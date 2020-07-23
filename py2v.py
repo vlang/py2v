@@ -1,10 +1,10 @@
-import _ast
 import ast
+import io
 import sys
 
 CALLS = {'print': 'println'}  # TODO: add an option to suppress this
 
-def deval(value) -> str:
+def deval(value) -> bytes:
     if isinstance(value, str):
         return f'"{value}"'
     elif isinstance(value, bool) or value is None:
@@ -37,21 +37,25 @@ def is_strformat(attr) -> bool:
     return True
 
 
-class Translator(ast.NodeVisitor):
+class Py2V(ast.NodeVisitor):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.buffer = []
+        
     def visit_Constant(self, node):
-        print(deval(node.value), end='')
+        self.buffer.append(deval(node.value))
         
     def visit_Module(self, module):
-        print(f'module main')
+        self.buffer.append('module main\n')
         for child in module.body:
             self.visit(child)
             
     def visit_FunctionDef(self, definition):
         args = [arg.arg for arg in definition.args.args]
-        print(f'fn {definition.name} ({", ".join(args)}) {definition.returns or ""}' + '{')
+        self.buffer.append(f'fn {definition.name} ({", ".join(args)}) {definition.returns or ""}' + '{\n')
         for child in definition.body:
             self.visit(child)
-        print('}')
+        self.buffer.append('}\n')
         
     def visit_Expr(self, expr):
         self.visit(expr.value)
@@ -59,46 +63,52 @@ class Translator(ast.NodeVisitor):
     def visit_Call(self, call):
         fmt = False
         if isinstance(call.func, ast.Name):
-            print(f'{CALLS.get(call.func.id, call.func.id)}(', end='')
+            self.buffer.append(f'{CALLS.get(call.func.id, call.func.id)}(')
         elif isinstance(call.func, ast.Attribute):
             if fmt := is_strformat(call.func):
-                print(deval(call.func.value.value.format(*[f'${{{arg.id}}}' for arg in call.args])), end='')
+                self.buffer.append(deval(call.func.value.value.format(*[f'${{{arg.id}}}' for arg in call.args])))
             else:
                 self.visit(call.func.value)
-                print(f'.{call.func.attr}(', end='')
+                self.buffer.append(f'.{call.func.attr}(')
         if not fmt:
-            for i, arg in enumerate(call.args):
+            for arg in call.args:
                 self.visit(arg)
-                if not i + 1 == len(call.args):  # if not last arg
-                    print(', ', end='')
-            print(')')
+                self.buffer.append(', ')
+            self.buffer.pop()
+            self.buffer.append(')\n')
         
     def visit_If(self, if_node):
         if is_maincheck(if_node.test):
             return
         
     def visit_Assign(self, assign):
-        print('mut ', end='')
+        self.buffer.append('mut ')
         for target in assign.targets:
             self.visit(target)
-        print(' := ', end='')
+            self.buffer.append(', ')
+        self.buffer.pop()
+        self.buffer.append(' := ')
         self.visit(assign.value)
-        print()
+        self.buffer.append('\n')
         
     def visit_Name(self, name):
-        print(name.id, end='')
+        self.buffer.append(name.id)
         
     def visit_BinOp(self, binop):
         self.visit(binop.left)
         if isinstance(binop.op, ast.Add):  # TODO: use dict
-            print(' + ', end='')
+            self.buffer.append(' + ')
         self.visit(binop.right)
     
     def generic_visit(self, node):
         raise Exception('unhandled {node}')
 
-
-with open(sys.argv[1]) as f:  # TODO: use argparse
-    src = f.read()
-parsed = ast.parse(src)
-Translator().visit(parsed)
+def main():
+    with open(sys.argv[1]) as f:  # TODO: use argparse
+        parsed = ast.parse(f.read())
+    p = Py2V()
+    p.visit(parsed)
+    print(''.join(p.buffer))
+    
+if __name__ == '__main__':
+    main()
