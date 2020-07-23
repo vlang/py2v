@@ -3,6 +3,18 @@ import io
 import sys
 
 CALLS = {'print': 'println'}  # TODO: add an option to suppress this
+OPERATORS = {ast.Add: '+',
+             ast.Sub: '-',
+             ast.Mult: '*',
+             ast.Div: '/',
+             ast.FloorDiv: '/',  # TODO: round this
+             ast.Mod: '%',
+             ast.Pow: '',  # TODO: Implement this
+             ast.LShift: '<<',
+             ast.RShift: '>>',
+             ast.BitOr: '|',
+             ast.BitXor: '^',
+             ast.BitAnd: '&'}
 
 def deval(value) -> bytes:
     if isinstance(value, str):
@@ -96,8 +108,7 @@ class Py2V(ast.NodeVisitor):
         
     def visit_BinOp(self, binop):
         self.visit(binop.left)
-        if isinstance(binop.op, ast.Add):  # TODO: use dict
-            self.buffer.append(' + ')
+        self.buffer.append(f' {OPERATORS[type(binop.op)]} ')
         self.visit(binop.right)
     
     def generic_visit(self, node):
