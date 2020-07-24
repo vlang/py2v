@@ -1,8 +1,14 @@
 import ast
+import contextlib
 import io
 import sys
+from collections import defaultdict
 
-CALLS = {'print': 'println'}  # TODO: add an option to suppress this
+import calls
+import typs
+import utils
+import vast
+
 OPERATORS = {ast.Add: '+',
              ast.Sub: '-',
              ast.Mult: '*',
@@ -16,100 +22,90 @@ OPERATORS = {ast.Add: '+',
              ast.BitXor: '^',
              ast.BitAnd: '&'}
 
-def deval(value) -> bytes:
-    if isinstance(value, str):
-        return f'"{value}"'
-    elif isinstance(value, bool) or value is None:
-        return str(value).lower()
-    else:
-        return str(value)
-
-def is_maincheck(test) -> bool:
-    if not isinstance(test.left, ast.Name):
-        return False
-    
-    if not test.left.id == '__main__':
-        return False
-    
-    if not len(test.ops) == 1 or not isinstance(test.ops[0], ast.Eq):
-        return False
-    
-    return True
-
-def is_strformat(attr) -> bool:
-    if not isinstance(attr.value, ast.Constant):
-        return False
-    
-    if not isinstance(attr.value.value, str):
-        return False
-    
-    if not attr.attr == 'format':
-        return False
-    
-    return True
+@contextlib.contextmanager
+def new_scope(visitor):
+    visitor.scope.append(set())
+    try:
+        yield
+    finally:
+        visitor.scope.pop()
 
 
 class Py2V(ast.NodeVisitor):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.buffer = []
+        self.scope = [set()]
+        self.file = vast.File(mod=vast.Module(name='main'), imports=set(), stmts=[])
+
+    
+    def visit(self, node):
+        print(node)
+        return super().visit(node)
         
     def visit_Constant(self, node):
-        self.buffer.append(deval(node.value))
+        return utils.deval(node.value)
         
     def visit_Module(self, module):
-        self.buffer.append('module main\n')
         for child in module.body:
-            self.visit(child)
+            if node := self.visit(child):
+                self.file.stmts.append(node)
             
-    def visit_FunctionDef(self, definition):
-        args = [arg.arg for arg in definition.args.args]
-        self.buffer.append(f'fn {definition.name} ({", ".join(args)}) {definition.returns or ""}' + '{\n')
-        for child in definition.body:
-            self.visit(child)
-        self.buffer.append('}\n')
+    def visit_Arg(self, arg):
+        return vast.Arg(name=arg.arg,
+                        typ=typs.translate(arg.annotation),
+                        is_mut=True,  # TODO: not mut if not changed
+                        is_hidden=False)
+            
+
+    def visit_FunctionDef(self, definition: ast.FunctionDef) -> vast.FnDecl:
+        args = []
+        with new_scope(self):
+            for arg in definition.args.args:  # TODO: support other kinds of args
+                args.append(self.visit(arg))
+                
+            stmts = []
+            for child in definition.body:
+                if node := self.visit(child):
+                    stmts.append(node)
+
+
+        return vast.FnDecl(name=definition.name,
+                           mod=self.file.mod.name,
+                           args=args,
+                           stmts=stmts,
+                           return_type=typs.translate(definition.returns))
+
         
     def visit_Expr(self, expr):
-        self.visit(expr.value)
+        return self.visit(expr.value)
         
     def visit_Call(self, call):
-        fmt = False
-        if isinstance(call.func, ast.Name):
-            self.buffer.append(f'{CALLS.get(call.func.id, call.func.id)}(')
-        elif isinstance(call.func, ast.Attribute):
-            if fmt := is_strformat(call.func):
-                self.buffer.append(deval(call.func.value.value.format(*[f'${{{arg.id}}}' for arg in call.args])))
-            else:
-                self.visit(call.func.value)
-                self.buffer.append(f'.{call.func.attr}(')
-        if not fmt:
-            for arg in call.args:
-                self.visit(arg)
-                self.buffer.append(', ')
-            self.buffer.pop()
-            self.buffer.append(')\n')
+        return calls.translate_call(call)
         
     def visit_If(self, if_node):
-        if is_maincheck(if_node.test):
-            return
-        
+        if len(self.scope) == 1:  # top level if __name__ == '__main__' checks are discarded
+            if all([getattr(if_node.test.left, 'id', '') == '__name__' or getattr(if_node.test.comparators[0], 'id', '') == '__name__', isinstance(if_node.test.ops[0], ast.Eq)]):  # This is badly coded on purpose so I have an excuse to remove it and properly distribute the body to fn main later
+                return
+
     def visit_Assign(self, assign):
-        self.buffer.append('mut ')
-        for target in assign.targets:
-            self.visit(target)
-            self.buffer.append(', ')
-        self.buffer.pop()
-        self.buffer.append(' := ')
-        self.visit(assign.value)
-        self.buffer.append('\n')
+        op = ':='
+        ident = vast.Ident(name=assign.targets[0].id)
+        for scope in reversed(self.scope):
+            for i in scope:  # 99% chance that there's a better implementation for this
+                if ident.name == i.name:
+                    op = '='
+                    i.is_mut = True
+        self.scope[-1].add(ident)
+
+        return vast.AssignStmt(left=ident, op=op, right=self.visit(assign.value))
         
     def visit_Name(self, name):
-        self.buffer.append(name.id)
+        return vast.Ident(name=name.id)
+
         
     def visit_BinOp(self, binop):
-        self.visit(binop.left)
-        self.buffer.append(f' {OPERATORS[type(binop.op)]} ')
-        self.visit(binop.right)
+        return vast.InfixExpr(left=self.visit(binop.left), op=OPERATORS[type(binop.op)], right=self.visit(binop.right))
+
     
     def generic_visit(self, node):
         raise Exception('unhandled {node}')
@@ -119,7 +115,8 @@ def main():
         parsed = ast.parse(f.read())
     p = Py2V()
     p.visit(parsed)
-    print(''.join(p.buffer))
+    with open('out.v', 'w') as f:
+        f.write(str(p.file))
     
 if __name__ == '__main__':
     main()
