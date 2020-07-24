@@ -28,10 +28,6 @@ class Py2V(ast.NodeVisitor):
         super().__init__(*args, **kwargs)
         self.scope = [set()]
         self.file = vast.File(children=[vast.ModuleDecl(name='main')])
-
-    def visit(self, node):
-        print(node)
-        return super().visit(node)
         
     def visit_Constant(self, node):
         return vast.Literal(value=node.value)
@@ -88,15 +84,7 @@ class Py2V(ast.NodeVisitor):
 
     
     def generic_visit(self, node):
-        raise Exception('unhandled {node}')
-    
-
-def show_tree(node):
-    listed = [node.__class__.__qualname__]
-    for child in node.children:
-        assert child.parent == node
-        listed.append('->' + show_tree(child))
-    return '\n'.join(listed)
+        raise Exception('unhandled {type(node)}')
 
 
 def main():

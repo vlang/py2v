@@ -4,12 +4,12 @@ from typing import List, Union, Optional
 
 TYPES = {'str': 'string'}
 
-
+"""
 class Language(Enum):
     V = 0
     C = 1
     JS = 2
-
+"""
     
 class Type:
     def __init__(self, typ: Optional[str] = None):
