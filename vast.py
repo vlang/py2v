@@ -1,5 +1,8 @@
+import ast
 from enum import Enum
-from typing import Sequence
+from typing import List, Union, Optional
+
+TYPES = {'str': 'string'}
 
 
 class Language(Enum):
@@ -7,25 +10,77 @@ class Language(Enum):
     C = 1
     JS = 2
 
+    
+class Type:
+    def __init__(self, typ: Optional[str] = None):
+        self.typ = TYPES.get(typ, typ)  # None -> unknown type, '' -> none/no return
 
-class Object:
-    def __init__(self, *_, **kwargs):
-        for key in kwargs:
-            setattr(self, key, kwargs[key])
-            
     def __str__(self):
-        attrs = []
-        for attr in dir(self):
-            if not attr.startswith('__'):
-                attrs.append(f'{attr}={getattr(self, attr)}')
-        return f'<{self.__class__.__qualname__}({" ".join(attrs)})>'
+        if self.typ is not None:
+            return self.typ
+        else:
+            return '<unknown>'
+        
+    @classmethod
+    def from_annotation(cls, annotation):
+        if annotation is None:
+            return cls()
+        elif isinstance(annotation, ast.Constant):
+            assert isinstance(annotation.value, str)
+            return cls(annotation.value)
+        else:
+            raise Exception(f'cannot handle type {type(annotation)}')
 
 
-class Expr(Object):
+class Node:
+    def __init__(self, parent: 'Node' = None, children: List['Node'] = None):
+        self.parent = parent
+        self.children = children or []
+
+        for child in self.children:
+            child.parent = self
+
+    def __str__(self):
+        return f'<{self.__class__.__qualname__}({" ".join(map(str, self.children))})>'
+    
+    def add_child(self, child: 'Node'):
+        child.parent = self
+        self.children.append(child)
+    
+    def find(self, cls: 'Node') -> 'Node':
+        """ Find the first parent node that is a {cls}. """
+        if self.parent is None:
+            raise Exception(f'cannot find {cls}')
+        if isinstance(self.parent, cls):
+            return self.parent
+        return self.parent.find(cls)
+
+
+class ScopeDict(dict):
+    def ensure(self, ident):
+        if first := super().get(ident.name, False):
+            first.is_mut = True
+            return True
+        self[ident.name] = ident
+        return False
+
+
+class ScopedNode(Node):
+    def __init__(self, *_args, **_kwargs):
+        super().__init__(*_args, **_kwargs)
+        self.scope = ScopeDict()
+
+
+class File(ScopedNode):
+    def __str__(self):
+        return '\n'.join(map(str, self.children))
+
+"""
+class Expr(Node):
     pass
 
 
-class Stmt(Object):
+class Stmt(Node):
     pass
 
 
@@ -34,50 +89,129 @@ class TypeDecl(Stmt):
 
 
 class Block(Stmt):
-    stmts: Sequence[Stmt]
+    stmts: List[Stmt]
 
 
 class ExprStmt(Stmt):
     expr: Expr
     typ: str
+"""
+
+class Literal(Node):
+    def __init__(self, value: Union[int, float, bool, str, None], *_args, **_kwargs):
+        super().__init__(*_args, **_kwargs)
+        self.value = value
+
+    def __str__(self) -> str:
+        if isinstance(self.value, (int, float)):
+            return str(self.value)
+        elif isinstance(self.value, bool) or self.value is None:
+            return str(self.value).lower()
+        elif isinstance(self.value, str):
+            return f'"{self.value}"'
+        else:
+            raise Exception(f'cannot handle literal type {type(self.value)}')
+        
+
+class ModuleDecl(Node):
+    def __init__(self, name: str, *args_, **kwargs):
+        super().__init__(*args_, **kwargs)
+        self.name = name
 
 
-class IntegerLiteral(Expr):
-    val: str
+    def __str__(self):
+        return f'module {self.name}'
+
+
+class Ident(Node):
+    def __init__(self, name: str, typ: Optional[Type] = None, is_mut: bool = False, *_args, **_kwargs):
+        super().__init__(*_args, **_kwargs)
+        self.name = name
+        self.typ = typ or Type()
+        self.is_mut = is_mut
+        
+    def __str__(self):
+        buf = []
+        if self.is_mut:
+            buf.append('mut')
+        buf.append(self.name)
+        if isinstance(self.parent, FunctionDecl):
+            buf.append(self.typ)
+        return self.name
+
+
+class StructDecl(Node):
+    pass
+
+
+class FunctionDecl(ScopedNode):
+    def __init__(self, name: str, args: Optional[List[Ident]] = None, returns: Optional[List[Type]] = None,
+                 *_args, **_kwargs):
+        super().__init__(*_args, **_kwargs)
+        self.name = name
+        self.args = args or []
+        self.returns = returns or []
+        
+    def __str__(self):
+        buf = []
+        if isinstance(self.parent, StructDecl):
+            buf.append(f'fn ({self.args[0]} {self.parent.name}) {self.name}({", ".join(map(str, self.args))}) {{')
+        else:
+            buf.append(f'fn {self.name}({", ".join(map(str, self.args))}) {{')
+        
+        for child in self.children:
+            buf.append(str(child))
+
+        buf.append('}')
+        return '\n'.join(buf)
     
-    def __str__(self):
-        return self.val
-
-
-class FloatLiteral(Expr):
-    val: str
     
+class FunctionCall(Node):
+    def __init__(self, name: str, module: str = 'main', left: Optional[Node] = None, *_args, **_kwargs):
+        super().__init__(*_args, **_kwargs)
+        self.name = name
+        self.module = module
+        self.left = left
+        
     def __str__(self):
-        return self.val
+        buf = []
+        if self.module != self.find(cls=File).children[0].name:
+            buf.append(self.module)
+        if self.left:
+            buf.append(str(self.left))
+        buf.append(f'{self.name}({", ".join(map(str, self.children))})')
+        
+        return '.'.join(buf)
 
 
-class StringLiteral(Expr):
-    val: str = ''
-    is_raw: bool = False
-    language: Language = Language.V
-    
+class Assign(Node):
+    def __init__(self, value: Node, *_args, **_kwargs):
+        super().__init__(*_args, **_kwargs)
+        self.value = value
+
     def __str__(self):
-        return f"'{self.val}'"  # TODO: escape
+        buf = []
+        op = ':='
+        for child in self.children:
+            buf.append(str(child))
+            if isinstance(self.parent, ScopedNode) and self.parent.scope.ensure(child):
+                op = '='
+        buf.append(op)
+        buf.append(', '.join([str(self.value)] * len(self.children)))  # TODO: This will break with non-pure function calls, should fix later
+        
+        return ' '.join(buf)
 
 
-class CharLiteral(Expr):
-    val: str
+class Infix(Node):
+    def __init__(self, left: Node, right: Node, op: str, *_args, **_kwargs):
+        super().__init__(*_args, **_kwargs)
+        self.left = left
+        self.right = right
+        self.op = op
 
     def __str__(self):
-        return f"`{self.val}`"
-
-class BoolLiteral(Expr):
-    val: str
-    
-    def __str__(self):
-        return self.val
-
-
+        return f'{self.left} {self.op} {self.right}'
+"""
 class SelectorExpr(Expr):
     expr: Expr
     field_name: str
@@ -91,21 +225,21 @@ class Module(Stmt):
     is_skipped: bool
 
 
-class StructField(Object):
+class StructField(Node):
     name: str
     default_expr: Expr
     has_default_expr: bool
-    attrs: Sequence[str]
+    attrs: List[str]
     is_public: bool
     typ: str
 
 
-class Field(Object):
+class Field(Node):
     name: str
     typ: str
 
 
-class ConstField(Object):
+class ConstField(Node):
     mod: str
     name: str
     expr: Expr
@@ -115,19 +249,19 @@ class ConstField(Object):
 
 class ConstDecl(Stmt):
     is_pub: bool
-    fields: Sequence[ConstField]
+    fields: List[ConstField]
 
 
 class StructDecl(Stmt):
     name: str
-    fields: Sequence[StructField]
+    fields: List[StructField]
     is_pub: bool
     language: Language
     is_union: bool
-    attrs: Sequence[str]
+    attrs: List[str]
 
 
-class Arg(Object):
+class Arg(Node):
     name: str
     is_mut: bool
     typ: str
@@ -137,7 +271,7 @@ class Arg(Object):
 class FnDecl(Stmt):
     name: str
     mod: str = 'main'
-    args: Sequence[Arg] = tuple()
+    args: List[Arg] = tuple()
     is_deprecated: bool = False
     is_pub: bool = True
     is_variadic: bool = False
@@ -150,7 +284,7 @@ class FnDecl(Stmt):
     # no_body: bool = True
     # ctdefine: str
     is_generic: bool = False
-    stmts: Sequence[Stmt] = tuple()
+    stmts: List[Stmt] = tuple()
     return_type: str = ''
     
     def __str__(self):
@@ -164,12 +298,12 @@ class FnDecl(Stmt):
 
 class InterfaceDecl(Stmt):
     name: str
-    field_names: Sequence[str]
+    field_names: List[str]
     is_pub: bool
-    methods: Sequence[FnDecl]
+    methods: List[FnDecl]
 
 
-class StructInitField(Object):
+class StructInitField(Node):
     expr: Expr
     name: str
     typ: str
@@ -179,13 +313,13 @@ class StructInitField(Object):
 class StructInit(Expr):
     is_short: bool
     typ: str
-    fields: Sequence[StructInitField]
+    fields: List[StructInitField]
 
 
 class Import(Stmt):
     mod: str
     alias: str
-    syms: Sequence[str]
+    syms: List[str]
     
     def __hash__(self):
         return hash(self.mod)
@@ -200,7 +334,7 @@ class BranchStmt(Stmt):
     tok: str
 
 
-class CallArg(Object):
+class CallArg(Node):
     is_mut: bool = True
     share: None  # TODO: table.ShareType
     expr: Expr
@@ -214,7 +348,7 @@ class OrKind(Enum):
 
 
 class OrExpr(Expr):
-    stmts: Sequence[Stmt]
+    stmts: List[Stmt]
     kind:  OrKind
 
 
@@ -222,10 +356,15 @@ class CallExpr(Expr):
     left: Expr = None
     mod: str = 'main'
     name: str
-    args: Sequence[CallArg] = tuple()
+    args: List[CallArg] = tuple()
     language: Language = Language.V
     or_block: OrExpr = None
     generic_type: str = None
+    
+    def __init__(self, name: str, args, *args_, **kwargs):
+        self.name = name
+        self.args = args
+        super().__init__(*args_, **kwargs)
     
     def __str__(self):
         buf = []
@@ -240,11 +379,10 @@ class CallExpr(Expr):
 
 
 class Return(Stmt):
-    exprs: Sequence[Expr]
-    types: Sequence[int]
+    exprs: List[Expr]
+    types: List[int]
 
-"""
-class Var(Object):
+class Var(Node):
     name: str
     expr: Expr
     share: None  # TODO: table.ShareType
@@ -253,7 +391,6 @@ class Var(Object):
     typ: str
     is_used: bool
     is_changed: bool
-"""
 
 class GlobalDecl(Stmt):
     name: str
@@ -262,37 +399,20 @@ class GlobalDecl(Stmt):
     typ: str
 
 
-class File(Object):
+class File(Node):
     mod: Module
-    stmts: Sequence[Stmt] = tuple()
-    imports: Sequence[Import] = tuple()
-    
-    def __str__(self):
-        buf = [f'module {self.mod.name}']
-        for imp in self.imports:
-            buf.append(str(imp))
-
-        for stmt in self.stmts:
-            buf.append(str(stmt))
-            
-        return '\n'.join(buf)
-
-
-class Ident(Expr):
-    language: Language = Language.V
-    mod: str = 'main'
-    name: str
-    is_mut: bool = False
-    
-    def __hash__(self):
-        return hash(self.name)
+    stmts: List[Stmt] = tuple()
+    imports: List[Import] = tuple()
     
     def __str__(self):
         buf = []
-        if self.is_mut:
-            buf.append('mut')
-        buf.append(self.name)
-        return ' '.join(buf)
+        for imp in self.imports:
+            buf.append(str(imp))
+
+        for child in self.children:
+            buf.append(str(child))
+            
+        return '\n'.join(buf)
 
 
 class InfixExpr(Expr):
@@ -322,9 +442,9 @@ class IndexExpr(Expr):
     is_setter: bool
 
 
-class IfBranch(Object):
+class IfBranch(Node):
     cond: Expr
-    stmts: Sequence[Stmt]
+    stmts: List[Stmt]
     smartcast: bool
     left_as_name: str
 
@@ -332,34 +452,34 @@ class IfBranch(Object):
 class IfExpr(Expr):
     tok_kind: str
     left: Expr
-    branches: Sequence[IfBranch]
+    branches: List[IfBranch]
     is_expr: bool
     typ: str
     has_else: bool
 
 
 class UnsafeExpr(Expr):
-    stmts: Sequence[Stmt]
+    stmts: List[Stmt]
 
 
 class LockExpr(Expr):
-    stmts: Sequence[Stmt]
+    stmts: List[Stmt]
     is_rlock: bool
-    lockeds:  Sequence[Ident]
+    lockeds:  List[Ident]
     is_expr: bool
     typ: str
 
 
-class MatchBranch(Object):
-    exprs: Sequence[Expr]
-    stmts: Sequence[Stmt]
+class MatchBranch(Node):
+    exprs: List[Expr]
+    stmts: List[Stmt]
     is_else: bool
 
 
 class MatchExpr(Expr):
     tok_kind: str
     cond: Expr
-    branches: Sequence[MatchBranch]
+    branches: List[MatchBranch]
     is_mut: bool
     var_name: str
     is_expr: bool
@@ -372,22 +492,22 @@ class MatchExpr(Expr):
 
 class CompIf(Stmt):
     val: str
-    stmts: Sequence[Stmt]
+    stmts: List[Stmt]
     is_not: bool
     is_opt: bool
     has_else: bool
-    else_stmts: Sequence[Stmt]
+    else_stmts: List[Stmt]
 
 
 class CompFor(Stmt):
     val_var: str
-    stmts: Sequence[Stmt]
+    stmts: List[Stmt]
     typ: str
 
 
 class ForStmt(Stmt):
     cond: Expr
-    stmts: Sequence[Stmt]
+    stmts: List[Stmt]
     is_inf: bool
 
 
@@ -397,7 +517,7 @@ class ForInStmt(Stmt):
     cond: Expr
     is_range: bool
     high: Expr
-    stmts: Sequence[Stmt]
+    stmts: List[Stmt]
     key_type: int
     val_type: int
     cond_type: int
@@ -411,7 +531,7 @@ class ForCStmt(Stmt):
     has_cond: bool
     inc: Stmt
     has_inc: bool
-    stmts: Sequence[Stmt]
+    stmts: List[Stmt]
 
 
 class HashStmt(Stmt):
@@ -419,7 +539,7 @@ class HashStmt(Stmt):
     mod: str
 
 
-class Lambda(Object):
+class Lambda(Node):
     name: str
 
 
@@ -450,7 +570,7 @@ class EnumVal(Stmt):
     typ: str
 
 
-class EnumField(Object):
+class EnumField(Node):
     name: str
     expr: Expr
     has_expr: bool
@@ -461,7 +581,7 @@ class EnumDecl(Stmt):
     is_pub: bool
     is_flag: bool
     is_multi_allowed: bool
-    fields: Sequence[EnumField]
+    fields: List[EnumField]
 
 
 class AliasTypeDecl(TypeDecl):
@@ -473,7 +593,7 @@ class AliasTypeDecl(TypeDecl):
 class SumTypeDecl(TypeDecl):
     name: str
     is_pub: bool
-    sub_types: Sequence[int]
+    sub_types: List[int]
 
 
 class FnTypeDecl(TypeDecl):
@@ -483,12 +603,12 @@ class FnTypeDecl(TypeDecl):
 
 
 class DeferStmt(Stmt):
-    stmts: Sequence[Stmt]
+    stmts: List[Stmt]
     ifdef: str
 
 
 class UnsafeStmt(Stmt):
-    stmts: Sequence[Stmt]
+    stmts: List[Stmt]
 
 
 class ParExpr(Expr):
@@ -508,7 +628,7 @@ class GotoStmt(Stmt):
 
 
 class ArrayInit(Expr):
-    exprs: Sequence[Expr]
+    exprs: List[Expr]
     is_fixed: bool
     has_val: bool
     mod: str
@@ -519,15 +639,15 @@ class ArrayInit(Expr):
     has_cap: bool
     has_default: bool
     is_interface: bool
-    interface_types: Sequence[int]
+    interface_types: List[int]
     interface_type: int
     elem_type: int
     typ: str
 
 
 class MapInit(Expr):
-    keys: Sequence[Expr]
-    vals: Sequence[Expr]
+    keys: List[Expr]
+    vals: List[Expr]
     typ: str
     key_type: int
     value_type: int
@@ -561,8 +681,8 @@ class IfGuardExpr(Expr):
 
 class Assoc(Expr):
     var_name: str
-    fields: Sequence[str]
-    exprs: Sequence[Expr]
+    fields: List[str]
+    exprs: List[Expr]
     typ: str
 
 
@@ -579,7 +699,7 @@ class TypeOf(Expr):
 
 
 class ConcatExpr(Expr):
-    vals: Sequence[Expr]
+    vals: List[Expr]
     return_type: int
 
 
@@ -591,5 +711,6 @@ class ComptimeCall(Expr):
     sym: str
 
 
-class none(Object):
+class none(Node):
     foo: int
+"""

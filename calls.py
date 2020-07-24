@@ -9,7 +9,7 @@ def resolve_args(call_args):
         if isinstance(arg, ast.Name):
             args.append(vast.Ident(name=arg.id))
         elif isinstance(arg, ast.Constant):
-            args.append(utils.deval(arg.value))
+            args.append(vast.Literal(value=arg.value))
         elif isinstance(arg, ast.Call):
             args.append(translate_call(arg))
         else:
