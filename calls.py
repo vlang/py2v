@@ -1,6 +1,5 @@
 import ast
 
-import utils
 import vast
 
 def resolve_args(call_args):

@@ -2,11 +2,10 @@ import ast
 import contextlib
 import io
 import sys
-from collections import defaultdict
+from pathlib import Path
 
 import calls
 import typs
-import utils
 import vast
 
 OPERATORS = {ast.Add: '+',
@@ -20,14 +19,23 @@ OPERATORS = {ast.Add: '+',
              ast.RShift: '>>',
              ast.BitOr: '|',
              ast.BitXor: '^',
-             ast.BitAnd: '&'}
+             ast.BitAnd: '&',
+             ast.Eq: '==',
+             ast.NotEq: '!=',
+             ast.Lt: '<',
+             ast.LtE: '<=',
+             ast.Gt: '>',
+             ast.GtE: '>=',
+             ast.Is: 'is',
+             ast.IsNot: '!is',
+             ast.In: 'in',
+             ast.NotIn: '!in'}
 
 
 class Py2V(ast.NodeVisitor):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.scope = [set()]
-        self.file = vast.File(children=[vast.ModuleDecl(name='main')])
+        self.file = vast.File()
         
     def visit_Constant(self, node):
         return vast.Literal(value=node.value)
@@ -68,33 +76,73 @@ class Py2V(ast.NodeVisitor):
         raise Exception(f'unhandled type {type(call.func)}')
         
     def visit_If(self, if_node):
-        if len(self.scope) == 1:  # top level if __name__ == '__main__' checks are discarded
-            if all([getattr(if_node.test.left, 'id', '') == '__name__' or getattr(if_node.test.comparators[0], 'id', '') == '__name__', isinstance(if_node.test.ops[0], ast.Eq)]):  # This is badly coded on purpose so I have an excuse to remove it and properly distribute the body to fn main later
-                return
+        return vast.If(test=self.visit(if_node.test), else_=[*map(self.visit, if_node.orelse)], children=[*map(self.visit, if_node.body)])
 
     def visit_Assign(self, assign):
         return vast.Assign(value=self.visit(assign.value), children=[*map(self.visit, assign.targets)])
         
     def visit_Name(self, name):
         return vast.Ident(name=name.id)
-
         
     def visit_BinOp(self, binop):
         return vast.Infix(left=self.visit(binop.left), op=OPERATORS[type(binop.op)], right=self.visit(binop.right))
 
+    def visit_arg(self, arg):
+        return vast.Ident(name=arg.arg, typ=vast.Type.from_annotation(arg.annotation))
+
+    def visit_Return(self, ret):
+        value = self.visit(ret.value)
+        if isinstance(value, (tuple, list)):
+            return vast.Return(children=[*value])
+        return vast.Return(children=[value])
+
+    def visit_NoneType(self, value):
+        return vast.Literal(value=value)
+
+    def visit_Raise(self, raise_node):
+        return vast.Return(children=[vast.FunctionCall(name='error', module='builtin')])  # TODO: better error handling
+
+    def visit_Compare(self, compare):
+        left = self.visit(compare.left)
+        comps = []
+        for op, comp in zip(compare.ops, compare.comparators):
+            comps.append(vast.Infix(left=left, right=self.visit(comp), op=OPERATORS[type(op)]))
+        while len(comps) > 1:
+            comps.insert(vast.Infix(left=comps.pop(), right=comps.pop(), op='&&'))
+        return comps[0]
     
     def generic_visit(self, node):
-        raise Exception('unhandled {type(node)}')
+        raise Exception(f'unhandled {type(node)}')
+    
+    
+def parse_file(path: Path, module: str = 'main') -> vast.File:
+    p = Py2V()
+    p.file.add_child(vast.ModuleDecl(name=module))
+    p.visit(ast.parse(path.read_text()))
+    
+    return p.file
 
 
 def main():
-    with open(sys.argv[1]) as f:  # TODO: use argparse
-        parsed = ast.parse(f.read())
-    p = Py2V()
-    p.visit(parsed)
-    print(show_tree(p.file))
-    with open('out.v', 'w') as f:
-        f.write(str(p.file))
+    path = Path(sys.argv[1])
+    if path.is_file():
+        parsed = parse_file(path)
+        output = path.with_suffix('.v')
+        if not output.exists():
+            output.write_text(str(parsed))
+        else:
+            print(f'cannot write to {output}, skipping...')
+    elif path.is_dir():
+        for f in path.glob('*.py'):
+            parsed = parse_file(f, module=path.name)
+            output = f.with_suffix('.v')
+            if not output.exists():
+                output.write_text(str(parsed))
+            else:
+                print(f'cannot write to {output}, skipping...')
+    else:
+        print('cannot find input file')
+        exit(1)
     
 if __name__ == '__main__':
     main()

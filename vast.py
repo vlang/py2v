@@ -28,6 +28,8 @@ class Type:
         elif isinstance(annotation, ast.Constant):
             assert isinstance(annotation.value, str)
             return cls(annotation.value)
+        elif isinstance(annotation, ast.Name):
+            return cls(annotation.id)
         else:
             raise Exception(f'cannot handle type {type(annotation)}')
 
@@ -175,7 +177,7 @@ class FunctionCall(Node):
         
     def __str__(self):
         buf = []
-        if self.module != self.find(cls=File).children[0].name:
+        if self.module not in ('builtin', 'strconv') or self.module != self.find(cls=File).children[0].name:
             buf.append(self.module)
         if self.left:
             buf.append(str(self.left))
@@ -211,6 +213,39 @@ class Infix(Node):
 
     def __str__(self):
         return f'{self.left} {self.op} {self.right}'
+
+
+class If(Node):
+    def __init__(self, test: Node, else_: Optional[List[Node]] = None, *_args, **_kwargs):
+        super().__init__(*_args, **_kwargs)
+        self.test = test
+        self.else_ = else_ or []
+
+    def __str__(self):
+        buf = [f'if {self.test} {{']
+        buf.extend(map(str, self.children))
+        buf.append('}')
+        
+        if self.else_:
+            buf.append('else {')
+            buf.extend(map(str, self.else_))
+            buf.append('}')
+            
+        return '\n'.join(buf)
+
+
+class Return(Node):
+    def __str__(self):
+        if self.children:
+            return f'return {", ".join(map(str, self.children))}'
+        return 'return'
+
+class Import(Node):
+    def __str__(self):
+        if self.children == 1:
+            return f'import {self.children[0]}'
+        return f'import {self.children[0]} {{{", ".join(map(str, self.children[1:]))}}}'
+
 """
 class SelectorExpr(Expr):
     expr: Expr
