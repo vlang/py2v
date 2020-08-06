@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import argparse
 import ast
 import contextlib
 import io
@@ -126,25 +127,32 @@ def parse_file(path: Path, module: str = 'main') -> vast.File:
 
 
 def main():
-    path = Path(sys.argv[1])
-    if path.is_file():
-        parsed = parse_file(path)
-        output = path.with_suffix('.v')
+    parser = argparse.ArgumentParser(description='A Python to V transpiler.')
+    parser.add_argument('input', help='input file(or module) to transpile.', type=Path)
+    parser.add_argument('-o', '--output', help='output file(or directory) to write into (default: input with .v suffix)', type=Path, default=None)
+    
+    args = parser.parse_args()
+
+    if args.input.is_file():
+        parsed = parse_file(args.input)
+        output = args.output or args.input.with_suffix('.v')
         if not output.exists():
             output.write_text(str(parsed))
         else:
-            print(f'cannot write to {output}, skipping...')
-    elif path.is_dir():
-        for f in path.glob('*.py'):
-            parsed = parse_file(f, module=path.name)
-            output = f.with_suffix('.v')
+            print(f'ERROR: output file already exists')
+    elif args.input.is_dir():
+        output_dir = args.output or args.input
+        output_dir.mkdir(exist_ok=True)
+        for f in args.input.glob('*.py'):
+            parsed = parse_file(f, module=args.input.name)
+            output = output_dir / f'{f.stem}.v'
             if not output.exists():
                 output.write_text(str(parsed))
             else:
-                print(f'cannot write to {output}, skipping...')
+                print(f'ERROR: output file "{output}"  already exists')
     else:
-        print('cannot find input file')
-        exit(1)
+        print('ERROR: input does not exist')
+        exit(2)
     
 if __name__ == '__main__':
     main()
