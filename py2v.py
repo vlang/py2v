@@ -130,7 +130,6 @@ def main():
     parser = argparse.ArgumentParser(description='A Python to V transpiler.')
     parser.add_argument('input', help='input file(or module) to transpile.', type=Path)
     parser.add_argument('-o', '--output', help='output file(or directory) to write into (default: input with .v suffix)', type=Path, default=None)
-    
     args = parser.parse_args()
 
     if args.input.is_file():
@@ -140,9 +139,11 @@ def main():
             output.write_text(str(parsed))
         else:
             print(f'ERROR: output file already exists')
+
     elif args.input.is_dir():
         output_dir = args.output or args.input
         output_dir.mkdir(exist_ok=True)
+
         for f in args.input.glob('*.py'):
             parsed = parse_file(f, module=args.input.name)
             output = output_dir / f'{f.stem}.v'

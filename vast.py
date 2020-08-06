@@ -3,14 +3,12 @@ from enum import Enum
 from typing import List, Union, Optional
 
 TYPES = {'str': 'string'}
+NAMES = {'__name__': '@MOD',
+        'main': 'main_'}
+LITERALS = {'__main__': 'main'}
+CALLS = {'print': 'println'}
 
-"""
-class Language(Enum):
-    V = 0
-    C = 1
-    JS = 2
-"""
-    
+ 
 class Type:
     def __init__(self, typ: Optional[str] = None):
         self.typ = TYPES.get(typ, typ)  # None -> unknown type, '' -> none/no return
@@ -77,32 +75,11 @@ class File(ScopedNode):
     def __str__(self):
         return '\n'.join(map(str, self.children))
 
-"""
-class Expr(Node):
-    pass
-
-
-class Stmt(Node):
-    pass
-
-
-class TypeDecl(Stmt):
-    pass
-
-
-class Block(Stmt):
-    stmts: List[Stmt]
-
-
-class ExprStmt(Stmt):
-    expr: Expr
-    typ: str
-"""
 
 class Literal(Node):
     def __init__(self, value: Union[int, float, bool, str, None], *_args, **_kwargs):
         super().__init__(*_args, **_kwargs)
-        self.value = value
+        self.value = LITERALS.get(value, value)
 
     def __str__(self) -> str:
         if isinstance(self.value, (int, float)):
@@ -128,7 +105,7 @@ class ModuleDecl(Node):
 class Ident(Node):
     def __init__(self, name: str, typ: Optional[Type] = None, is_mut: bool = False, *_args, **_kwargs):
         super().__init__(*_args, **_kwargs)
-        self.name = name
+        self.name = NAMES.get(name, name)
         self.typ = typ or Type()
         self.is_mut = is_mut
         
@@ -150,7 +127,7 @@ class FunctionDecl(ScopedNode):
     def __init__(self, name: str, args: Optional[List[Ident]] = None, returns: Optional[List[Type]] = None,
                  *_args, **_kwargs):
         super().__init__(*_args, **_kwargs)
-        self.name = name
+        self.name = NAMES.get(name, name)
         self.args = args or []
         self.returns = returns or []
         
@@ -171,13 +148,14 @@ class FunctionDecl(ScopedNode):
 class FunctionCall(Node):
     def __init__(self, name: str, module: str = 'main', left: Optional[Node] = None, *_args, **_kwargs):
         super().__init__(*_args, **_kwargs)
-        self.name = name
+        self.name = NAMES.get(name, name)
+        self.name = CALLS.get(self.name, self.name)
         self.module = module
         self.left = left
         
     def __str__(self):
         buf = []
-        if self.module not in ('builtin', 'strconv') or self.module != self.find(cls=File).children[0].name:
+        if self.module not in ('builtin', 'strconv', 'main') or self.module != self.find(cls=File).children[0].name:
             buf.append(self.module)
         if self.left:
             buf.append(str(self.left))
