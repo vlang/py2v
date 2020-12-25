@@ -8,6 +8,8 @@ fn visit_call(node json2.Any) ast.CallExpr {
 	func := map_node['func'].as_map()
 
 	mut name := ''
+	mut left := ast.Expr(ast.None{})
+	mut is_method := false
 	match func['@type'].str() {
 		'Name' {
 			name = match func['id'].str() {
@@ -19,6 +21,11 @@ fn visit_call(node json2.Any) ast.CallExpr {
 				}
 			}
 		}
+		'Attribute' {
+			name = func['attr'].str()
+			left = visit_expr(func['value'])
+			is_method = true
+		}
 		else {
 			eprintln('unhandled func type in visit_call')
 		}
@@ -29,5 +36,5 @@ fn visit_call(node json2.Any) ast.CallExpr {
 		args << ast.CallArg{expr: visit_expr(arg)}
 	}
 
-	return ast.CallExpr{name: name args: args scope: voidptr(0)}
+	return ast.CallExpr{name: name args: args scope: voidptr(0) left: left is_method: is_method}
 }

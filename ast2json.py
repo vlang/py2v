@@ -1,6 +1,7 @@
 import ast
 import json
 import sys
+from typing import Callable
 
 BASE = set(dir(object()))
 
@@ -22,7 +23,9 @@ class AstEncoder(json.JSONEncoder):
         except TypeError:
             d = {'@type': o.__class__.__qualname__}
             for attr in filter(filter_attr, dir(o)):
-                d[attr] = getattr(o, attr)
+                val = getattr(o, attr)
+                if not isinstance(val, Callable):
+                    d[attr] = val
             return d
 
 
