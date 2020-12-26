@@ -1,19 +1,6 @@
 import ast
 import json
 import sys
-from typing import Callable
-
-BASE = set(dir(object()))
-
-
-def filter_attr(attr: str) -> bool:
-    if attr in BASE:
-        return False
-
-    if attr.startswith('_') or attr.endswith('_'):
-        return False
-
-    return True
 
 
 class AstEncoder(json.JSONEncoder):
@@ -22,10 +9,15 @@ class AstEncoder(json.JSONEncoder):
             return super().default(o)
         except TypeError:
             d = {'@type': o.__class__.__qualname__}
-            for attr in filter(filter_attr, dir(o)):
-                val = getattr(o, attr)
-                if not isinstance(val, Callable):
-                    d[attr] = val
+            if isinstance(o, ast.Constant):
+                d['@constant_type'] = o.value.__class__.__qualname__
+
+            for name, field in ast.iter_fields(o):
+                if isinstance(field, bytes):
+                    d[name] = list(field.decode())
+                    continue
+
+                d[name] = field
             return d
 
 
