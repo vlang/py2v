@@ -26,7 +26,7 @@ fn (mut t Transpiler) visit_call(node json2.Any) ast.Expr {
 					mod = 'main'
 				}
 				'len' {
-					return ast.SelectorExpr{expr: args[0].expr field_name: 'len' scope: t.ast_scope typ: table.void_type expr_type: table.void_type name_type: table.void_type}
+					return ast.SelectorExpr{expr: args[0].expr field_name: 'len' scope: t.scope typ: table.void_type expr_type: table.void_type name_type: table.void_type}
 				}
 				'bytes', 'bytearray' {
 					typ := t.get_type(args[0].expr)
@@ -70,5 +70,5 @@ fn (mut t Transpiler) visit_call(node json2.Any) ast.Expr {
 		}
 	}
 
-	return ast.CallExpr{name: name mod: mod args: args scope: t.ast_scope left: left is_method: is_method return_type: table.void_type receiver_type: table.void_type}
+	return ast.CallExpr{name: name mod: mod args: args scope: t.scope left: left is_method: is_method return_type: table.void_type receiver_type: table.void_type}
 }

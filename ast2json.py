@@ -4,6 +4,8 @@ import sys
 
 
 class AstEncoder(json.JSONEncoder):
+    no_main = True
+
     def default(self, o):
         try:
             return super().default(o)
@@ -11,6 +13,9 @@ class AstEncoder(json.JSONEncoder):
             d = {'@type': o.__class__.__qualname__}
             if isinstance(o, ast.Constant):
                 d['@constant_type'] = o.value.__class__.__qualname__
+            elif isinstance(o, ast.FunctionDef):  # TODO: improve this
+                if o.name == 'main':
+                    self.no_main = False
 
             for name, field in ast.iter_fields(o):
                 if isinstance(field, bytes):
@@ -18,6 +23,8 @@ class AstEncoder(json.JSONEncoder):
                     continue
 
                 d[name] = field
+            if isinstance(o, ast.Module):
+                d['@no_main'] = self.no_main
             return d
 
 

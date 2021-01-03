@@ -2,67 +2,29 @@ module main
 
 import v.ast
 
-struct Scope {
-mut:
-	idents       map[string]&ast.IdentVar
-	redirects map[string]string
-	parent        &Scope = voidptr(0)
-	children      []&Scope
+[inline]
+fn is_scoped(stmt ast.Stmt) bool {
+	return match stmt {
+		ast.FnDecl, ast.ForInStmt { true }
+		else { false }
+	}
 }
 
-fn (s &Scope) get_parent() &Scope {
-	mut sc := s
-	if isnil(sc.parent) {
-		return sc
-	}
-	return sc.parent.get_parent()
+[inline]
+fn (mut t Transpiler) is_at_top() bool {
+	return isnil(t.scope.parent)
 }
 
-fn (s &Scope) new_child() &Scope {
-	mut sc := s
-	sc.children << &Scope{parent: sc}
-	return sc.children.last()
+[inline]
+fn (mut t Transpiler) scope_up() {
+	if isnil(t.scope.parent) {
+		panic(@FN + ': no parent')
+	}
+	t.scope = t.scope.parent
 }
 
-fn (s &Scope) get(name string) ?&ast.IdentVar {
-	mut sc := s
-	println(sc.idents.keys())
-	if name in sc.idents {
-		return sc.idents[name]
-	}
-
-	if isnil(sc.parent) {
-		return none
-	}
-
-	return sc.parent.get(name)
-}
-
-fn (s &Scope) has(name string) bool {
-	mut sc := s
-	sc.get(name) or { return false }
-	return true
-}
-
-fn (s &Scope) add(name string, identvar &ast.IdentVar) bool {
-	mut sc := s
-	if sc.has(name) {
-		return false
-	}
-
-	sc.idents[name] = identvar
-	return true
-}
-
-fn (s &Scope) redirect(name string) string {
-	mut sc := s
-	if name in sc.redirects {
-		return sc.redirects[name]
-	}
-
-	if isnil(sc.parent) {
-		return name
-	}
-
-	return sc.parent.redirect(name)
+[inline]
+fn (mut t Transpiler) scope_down() {
+	t.scope.children << &ast.Scope{parent: t.scope}
+	t.scope = t.scope.children.last()
 }
