@@ -5,5 +5,5 @@ Very early stage.
 #### Usage
 
 ```
-bash py2v.sh file.py
+bash py2v.sh file.py file.v
 ```
