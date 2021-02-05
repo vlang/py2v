@@ -1,3 +1,9 @@
 ### Python => V Translator
 
-Very early state.
+Very early stage.
+
+#### Usage
+
+```
+bash py2v.sh file.py
+```
