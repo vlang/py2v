@@ -1,4 +1,4 @@
-name: Build and Test with deps
+name: CI
 
 on: [push, pull_request]
 
@@ -6,16 +6,15 @@ jobs:
   ubuntu:
     runs-on: ubuntu-latest
     steps:
-    - name: install V
-      run: |
-        git clone --depth=1 https://github.com/vlang/v.git
-        make -C v
-        sudo v/v symlink
-        v doctor
     - name: checkout
       uses: actions/checkout@v2
     - name: build
-      run: v -cc tcc json2v -o json2v/json2v
+      run: |
+        git clone --depth 1 --quiet --single-branch https://github.com/vlang/v.git /tmp/v
+        make -C /tmp/v
+        sudo /tmp/v/v symlink
+        v doctor
+        v -cc tcc json2v -o json2v/json2v
     - name: test
       run: |
         ./test.sh
