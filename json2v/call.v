@@ -1,5 +1,6 @@
 module main
 
+import regex
 import v.ast
 import x.json2
 
@@ -60,6 +61,25 @@ fn (mut t Transpiler) visit_call(node json2.Any) ast.Expr {
 				}
 				'lower' {
 					name = 'to_lower'
+				}
+				'format' {
+					if mut left is ast.StringLiteral {  // TODO: respect formatting spec
+						mut vals := []string{cap: left.val.count('{')}
+						mut start_idx := 0
+						mut re := regex.regex_opt('{*.}') or { panic(err) }
+						indices := re.find_all(left.val)
+
+						for i in 0..indices.len/2 {
+							vals << left.val[start_idx..indices[2 * i]]
+							start_idx = indices[2 * i + 1]
+						}
+
+						if start_idx < left.val.len {
+							vals << left.val[start_idx..left.val.len]
+						}
+
+						return ast.StringInterLiteral{vals: vals exprs: args.map(it.expr) need_fmts: args.map(false) fwidths: args.map(int(0)) precisions: args.map(int(987698)) pluss: args.map(false) fills: args.map(false)}
+					}
 				}
 				else {}
 			}
