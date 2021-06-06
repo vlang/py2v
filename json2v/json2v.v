@@ -4,8 +4,7 @@ import os
 import v.ast
 //import v.checker
 import v.fmt
-//import v.pref
-import v.table
+import v.pref
 import v.token
 import x.json2
 
@@ -30,15 +29,16 @@ const (
 				 'BitOr': token.Kind.pipe
 				 'BitXor': token.Kind.xor
 				 'BitAnd': token.Kind.amp}
+	v_keywords = token.keywords.keys()
 )
 
 [inline]
-fn is_resolved_type(typ table.Type) bool {
-	return typ !in [table.void_type, table.any_type]
+fn is_resolved_type(typ ast.Type) bool {
+	return typ !in [ast.void_type, ast.any_type]
 }
 
 fn fix_name(name string) string {
-	if name in token.token_str || name in table.builtin_type_names {
+	if name in v_keywords || name in ast.builtin_type_names {
 		return '${name}_'
 	}
 
@@ -52,7 +52,7 @@ fn (mut t Transpiler) ident(name string) ast.Expr {
 
 struct Transpiler {
 mut:
-	tbl &table.Table
+	tbl &ast.Table
 	file &ast.File
 	const_decl &ast.ConstDecl = voidptr(0)
 	scope &ast.Scope = &ast.Scope{parent: 0}
@@ -67,36 +67,36 @@ fn translate_op(op json2.Any) token.Kind {
 	return token.Kind.unknown
 }
 
-fn (mut t Transpiler) translate_annotation(ann json2.Any) table.Type {
+fn (mut t Transpiler) translate_annotation(ann json2.Any) ast.Type {
 	map_ann := ann.as_map()
 	match map_ann['@type'].str() {
 		'Name' {
 			return match map_ann['id'].str() {
 				'str' {
-					table.string_type
+					ast.string_type
 				}
 				'bytes', 'bytearray' {
-					table.new_type(t.tbl.find_or_register_array(table.byte_type, 1))
+					ast.new_type(t.tbl.find_or_register_array(ast.byte_type))
 				}
 				else {
-					table.any_type
+					ast.any_type
 				}
 			}
 		}
 		'' {
-			table.void_type  // no info
+			ast.void_type  // no info
 		}
 		else {
 			eprintln('unhandled type ${map_ann["@type"].str()}')
 		}
 	}
-	return table.any_type
+	return ast.any_type
 }
 
-fn (mut t Transpiler) get_type(expr ast.Expr) table.Type {
+fn (mut t Transpiler) get_type(expr ast.Expr) ast.Type {
 	match expr {
 		ast.Ident {
-			info := t.scope.find(expr.name) or { return table.any_type }
+			info := t.scope.find(expr.name) or { return ast.any_type }
 			typ := if info is ast.ConstField {
 				info.typ
 			} else if info is ast.GlobalField {
@@ -108,7 +108,7 @@ fn (mut t Transpiler) get_type(expr ast.Expr) table.Type {
 			return typ
 		}
 		ast.IntegerLiteral {
-			return table.int_type
+			return ast.int_type
 		}
 		ast.ArrayInit {
 			return expr.typ
@@ -118,7 +118,7 @@ fn (mut t Transpiler) get_type(expr ast.Expr) table.Type {
 		}
 		else {}
 	}
-	return table.any_type
+	return ast.any_type
 }
 
 fn (mut t Transpiler) visit_constant(node json2.Any) ast.Expr {
@@ -133,7 +133,7 @@ fn (mut t Transpiler) visit_constant(node json2.Any) ast.Expr {
 				chars << ast.CharLiteral{val: c as string}
 			}
 
-			return ast.ArrayInit{exprs: chars elem_type: table.rune_type typ: table.new_type(t.tbl.find_or_register_array(table.rune_type, 1))}
+			return ast.ArrayInit{exprs: chars elem_type: ast.rune_type typ: ast.new_type(t.tbl.find_or_register_array(ast.rune_type))}
 		}
 		'int' {
 			return ast.IntegerLiteral{val: map_node['value'].str()}
@@ -156,7 +156,7 @@ fn (mut t Transpiler) visit_expr(node json2.Any) ast.Expr {
 		}
 		'Name' {
 			name := fix_name(map_node['id'].str())
-			if '.' !in name {
+			if !name.contains('.') {
 				return ast.Ident{name: name scope: t.scope info: ast.IdentVar{}}
 			}
 			return ast.SelectorExpr{expr: ast.Ident{name: name.split('.')[0] scope: t.scope info: ast.IdentVar{}} field_name: name.split('.')[1] scope: t.scope}
@@ -167,7 +167,7 @@ fn (mut t Transpiler) visit_expr(node json2.Any) ast.Expr {
 				exprs << t.visit_expr(expr)
 			}
 			elem_type := t.get_type(exprs[0])
-			return ast.ArrayInit{exprs: exprs elem_type: elem_type typ: table.new_type(t.tbl.find_or_register_array(elem_type, 1))}
+			return ast.ArrayInit{exprs: exprs elem_type: elem_type typ: ast.new_type(t.tbl.find_or_register_array(elem_type))}
 		}
 		'BinOp' {
 			left := t.visit_expr(map_node['left'])
@@ -231,7 +231,7 @@ fn (mut t Transpiler) visit_ast(node json2.Any) []ast.Stmt {
 				println('====')
 			}
 			name := fix_name(map_node['name'].str())
-			mut params := []table.Param{}
+			mut params := []ast.Param{}
 			mut body_stmts := []ast.Stmt{}
 			mut return_type := t.translate_annotation(map_node['returns'])
 
@@ -250,14 +250,14 @@ fn (mut t Transpiler) visit_ast(node json2.Any) []ast.Stmt {
 				if default_index >= 0 { // has default
 					default_expr := t.visit_expr(arr_defaults[default_index])
 					st.fields << ast.StructField{name: arg_name typ: arg_type has_default_expr: true default_expr: default_expr}
-					if arg_type in [table.void_type, table.any_type] {
+					if arg_type in [ast.void_type, ast.any_type] {
 						arg_type = t.get_type(default_expr)
 					}
 					left := [t.ident(arg_name)]
 					right := [ast.Expr(ast.SelectorExpr{expr: t.ident('${name}_options') field_name: arg_name scope: t.scope})]
 					body_stmts << ast.AssignStmt{left: left right: right op: token.Kind.decl_assign}
 				} else {
-					params << table.Param{name: arg_name, typ: arg_type}
+					params << ast.Param{name: arg_name, typ: arg_type}
 				}
 				t.scope.register(ast.Var{name: arg_name typ: arg_type})
 			}
@@ -270,21 +270,21 @@ fn (mut t Transpiler) visit_ast(node json2.Any) []ast.Stmt {
 				if default_index >= 0 { // has default
 					default_expr := t.visit_expr(arr_defaults[default_index])
 					st.fields << ast.StructField{name: arg_name typ: arg_type has_default_expr: true default_expr: default_expr}
-					if arg_type in [table.void_type, table.any_type] {
+					if arg_type in [ast.void_type, ast.any_type] {
 						arg_type = t.get_type(default_expr)
 					}
 					left := [t.ident(arg_name)]
 					right := [ast.Expr(ast.SelectorExpr{expr: t.ident('${name}_options') field_name: arg_name scope: t.scope})]
 					body_stmts << ast.AssignStmt{left: left right: right op: token.Kind.decl_assign}
 				} else {
-					params << table.Param{name: arg_name, typ: arg_type}
+					params << ast.Param{name: arg_name, typ: arg_type}
 				}
 				t.scope.register(ast.Var{name: arg_name typ: arg_type})
 			}
 
 			if needs_struct {
 				stmts << st
-				params << table.Param{name: '${name}_options' typ: t.tbl.add_placeholder_type('${name}Options', table.Language.v)}
+				params << ast.Param{name: '${name}_options' typ: t.tbl.add_placeholder_type('${name}Options', ast.Language.v)}
 			}
 
 			mut has_return := false
@@ -314,7 +314,7 @@ fn (mut t Transpiler) visit_ast(node json2.Any) []ast.Stmt {
 			}
 
 			if return_type == 0 || !has_return {
-				return_type = table.void_type
+				return_type = ast.void_type
 			}
 
 			$if debug {
@@ -347,7 +347,7 @@ fn (mut t Transpiler) visit_ast(node json2.Any) []ast.Stmt {
 		}
 		'Return' {
 			mut exprs := []ast.Expr{}
-			mut types := []table.Type{}
+			mut types := []ast.Type{}
 			if map_node['value'] !is json2.Null {
 				exprs = [t.visit_expr(map_node['value'])]
 				types = [t.get_type(exprs[0])]
@@ -491,7 +491,7 @@ fn (mut t Transpiler) revisit_stmt(stmt ast.Stmt) []ast.Stmt {
 	match stmt {
 		ast.FnDecl {
 			t.scope = stmt.scope
-			mut params := []table.Param{}
+			mut params := []ast.Param{}
 			for param in stmt.params {
 				if is_resolved_type(param.typ) {
 					params << param
@@ -499,7 +499,7 @@ fn (mut t Transpiler) revisit_stmt(stmt ast.Stmt) []ast.Stmt {
 				}
 
 				info := stmt.scope.find_var(param.name) or { params << param continue }
-				params << table.Param{name: param.name typ: info.typ}
+				params << ast.Param{name: param.name typ: info.typ}
 			}
 
 			mut body_stmts := []ast.Stmt{}
@@ -537,7 +537,7 @@ fn main() {
 
 	scope := ast.Scope{parent: 0}
 	mut file := ast.File{global_scope: &scope scope: &scope}
-	mut table := table.new_table()
+	mut table := ast.new_table()
 
 	mut t := &Transpiler{tbl: table file: &file no_main: map_ast['@no_main'].bool()}
 
@@ -551,5 +551,5 @@ fn main() {
 	checker.check(file)
 	println(checker.errors)
 	println(checker.warnings)*/
-	os.write_file(os.args[2], fmt.fmt(t.revisit_ast(), table, false)) 
+	os.write_file(os.args[2], fmt.fmt(t.revisit_ast(), table, &pref.Preferences{}, false))?
 }

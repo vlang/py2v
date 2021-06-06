@@ -1,7 +1,6 @@
 module main
 
 import v.ast
-import v.table
 import x.json2
 
 fn (mut t Transpiler) visit_call(node json2.Any) ast.Expr {
@@ -10,7 +9,7 @@ fn (mut t Transpiler) visit_call(node json2.Any) ast.Expr {
 
 	mut args := []ast.CallArg{}
 	for arg in map_node['args'].arr() {
-		args << ast.CallArg{expr: t.visit_expr(arg) typ: table.void_type}
+		args << ast.CallArg{expr: t.visit_expr(arg) typ: ast.void_type}
 	}
 
 	mut name := ''
@@ -26,7 +25,7 @@ fn (mut t Transpiler) visit_call(node json2.Any) ast.Expr {
 					mod = 'main'
 				}
 				'len' {
-					return ast.SelectorExpr{expr: args[0].expr field_name: 'len' scope: t.scope typ: table.void_type expr_type: table.void_type name_type: table.void_type}
+					return ast.SelectorExpr{expr: args[0].expr field_name: 'len' scope: t.scope typ: ast.void_type expr_type: ast.void_type name_type: ast.void_type}
 				}
 				'bytes', 'bytearray' {
 					typ := t.get_type(args[0].expr)
@@ -34,7 +33,7 @@ fn (mut t Transpiler) visit_call(node json2.Any) ast.Expr {
 						println('$name cast: has type "${t.tbl.get_type_name(typ)}"')
 					}
 					match typ {
-						table.new_type(t.tbl.find_or_register_array(table.byte_type, 1)) {
+						ast.new_type(t.tbl.find_or_register_array(ast.byte_type)) {
 							return args[0].expr
 						}
 						else {
@@ -70,5 +69,5 @@ fn (mut t Transpiler) visit_call(node json2.Any) ast.Expr {
 		}
 	}
 
-	return ast.CallExpr{name: name mod: mod args: args scope: t.scope left: left is_method: is_method return_type: table.void_type receiver_type: table.void_type}
+	return ast.CallExpr{name: name mod: mod args: args scope: t.scope left: left is_method: is_method return_type: ast.void_type receiver_type: ast.void_type}
 }
