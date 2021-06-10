@@ -1,9 +1,30 @@
-### Python => V Translator
+# py2v
 
-Very early stage.
+py2v is a Python to V source transpiler written (mostly) in V. py2v aims not to have a bug-to-bug 100% accurate transpilation but to create a baseline to ease re-making Python projects in V.
 
-#### Usage
+Please see the [examples folder](/examples/) to see the least py2v can do.
+
+## Installation
+
+Dependencies:
+- [V](https://github.com/vlang/v)
+- Python 3.6+
+
+```bash
+git clone https://github.com/vlang/py2v.git
+cd py2v
+```
+
+## Usage
 
 ```
-bash py2v.sh file.py file.v
+./py2v.sh <Python input file> <V output file>
 ```
+
+## Contributing
+
+PRs are welcome. Please prefix your PR titles with the component you are editing. (`docs: improve README.md` etc.)
+
+## License
+
+[MIT License](/LICENSE)
