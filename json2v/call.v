@@ -14,16 +14,20 @@ fn (mut t Transpiler) visit_call(node json2.Any) ast.Expr {
 	}
 
 	mut name := ''
-	mut mod := ''
+	mut mod := 'main'
 	mut left := ast.Expr(ast.None{})
 	mut is_method := false
+
 	match func['@type'].str() {
 		'Name' {
 			name = func['id'].str()
 			match name {
 				'print' {
 					name = 'println'
-					mod = 'main'
+				}
+				'input' {
+					left = t.ident('os')
+					is_method = true
 				}
 				'len' {
 					return ast.SelectorExpr{expr: args[0].expr field_name: 'len' scope: t.scope typ: ast.void_type expr_type: ast.void_type name_type: ast.void_type}
@@ -88,6 +92,5 @@ fn (mut t Transpiler) visit_call(node json2.Any) ast.Expr {
 			eprintln('unhandled func type in visit_call')
 		}
 	}
-
 	return ast.CallExpr{name: name mod: mod args: args scope: t.scope left: left is_method: is_method return_type: ast.void_type receiver_type: ast.void_type}
 }
