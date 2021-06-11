@@ -13,15 +13,13 @@ Dependencies:
 ```bash
 git clone https://github.com/vlang/py2v.git
 cd py2v
-
-# only needed if you don't have V on PATH
-<path to V> -prod json2v -o json2v/json2v
+<path to V> -prod py2v.v -o py2v
 ```
 
 ## Usage
 
 ```
-./py2v.sh <Python input file> <V output file>
+./py2v <Python input file> <V output file>
 ```
 
 ## Contributing

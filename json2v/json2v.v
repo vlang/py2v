@@ -1,4 +1,4 @@
-module main
+module json2v
 
 import os
 import v.ast
@@ -525,14 +525,8 @@ fn (mut t Transpiler) revisit_ast() ast.File {
 	return file
 }
 
-fn main() {
-	if os.args.len < 3 {
-		eprintln('USAGE: ${os.args[0]} <source> <destination>')
-		return
-	}
-
-	json_source := os.read_file(os.args[1])? 
-	json_ast := json2.raw_decode(json_source)?
+pub fn transpile(ast_source string) ?string {
+	json_ast := json2.raw_decode(ast_source)?
 	map_ast := json_ast.as_map()
 
 	scope := ast.Scope{parent: 0}
@@ -545,11 +539,6 @@ fn main() {
 	for node in map_ast['body'].arr() {
 		file.stmts << t.visit_ast(node)
 	}
-	println('first pass complete')
 
-	/*mut checker := checker.new_checker(table, &pref.Preferences{})
-	checker.check(file)
-	println(checker.errors)
-	println(checker.warnings)*/
-	os.write_file(os.args[2], fmt.fmt(t.revisit_ast(), table, &pref.Preferences{}, false))?
+	return fmt.fmt(t.revisit_ast(), table, &pref.Preferences{}, false)
 }

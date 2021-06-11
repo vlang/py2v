@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 
+# TODO: merge this to py2v.v
+
 set -o errexit
 
 for file in examples/*.py
 do
-python ast2json.py $file /tmp/out.json
-json2v/json2v /tmp/out.json /tmp/out.v
+./py2v $file /tmp/out.v
 diff -u ${file%.py}.v /tmp/out.v
 done

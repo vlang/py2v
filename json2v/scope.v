@@ -1,4 +1,4 @@
-module main
+module json2v
 
 import v.ast
 

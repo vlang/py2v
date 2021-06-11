@@ -13,7 +13,7 @@ jobs:
         git clone --depth 1 --quiet --single-branch https://github.com/vlang/v.git /tmp/v
         make -C /tmp/v
         /tmp/v/v doctor
-        /tmp/v/v -cc tcc json2v -o json2v/json2v
+        /tmp/v/v -cc tcc py2v.v -o py2v
     - name: test
       run: |
         ./test.sh
