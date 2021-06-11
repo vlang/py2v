@@ -25,6 +25,17 @@ cd py2v
 
 PRs are welcome. Please prefix your PR titles with the component you are editing. (`docs: improve README.md` etc.)
 
+## Running without V in PATH
+1. Build V then put it and all required folders to run V in directory. (cmd, 3rdparty, vlib)  
+
+2. Add  ```./``` before v in ```py2v.sh```:  
+```
+right here
+V
+ v -prod json2v -o json2v/json2v
+```
+3. Run ```py2v.sh``` normally
+
 ## License
 
 [MIT License](/LICENSE)
