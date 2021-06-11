@@ -32,7 +32,7 @@ PRs are welcome. Please prefix your PR titles with the component you are editing
 ```
 ./v -prod json2v -o json2v/json2v
 ```
-3. Run ```py2v.sh``` normally
+3. Run ```./py2v.sh``` to run.  
 
 ## License
 
