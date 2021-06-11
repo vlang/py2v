@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 
+set -euo pipefail
+
 python3 ast2json.py $1 /tmp/ast2json.temp.json
 
 if [[ ! -f "json2v/json2v" ]]; then
