@@ -30,9 +30,7 @@ PRs are welcome. Please prefix your PR titles with the component you are editing
 
 2. Add  ```./``` before v in ```py2v.sh```:  
 ```
-right here
-V
- v -prod json2v -o json2v/json2v
+./v -prod json2v -o json2v/json2v
 ```
 3. Run ```py2v.sh``` normally
 
