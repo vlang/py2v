@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-python ast2json.py $1 /tmp/ast2json.temp.json
+python3 ast2json.py $1 /tmp/ast2json.temp.json
 
 if [[ ! -f "json2v/json2v" ]]; then
 v -prod json2v -o json2v/json2v
