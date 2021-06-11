@@ -60,8 +60,13 @@ fn main() {
 		eprintln('error: Failed to transpile python source: ${err.msg}')
 		exit(1)
 	}
-	os.write_file(os.args[2], output) or {
-		eprintln('error: Cannot write V output: ${err.msg}')
-		exit(1)
+
+	if os.args[2] == '-' {
+		print(output)
+	} else {
+		os.write_file(os.args[2], output) or {
+			eprintln('error: Cannot write V output: ${err.msg}')
+			exit(1)
+		}
 	}
 }
