@@ -14,8 +14,8 @@ Dependencies:
 git clone https://github.com/vlang/py2v.git
 cd py2v
 
-# only use next command if you don't have V on PATH
-./v -prod json2v -o json2v/json2v
+# only needed if you don't have V on PATH
+<path to V> -prod json2v -o json2v/json2v
 ```
 
 ## Usage
