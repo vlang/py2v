@@ -20,6 +20,7 @@ cd py2v
 
 ```
 ./py2v <Python input file> <V output file>
+# put - as output file to print output to terminal
 ```
 
 ## Contributing
