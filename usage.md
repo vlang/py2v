@@ -15,6 +15,6 @@ or
   
   
 # More options
-puting file2 as ```-``` will output the v code to the terminal.
+ Using `-` as the output argument will output the transpiled code to stdout.
   
   
