@@ -138,6 +138,9 @@ fn (mut t Transpiler) visit_constant(node json2.Any) ast.Expr {
 		'int' {
 			return ast.IntegerLiteral{val: map_node['value'].str()}
 		}
+		'bool' {
+			return ast.BoolLiteral{val: map_node['value'].bool()}
+		}
 		else {
 			eprintln('unhandled constant type')
 			return ast.None{}
@@ -477,6 +480,25 @@ fn (mut t Transpiler) visit_ast(node json2.Any) []ast.Stmt {
 			left := [target]
 			right := [ast.Expr(ast.InfixExpr{left: target op: translate_op(map_node['op']) right: value})]
 			stmts << ast.AssignStmt{left: left right: right op: token.Kind.assign}
+		}
+		'While' {
+			mut body_stmts := []ast.Stmt{}
+			for stmt in map_node['body'].arr() {
+				body_stmts << t.visit_ast(stmt)
+			}
+
+			cond := t.visit_expr(map_node['test'])
+			if cond is ast.BoolLiteral && (cond as ast.BoolLiteral).val {
+				stmts << ast.ForStmt{is_inf: true stmts: body_stmts scope: t.scope}
+			} else {
+				stmts << ast.ForStmt{cond: cond stmts: body_stmts scope: t.scope}
+			}
+		}
+		'Break' {
+			stmts << ast.BranchStmt{kind: .key_break}
+		}
+		'Continue' {
+			stmts << ast.BranchStmt{kind: .key_continue}
 		}
 		else {
 			eprintln('unhandled stmt type ${map_node["@type"]}')
