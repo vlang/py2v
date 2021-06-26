@@ -14,6 +14,8 @@ jobs:
         make -C /tmp/v
         /tmp/v/v doctor
         /tmp/v/v -cc tcc py2v.v -o py2v
+    - name: check format
+      run: /tmp/v/v fmt -verify ./
     - name: test
       run: |
         ./test.sh
