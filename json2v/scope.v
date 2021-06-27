@@ -25,6 +25,8 @@ fn (mut t Transpiler) scope_up() {
 
 [inline]
 fn (mut t Transpiler) scope_down() {
-	t.scope.children << &ast.Scope{parent: t.scope}
+	t.scope.children << &ast.Scope{
+		parent: t.scope
+	}
 	t.scope = t.scope.children.last()
 }

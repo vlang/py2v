@@ -2,33 +2,35 @@ module json2v
 
 import os
 import v.ast
-//import v.checker
+// import v.checker
 import v.fmt
 import v.pref
 import v.token
 import x.json2
 
 const (
-	operators = {'LShift': token.Kind.left_shift
-				 'RShift': token.Kind.right_shift
-				 'Eq': token.Kind.eq
-				 'NotEq': token.Kind.ne
-				 'Lt': token.Kind.lt
-				 'LtE': token.Kind.le
-				 'Gt': token.Kind.gt
-				 'GtE': token.Kind.ge
-				 'Is': token.Kind.eq
-				 'IsNot': token.Kind.ne
-				 'In': token.Kind.key_in
-				 'NotIn': token.Kind.not_in
-				 'Add': token.Kind.plus
-				 'Sub': token.Kind.minus
-				 'Mult': token.Kind.mul
-				 'Div': token.Kind.div
-				 'Mod': token.Kind.mod
-				 'BitOr': token.Kind.pipe
-				 'BitXor': token.Kind.xor
-				 'BitAnd': token.Kind.amp}
+	operators = map{
+		'LShift': token.Kind.left_shift
+		'RShift': token.Kind.right_shift
+		'Eq':     token.Kind.eq
+		'NotEq':  token.Kind.ne
+		'Lt':     token.Kind.lt
+		'LtE':    token.Kind.le
+		'Gt':     token.Kind.gt
+		'GtE':    token.Kind.ge
+		'Is':     token.Kind.eq
+		'IsNot':  token.Kind.ne
+		'In':     token.Kind.key_in
+		'NotIn':  token.Kind.not_in
+		'Add':    token.Kind.plus
+		'Sub':    token.Kind.minus
+		'Mult':   token.Kind.mul
+		'Div':    token.Kind.div
+		'Mod':    token.Kind.mod
+		'BitOr':  token.Kind.pipe
+		'BitXor': token.Kind.xor
+		'BitAnd': token.Kind.amp
+	}
 	v_keywords = token.keywords.keys()
 )
 
@@ -38,7 +40,7 @@ fn is_resolved_type(typ ast.Type) bool {
 }
 
 fn fix_name(name string) string {
-	if name in v_keywords || name in ast.builtin_type_names {
+	if name in json2v.v_keywords || name in ast.builtin_type_names {
 		return '${name}_'
 	}
 
@@ -47,22 +49,28 @@ fn fix_name(name string) string {
 
 [inline]
 fn (mut t Transpiler) ident(name string) ast.Expr {
-	return ast.Ident{name: name scope: t.scope info: ast.IdentVar{}}
+	return ast.Ident{
+		name: name
+		scope: t.scope
+		info: ast.IdentVar{}
+	}
 }
 
 struct Transpiler {
 mut:
-	tbl &ast.Table
-	file &ast.File
+	tbl        &ast.Table
+	file       &ast.File
 	const_decl &ast.ConstDecl = voidptr(0)
-	scope &ast.Scope = &ast.Scope{parent: 0}
-	no_main bool
+	scope      &ast.Scope     = &ast.Scope{
+	parent: 0
+}
+	no_main    bool
 }
 
 fn translate_op(op json2.Any) token.Kind {
 	key := op.as_map()['@type'].str()
-	if key in operators {
-		return operators[key]
+	if key in json2v.operators {
+		return json2v.operators[key]
 	}
 	return token.Kind.unknown
 }
@@ -84,10 +92,10 @@ fn (mut t Transpiler) translate_annotation(ann json2.Any) ast.Type {
 			}
 		}
 		'' {
-			ast.void_type  // no info
+			ast.void_type // no info
 		}
 		else {
-			eprintln('unhandled type ${map_ann["@type"].str()}')
+			eprintln('unhandled type ${map_ann['@type'].str()}')
 		}
 	}
 	return ast.any_type
@@ -125,21 +133,33 @@ fn (mut t Transpiler) visit_constant(node json2.Any) ast.Expr {
 	map_node := node.as_map()
 	match map_node['@constant_type'].str() {
 		'str' {
-			return ast.StringLiteral{val: map_node['value'] as string}
+			return ast.StringLiteral{
+				val: map_node['value'] as string
+			}
 		}
 		'bytes' {
 			mut chars := []ast.Expr{}
 			for c in map_node['value'].arr() {
-				chars << ast.CharLiteral{val: c as string}
+				chars << ast.CharLiteral{
+					val: c as string
+				}
 			}
 
-			return ast.ArrayInit{exprs: chars elem_type: ast.rune_type typ: ast.new_type(t.tbl.find_or_register_array(ast.rune_type))}
+			return ast.ArrayInit{
+				exprs: chars
+				elem_type: ast.rune_type
+				typ: ast.new_type(t.tbl.find_or_register_array(ast.rune_type))
+			}
 		}
 		'int' {
-			return ast.IntegerLiteral{val: map_node['value'].str()}
+			return ast.IntegerLiteral{
+				val: map_node['value'].str()
+			}
 		}
 		'bool' {
-			return ast.BoolLiteral{val: map_node['value'].bool()}
+			return ast.BoolLiteral{
+				val: map_node['value'].bool()
+			}
 		}
 		else {
 			eprintln('unhandled constant type')
@@ -160,9 +180,21 @@ fn (mut t Transpiler) visit_expr(node json2.Any) ast.Expr {
 		'Name' {
 			name := fix_name(map_node['id'].str())
 			if !name.contains('.') {
-				return ast.Ident{name: name scope: t.scope info: ast.IdentVar{}}
+				return ast.Ident{
+					name: name
+					scope: t.scope
+					info: ast.IdentVar{}
+				}
 			}
-			return ast.SelectorExpr{expr: ast.Ident{name: name.split('.')[0] scope: t.scope info: ast.IdentVar{}} field_name: name.split('.')[1] scope: t.scope}
+			return ast.SelectorExpr{
+				expr: ast.Ident{
+					name: name.split('.')[0]
+					scope: t.scope
+					info: ast.IdentVar{}
+				}
+				field_name: name.split('.')[1]
+				scope: t.scope
+			}
 		}
 		'Tuple' {
 			mut exprs := []ast.Expr{}
@@ -170,7 +202,11 @@ fn (mut t Transpiler) visit_expr(node json2.Any) ast.Expr {
 				exprs << t.visit_expr(expr)
 			}
 			elem_type := t.get_type(exprs[0])
-			return ast.ArrayInit{exprs: exprs elem_type: elem_type typ: ast.new_type(t.tbl.find_or_register_array(elem_type))}
+			return ast.ArrayInit{
+				exprs: exprs
+				elem_type: elem_type
+				typ: ast.new_type(t.tbl.find_or_register_array(elem_type))
+			}
 		}
 		'BinOp' {
 			left := t.visit_expr(map_node['left'])
@@ -178,20 +214,22 @@ fn (mut t Transpiler) visit_expr(node json2.Any) ast.Expr {
 			if left is ast.Ident {
 				rtyp := t.get_type(right)
 				if is_resolved_type(rtyp) {
-					t.scope.register(ast.Var{name: left.name typ: rtyp})
+					t.scope.register(ast.Var{ name: left.name, typ: rtyp })
 					t.scope.update_var_type(left.name, rtyp)
 				}
 			}
 			if right is ast.Ident {
 				ltyp := t.get_type(left)
 				if is_resolved_type(ltyp) {
-					t.scope.register(ast.Var{name: right.name typ: ltyp})
+					t.scope.register(ast.Var{ name: right.name, typ: ltyp })
 					t.scope.update_var_type(right.name, ltyp)
 				}
 			}
-			return ast.InfixExpr{op: translate_op(map_node['op'])
-								 left: left
-								 right: right}
+			return ast.InfixExpr{
+				op: translate_op(map_node['op'])
+				left: left
+				right: right
+			}
 		}
 		'Compare' {
 			mut exprs := []ast.Expr{}
@@ -202,11 +240,23 @@ fn (mut t Transpiler) visit_expr(node json2.Any) ast.Expr {
 
 			mut cmps := []ast.InfixExpr{}
 			for i, op in map_node['ops'].arr() {
-				cmps << ast.InfixExpr{op: translate_op(op) left: exprs[i] right: exprs[i+1]} 
+				cmps << ast.InfixExpr{
+					op: translate_op(op)
+					left: exprs[i]
+					right: exprs[i + 1]
+				}
 			}
 
 			for cmps.len > 1 {
-				cmps.prepend(ast.InfixExpr{op: token.Kind.and left: ast.ParExpr{expr: cmps[0]} right: ast.ParExpr{expr: cmps[1]}})
+				cmps.prepend(ast.InfixExpr{
+					op: token.Kind.and
+					left: ast.ParExpr{
+						expr: cmps[0]
+					}
+					right: ast.ParExpr{
+						expr: cmps[1]
+					}
+				})
 				cmps.delete(1)
 				cmps.delete(1)
 			}
@@ -215,10 +265,13 @@ fn (mut t Transpiler) visit_expr(node json2.Any) ast.Expr {
 		'Subscript' {
 			value := t.visit_expr(map_node['value'])
 			slice := t.visit_expr(map_node['slice'])
-			return ast.IndexExpr{left: value index: slice}
+			return ast.IndexExpr{
+				left: value
+				index: slice
+			}
 		}
 		else {
-			eprintln('unhandled expr type ${map_node["@type"]}')
+			eprintln('unhandled expr type ${map_node['@type']}')
 			return ast.None{}
 		}
 	}
@@ -244,7 +297,9 @@ fn (mut t Transpiler) visit_ast(node json2.Any) []ast.Stmt {
 			arr_kwonlyargs := map_args['kwonlyargs'].arr()
 			arr_defaults := map_args['defaults'].arr()
 			mut needs_struct := arr_kwonlyargs.len != 0 || arr_defaults.len != 0
-			mut st := ast.StructDecl{name: '${name}Options'}
+			mut st := ast.StructDecl{
+				name: '${name}Options'
+			}
 			for i, arg in arr_posonlyargs {
 				map_arg := arg.as_map()
 				arg_name := fix_name(map_arg['arg'].str())
@@ -252,17 +307,35 @@ fn (mut t Transpiler) visit_ast(node json2.Any) []ast.Stmt {
 				default_index := arr_defaults.len - arr_args.len - arr_posonlyargs.len + i
 				if default_index >= 0 { // has default
 					default_expr := t.visit_expr(arr_defaults[default_index])
-					st.fields << ast.StructField{name: arg_name typ: arg_type has_default_expr: true default_expr: default_expr}
+					st.fields << ast.StructField{
+						name: arg_name
+						typ: arg_type
+						has_default_expr: true
+						default_expr: default_expr
+					}
 					if arg_type in [ast.void_type, ast.any_type] {
 						arg_type = t.get_type(default_expr)
 					}
 					left := [t.ident(arg_name)]
-					right := [ast.Expr(ast.SelectorExpr{expr: t.ident('${name}_options') field_name: arg_name scope: t.scope})]
-					body_stmts << ast.AssignStmt{left: left right: right op: token.Kind.decl_assign}
+					right := [
+						ast.Expr(ast.SelectorExpr{
+						expr: t.ident('${name}_options')
+						field_name: arg_name
+						scope: t.scope
+					}),
+					]
+					body_stmts << ast.AssignStmt{
+						left: left
+						right: right
+						op: token.Kind.decl_assign
+					}
 				} else {
-					params << ast.Param{name: arg_name, typ: arg_type}
+					params << ast.Param{
+						name: arg_name
+						typ: arg_type
+					}
 				}
-				t.scope.register(ast.Var{name: arg_name typ: arg_type})
+				t.scope.register(ast.Var{ name: arg_name, typ: arg_type })
 			}
 
 			for i, arg in arr_args {
@@ -272,22 +345,43 @@ fn (mut t Transpiler) visit_ast(node json2.Any) []ast.Stmt {
 				default_index := arr_defaults.len - arr_args.len + i
 				if default_index >= 0 { // has default
 					default_expr := t.visit_expr(arr_defaults[default_index])
-					st.fields << ast.StructField{name: arg_name typ: arg_type has_default_expr: true default_expr: default_expr}
+					st.fields << ast.StructField{
+						name: arg_name
+						typ: arg_type
+						has_default_expr: true
+						default_expr: default_expr
+					}
 					if arg_type in [ast.void_type, ast.any_type] {
 						arg_type = t.get_type(default_expr)
 					}
 					left := [t.ident(arg_name)]
-					right := [ast.Expr(ast.SelectorExpr{expr: t.ident('${name}_options') field_name: arg_name scope: t.scope})]
-					body_stmts << ast.AssignStmt{left: left right: right op: token.Kind.decl_assign}
+					right := [
+						ast.Expr(ast.SelectorExpr{
+						expr: t.ident('${name}_options')
+						field_name: arg_name
+						scope: t.scope
+					}),
+					]
+					body_stmts << ast.AssignStmt{
+						left: left
+						right: right
+						op: token.Kind.decl_assign
+					}
 				} else {
-					params << ast.Param{name: arg_name, typ: arg_type}
+					params << ast.Param{
+						name: arg_name
+						typ: arg_type
+					}
 				}
-				t.scope.register(ast.Var{name: arg_name typ: arg_type})
+				t.scope.register(ast.Var{ name: arg_name, typ: arg_type })
 			}
 
 			if needs_struct {
 				stmts << st
-				params << ast.Param{name: '${name}_options' typ: t.tbl.add_placeholder_type('${name}Options', ast.Language.v)}
+				params << ast.Param{
+					name: '${name}_options'
+					typ: t.tbl.add_placeholder_type('${name}Options', ast.Language.v)
+				}
 			}
 
 			mut has_return := false
@@ -310,7 +404,11 @@ fn (mut t Transpiler) visit_ast(node json2.Any) []ast.Stmt {
 				if first is ast.ExprStmt {
 					first_expr := first.expr
 					if first_expr is ast.StringLiteral {
-						stmts << ast.ExprStmt{expr: ast.Comment{text: first_expr.val}}
+						stmts << ast.ExprStmt{
+							expr: ast.Comment{
+								text: first_expr.val
+							}
+						}
 						body_stmts.delete(0)
 					}
 				}
@@ -323,28 +421,39 @@ fn (mut t Transpiler) visit_ast(node json2.Any) []ast.Stmt {
 			$if debug {
 				println('==fn $name ${t.tbl.get_type_name(return_type)}==')
 			}
-			stmts << ast.FnDecl{return_type: return_type
-								stmts: body_stmts
-								name: name
-								scope: t.scope
-								params: params}
-			
+			stmts << ast.FnDecl{
+				return_type: return_type
+				stmts: body_stmts
+				name: name
+				scope: t.scope
+				params: params
+			}
+
 			t.scope_up()
 		}
 		'Expr' {
-			stmts << ast.ExprStmt{expr: t.visit_expr(map_node['value'])}
+			stmts << ast.ExprStmt{
+				expr: t.visit_expr(map_node['value'])
+			}
 		}
 		'Assert' {
-			stmts << ast.AssertStmt{expr: t.visit_expr(map_node['test'])}
+			stmts << ast.AssertStmt{
+				expr: t.visit_expr(map_node['test'])
+			}
 		}
 		'Import' {
 			for imp in map_node['names'].arr() {
 				map_imp := imp.as_map()
 				if map_imp['asname'] is json2.Null {
-					t.file.imports << ast.Import{mod: map_imp['name'].str() alias: map_imp['name'].str()}
-				}
-				else {
-					t.file.imports << ast.Import{mod: map_imp['name'].str() alias: map_imp['asname'].str()}
+					t.file.imports << ast.Import{
+						mod: map_imp['name'].str()
+						alias: map_imp['name'].str()
+					}
+				} else {
+					t.file.imports << ast.Import{
+						mod: map_imp['name'].str()
+						alias: map_imp['asname'].str()
+					}
 				}
 			}
 		}
@@ -356,7 +465,10 @@ fn (mut t Transpiler) visit_ast(node json2.Any) []ast.Stmt {
 				types = [t.get_type(exprs[0])]
 				println(types)
 			}
-			stmts << ast.Return{exprs: exprs types: types}
+			stmts << ast.Return{
+				exprs: exprs
+				types: types
+			}
 		}
 		'Assign' {
 			if t.is_at_top() && !t.no_main {
@@ -367,9 +479,11 @@ fn (mut t Transpiler) visit_ast(node json2.Any) []ast.Stmt {
 
 				name := fix_name(map_node['targets'].arr()[0].as_map()['id'].str())
 				expr := t.visit_expr(map_node['value'])
-				field := ast.ConstField{name: name
-										expr: expr
-										typ: t.get_type(expr)}
+				field := ast.ConstField{
+					name: name
+					expr: expr
+					typ: t.get_type(expr)
+				}
 				t.const_decl.fields << field
 				t.scope.register(field)
 			} else {
@@ -389,45 +503,79 @@ fn (mut t Transpiler) visit_ast(node json2.Any) []ast.Stmt {
 					mut e := t.visit_expr(expr)
 					mut ident := e as ast.Ident // FIX: assignment on to a function parameter with a default value will break this cast
 					typ := t.get_type(right[i])
-					mut scope_obj, mut scope := t.scope.find_with_scope(ident.name) or { ast.ScopeObject{}, &ast.Scope{parent: 0} }
+					mut scope_obj, mut scope := t.scope.find_with_scope(ident.name) or {
+						ast.ScopeObject{}, &ast.Scope{
+							parent: 0
+						}
+					}
 					match scope_obj {
 						ast.Var {
 							mut var := scope_obj as ast.Var
 							kind = token.Kind.assign
 							if is_resolved_type(typ) {
-								scope.objects[ident.name] = ast.ScopeObject(ast.Var{typ:typ is_mut: true})
+								scope.objects[ident.name] = ast.ScopeObject(ast.Var{
+									typ: typ
+									is_mut: true
+								})
 							} else {
-								scope.objects[ident.name] = ast.ScopeObject(ast.Var{typ: var.typ is_mut: true})
+								scope.objects[ident.name] = ast.ScopeObject(ast.Var{
+									typ: var.typ
+									is_mut: true
+								})
 							}
 						}
 						else {
-							e = ast.Ident{name: ident.name scope: t.scope info: ast.IdentVar{is_mut: true}}
-							t.scope.register(ast.Var{name: ident.name typ: typ})
+							e = ast.Ident{
+								name: ident.name
+								scope: t.scope
+								info: ast.IdentVar{
+									is_mut: true
+								}
+							}
+							t.scope.register(ast.Var{ name: ident.name, typ: typ })
 						}
 					}
 					left << e
 				}
 
-				stmts << ast.AssignStmt{left: left right: right op: kind}
+				stmts << ast.AssignStmt{
+					left: left
+					right: right
+					op: kind
+				}
 			}
 		}
 		'For' {
-			//t.scope_down()
+			// t.scope_down()
 			target := t.visit_expr(map_node['target'])
 			iter := t.visit_expr(map_node['iter'])
-			mut name := '' 
+			mut name := ''
 
 			mut body_stmts := []ast.Stmt{}
 			if target is ast.ArrayInit {
-				mut ident := ast.Ident{scope: t.scope name: target.exprs.map((it as ast.Ident).name).join('')}
+				mut ident := ast.Ident{
+					scope: t.scope
+					name: target.exprs.map((it as ast.Ident).name).join('')
+				}
 				elem_type := t.tbl.get_type_symbol(t.tbl.get_type_symbol(t.get_type(iter)).array_info().elem_type).array_info().elem_type
 				println(t.scope)
 				for i, subtarget in target.exprs {
-					t.scope.register(ast.Var{name: (subtarget as ast.Ident).name typ: elem_type})
+					t.scope.register(ast.Var{ name: (subtarget as ast.Ident).name, typ: elem_type })
 					t.scope.update_var_type((subtarget as ast.Ident).name, elem_type)
 					left := [subtarget]
-					right := [ast.Expr(ast.IndexExpr{left: ident index: ast.IntegerLiteral{val: i.str()}})]
-					body_stmts << ast.AssignStmt{left: left op: token.Kind.decl_assign right: right}
+					right := [
+						ast.Expr(ast.IndexExpr{
+						left: ident
+						index: ast.IntegerLiteral{
+							val: i.str()
+						}
+					}),
+					]
+					body_stmts << ast.AssignStmt{
+						left: left
+						op: token.Kind.decl_assign
+						right: right
+					}
 				}
 				println(t.scope)
 				name = ident.name
@@ -437,8 +585,13 @@ fn (mut t Transpiler) visit_ast(node json2.Any) []ast.Stmt {
 				body_stmts << t.visit_ast(stmt)
 			}
 
-			stmts << ast.ForInStmt{val_var: name cond: iter stmts: body_stmts scope: t.scope}
-			//t.scope_up()
+			stmts << ast.ForInStmt{
+				val_var: name
+				cond: iter
+				stmts: body_stmts
+				scope: t.scope
+			}
+			// t.scope_up()
 		}
 		'If' {
 			cond := t.visit_expr(map_node['test'])
@@ -466,20 +619,49 @@ fn (mut t Transpiler) visit_ast(node json2.Any) []ast.Stmt {
 			}
 
 			if else_stmts.len == 0 {
-				stmts << ast.ExprStmt{expr: ast.IfExpr{branches: [ast.IfBranch{cond: cond stmts: body_stmts scope: t.scope}]}}
+				stmts << ast.ExprStmt{
+					expr: ast.IfExpr{
+						branches: [ast.IfBranch{
+							cond: cond
+							stmts: body_stmts
+							scope: t.scope
+						}]
+					}
+				}
 			} else {
-				stmts << ast.ExprStmt{expr: ast.IfExpr{branches: [ast.IfBranch{cond: cond stmts: body_stmts scope: t.scope},
-											   					  ast.IfBranch{cond: cond stmts: else_stmts scope: t.scope}]
-													   has_else: true}}
+				stmts << ast.ExprStmt{
+					expr: ast.IfExpr{
+						branches: [ast.IfBranch{
+							cond: cond
+							stmts: body_stmts
+							scope: t.scope
+						}, ast.IfBranch{
+							cond: cond
+							stmts: else_stmts
+							scope: t.scope
+						}]
+						has_else: true
+					}
+				}
 			}
 		}
-		'AugAssign' {  // FIX: needs to set mut
+		'AugAssign' { // FIX: needs to set mut
 			target := t.visit_expr(map_node['target'])
 			value := t.visit_expr(map_node['value'])
 
 			left := [target]
-			right := [ast.Expr(ast.InfixExpr{left: target op: translate_op(map_node['op']) right: value})]
-			stmts << ast.AssignStmt{left: left right: right op: token.Kind.assign}
+			right := [
+				ast.Expr(ast.InfixExpr{
+				left: target
+				op: translate_op(map_node['op'])
+				right: value
+			}),
+			]
+			stmts << ast.AssignStmt{
+				left: left
+				right: right
+				op: token.Kind.assign
+			}
 		}
 		'While' {
 			mut body_stmts := []ast.Stmt{}
@@ -489,19 +671,31 @@ fn (mut t Transpiler) visit_ast(node json2.Any) []ast.Stmt {
 
 			cond := t.visit_expr(map_node['test'])
 			if cond is ast.BoolLiteral && (cond as ast.BoolLiteral).val {
-				stmts << ast.ForStmt{is_inf: true stmts: body_stmts scope: t.scope}
+				stmts << ast.ForStmt{
+					is_inf: true
+					stmts: body_stmts
+					scope: t.scope
+				}
 			} else {
-				stmts << ast.ForStmt{cond: cond stmts: body_stmts scope: t.scope}
+				stmts << ast.ForStmt{
+					cond: cond
+					stmts: body_stmts
+					scope: t.scope
+				}
 			}
 		}
 		'Break' {
-			stmts << ast.BranchStmt{kind: .key_break}
+			stmts << ast.BranchStmt{
+				kind: .key_break
+			}
 		}
 		'Continue' {
-			stmts << ast.BranchStmt{kind: .key_continue}
+			stmts << ast.BranchStmt{
+				kind: .key_continue
+			}
 		}
 		else {
-			eprintln('unhandled stmt type ${map_node["@type"]}')
+			eprintln('unhandled stmt type ${map_node['@type']}')
 		}
 	}
 	return stmts
@@ -520,8 +714,14 @@ fn (mut t Transpiler) revisit_stmt(stmt ast.Stmt) []ast.Stmt {
 					continue
 				}
 
-				info := stmt.scope.find_var(param.name) or { params << param continue }
-				params << ast.Param{name: param.name typ: info.typ}
+				info := stmt.scope.find_var(param.name) or {
+					params << param
+					continue
+				}
+				params << ast.Param{
+					name: param.name
+					typ: info.typ
+				}
 			}
 
 			mut body_stmts := []ast.Stmt{}
@@ -529,7 +729,13 @@ fn (mut t Transpiler) revisit_stmt(stmt ast.Stmt) []ast.Stmt {
 				body_stmts << t.revisit_stmt(body_stmt)
 			}
 
-			stmts << ast.FnDecl{return_type: stmt.return_type params: params stmts: body_stmts name: stmt.name scope: stmt.scope}
+			stmts << ast.FnDecl{
+				return_type: stmt.return_type
+				params: params
+				stmts: body_stmts
+				name: stmt.name
+				scope: stmt.scope
+			}
 			t.scope_up()
 		}
 		else {
@@ -540,7 +746,10 @@ fn (mut t Transpiler) revisit_stmt(stmt ast.Stmt) []ast.Stmt {
 }
 
 fn (mut t Transpiler) revisit_ast() ast.File {
-	mut file := ast.File{global_scope: t.scope scope: t.scope} 
+	mut file := ast.File{
+		global_scope: t.scope
+		scope: t.scope
+	}
 	for stmt in t.file.stmts {
 		file.stmts << t.revisit_stmt(stmt)
 	}
@@ -548,14 +757,23 @@ fn (mut t Transpiler) revisit_ast() ast.File {
 }
 
 pub fn transpile(ast_source string) ?string {
-	json_ast := json2.raw_decode(ast_source)?
+	json_ast := json2.raw_decode(ast_source) ?
 	map_ast := json_ast.as_map()
 
-	scope := ast.Scope{parent: 0}
-	mut file := ast.File{global_scope: &scope scope: &scope}
+	scope := ast.Scope{
+		parent: 0
+	}
+	mut file := ast.File{
+		global_scope: &scope
+		scope: &scope
+	}
 	mut table := ast.new_table()
 
-	mut t := &Transpiler{tbl: table file: &file no_main: map_ast['@no_main'].bool()}
+	mut t := &Transpiler{
+		tbl: table
+		file: &file
+		no_main: map_ast['@no_main'].bool()
+	}
 
 	assert map_ast['@type'].str() == 'Module'
 	for node in map_ast['body'].arr() {

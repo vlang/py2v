@@ -10,7 +10,10 @@ fn (mut t Transpiler) visit_call(node json2.Any) ast.Expr {
 
 	mut args := []ast.CallArg{}
 	for arg in map_node['args'].arr() {
-		args << ast.CallArg{expr: t.visit_expr(arg) typ: ast.void_type}
+		args << ast.CallArg{
+			expr: t.visit_expr(arg)
+			typ: ast.void_type
+		}
 	}
 
 	mut name := ''
@@ -30,7 +33,14 @@ fn (mut t Transpiler) visit_call(node json2.Any) ast.Expr {
 					is_method = true
 				}
 				'len' {
-					return ast.SelectorExpr{expr: args[0].expr field_name: 'len' scope: t.scope typ: ast.void_type expr_type: ast.void_type name_type: ast.void_type}
+					return ast.SelectorExpr{
+						expr: args[0].expr
+						field_name: 'len'
+						scope: t.scope
+						typ: ast.void_type
+						expr_type: ast.void_type
+						name_type: ast.void_type
+					}
 				}
 				'bytes', 'bytearray' {
 					typ := t.get_type(args[0].expr)
@@ -67,13 +77,13 @@ fn (mut t Transpiler) visit_call(node json2.Any) ast.Expr {
 					name = 'to_lower'
 				}
 				'format' {
-					if mut left is ast.StringLiteral {  // TODO: respect formatting spec
+					if mut left is ast.StringLiteral { // TODO: respect formatting spec
 						mut vals := []string{cap: left.val.count('{')}
 						mut start_idx := 0
 						mut re := regex.regex_opt('{*.}') or { panic(err) }
 						indices := re.find_all(left.val)
 
-						for i in 0..indices.len/2 {
+						for i in 0 .. indices.len / 2 {
 							vals << left.val[start_idx..indices[2 * i]]
 							start_idx = indices[2 * i + 1]
 						}
@@ -82,7 +92,15 @@ fn (mut t Transpiler) visit_call(node json2.Any) ast.Expr {
 							vals << left.val[start_idx..left.val.len]
 						}
 
-						return ast.StringInterLiteral{vals: vals exprs: args.map(it.expr) need_fmts: args.map(false) fwidths: args.map(int(0)) precisions: args.map(int(987698)) pluss: args.map(false) fills: args.map(false)}
+						return ast.StringInterLiteral{
+							vals: vals
+							exprs: args.map(it.expr)
+							need_fmts: args.map(false)
+							fwidths: args.map(int(0))
+							precisions: args.map(int(987698))
+							pluss: args.map(false)
+							fills: args.map(false)
+						}
 					}
 				}
 				else {}
@@ -92,5 +110,14 @@ fn (mut t Transpiler) visit_call(node json2.Any) ast.Expr {
 			eprintln('unhandled func type in visit_call')
 		}
 	}
-	return ast.CallExpr{name: name mod: mod args: args scope: t.scope left: left is_method: is_method return_type: ast.void_type receiver_type: ast.void_type}
+	return ast.CallExpr{
+		name: name
+		mod: mod
+		args: args
+		scope: t.scope
+		left: left
+		is_method: is_method
+		return_type: ast.void_type
+		receiver_type: ast.void_type
+	}
 }
