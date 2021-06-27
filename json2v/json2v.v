@@ -64,7 +64,7 @@ mut:
 	scope      &ast.Scope     = &ast.Scope{
 	parent: 0
 }
-	no_main    bool
+	no_main bool
 }
 
 fn translate_op(op json2.Any) token.Kind {
@@ -319,10 +319,10 @@ fn (mut t Transpiler) visit_ast(node json2.Any) []ast.Stmt {
 					left := [t.ident(arg_name)]
 					right := [
 						ast.Expr(ast.SelectorExpr{
-						expr: t.ident('${name}_options')
-						field_name: arg_name
-						scope: t.scope
-					}),
+							expr: t.ident('${name}_options')
+							field_name: arg_name
+							scope: t.scope
+						}),
 					]
 					body_stmts << ast.AssignStmt{
 						left: left
@@ -357,10 +357,10 @@ fn (mut t Transpiler) visit_ast(node json2.Any) []ast.Stmt {
 					left := [t.ident(arg_name)]
 					right := [
 						ast.Expr(ast.SelectorExpr{
-						expr: t.ident('${name}_options')
-						field_name: arg_name
-						scope: t.scope
-					}),
+							expr: t.ident('${name}_options')
+							field_name: arg_name
+							scope: t.scope
+						}),
 					]
 					body_stmts << ast.AssignStmt{
 						left: left
@@ -565,11 +565,11 @@ fn (mut t Transpiler) visit_ast(node json2.Any) []ast.Stmt {
 					left := [subtarget]
 					right := [
 						ast.Expr(ast.IndexExpr{
-						left: ident
-						index: ast.IntegerLiteral{
-							val: i.str()
-						}
-					}),
+							left: ident
+							index: ast.IntegerLiteral{
+								val: i.str()
+							}
+						}),
 					]
 					body_stmts << ast.AssignStmt{
 						left: left
@@ -652,10 +652,10 @@ fn (mut t Transpiler) visit_ast(node json2.Any) []ast.Stmt {
 			left := [target]
 			right := [
 				ast.Expr(ast.InfixExpr{
-				left: target
-				op: translate_op(map_node['op'])
-				right: value
-			}),
+					left: target
+					op: translate_op(map_node['op'])
+					right: value
+				}),
 			]
 			stmts << ast.AssignStmt{
 				left: left
