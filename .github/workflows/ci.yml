@@ -19,3 +19,8 @@ jobs:
     - name: test
       run: |
         ./test.sh
+    - name: upload artifact
+      uses: actions/upload-artifact@v2
+      with:
+        name: py2v
+        path: py2v
