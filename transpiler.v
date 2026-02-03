@@ -1,0 +1,2100 @@
+module main
+
+// VTranspiler - transpiles Python AST to V code
+pub struct VTranspiler {
+mut:
+	usings                      []string
+	indent_str                  string = '\t'
+	tmp_var_id                  int
+	generated_code_has_any_type bool
+	known_classes               map[string][]string   // class name -> field names in order
+	mut_param_indices           map[string][]int      // function name -> indices of mut parameters
+	func_defaults               map[string][]string   // function name -> default values for trailing params
+	func_param_count            map[string]int        // function name -> total parameter count
+}
+
+// Create a new VTranspiler
+pub fn new_transpiler() VTranspiler {
+	return VTranspiler{
+		usings: []string{}
+	}
+}
+
+// Add a using/import
+pub fn (mut t VTranspiler) add_using(mod string) {
+	if mod !in t.usings {
+		t.usings << mod
+	}
+}
+
+// Generate a new temporary variable name
+pub fn (mut t VTranspiler) new_tmp(prefix string) string {
+	t.tmp_var_id++
+	return '__${prefix}${t.tmp_var_id}'
+}
+
+// Indent code
+pub fn (t VTranspiler) indent_code(code string, level int) string {
+	return indent(code, level, t.indent_str)
+}
+
+// Generate the module header with imports
+pub fn (t VTranspiler) usings_code() string {
+	mut buf := []string{}
+	buf << '@[translated]'
+	buf << 'module main'
+
+	if t.usings.len > 0 {
+		buf << ''
+		mut sorted_usings := t.usings.clone()
+		sorted_usings.sort()
+		for mod in sorted_usings {
+			buf << 'import ${mod}'
+		}
+	}
+
+	if t.generated_code_has_any_type {
+		buf << ''
+		buf << 'type Any = bool | int | i64 | f64 | string | []byte'
+	}
+
+	return buf.join('\n')
+}
+
+// Main entry point - transpile a module
+pub fn (mut t VTranspiler) visit_module(mod Module) string {
+	// Separate module-level assignments from definitions
+	// V requires __global block for module-level variables, and definitions before code
+	mut global_assigns := []string{}
+	mut defined_vars := map[string]bool{}  // Track already defined variables
+	mut definitions := []string{}
+	mut other_stmts := []string{}
+
+	for stmt in mod.body {
+		match stmt {
+			FunctionDef, AsyncFunctionDef, ClassDef {
+				result := t.visit_stmt(stmt)
+				if result.len > 0 {
+					definitions << result
+				}
+			}
+			Assign {
+				// Check if this is a first-time definition or reassignment
+				// Extract variable names from targets
+				mut is_first_def := true
+				for target in stmt.targets {
+					if target is Name {
+						n := target as Name
+						if n.id in defined_vars {
+							is_first_def = false
+							break
+						}
+					}
+				}
+
+				result := t.visit_assign(stmt)
+				if result.len > 0 {
+					if is_first_def {
+						// First definition goes in __global
+						// Mark variables as defined
+						for target in stmt.targets {
+							if target is Name {
+								n := target as Name
+								defined_vars[n.id] = true
+							}
+						}
+						// Convert := to = for __global block
+						global_assigns << result.replace(' := ', ' = ')
+					} else {
+						// Reassignment goes in other statements
+						other_stmts << result
+					}
+				}
+			}
+			AnnAssign {
+				// Check if already defined
+				mut var_name := ''
+				if stmt.target is Name {
+					n := stmt.target as Name
+					var_name = n.id
+				}
+
+				result := t.visit_stmt(stmt)
+				if result.len > 0 {
+					if var_name !in defined_vars {
+						defined_vars[var_name] = true
+						global_assigns << result.replace(' := ', ' = ')
+					} else {
+						other_stmts << result
+					}
+				}
+			}
+			else {
+				result := t.visit_stmt(stmt)
+				if result.len > 0 {
+					other_stmts << result
+				}
+			}
+		}
+	}
+
+	// Build code with proper ordering
+	mut code_parts := []string{}
+
+	// Add global block if there are module-level assignments
+	if global_assigns.len > 0 {
+		code_parts << '__global ('
+		for ga in global_assigns {
+			code_parts << '\t${ga}'
+		}
+		code_parts << ')'
+	}
+
+	// Add definitions (functions, classes)
+	for i, def in definitions {
+		if i > 0 {
+			code_parts << ''
+		}
+		code_parts << def
+	}
+
+	// Add other statements - must be wrapped in fn main() if present
+	if other_stmts.len > 0 {
+		code_parts << ''
+		code_parts << 'fn main() {'
+		for stmt in other_stmts {
+			code_parts << '\t${stmt}'
+		}
+		code_parts << '}'
+	}
+
+	mut code := code_parts.join('\n')
+
+	// Add module docstring comment if present
+	if doc := mod.docstring_comment {
+		// Convert multi-line docstrings to single-line comment with first line
+		first_line := doc.split('\n')[0].trim_space()
+		if first_line.len > 0 {
+			code = '// ${first_line}\n\n' + code
+		}
+	}
+
+	// Check if code contains "Any" type
+	t.generated_code_has_any_type = code.contains(' Any') || code.contains('[Any]') ||
+		code.contains('Any{')
+
+	header := t.usings_code()
+	if header.len > 0 {
+		return header + '\n\n' + code + '\n'
+	}
+	return code + '\n'
+}
+
+// Visit a list of statements
+pub fn (mut t VTranspiler) visit_body(stmts []Stmt) string {
+	mut parts := []string{}
+	mut prev_was_func_or_class := false
+	for stmt in stmts {
+		result := t.visit_stmt(stmt)
+		if result.len > 0 {
+			// Add blank line between function/class definitions
+			is_func_or_class := stmt is FunctionDef || stmt is AsyncFunctionDef || stmt is ClassDef
+			if prev_was_func_or_class && is_func_or_class {
+				parts << ''
+			}
+			parts << result
+			prev_was_func_or_class = is_func_or_class
+		}
+	}
+	return parts.join('\n')
+}
+
+// Visit statements in a body and apply indentation
+fn (mut t VTranspiler) visit_body_stmts(stmts []Stmt, indent_level int) []string {
+	mut lines := []string{}
+	mut prev_was_if_no_else := false
+	for stmt in stmts {
+		result := t.visit_stmt(stmt)
+		if result.len > 0 {
+			// Add blank line after if-without-else
+			if prev_was_if_no_else {
+				lines << ''
+			}
+			lines << t.indent_code(result, indent_level)
+			// Track if this was an if without else
+			if stmt is If {
+				if_stmt := stmt as If
+				prev_was_if_no_else = if_stmt.orelse.len == 0
+			} else {
+				prev_was_if_no_else = false
+			}
+		}
+	}
+	return lines
+}
+
+// Visit a statement
+pub fn (mut t VTranspiler) visit_stmt(stmt Stmt) string {
+	match stmt {
+		FunctionDef { return t.visit_function_def(stmt) }
+		AsyncFunctionDef { return t.visit_async_function_def(stmt) }
+		ClassDef { return t.visit_class_def(stmt) }
+		Return { return t.visit_return(stmt) }
+		Delete { return t.visit_delete(stmt) }
+		Assign { return t.visit_assign(stmt) }
+		AugAssign { return t.visit_aug_assign(stmt) }
+		AnnAssign { return t.visit_ann_assign(stmt) }
+		For { return t.visit_for(stmt) }
+		AsyncFor { return t.visit_async_for(stmt) }
+		While { return t.visit_while(stmt) }
+		If { return t.visit_if(stmt) }
+		With { return t.visit_with(stmt) }
+		AsyncWith { return t.visit_async_with(stmt) }
+		Raise { return t.visit_raise(stmt) }
+		Try { return t.visit_try(stmt) }
+		Assert { return t.visit_assert(stmt) }
+		Import { return t.visit_import(stmt) }
+		ImportFrom { return t.visit_import_from(stmt) }
+		Global { return t.visit_global(stmt) }
+		Nonlocal { return t.visit_nonlocal(stmt) }
+		ExprStmt { return t.visit_expr_stmt(stmt) }
+		Pass { return '// pass' }
+		Break { return 'break' }
+		Continue { return 'continue' }
+	}
+}
+
+// Visit an expression
+pub fn (mut t VTranspiler) visit_expr(expr Expr) string {
+	match expr {
+		Constant { return t.visit_constant(expr) }
+		Name { return t.visit_name(expr) }
+		BinOp { return t.visit_binop(expr) }
+		UnaryOp { return t.visit_unaryop(expr) }
+		BoolOp { return t.visit_boolop(expr) }
+		Compare { return t.visit_compare(expr) }
+		Call { return t.visit_call(expr) }
+		Attribute { return t.visit_attribute(expr) }
+		Subscript { return t.visit_subscript(expr) }
+		Slice { return t.visit_slice(expr) }
+		List { return t.visit_list(expr) }
+		Tuple { return t.visit_tuple(expr) }
+		Dict { return t.visit_dict(expr) }
+		Set { return t.visit_set(expr) }
+		IfExp { return t.visit_ifexp(expr) }
+		Lambda { return t.visit_lambda(expr) }
+		ListComp { return t.visit_list_comp(expr) }
+		SetComp { return t.visit_set_comp(expr) }
+		DictComp { return t.visit_dict_comp(expr) }
+		GeneratorExp { return t.visit_generator_exp(expr) }
+		Await { return t.visit_await(expr) }
+		Yield { return t.visit_yield(expr) }
+		YieldFrom { return t.visit_yield_from(expr) }
+		FormattedValue { return t.visit_formatted_value(expr) }
+		JoinedStr { return t.visit_joined_str(expr) }
+		NamedExpr { return t.visit_named_expr(expr) }
+		Starred { return t.visit_starred(expr) }
+	}
+}
+
+// Visit FunctionDef
+pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
+	mut signature := []string{}
+	signature << 'fn'
+
+	// Handle class method receiver
+	if node.is_class_method {
+		signature << '(self ${node.class_name})'
+	}
+
+	// Process arguments
+	mut args_strs := []string{}
+	mut generics := []string{}
+	mut mut_indices := []int{}  // Track which parameter indices are mutable
+	mut param_idx := 0
+
+	for arg in node.args.args {
+		if arg.arg == 'self' {
+			continue
+		}
+
+		mut typename := ''
+		if ann := arg.annotation {
+			typename = t.typename_from_annotation(ann)
+		}
+
+		mut arg_name := escape_keyword(arg.arg)
+		// Check if this argument is mutable
+		if arg.arg in node.mutable_vars {
+			arg_name = 'mut ${arg_name}'
+			mut_indices << param_idx
+		}
+
+		if typename == '' {
+			// Need to infer or use generic
+			if node.is_class_method {
+				typename = 'Any'
+			} else {
+				// Use a generic type parameter
+				gen := get_next_generic(generics)
+				generics << gen
+				typename = gen
+			}
+		} else if typename.len == 1 && typename[0] >= `A` && typename[0] <= `Z` {
+			// Single uppercase letter is a generic
+			if typename !in generics {
+				generics << typename
+			}
+		}
+
+		args_strs << '${arg_name} ${typename}'
+		param_idx++
+	}
+
+	// Register function's mut parameter indices for call-site mut keyword generation
+	if mut_indices.len > 0 && !node.is_class_method {
+		t.mut_param_indices[node.name] = mut_indices
+	}
+
+	// Record default values for call-site default filling
+	if node.args.defaults.len > 0 && !node.is_class_method {
+		mut default_strs := []string{}
+		for def in node.args.defaults {
+			default_strs << t.visit_expr(def)
+		}
+		t.func_defaults[node.name] = default_strs
+		t.func_param_count[node.name] = param_idx
+	}
+
+	// Handle vararg
+	if vararg := node.args.vararg {
+		mut typename := ''
+		if ann := vararg.annotation {
+			typename = t.typename_from_annotation(ann)
+		}
+		if typename.starts_with('[]') {
+			typename = '...' + typename[2..]
+		} else if typename == '' {
+			typename = '...Any'
+		} else {
+			typename = '...' + typename
+		}
+		args_strs << '${escape_keyword(vararg.arg)} ${typename}'
+	}
+
+	// For generator functions, add channel parameter
+	if node.is_generator {
+		yield_type := t.infer_generator_yield_type(node)
+		args_strs << 'ch chan ${yield_type}'
+	}
+
+	signature << '${node.name}(${args_strs.join(", ")})'
+
+	// Return type
+	if !node.is_void && !node.is_generator {
+		if ret := node.returns {
+			ret_type := t.typename_from_annotation(ret)
+			signature << ret_type
+		}
+	}
+
+	// Process body - separate nested function definitions
+	mut nested_fndefs := []string{}
+	mut body_stmts := []Stmt{}
+	for stmt in node.body {
+		match stmt {
+			FunctionDef {
+				nested_fndefs << t.visit_function_def(stmt)
+			}
+			AsyncFunctionDef {
+				nested_fndefs << t.visit_async_function_def(stmt)
+			}
+			else {
+				body_stmts << stmt
+			}
+		}
+	}
+
+	// Build body
+	mut body_lines := []string{}
+	if node.is_generator {
+		body_lines << t.indent_code('defer { ch.close() }', 1)
+	}
+	body_lines << t.visit_body_stmts(body_stmts, 1)
+	body := body_lines.join('\n')
+
+	func_code := '${signature.join(" ")} {\n${body}\n}'
+
+	if nested_fndefs.len > 0 {
+		return nested_fndefs.join('\n') + '\n' + func_code
+	}
+	return func_code
+}
+
+// Visit AsyncFunctionDef (converted to sync)
+pub fn (mut t VTranspiler) visit_async_function_def(node AsyncFunctionDef) string {
+	// Convert to regular FunctionDef
+	fd := FunctionDef{
+		name: node.name
+		args: node.args
+		body: node.body
+		decorator_list: node.decorator_list
+		returns: node.returns
+		type_comment: node.type_comment
+		loc: node.loc
+		is_generator: node.is_generator
+		is_void: node.is_void
+		mutable_vars: node.mutable_vars
+		is_class_method: node.is_class_method
+		class_name: node.class_name
+	}
+	return t.visit_function_def(fd)
+}
+
+// Visit ClassDef
+pub fn (mut t VTranspiler) visit_class_def(node ClassDef) string {
+	mut fields := []string{}
+	mut field_names := []string{}
+
+	if node.declarations.len > 0 {
+		fields << 'pub mut:'
+		mut idx := 0
+		for decl, typename in node.declarations {
+			mut typ := typename
+			if typ == '' {
+				typ = 'ST${idx}'
+				idx++
+			}
+			fields << t.indent_code('${decl} ${typ}', 1)
+			field_names << decl
+		}
+	}
+	// Register ALL classes for struct literal generation
+	t.known_classes[node.name] = field_names
+
+	struct_def := if fields.len > 0 {
+		'pub struct ${node.name} {\n${fields.join("\n")}\n}'
+	} else {
+		'pub struct ${node.name} {\n}'
+	}
+
+	// Process body (methods)
+	mut methods := []string{}
+	for stmt in node.body {
+		match stmt {
+			FunctionDef {
+				// Mark as class method
+				mut fd := stmt
+				fd.is_class_method = true
+				fd.class_name = node.name
+				methods << t.visit_function_def(fd)
+			}
+			else {}
+		}
+	}
+
+	if methods.len > 0 {
+		return struct_def + '\n\n' + methods.join('\n\n')
+	}
+	return struct_def
+}
+
+// Visit Return
+pub fn (mut t VTranspiler) visit_return(node Return) string {
+	if val := node.value {
+		expr := t.visit_expr(val)
+		// Strip outer parentheses from return expression
+		stripped := strip_outer_parens(expr)
+		return 'return ${stripped}'
+	}
+	return 'return'
+}
+
+// Visit Delete
+pub fn (mut t VTranspiler) visit_delete(node Delete) string {
+	mut parts := []string{}
+	for target in node.targets {
+		if target is Subscript {
+			// Deleting a subscript - list[i] or dict[key]
+			sub := target as Subscript
+			obj := t.visit_expr(sub.value)
+			idx := t.visit_expr(sub.slice)
+			// For lists, use .delete(index)
+			// For dicts, use .delete(key)
+			parts << '${obj}.delete(${idx})'
+		} else if target is Name {
+			// Can't delete a variable in V - comment it out
+			parts << '// del ${t.visit_expr(target)} - V does not support deleting variables'
+		} else {
+			// Fallback
+			parts << '// del ${t.visit_expr(target)}'
+		}
+	}
+	return parts.join('\n')
+}
+
+// Visit Assign
+pub fn (mut t VTranspiler) visit_assign(node Assign) string {
+	mut assigns := []string{}
+	use_temp := node.targets.len > 1 && node.value is Call
+
+	if use_temp {
+		assigns << 'mut tmp := ${t.visit_expr(node.value)}'
+	}
+
+	for target in node.targets {
+		mut is_redefined := false
+		if target is Name {
+			n := target as Name
+			is_redefined = n.id in node.redefined_targets
+		}
+
+		value_str := if use_temp { 'tmp' } else { t.visit_expr(node.value) }
+
+		match target {
+			Tuple {
+				// Tuple unpacking
+				elts := target.elts
+
+				// Check for starred unpacking
+				has_starred := elts.any(fn (e Expr) bool {
+					return e is Starred
+				})
+
+				if has_starred {
+					assigns << t.handle_starred_unpack(elts, value_str, node)
+				} else {
+					// Check if value is a tuple/list literal with same length - can unpack directly
+					is_tuple_swap := node.value is Tuple && (node.value as Tuple).elts.len == elts.len
+
+					if is_tuple_swap {
+						// Direct tuple swap: x, y = y, x or a, b, c = 1, 2, 3
+						mut subtargets := []string{}
+						mut any_redefined := false
+						mut all_names_mutable := true
+						mut has_subscript_or_attr := false
+
+						// Check if all targets are mutable names (meaning they were defined earlier)
+						for st in elts {
+							if st is Name {
+								if st.id in node.redefined_targets {
+									any_redefined = true
+								}
+								// If is_mutable is set, it means the name was used mutably somewhere
+								// For a swap, both vars should be mutable
+								if !st.is_mutable {
+									all_names_mutable = false
+								}
+							} else if st is Subscript || st is Attribute {
+								// Subscript/Attribute targets always need =
+								has_subscript_or_attr = true
+							} else {
+								all_names_mutable = false
+							}
+						}
+
+						// If all names are marked mutable, this is likely a reassignment (like swap)
+						// Use = without mut prefix
+						for st in elts {
+							mut subkw := ''
+							if st is Name {
+								// Only add mut for new definitions
+								if !any_redefined && !all_names_mutable && !has_subscript_or_attr {
+									if st.is_mutable && st.id !in node.redefined_targets {
+										subkw = 'mut '
+									}
+								}
+							}
+							subtargets << '${subkw}${t.visit_expr(st)}'
+						}
+						op := if is_redefined || any_redefined || all_names_mutable || has_subscript_or_attr { '=' } else { ':=' }
+						// Strip brackets from value
+						mut val := value_str
+						if val.starts_with('[') && val.ends_with(']') {
+							val = val[1..val.len - 1]
+						}
+						assigns << '${subtargets.join(", ")} ${op} ${val}'
+					} else {
+						// Unpacking from array/variable - V doesn't support this directly
+						// Generate individual assignments: a := arr[0]; b := arr[1]; c := arr[2]
+						tmp_var := t.new_tmp('unpack')
+						assigns << '${tmp_var} := ${value_str}'
+						for i, st in elts {
+							mut subkw := ''
+							mut any_redefined := false
+							if st is Name {
+								if st.is_mutable && st.id !in node.redefined_targets {
+									subkw = 'mut '
+								}
+								if st.id in node.redefined_targets {
+									any_redefined = true
+								}
+							}
+							op := if any_redefined { '=' } else { ':=' }
+							assigns << '${subkw}${t.visit_expr(st)} ${op} ${tmp_var}[${i}]'
+						}
+					}
+				}
+			}
+			List {
+				// List unpacking
+				elts := target.elts
+
+				// Check for starred unpacking
+				has_starred := elts.any(fn (e Expr) bool {
+					return e is Starred
+				})
+
+				if has_starred {
+					assigns << t.handle_starred_unpack(elts, value_str, node)
+				} else {
+					// Check if value is a list/tuple literal with same length
+					is_list_literal := (node.value is List && (node.value as List).elts.len == elts.len) ||
+						(node.value is Tuple && (node.value as Tuple).elts.len == elts.len)
+
+					if is_list_literal {
+						mut subtargets := []string{}
+						mut any_redefined := false
+						for st in elts {
+							mut subkw := ''
+							if st is Name {
+								if st.is_mutable && st.id !in node.redefined_targets {
+									subkw = 'mut '
+								}
+								if st.id in node.redefined_targets {
+									any_redefined = true
+								}
+							}
+							subtargets << '${subkw}${t.visit_expr(st)}'
+						}
+						op := if is_redefined || any_redefined { '=' } else { ':=' }
+						mut val := value_str
+						if val.starts_with('[') && val.ends_with(']') {
+							val = val[1..val.len - 1]
+						}
+						assigns << '${subtargets.join(", ")} ${op} ${val}'
+					} else {
+						// Unpacking from array/variable - generate individual assignments
+						tmp_var := t.new_tmp('unpack')
+						assigns << '${tmp_var} := ${value_str}'
+						for i, st in elts {
+							mut subkw := ''
+							mut any_redefined := false
+							if st is Name {
+								if st.is_mutable && st.id !in node.redefined_targets {
+									subkw = 'mut '
+								}
+								if st.id in node.redefined_targets {
+									any_redefined = true
+								}
+							}
+							op := if any_redefined { '=' } else { ':=' }
+							assigns << '${subkw}${t.visit_expr(st)} ${op} ${tmp_var}[${i}]'
+						}
+					}
+				}
+			}
+			Subscript, Attribute {
+				assigns << '${t.visit_expr(target)} = ${value_str}'
+			}
+			Name {
+				kw := if target.is_mutable && !is_redefined { 'mut ' } else { '' }
+				op := if is_redefined { '=' } else { ':=' }
+				assigns << '${kw}${t.visit_expr(target)} ${op} ${value_str}'
+			}
+			else {
+				assigns << '${t.visit_expr(target)} := ${value_str}'
+			}
+		}
+	}
+
+	return assigns.join('\n')
+}
+
+// Handle starred unpacking in assignments
+fn (mut t VTranspiler) handle_starred_unpack(elts []Expr, value_str string, node Assign) string {
+	mut starred_idx := -1
+	for i, e in elts {
+		if e is Starred {
+			starred_idx = i
+			break
+		}
+	}
+
+	tmp_var := t.new_tmp('unpack')
+	mut assigns := []string{}
+	assigns << '${tmp_var} := ${value_str}'
+
+	for i, elt in elts {
+		mut target_elt := elt
+		mut idx_val := ''
+
+		if i < starred_idx {
+			idx_val = '${tmp_var}[${i}]'
+		} else if i == starred_idx {
+			end := elts.len - 1 - i
+			if end > 0 {
+				idx_val = '${tmp_var}[${i}..${tmp_var}.len - ${end}]'
+			} else {
+				idx_val = '${tmp_var}[${i}..]'
+			}
+			if elt is Starred {
+				target_elt = (elt as Starred).value
+			}
+		} else {
+			dist := elts.len - 1 - i
+			if dist == 0 {
+				idx_val = '${tmp_var}.last()'
+			} else {
+				idx_val = '${tmp_var}[${tmp_var}.len - ${dist + 1}]'
+			}
+		}
+
+		mut subkw := ''
+		if target_elt is Name {
+			n := target_elt as Name
+			if n.is_mutable {
+				subkw = 'mut '
+			}
+		}
+
+		assigns << '${subkw}${t.visit_expr(target_elt)} := ${idx_val}'
+	}
+
+	return assigns.join('\n')
+}
+
+// Visit AugAssign
+pub fn (mut t VTranspiler) visit_aug_assign(node AugAssign) string {
+	target := t.visit_expr(node.target)
+	op := op_to_symbol(get_op_type(node.op))
+	val := t.visit_expr(node.value)
+	return '${target} ${op}= ${val}'
+}
+
+// Visit AnnAssign
+pub fn (mut t VTranspiler) visit_ann_assign(node AnnAssign) string {
+	target := t.visit_expr(node.target)
+	type_str := t.typename_from_annotation(node.annotation)
+
+	mut kw := ''
+	if node.target is Name {
+		n := node.target as Name
+		if n.is_mutable {
+			kw = 'mut '
+		}
+	}
+
+	if val := node.value {
+		val_str := t.visit_expr(val)
+
+		// Special handling for list initialization
+		if val is List {
+			lst := val as List
+			if lst.elts.len > 0 {
+				mut elts := []string{}
+				first_val := t.visit_expr(lst.elts[0])
+				// Cast first element if needed for type inference
+				if type_str.starts_with('[]') {
+					inner_type := type_str[2..]
+					if inner_type in v_width_rank {
+						elts << '${inner_type}(${first_val})'
+					} else {
+						elts << first_val
+					}
+				} else {
+					elts << first_val
+				}
+				for i := 1; i < lst.elts.len; i++ {
+					elts << t.visit_expr(lst.elts[i])
+				}
+				return '${kw}${target} := [${elts.join(", ")}]'
+			}
+			return '${kw}${target} := ${type_str}{}'
+		}
+
+		return '${kw}${target} := ${val_str}'
+	}
+
+	return '${kw}${target} := ${type_str}{}'
+}
+
+// Visit For
+pub fn (mut t VTranspiler) visit_for(node For) string {
+	target := t.visit_expr(node.target)
+	mut buf := []string{}
+
+	// Check for range with step
+	if node.iter is Call {
+		call := node.iter as Call
+		if call.func is Name {
+			fname := (call.func as Name).id
+			if fname == 'range' && call.args.len == 3 {
+				start := t.visit_expr(call.args[0])
+				end := t.visit_expr(call.args[1])
+				step := t.visit_expr(call.args[2])
+				buf << 'for ${target} := ${start}; ${target} < ${end}; ${target} += ${step} {'
+				buf << t.visit_body_stmts(node.body, 1)
+				buf << '}'
+				return buf.join('\n')
+			}
+		}
+	}
+
+	iter := t.visit_expr(node.iter)
+	buf << 'for ${target} in ${iter} {'
+	buf << t.visit_body_stmts(node.body, 1)
+	buf << '}'
+
+	return buf.join('\n')
+}
+
+// Visit AsyncFor (converted to sync)
+pub fn (mut t VTranspiler) visit_async_for(node AsyncFor) string {
+	mut buf := []string{}
+	buf << '// WARNING: async for converted to sync for'
+
+	f := For{
+		target: node.target
+		iter: node.iter
+		body: node.body
+		orelse: node.orelse
+		type_comment: node.type_comment
+		loc: node.loc
+		level: node.level
+	}
+	buf << t.visit_for(f)
+
+	return buf.join('\n')
+}
+
+// Visit While
+pub fn (mut t VTranspiler) visit_while(node While) string {
+	mut buf := []string{}
+
+	// Check for infinite loop (while True)
+	if node.test is Constant {
+		c := node.test as Constant
+		if c.value is bool && (c.value as bool) == true {
+			buf << 'for {'
+			buf << t.visit_body_stmts(node.body, 1)
+			buf << '}'
+			return buf.join('\n')
+		}
+	}
+
+	test := t.visit_expr(node.test)
+	buf << 'for ${test} {'
+	buf << t.visit_body_stmts(node.body, 1)
+	buf << '}'
+
+	return buf.join('\n')
+}
+
+// Visit If
+pub fn (mut t VTranspiler) visit_if(node If) string {
+	test := t.visit_expr(node.test)
+	mut buf := []string{}
+
+	buf << 'if ${test} {'
+	buf << t.visit_body_stmts(node.body, 1)
+
+	if node.orelse.len > 0 {
+		// Check if it's an elif
+		if node.orelse.len == 1 && node.orelse[0] is If {
+			else_if := node.orelse[0] as If
+			buf << '} else ${t.visit_if(else_if)}'
+		} else {
+			buf << '} else {'
+			buf << t.visit_body_stmts(node.orelse, 1)
+			buf << '}'
+		}
+	} else {
+		buf << '}'
+	}
+
+	return buf.join('\n')
+}
+
+// Visit With
+pub fn (mut t VTranspiler) visit_with(node With) string {
+	mut buf := []string{}
+
+	for item in node.items {
+		context := t.visit_expr(item.context_expr)
+		if vars := item.optional_vars {
+			target := t.visit_expr(vars)
+			buf << '${target} := ${context}'
+			buf << 'defer { ${target}.__exit__() }'
+		} else {
+			buf << 'defer { ${context}.__exit__() }'
+			buf << '${context}.__enter__()'
+		}
+	}
+
+	for stmt in node.body {
+		buf << t.visit_stmt(stmt)
+	}
+
+	return buf.join('\n')
+}
+
+// Visit AsyncWith (converted to sync)
+pub fn (mut t VTranspiler) visit_async_with(node AsyncWith) string {
+	mut buf := []string{}
+	buf << '// WARNING: async with converted to sync with defer'
+
+	w := With{
+		items: node.items
+		body: node.body
+		type_comment: node.type_comment
+		loc: node.loc
+	}
+	buf << t.visit_with(w)
+
+	return buf.join('\n')
+}
+
+// Visit Raise
+pub fn (mut t VTranspiler) visit_raise(node Raise) string {
+	if exc := node.exc {
+		if exc is Call {
+			call := exc as Call
+			fname := t.visit_expr(call.func)
+			msg := if call.args.len > 0 { t.visit_expr(call.args[0]) } else { "''" }
+			return "panic('${fname}: ' + ${msg})"
+		}
+		name := t.visit_expr(exc)
+		return "panic('${name}')"
+	}
+
+	return "panic('Exception')"
+}
+
+// Visit Try
+pub fn (mut t VTranspiler) visit_try(node Try) string {
+	mut buf := []string{}
+
+	// V doesn't have try/except - convert to comments and execute body directly
+	// In the future, this could use V's or{} blocks for error handling
+	buf << '// try {'
+	for stmt in node.body {
+		buf << t.visit_stmt(stmt)
+	}
+	buf << '// } catch {'
+
+	if node.handlers.len > 0 {
+		for handler in node.handlers {
+			if typ := handler.typ {
+				typ_name := t.visit_expr(typ)
+				buf << "// except ${typ_name}:"
+			} else {
+				buf << '// except:'
+			}
+			buf << '// NOTE: V does not have exception handling - this code is unreachable'
+			// Comment out the handler body
+			for stmt in handler.body {
+				result := t.visit_stmt(stmt)
+				for line in result.split('\n') {
+					buf << '// ${line}'
+				}
+			}
+		}
+	}
+
+	if node.finalbody.len > 0 {
+		buf << '// finally:'
+		for stmt in node.finalbody {
+			buf << t.visit_stmt(stmt)
+		}
+	}
+
+	buf << '// }'
+
+	return buf.join('\n')
+}
+
+// Visit Assert
+pub fn (mut t VTranspiler) visit_assert(node Assert) string {
+	test := t.visit_expr(node.test)
+	return 'assert ${test}'
+}
+
+// Visit Import
+pub fn (mut t VTranspiler) visit_import(node Import) string {
+	// Suppress imports - they're handled differently in V
+	return ''
+}
+
+// Visit ImportFrom
+pub fn (mut t VTranspiler) visit_import_from(node ImportFrom) string {
+	// Suppress imports
+	return ''
+}
+
+// Visit Global
+pub fn (mut t VTranspiler) visit_global(node Global) string {
+	names := node.names.join(', ')
+	return "// global ${names}  // V doesn't support global keyword"
+}
+
+// Visit Nonlocal
+pub fn (mut t VTranspiler) visit_nonlocal(node Nonlocal) string {
+	names := node.names.join(', ')
+	return "// nonlocal ${names}  // V doesn't support nonlocal keyword"
+}
+
+// Visit ExprStmt
+pub fn (mut t VTranspiler) visit_expr_stmt(node ExprStmt) string {
+	// Check for ellipsis
+	if node.value is Constant {
+		c := node.value as Constant
+		if c.value is EllipsisValue {
+			return '// ...'
+		}
+	}
+	result := t.visit_expr(node.value)
+	if result.len == 0 {
+		return ''
+	}
+	return result
+}
+
+// Visit Constant
+pub fn (mut t VTranspiler) visit_constant(node Constant) string {
+	match node.value {
+		NoneValue { return 'none' }
+		EllipsisValue { return '' }
+		bool { return if node.value as bool { 'true' } else { 'false' } }
+		int { return (node.value as int).str() }
+		i64 { return (node.value as i64).str() }
+		f64 { return (node.value as f64).str() }
+		string { return "'${escape_string(node.value as string)}'" }
+		BytesValue {
+			bv := node.value as BytesValue
+			return bytes_to_v_literal(bv.data)
+		}
+	}
+}
+
+// Visit Name
+pub fn (mut t VTranspiler) visit_name(node Name) string {
+	return escape_keyword(node.id)
+}
+
+// Visit BinOp
+pub fn (mut t VTranspiler) visit_binop(node BinOp) string {
+	left := t.visit_expr(node.left)
+	right := t.visit_expr(node.right)
+	mut op := op_to_symbol(get_op_type(node.op))
+
+	// Handle power operator specially
+	if node.op is Pow {
+		return '${left} ^ ${right}'
+	}
+
+	// Handle string/list repetition
+	if node.op is Mult {
+		left_ann := get_expr_annotation(node.left)
+		right_ann := get_expr_annotation(node.right)
+		if right_ann == 'int' && (left_ann == 'string' || left_ann.starts_with('[]')) {
+			return '(${left}.repeat(${right}))'
+		}
+	}
+
+	// Handle list concatenation - V uses << operator
+	if node.op is Add {
+		left_ann := get_expr_annotation(node.left)
+		right_ann := get_expr_annotation(node.right)
+		if left_ann.starts_with('[]') && right_ann.starts_with('[]') {
+			// Use IIFE (immediately invoked function expression) to concat
+			// Need to capture variables in the closure
+			return '(fn [${left}, ${right}] () ${left_ann} { mut r := ${left}.clone(); r << ${right}; return r }())'
+		}
+	}
+
+	// Handle int/float division - V requires explicit type conversion
+	if node.op is Div {
+		left_ann := get_expr_annotation(node.left)
+		right_ann := get_expr_annotation(node.right)
+		// If either operand is float, ensure both are float
+		if left_ann == 'int' && right_ann == 'f64' {
+			return '(f64(${left}) ${op} ${right})'
+		}
+		if left_ann == 'f64' && right_ann == 'int' {
+			return '(${left} ${op} f64(${right}))'
+		}
+		// If right is float but left annotation is unknown/empty, wrap left in f64 to be safe
+		if right_ann == 'f64' && left_ann == '' {
+			return '(f64(${left}) ${op} ${right})'
+		}
+		if left_ann == 'f64' && right_ann == '' {
+			return '(${left} ${op} f64(${right}))'
+		}
+	}
+
+	// Handle bitwise operators on booleans - convert to logical operators
+	left_ann := get_expr_annotation(node.left)
+	right_ann := get_expr_annotation(node.right)
+	if left_ann == 'bool' || right_ann == 'bool' {
+		if node.op is BitAnd {
+			op = '&&'
+		} else if node.op is BitOr {
+			op = '||'
+		} else if node.op is BitXor {
+			op = '!='
+		}
+	}
+
+	// Handle mixed signed/unsigned integer types - V requires explicit casts
+	// Signed types: i8, i16, int, i64
+	// Unsigned types: u8, u16, u32, u64
+	left_signed := left_ann in ['i8', 'i16', 'int', 'i64']
+	left_unsigned := left_ann in ['u8', 'u16', 'u32', 'u64']
+	right_signed := right_ann in ['i8', 'i16', 'int', 'i64']
+	right_unsigned := right_ann in ['u8', 'u16', 'u32', 'u64']
+
+	// If mixing signed and unsigned, cast both to the result type
+	if (left_signed && right_unsigned) || (left_unsigned && right_signed) {
+		// Use the result type annotation if available
+		result_type := node.v_annotation or { '' }
+		if result_type != '' {
+			return '(${result_type}(${left}) ${op} ${result_type}(${right}))'
+		}
+		// Default to i64 as a safe common type
+		return '(i64(${left}) ${op} i64(${right}))'
+	}
+
+	return '(${left} ${op} ${right})'
+}
+
+// Visit UnaryOp
+pub fn (mut t VTranspiler) visit_unaryop(node UnaryOp) string {
+	op := op_to_symbol(get_unary_op_type(node.op))
+	operand := t.visit_expr(node.operand)
+
+	if node.op is USub {
+		// Check if operand is simple
+		if node.operand is Call || is_number_expr(node.operand) {
+			return '-${operand}'
+		}
+		return '-(${operand})'
+	}
+
+	return '${op}(${operand})'
+}
+
+// Visit BoolOp
+pub fn (mut t VTranspiler) visit_boolop(node BoolOp) string {
+	op := op_to_symbol(get_bool_op_type(node.op))
+	mut parts := []string{}
+	for val in node.values {
+		expr_str := t.visit_expr(val)
+		// Wrap nested BoolOps in parentheses to avoid ambiguity
+		if val is BoolOp {
+			parts << '(${expr_str})'
+		} else {
+			parts << expr_str
+		}
+	}
+	return parts.join(' ${op} ')
+}
+
+// Visit Compare
+pub fn (mut t VTranspiler) visit_compare(node Compare) string {
+	left := t.visit_expr(node.left)
+
+	if node.ops.len > 0 && node.ops[0] is In {
+		right := t.visit_expr(node.comparators[0])
+		// Check if right side is a string - use .contains() instead of 'in'
+		right_ann := get_expr_annotation(node.comparators[0])
+		if right_ann == 'string' {
+			return '${right}.contains(${left})'
+		}
+		return '${left} in ${right}'
+	}
+
+	if node.ops.len > 0 && node.ops[0] is NotIn {
+		right := t.visit_expr(node.comparators[0])
+		// Check if right side is a string - use !.contains() instead of '!in'
+		right_ann := get_expr_annotation(node.comparators[0])
+		if right_ann == 'string' {
+			return '!${right}.contains(${left})'
+		}
+		return '${left} !in ${right}'
+	}
+
+	op := op_to_symbol(get_cmp_op_type(node.ops[0]))
+	right := t.visit_expr(node.comparators[0])
+
+	return '${left} ${op} ${right}'
+}
+
+// Visit Call
+pub fn (mut t VTranspiler) visit_call(node Call) string {
+	fname := t.visit_expr(node.func)
+
+	// Check if this function has mut parameters
+	mut_indices := t.mut_param_indices[fname] or { []int{} }
+
+	mut vargs := []string{}
+	for i, arg in node.args {
+		mut arg_str := t.visit_expr(arg)
+		// Add mut keyword if this parameter index requires it
+		if i in mut_indices {
+			arg_str = 'mut ${arg_str}'
+		}
+		vargs << arg_str
+	}
+
+	// Fill in missing arguments with default values
+	if defaults := t.func_defaults[fname] {
+		param_count := t.func_param_count[fname] or { 0 }
+		args_provided := vargs.len
+		if args_provided < param_count {
+			// defaults apply to the last N parameters
+			// where N = defaults.len
+			num_defaults := defaults.len
+			first_default_idx := param_count - num_defaults
+
+			for i in args_provided .. param_count {
+				default_idx := i - first_default_idx
+				if default_idx >= 0 && default_idx < defaults.len {
+					vargs << defaults[default_idx]
+				}
+			}
+		}
+	}
+
+	// Handle string/list methods that need translation
+	if node.func is Attribute {
+		attr_node := node.func as Attribute
+		obj := t.visit_expr(attr_node.value)
+		method := attr_node.attr
+
+		// String methods
+		match method {
+			'strip' {
+				return '${obj}.trim_space()'
+			}
+			'lstrip' {
+				if vargs.len > 0 {
+					return '${obj}.trim_left(${vargs[0]})'
+				}
+				return '${obj}.trim_left(" \\t\\n\\r")'
+			}
+			'rstrip' {
+				if vargs.len > 0 {
+					return '${obj}.trim_right(${vargs[0]})'
+				}
+				return '${obj}.trim_right(" \\t\\n\\r")'
+			}
+			'find' {
+				if vargs.len > 0 {
+					return '${obj}.index(${vargs[0]}) or { -1 }'
+				}
+				return '-1'
+			}
+			'rfind' {
+				if vargs.len > 0 {
+					return '${obj}.last_index(${vargs[0]}) or { -1 }'
+				}
+				return '-1'
+			}
+			'replace' {
+				if vargs.len >= 2 {
+					return '${obj}.replace(${vargs[0]}, ${vargs[1]})'
+				}
+				return obj
+			}
+			'split' {
+				if vargs.len > 0 {
+					return '${obj}.split(${vargs[0]})'
+				}
+				return '${obj}.split(" ")'
+			}
+			'join' {
+				if vargs.len > 0 {
+					return '${vargs[0]}.join(${obj})'
+				}
+				return obj
+			}
+			'upper' {
+				return '${obj}.to_upper()'
+			}
+			'lower' {
+				return '${obj}.to_lower()'
+			}
+			'startswith' {
+				if vargs.len > 0 {
+					return '${obj}.starts_with(${vargs[0]})'
+				}
+				return 'false'
+			}
+			'endswith' {
+				if vargs.len > 0 {
+					return '${obj}.ends_with(${vargs[0]})'
+				}
+				return 'false'
+			}
+			'format' {
+				// Convert .format() to string interpolation isn't easy
+				// For now, just comment it
+				return '${obj} /* .format(${vargs.join(", ")}) not supported */'
+			}
+			'count' {
+				if vargs.len > 0 {
+					return '${obj}.count(${vargs[0]})'
+				}
+				return '0'
+			}
+			'isdigit' {
+				return '${obj}.is_digit()'
+			}
+			'isalpha' {
+				return '${obj}.is_alpha()'
+			}
+			// List methods
+			'remove' {
+				if vargs.len > 0 {
+					// V uses .delete() with index, not value
+					// Need to find the index first
+					return '${obj}.delete(${obj}.index(${vargs[0]}))'
+				}
+				return obj
+			}
+			'pop' {
+				// For lists, V has .pop()
+				// For dicts with a key argument, need to get value before deleting
+				if vargs.len > 0 {
+					// Dict pop - get value then delete
+					// Note: V's delete doesn't return the value, and we can't use none
+					// Use 0 as default for int maps, empty string for string maps
+					return '(${obj}[${vargs[0]}] or { 0 })'
+				}
+				return '${obj}.pop()'
+			}
+			'insert' {
+				if vargs.len >= 2 {
+					return '${obj}.insert(${vargs[0]}, ${vargs[1]})'
+				}
+				return obj
+			}
+			'extend' {
+				if vargs.len > 0 {
+					return '${obj} << ${vargs[0]}'
+				}
+				return obj
+			}
+			'index' {
+				if vargs.len > 0 {
+					return '${obj}.index(${vargs[0]}) or { -1 }'
+				}
+				return '-1'
+			}
+			'copy' {
+				return '${obj}.clone()'
+			}
+			'clear' {
+				return '${obj}.clear()'
+			}
+			'reverse' {
+				return '${obj}.reverse()'
+			}
+			'sort' {
+				if vargs.len > 0 {
+					// Python sort with key/reverse - complex to translate
+					return '${obj}.sort(a < b)'
+				}
+				return '${obj}.sort(a < b)'
+			}
+			// Dict methods
+			'keys' {
+				return '${obj}.keys()'
+			}
+			'values' {
+				return '${obj}.values()'
+			}
+			'items' {
+				// V doesn't have items(), iterate directly
+				return '${obj} /* .items() - iterate with for k, v in dict */'
+			}
+			'get' {
+				if vargs.len >= 2 {
+					return '${obj}[${vargs[0]}] or { ${vargs[1]} }'
+				}
+				if vargs.len == 1 {
+					return '${obj}[${vargs[0]}] or { none }'
+				}
+				return obj
+			}
+			'update' {
+				if vargs.len > 0 {
+					return '/* ${obj}.update() - manually merge dicts */'
+				}
+				return obj
+			}
+			else {}
+		}
+	}
+
+	// Check if this is a struct constructor call (known dataclass)
+	if fname in t.known_classes {
+		mut field_vals := map[string]string{}
+
+		// Handle keyword arguments
+		for kw in node.keywords {
+			if arg := kw.arg {
+				if arg.len > 0 {
+					field_vals[arg] = t.visit_expr(kw.value)
+				}
+			}
+		}
+
+		// Handle positional arguments (map to fields in order)
+		fields := t.known_classes[fname]
+		for i, arg in vargs {
+			if i < fields.len {
+				field_vals[fields[i]] = arg
+			}
+		}
+
+		// Generate struct literal with indentation for vfmt
+		mut field_parts := []string{}
+		for field in fields {
+			if val := field_vals[field] {
+				field_parts << '\t${field}: ${val}'
+			}
+		}
+		if field_parts.len == 0 {
+			return '${fname}{}'
+		}
+		return '${fname}{\n${field_parts.join("\n")}\n}'
+	}
+
+	for kw in node.keywords {
+		vargs << t.visit_expr(kw.value)
+	}
+
+	// Try builtin dispatch
+	result, handled := dispatch_builtin(mut t, fname, node, vargs)
+	if handled {
+		return result
+	}
+
+	// Handle append (which becomes <<)
+	if fname.ends_with(' << ') {
+		if vargs.len > 0 {
+			return '${fname}${vargs[0]}'
+		}
+		return fname.trim_right(' ')
+	}
+
+	// Default call
+	if vargs.len > 0 {
+		return '${fname}(${vargs.join(", ")})'
+	}
+	return '${fname}()'
+}
+
+// Visit Attribute
+pub fn (mut t VTranspiler) visit_attribute(node Attribute) string {
+	value := t.visit_expr(node.value)
+	attr := node.attr
+	attr_path := '${value}.${attr}'
+
+	// Try attribute dispatch
+	result, handled := dispatch_attr(mut t, attr_path)
+	if handled {
+		return result
+	}
+
+	// Check for list.append -> <<
+	if attr == 'append' {
+		return '${value} << '
+	}
+
+	return '${value}.${attr}'
+}
+
+// Visit Subscript
+pub fn (mut t VTranspiler) visit_subscript(node Subscript) string {
+	value := t.visit_expr(node.value)
+
+	if node.is_annotation {
+		index := t.visit_expr(node.slice)
+		mapped := v_container_type_map[value] or { value }
+		if value == 'Tuple' {
+			return '(${index})'
+		}
+		return '${mapped}[${index}]'
+	}
+
+	// Handle negative indexing - V doesn't support negative indices
+	if node.slice is UnaryOp {
+		unary := node.slice as UnaryOp
+		if unary.op is USub {
+			if unary.operand is Constant {
+				c := unary.operand as Constant
+				if c.value is int {
+					// Convert arr[-n] to arr[arr.len - n]
+					n := c.value as int
+					return '${value}[${value}.len - ${n}]'
+				}
+			}
+		}
+	}
+
+	// Handle slice with potential negative indices
+	if node.slice is Slice {
+		slice_node := node.slice as Slice
+		mut lower := ''
+		mut upper := ''
+
+		// Handle lower bound
+		if l := slice_node.lower {
+			if l is UnaryOp {
+				unary := l as UnaryOp
+				if unary.op is USub {
+					if unary.operand is Constant {
+						c := unary.operand as Constant
+						if c.value is int {
+							n := c.value as int
+							lower = '${value}.len - ${n}'
+						} else {
+							lower = t.visit_expr(l)
+						}
+					} else {
+						lower = t.visit_expr(l)
+					}
+				} else {
+					lower = t.visit_expr(l)
+				}
+			} else {
+				lower = t.visit_expr(l)
+			}
+		}
+
+		// Handle upper bound
+		if u := slice_node.upper {
+			if u is UnaryOp {
+				unary := u as UnaryOp
+				if unary.op is USub {
+					if unary.operand is Constant {
+						c := unary.operand as Constant
+						if c.value is int {
+							n := c.value as int
+							upper = '${value}.len - ${n}'
+						} else {
+							upper = t.visit_expr(u)
+						}
+					} else {
+						upper = t.visit_expr(u)
+					}
+				} else {
+					upper = t.visit_expr(u)
+				}
+			} else {
+				upper = t.visit_expr(u)
+			}
+		}
+
+		return '${value}[${lower}..${upper}]'
+	}
+
+	index := t.visit_expr(node.slice)
+	return '${value}[${index}]'
+}
+
+// Visit Slice
+pub fn (mut t VTranspiler) visit_slice(node Slice) string {
+	lower := if l := node.lower { t.visit_expr(l) } else { '' }
+	upper := if u := node.upper { t.visit_expr(u) } else { '' }
+	return '${lower}..${upper}'
+}
+
+// Visit List
+pub fn (mut t VTranspiler) visit_list(node List) string {
+	// Check for starred elements
+	has_starred := node.elts.any(fn (e Expr) bool {
+		return e is Starred
+	})
+
+	if has_starred {
+		mut parts := []string{}
+		mut curr_list := []string{}
+
+		for e in node.elts {
+			if e is Starred {
+				if curr_list.len > 0 {
+					parts << '[${curr_list.join(", ")}]'
+					curr_list = []
+				}
+				parts << t.visit_expr((e as Starred).value)
+			} else {
+				curr_list << t.visit_expr(e)
+			}
+		}
+
+		if curr_list.len > 0 {
+			parts << '[${curr_list.join(", ")}]'
+		}
+
+		if parts.len == 0 {
+			return '[]'
+		}
+
+		mut result := parts[0]
+		if !result.starts_with('[') {
+			result = '([]).concat(${result})'
+		}
+		for i := 1; i < parts.len; i++ {
+			result = '(${result}).concat(${parts[i]})'
+		}
+		return result
+	}
+
+	mut elts := []string{}
+	for e in node.elts {
+		elts << t.visit_expr(e)
+	}
+	return '[${elts.join(", ")}]'
+}
+
+// Visit Tuple (same as List in V)
+pub fn (mut t VTranspiler) visit_tuple(node Tuple) string {
+	// Check for starred elements
+	has_starred := node.elts.any(fn (e Expr) bool {
+		return e is Starred
+	})
+
+	if has_starred {
+		// Same logic as list
+		mut parts := []string{}
+		mut curr_list := []string{}
+
+		for e in node.elts {
+			if e is Starred {
+				if curr_list.len > 0 {
+					parts << '[${curr_list.join(", ")}]'
+					curr_list = []
+				}
+				parts << t.visit_expr((e as Starred).value)
+			} else {
+				curr_list << t.visit_expr(e)
+			}
+		}
+
+		if curr_list.len > 0 {
+			parts << '[${curr_list.join(", ")}]'
+		}
+
+		if parts.len == 0 {
+			return '[]'
+		}
+
+		mut result := parts[0]
+		if !result.starts_with('[') {
+			result = '([]).concat(${result})'
+		}
+		for i := 1; i < parts.len; i++ {
+			result = '(${result}).concat(${parts[i]})'
+		}
+		return result
+	}
+
+	mut elts := []string{}
+	for e in node.elts {
+		elts << t.visit_expr(e)
+	}
+	return '[${elts.join(", ")}]'
+}
+
+// Visit Dict
+pub fn (mut t VTranspiler) visit_dict(node Dict) string {
+	mut pairs := []string{}
+	for i, key_opt in node.keys {
+		if key := key_opt {
+			k := t.visit_expr(key)
+			v := t.visit_expr(node.values[i])
+			pairs << '\t${k}: ${v}'
+		}
+	}
+	if pairs.len == 0 {
+		return '{}'
+	}
+	return '{\n${pairs.join("\n")}\n}'
+}
+
+// Visit Set (same as List in V)
+pub fn (mut t VTranspiler) visit_set(node Set) string {
+	mut elts := []string{}
+	for e in node.elts {
+		elts << t.visit_expr(e)
+	}
+	return '[${elts.join(", ")}]'
+}
+
+// Visit IfExp
+pub fn (mut t VTranspiler) visit_ifexp(node IfExp) string {
+	test := t.visit_expr(node.test)
+	body := t.visit_expr(node.body)
+	orelse := t.visit_expr(node.orelse)
+	return 'if ${test} { ${body} } else { ${orelse} }'
+}
+
+// Visit Lambda
+pub fn (mut t VTranspiler) visit_lambda(node Lambda) string {
+	mut args := []string{}
+
+	// Try to infer types from the body expression
+	// If body uses arithmetic, use int; otherwise use generic default
+	body := t.visit_expr(node.body)
+	stripped_body := strip_outer_parens(body)
+
+	// Check if body contains arithmetic operations
+	body_has_arithmetic := body.contains(' + ') || body.contains(' - ') ||
+		body.contains(' * ') || body.contains(' / ')
+
+	default_type := if body_has_arithmetic { 'int' } else { 'string' }
+
+	for arg in node.args.args {
+		name := escape_keyword(arg.arg)
+		// V requires type annotations on each parameter
+		// Use annotation if available, otherwise default based on body analysis
+		if ann := arg.annotation {
+			type_str := t.typename_from_annotation(ann)
+			args << '${name} ${type_str}'
+		} else {
+			// Use _ for unused parameters (starts with underscore)
+			if name.starts_with('_') && name != '_' {
+				args << '_ ${default_type}'
+			} else {
+				args << '${name} ${default_type}'
+			}
+		}
+	}
+
+	return 'fn (${args.join(", ")}) ${default_type} {\n\treturn ${stripped_body}\n}'
+}
+
+// Visit ListComp
+pub fn (mut t VTranspiler) visit_list_comp(node ListComp) string {
+	// Should be transformed by VComprehensionRewriter
+	// Fallback implementation
+	return t.visit_generator_exp_impl(node.elt, node.generators)
+}
+
+// Visit SetComp
+pub fn (mut t VTranspiler) visit_set_comp(node SetComp) string {
+	return t.visit_generator_exp_impl(node.elt, node.generators)
+}
+
+// Visit DictComp
+pub fn (mut t VTranspiler) visit_dict_comp(node DictComp) string {
+	mut buf := []string{}
+	buf << '(fn () map[string]Any {'
+	buf << 'mut result := map[string]Any{}'
+
+	for comp in node.generators {
+		target := t.visit_expr(comp.target)
+		iter := t.visit_expr(comp.iter)
+		buf << 'for ${target} in ${iter} {'
+
+		for if_clause in comp.ifs {
+			buf << 'if ${t.visit_expr(if_clause)} {'
+		}
+
+		key := t.visit_expr(node.key)
+		value := t.visit_expr(node.value)
+		buf << 'result[${key}] = ${value}'
+
+		for _ in comp.ifs {
+			buf << '}'
+		}
+
+		buf << '}'
+	}
+
+	buf << 'return result'
+	buf << '}())'
+
+	return buf.join('\n')
+}
+
+// Visit GeneratorExp
+pub fn (mut t VTranspiler) visit_generator_exp(node GeneratorExp) string {
+	return t.visit_generator_exp_impl(node.elt, node.generators)
+}
+
+fn (mut t VTranspiler) visit_generator_exp_impl(elt Expr, generators []Comprehension) string {
+	if generators.len == 0 {
+		return '[]'
+	}
+
+	// Check if the iter is a range() call - need special handling
+	mut result := ''
+	iter := generators[0].iter
+	target := t.visit_expr(generators[0].target)
+
+	if iter is Call {
+		call := iter as Call
+		if call.func is Name {
+			fname := (call.func as Name).id
+			if fname == 'range' {
+				// Handle range() specially - convert to array
+				if call.args.len == 1 {
+					end := t.visit_expr(call.args[0])
+					result = '[]int{len: ${end}, init: index}'
+				} else if call.args.len == 2 {
+					start := t.visit_expr(call.args[0])
+					end := t.visit_expr(call.args[1])
+					result = '[]int{len: ${end} - ${start}, init: index + ${start}}'
+				} else if call.args.len == 3 {
+					// For stepped range, use a different approach
+					start := t.visit_expr(call.args[0])
+					end := t.visit_expr(call.args[1])
+					step := t.visit_expr(call.args[2])
+					result = '[]int{len: (${end} - ${start}) / ${step}, init: ${start} + index * ${step}}'
+				} else {
+					result = t.visit_expr(iter)
+				}
+			} else {
+				result = t.visit_expr(iter)
+			}
+		} else {
+			result = t.visit_expr(iter)
+		}
+	} else {
+		result = t.visit_expr(iter)
+	}
+
+	// Apply filters - need to use 'it' for the element reference
+	for if_clause in generators[0].ifs {
+		mut filter_expr := t.visit_expr(if_clause)
+		// Replace target variable with 'it' for filter lambda
+		filter_expr = filter_expr.replace(target, 'it')
+		result = '${result}.filter(${filter_expr})'
+	}
+
+	// Apply map - need to use 'it' for the element reference
+	mut map_expr := t.visit_expr(elt)
+	// Replace target variable with 'it' for map lambda
+	map_expr = map_expr.replace(target, 'it')
+	result = '${result}.map(${map_expr})'
+
+	return result
+}
+
+// Visit Await
+pub fn (mut t VTranspiler) visit_await(node Await) string {
+	// V doesn't have await, just return the value
+	return t.visit_expr(node.value)
+}
+
+// Visit Yield
+pub fn (mut t VTranspiler) visit_yield(node Yield) string {
+	if val := node.value {
+		return 'ch <- ${t.visit_expr(val)}'
+	}
+	return 'ch <- 0'
+}
+
+// Visit YieldFrom
+pub fn (mut t VTranspiler) visit_yield_from(node YieldFrom) string {
+	gen_expr := t.visit_expr(node.value)
+	gen_var := t.new_tmp('gen')
+
+	mut buf := []string{}
+	buf << '${gen_var} := ${gen_expr}'
+	buf << '// yield from ${gen_var}'
+	buf << 'for {'
+	buf << '    val := <-${gen_var} or { break }'
+	buf << '    ch <- val'
+	buf << '}'
+
+	return buf.join('\n')
+}
+
+// Visit FormattedValue
+pub fn (mut t VTranspiler) visit_formatted_value(node FormattedValue) string {
+	return '\${${t.visit_expr(node.value)}}'
+}
+
+// Visit JoinedStr (f-string)
+pub fn (mut t VTranspiler) visit_joined_str(node JoinedStr) string {
+	mut parts := []string{}
+	for val in node.values {
+		if val is Constant {
+			c := val as Constant
+			if c.value is string {
+				parts << c.value as string
+				continue
+			}
+		}
+		parts << t.visit_expr(val)
+	}
+	return "'${parts.join("")}'"
+}
+
+// Visit NamedExpr (walrus operator - should be transformed)
+pub fn (mut t VTranspiler) visit_named_expr(node NamedExpr) string {
+	target := t.visit_expr(node.target)
+	value := t.visit_expr(node.value)
+	return '(${target} := ${value})'
+}
+
+// Visit Starred
+pub fn (mut t VTranspiler) visit_starred(node Starred) string {
+	return '...${t.visit_expr(node.value)}'
+}
+
+// Helper: get typename from annotation expression
+pub fn (mut t VTranspiler) typename_from_annotation(ann Expr) string {
+	match ann {
+		Name {
+			name := ann.id
+			if name in v_type_map {
+				return v_type_map[name]
+			}
+			return name
+		}
+		Subscript {
+			value := t.typename_from_annotation(ann.value)
+			index := t.typename_from_annotation(ann.slice)
+
+			mapped := v_container_type_map[value] or { value }
+			if value == 'Tuple' {
+				return '(${index})'
+			}
+			if value == 'Dict' {
+				// Handle Dict[K, V]
+				return 'map[${index}]'
+			}
+			return '${mapped}${index}'
+		}
+		Tuple {
+			mut types := []string{}
+			for e in ann.elts {
+				types << t.typename_from_annotation(e)
+			}
+			return types.join(', ')
+		}
+		Attribute {
+			// Handle typing.X or similar qualified names
+			// e.g., typing.List -> List
+			attr := ann.attr
+			if attr in v_type_map {
+				return v_type_map[attr]
+			}
+			if attr in v_container_type_map {
+				return v_container_type_map[attr]
+			}
+			return attr
+		}
+		Constant {
+			if ann.value is string {
+				return ann.value as string
+			}
+			return default_type
+		}
+		else {
+			return default_type
+		}
+	}
+}
+
+// Helper: infer generator yield type
+fn (mut t VTranspiler) infer_generator_yield_type(node FunctionDef) string {
+	// Walk the function body to find yield statements
+	// For simplicity, return "Any" for now
+	// A proper implementation would analyze yield expressions
+	return 'Any'
+}
+
+// Helper functions
+fn get_op_type(op Operator) string {
+	return match op {
+		Add { 'Add' }
+		Sub { 'Sub' }
+		Mult { 'Mult' }
+		MatMult { 'MatMult' }
+		Div { 'Div' }
+		Mod { 'Mod' }
+		Pow { 'Pow' }
+		LShift { 'LShift' }
+		RShift { 'RShift' }
+		BitOr { 'BitOr' }
+		BitXor { 'BitXor' }
+		BitAnd { 'BitAnd' }
+		FloorDiv { 'FloorDiv' }
+	}
+}
+
+fn get_unary_op_type(op UnaryOperator) string {
+	return match op {
+		Invert { 'Invert' }
+		Not { 'Not' }
+		UAdd { 'UAdd' }
+		USub { 'USub' }
+	}
+}
+
+fn get_bool_op_type(op BoolOperator) string {
+	return match op {
+		And { 'And' }
+		Or { 'Or' }
+	}
+}
+
+fn get_cmp_op_type(op CmpOp) string {
+	return match op {
+		Eq { 'Eq' }
+		NotEq { 'NotEq' }
+		Lt { 'Lt' }
+		LtE { 'LtE' }
+		Gt { 'Gt' }
+		GtE { 'GtE' }
+		Is { 'Is' }
+		IsNot { 'IsNot' }
+		In { 'In' }
+		NotIn { 'NotIn' }
+	}
+}
+
+fn get_next_generic(existing []string) string {
+	for c in 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.bytes() {
+		s := c.ascii_str()
+		if s !in existing {
+			return s
+		}
+	}
+	return 'T'
+}
+
+fn get_expr_annotation(expr Expr) string {
+	return match expr {
+		Constant { expr.v_annotation or { '' } }
+		Name { expr.v_annotation or { '' } }
+		BinOp { expr.v_annotation or { '' } }
+		UnaryOp { expr.v_annotation or { '' } }
+		BoolOp { expr.v_annotation or { '' } }
+		Compare { expr.v_annotation or { '' } }
+		Call { expr.v_annotation or { '' } }
+		Attribute { expr.v_annotation or { '' } }
+		Subscript { expr.v_annotation or { '' } }
+		List { expr.v_annotation or { '' } }
+		Tuple { expr.v_annotation or { '' } }
+		Dict { expr.v_annotation or { '' } }
+		Set { expr.v_annotation or { '' } }
+		else { '' }
+	}
+}
+
+fn is_number_expr(expr Expr) bool {
+	if expr is Constant {
+		c := expr as Constant
+		return c.value is int || c.value is i64 || c.value is f64
+	}
+	return false
+}
