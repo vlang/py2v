@@ -29,7 +29,7 @@ fn (self MockFile) read() string {
 fn show() {
 	if true {
 		f := MockFile{}
-		println((f.read()).str())
+		println(f.read())
 	}
 }
 

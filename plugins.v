@@ -20,7 +20,7 @@ fn visit_range(args []string) (string, bool) {
 }
 
 // Handle print() call
-fn visit_print(node Call, args []string) (string, bool) {
+fn visit_print(t &VTranspiler, node Call, args []string) (string, bool) {
 	if args.len == 0 {
 		return "println('')", true
 	}
@@ -64,6 +64,11 @@ fn visit_print(node Call, args []string) (string, bool) {
 				parts << arg_str
 				continue
 			}
+			// Bool constants need Python-style True/False
+			if c.value is bool {
+				parts << bool_to_python_str(arg_str)
+				continue
+			}
 			// Numeric constants need parentheses for .str()
 			parts << '(${arg_str}).str()'
 			continue
@@ -90,6 +95,54 @@ fn visit_print(node Call, args []string) (string, bool) {
 			}
 		}
 
+		// Check if this is a boolean expression (BoolOp, Compare, not X)
+		if is_bool_expr(arg) {
+			parts << bool_to_python_str(arg_str)
+			continue
+		}
+
+		// Check if this is a Name that refers to a known bool variable
+		if arg is Name {
+			n := arg as Name
+			if t.var_types[n.id] == 'bool' {
+				parts << bool_to_python_str(arg_str)
+				continue
+			}
+			// Check if Name refers to a known string variable
+			if t.var_types[n.id] == 'string' {
+				parts << arg_str
+				continue
+			}
+		}
+
+		// Check if this is a Call to a function with known string return type
+		if arg is Call {
+			call := arg as Call
+			if call.func is Name {
+				fn_name := (call.func as Name).id
+				ret_type := t.func_return_types[fn_name]
+				if ret_type == 'string' {
+					parts << arg_str
+					continue
+				}
+				if ret_type == 'bool' {
+					parts << bool_to_python_str(arg_str)
+					continue
+				}
+			}
+		}
+
+		// Use infer_expr_type for more complex expressions
+		inferred := t.infer_expr_type(arg)
+		if inferred == 'string' {
+			parts << arg_str
+			continue
+		}
+		if inferred == 'bool' {
+			parts << bool_to_python_str(arg_str)
+			continue
+		}
+
 		// Non-string - need to convert with .str()
 		// Name nodes don't need parens, but Attribute/Subscript and other expressions do
 		needs_parens := !(arg is Name)
@@ -109,7 +162,7 @@ fn visit_print(node Call, args []string) (string, bool) {
 }
 
 // Handle bool() call
-fn visit_bool(node Call, args []string) (string, bool) {
+fn visit_bool(t &VTranspiler, node Call, args []string) (string, bool) {
 	if args.len == 0 {
 		return 'false', true
 	}
@@ -123,8 +176,16 @@ fn visit_bool(node Call, args []string) (string, bool) {
 		if ann == 'string' {
 			return "(${args[0]}.len > 0)", true
 		}
+		// Use infer_expr_type as fallback
+		inferred := t.infer_expr_type(node.args[0])
+		if inferred in ['int', 'i64', 'f64', 'i8', 'i16', 'u8', 'u16', 'u32', 'u64'] {
+			return '(${args[0]} != 0)', true
+		}
+		if inferred == 'string' {
+			return "(${args[0]}.len > 0)", true
+		}
 	}
-	return '(${args[0]}).bool()', true
+	return '(${args[0]} != 0)', true  // Default to numeric comparison
 }
 
 // Handle int() call
@@ -396,25 +457,25 @@ struct DispatchResult {
 
 // Dispatch function that routes to the appropriate handler
 pub fn dispatch_builtin(mut t VTranspiler, fname string, node Call, args []string) (string, bool) {
-	result := dispatch_builtin_impl(fname, node, args)
+	result := dispatch_builtin_impl(t, fname, node, args)
 	if result.handled && result.using.len > 0 {
 		t.add_using(result.using)
 	}
 	return result.code, result.handled
 }
 
-fn dispatch_builtin_impl(fname string, node Call, args []string) DispatchResult {
+fn dispatch_builtin_impl(t &VTranspiler, fname string, node Call, args []string) DispatchResult {
 	match fname {
 		'range' {
 			code, handled := visit_range(args)
 			return DispatchResult{code, handled, ''}
 		}
 		'print' {
-			code, handled := visit_print(node, args)
+			code, handled := visit_print(t, node, args)
 			return DispatchResult{code, handled, ''}
 		}
 		'bool' {
-			code, handled := visit_bool(node, args)
+			code, handled := visit_bool(t, node, args)
 			return DispatchResult{code, handled, ''}
 		}
 		'int' {
