@@ -13,5 +13,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Setup V
+        uses: vlang/setup-v@v1.4
+
+      - name: Build py2v
+        run: v . -o py2v
+
       - name: Run tests
-        run: sh tests/run_tests.sh
+        run: bash tests/run_tests.sh

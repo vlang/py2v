@@ -1,0 +1,14 @@
+# Build artifacts
+*.exe
+*.obj
+*.pdb
+*.ilk
+
+# IDE
+.idea/
+
+# Temporary files
+tmp/
+
+# Test artifacts
+tests/actual_output/

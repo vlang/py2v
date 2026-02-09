@@ -38,26 +38,27 @@ for case_file in "$CASES_DIR"/*.py; do
     # Skip if no expected file
     if [ ! -f "$expected_file" ]; then
         echo -e "${YELLOW}SKIP${NC} $test_name (no expected file)"
-        ((SKIPPED++))
+        ((SKIPPED++)) || true
         continue
     fi
 
     # Run py2v
     generated=$("$PY2V" "$case_file" 2>&1) || {
         echo -e "${RED}FAIL${NC} $test_name (transpilation error)"
-        ((FAILED++))
+        ((FAILED++)) || true
         continue
     }
 
-    # Compare output
-    expected=$(cat "$expected_file")
+    # Compare output (normalize line endings for cross-platform compatibility)
+    expected=$(cat "$expected_file" | tr -d '\r')
+    generated=$(echo "$generated" | tr -d '\r')
 
     if [ "$generated" = "$expected" ]; then
         echo -e "${GREEN}PASS${NC} $test_name"
-        ((PASSED++))
+        ((PASSED++)) || true
     else
         echo -e "${RED}FAIL${NC} $test_name (output mismatch)"
-        ((FAILED++))
+        ((FAILED++)) || true
 
         # Show diff if VERBOSE is set
         if [ -n "$VERBOSE" ]; then
