@@ -17,7 +17,7 @@ jobs:
         run: |
           wget -qO /tmp/v.zip https://github.com/vlang/v/releases/latest/download/v_linux.zip
           unzip -q /tmp/v.zip -d /tmp
-          echo /tmp/v >> "$GITHUB_PATH
+          echo /tmp/v >> "$GITHUB_PATH"
           
       - name: Build
         run: v build .
