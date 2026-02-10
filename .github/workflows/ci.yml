@@ -10,13 +10,15 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-      - name: Set up V
-        uses: vlang/setup-v@v0.3
-        with:
-          v-version: latest
-
+      - name: Setup V
+        run: |
+          wget -qO /tmp/v.zip https://github.com/vlang/v/releases/latest/download/v_linux.zip
+          unzip -q /tmp/v.zip -d /tmp
+          echo /tmp/v >> "$GITHUB_PATH
+          
       - name: Build
         run: v build .
 
