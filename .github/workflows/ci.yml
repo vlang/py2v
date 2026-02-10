@@ -20,7 +20,7 @@ jobs:
           echo /tmp/v >> "$GITHUB_PATH"
           
       - name: Build
-        run: v build .
+        run: v .
 
   test:
     runs-on: ubuntu-latest
