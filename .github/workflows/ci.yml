@@ -7,17 +7,25 @@ on:
     branches: [master]
 
 jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up V
+        uses: vlang/setup-v@v0.3
+        with:
+          v-version: latest
+
+      - name: Build
+        run: v build .
+
   test:
     runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup V
-        uses: vlang/setup-v@v1.4
-
-      - name: Build py2v
-        run: v . -o py2v
-
       - name: Run tests
-        run: bash tests/run_tests.sh
+        run: sh tests/run_tests.sh
