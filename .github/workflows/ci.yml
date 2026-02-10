@@ -22,11 +22,5 @@ jobs:
       - name: Build
         run: v .
 
-  test:
-    runs-on: ubuntu-latest
-
-    steps:
-      - uses: actions/checkout@v4
-
       - name: Run tests
         run: sh tests/run_tests.sh
