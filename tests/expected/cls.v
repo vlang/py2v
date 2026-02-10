@@ -11,5 +11,5 @@ fn (self Foo) bar() string {
 fn main() {
 	f := Foo{}
 	b := f.bar()
-	println(b.str())
+	println(b)
 }

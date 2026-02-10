@@ -152,6 +152,27 @@ pub fn maybe_paren(code string, needs_paren bool) string {
 	return code
 }
 
+// Check if an expression is syntactically a boolean expression
+pub fn is_bool_expr(expr Expr) bool {
+	match expr {
+		BoolOp { return true }
+		Compare { return true }
+		UnaryOp {
+			// not X is boolean
+			return expr.op is Not
+		}
+		Constant {
+			return expr.value is bool
+		}
+		else { return false }
+	}
+}
+
+// Wrap a boolean expression as Python-style True/False string
+pub fn bool_to_python_str(expr_str string) string {
+	return "if ${expr_str} { 'True' } else { 'False' }"
+}
+
 // Strip outer parentheses from expression if they wrap the entire expression
 pub fn strip_outer_parens(s string) string {
 	if s.len < 2 || s[0] != `(` || s[s.len - 1] != `)` {

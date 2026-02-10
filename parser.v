@@ -749,7 +749,7 @@ fn parse_constant_value(raw json2.Any) ConstantValue {
 		bool { return ConstantValue(raw as bool) }
 		i64 {
 			val := raw as i64
-			if val >= -2147483648 && val <= 2147483647 {
+			if val >= i64(-2147483647) - 1 && val <= i64(2147483647) {
 				return ConstantValue(int(val))
 			}
 			return ConstantValue(val)
@@ -757,7 +757,7 @@ fn parse_constant_value(raw json2.Any) ConstantValue {
 		f64 {
 			val := raw as f64
 			int_val := i64(val)
-			if f64(int_val) == val && int_val >= -2147483648 && int_val <= 2147483647 {
+			if f64(int_val) == val && int_val >= i64(-2147483647) - 1 && int_val <= i64(2147483647) {
 				return ConstantValue(int(int_val))
 			}
 			return ConstantValue(val)

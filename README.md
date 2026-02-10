@@ -76,6 +76,12 @@ cd tests
 sh run_tests.sh
 ```
 
+Windows
+```PowerShell
+cd tests
+./run_tests.ps1
+```
+
 ## Architecture
 
 py2v uses a two-stage pipeline:

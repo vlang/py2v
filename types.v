@@ -25,6 +25,7 @@ pub const v_type_map = {
 	'u16':     'u16'
 	'u32':     'u32'
 	'u64':     'u64'
+	'None':    'auto'
 }
 
 // V container type mapping
@@ -213,6 +214,33 @@ pub fn get_wider_type(left_type string, right_type string) string {
 		return left_type
 	}
 	return right_type
+}
+
+// Promote numeric type for add/mul operations (widens by one step)
+pub fn promote_numeric_type(left_type string, right_type string, op string) string {
+	// Float always wins
+	if left_type == 'f64' || right_type == 'f64' || left_type == 'f32' || right_type == 'f32' {
+		return 'f64'
+	}
+
+	// Sub keeps the wider type (no promotion)
+	if op == 'Sub' {
+		return get_wider_type(left_type, right_type)
+	}
+
+	// For Add, Mult: promote to next-wider type
+	wider := get_wider_type(left_type, right_type)
+	return match wider {
+		'i8' { 'i16' }
+		'u8' { 'u16' }
+		'i16' { 'int' }
+		'u16' { 'u32' }
+		'int' { 'i64' }
+		'u32' { 'u64' }
+		'i64' { 'i64' }
+		'u64' { 'u64' }
+		else { wider }
+	}
 }
 
 // Default type for unresolved types

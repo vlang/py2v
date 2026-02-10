@@ -11,6 +11,10 @@ mut:
 	mut_param_indices           map[string][]int      // function name -> indices of mut parameters
 	func_defaults               map[string][]string   // function name -> default values for trailing params
 	func_param_count            map[string]int        // function name -> total parameter count
+	var_types                   map[string]string     // variable name -> inferred type ("bool", "string", etc.)
+	func_return_types           map[string]string     // function name -> return type ("string", "int", etc.)
+	extra_mut_vars              map[string]bool       // variables that need mut because passed to mut params
+	global_vars                 map[string]bool       // module-level variables (declared in __global)
 }
 
 // Create a new VTranspiler
@@ -70,6 +74,38 @@ pub fn (mut t VTranspiler) visit_module(mod Module) string {
 	mut definitions := []string{}
 	mut other_stmts := []string{}
 
+	// Pre-pass: identify module-level variable names and infer types (will become __global)
+	for stmt in mod.body {
+		match stmt {
+			Assign {
+				for target in stmt.targets {
+					if target is Name {
+						n := target as Name
+						t.global_vars[n.id] = true
+						// Infer type from value for use in function bodies
+						inferred := t.infer_expr_type(stmt.value)
+						if inferred.len > 0 {
+							t.var_types[n.id] = inferred
+						}
+					}
+				}
+			}
+			AnnAssign {
+				if stmt.target is Name {
+					n := stmt.target as Name
+					t.global_vars[n.id] = true
+					// Infer type from annotation
+					ann_type := t.typename_from_annotation(stmt.annotation)
+					if ann_type.len > 0 {
+						t.var_types[n.id] = ann_type
+					}
+				}
+			}
+			else {}
+		}
+	}
+
+	// First pass: process function/class definitions to register signatures
 	for stmt in mod.body {
 		match stmt {
 			FunctionDef, AsyncFunctionDef, ClassDef {
@@ -77,6 +113,19 @@ pub fn (mut t VTranspiler) visit_module(mod Module) string {
 				if result.len > 0 {
 					definitions << result
 				}
+			}
+			else {}
+		}
+	}
+
+	// Pre-scan remaining statements for variables passed to mut params
+	t.prescan_mut_call_args(mod.body)
+
+	// Second pass: process non-definition statements
+	for stmt in mod.body {
+		match stmt {
+			FunctionDef, AsyncFunctionDef, ClassDef {
+				// Already processed above
 			}
 			Assign {
 				// Check if this is a first-time definition or reassignment
@@ -96,15 +145,20 @@ pub fn (mut t VTranspiler) visit_module(mod Module) string {
 				if result.len > 0 {
 					if is_first_def {
 						// First definition goes in __global
-						// Mark variables as defined
+						// Mark variables as defined and as global
 						for target in stmt.targets {
 							if target is Name {
 								n := target as Name
 								defined_vars[n.id] = true
+								t.global_vars[n.id] = true
 							}
 						}
-						// Convert := to = for __global block
-						global_assigns << result.replace(' := ', ' = ')
+						// Convert := to = and strip mut for __global block
+						mut ga := result.replace(' := ', ' = ')
+						if ga.starts_with('mut ') {
+							ga = ga[4..]
+						}
+						global_assigns << ga
 					} else {
 						// Reassignment goes in other statements
 						other_stmts << result
@@ -123,10 +177,30 @@ pub fn (mut t VTranspiler) visit_module(mod Module) string {
 				if result.len > 0 {
 					if var_name !in defined_vars {
 						defined_vars[var_name] = true
-						global_assigns << result.replace(' := ', ' = ')
+						if var_name.len > 0 {
+							t.global_vars[var_name] = true
+						}
+						mut ga := result.replace(' := ', ' = ')
+						if ga.starts_with('mut ') {
+							ga = ga[4..]
+						}
+						global_assigns << ga
 					} else {
 						other_stmts << result
 					}
+				}
+			}
+			ExprStmt {
+				// Skip module-level docstrings (bare string constants)
+				if stmt.value is Constant {
+					c := stmt.value as Constant
+					if c.value is string {
+						continue
+					}
+				}
+				result := t.visit_stmt(stmt)
+				if result.len > 0 {
+					other_stmts << result
 				}
 			}
 			else {
@@ -221,10 +295,12 @@ fn (mut t VTranspiler) visit_body_stmts(stmts []Stmt, indent_level int) []string
 				lines << ''
 			}
 			lines << t.indent_code(result, indent_level)
-			// Track if this was an if without else
+			// Track if this was an if without else, or a with block
 			if stmt is If {
 				if_stmt := stmt as If
 				prev_was_if_no_else = if_stmt.orelse.len == 0
+			} else if stmt is With || stmt is AsyncWith {
+				prev_was_if_no_else = true
 			} else {
 				prev_was_if_no_else = false
 			}
@@ -299,6 +375,17 @@ pub fn (mut t VTranspiler) visit_expr(expr Expr) string {
 
 // Visit FunctionDef
 pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
+	// Save var_types for function scope (keep globals, reset locals)
+	saved_var_types := t.var_types.clone()
+	// Keep global variable types, reset function-local ones
+	mut func_var_types := map[string]string{}
+	for k, v in t.var_types {
+		if t.global_vars[k] or { false } {
+			func_var_types[k] = v
+		}
+	}
+	t.var_types = func_var_types.clone()
+
 	mut signature := []string{}
 	signature << 'fn'
 
@@ -348,6 +435,10 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 		}
 
 		args_strs << '${arg_name} ${typename}'
+		// Track parameter type for return type inference
+		if typename.len > 0 && typename != 'Any' && !(typename.len == 1 && typename[0] >= `A` && typename[0] <= `Z`) {
+			t.var_types[arg.arg] = typename
+		}
 		param_idx++
 	}
 
@@ -390,18 +481,43 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 
 	signature << '${node.name}(${args_strs.join(", ")})'
 
+	// Pre-scan body to populate var_types for return type inference
+	t.prescan_body_types(node.body)
+
 	// Return type
 	if !node.is_void && !node.is_generator {
 		if ret := node.returns {
 			ret_type := t.typename_from_annotation(ret)
 			signature << ret_type
+			t.func_return_types[node.name] = ret_type
+		} else {
+			// Infer return type from return statements
+			inferred := t.infer_return_type(node.body)
+			if inferred.len > 0 {
+				signature << inferred
+				t.func_return_types[node.name] = inferred
+			}
 		}
 	}
 
 	// Process body - separate nested function definitions
 	mut nested_fndefs := []string{}
 	mut body_stmts := []Stmt{}
+	mut first_stmt := true
 	for stmt in node.body {
+		// Skip docstrings (first statement that is a bare string constant)
+		if first_stmt {
+			first_stmt = false
+			if stmt is ExprStmt {
+				es := stmt as ExprStmt
+				if es.value is Constant {
+					c := es.value as Constant
+					if c.value is string {
+						continue
+					}
+				}
+			}
+		}
 		match stmt {
 			FunctionDef {
 				nested_fndefs << t.visit_function_def(stmt)
@@ -415,6 +531,9 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 		}
 	}
 
+	// Pre-scan body for variables passed to mut-parameter functions
+	t.prescan_mut_call_args(body_stmts)
+
 	// Build body
 	mut body_lines := []string{}
 	if node.is_generator {
@@ -424,6 +543,9 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 	body := body_lines.join('\n')
 
 	func_code := '${signature.join(" ")} {\n${body}\n}'
+
+	// Restore var_types from parent scope
+	t.var_types = saved_var_types.clone()
 
 	if nested_fndefs.len > 0 {
 		return nested_fndefs.join('\n') + '\n' + func_code
@@ -457,14 +579,17 @@ pub fn (mut t VTranspiler) visit_class_def(node ClassDef) string {
 	mut field_names := []string{}
 
 	if node.declarations.len > 0 {
-		fields << 'pub mut:'
-		mut idx := 0
+		mut has_typed_fields := false
 		for decl, typename in node.declarations {
-			mut typ := typename
-			if typ == '' {
-				typ = 'ST${idx}'
-				idx++
+			if typename == '' {
+				// Skip untyped fields (from __init__ self.x = y assignments)
+				continue
 			}
+			if !has_typed_fields {
+				fields << 'pub mut:'
+				has_typed_fields = true
+			}
+			typ := map_type(typename)
 			fields << t.indent_code('${decl} ${typ}', 1)
 			field_names << decl
 		}
@@ -476,6 +601,20 @@ pub fn (mut t VTranspiler) visit_class_def(node ClassDef) string {
 		'pub struct ${node.name} {\n${fields.join("\n")}\n}'
 	} else {
 		'pub struct ${node.name} {\n}'
+	}
+
+	// Pre-pass: register return types of all methods that have explicit annotations
+	for stmt in node.body {
+		if stmt is FunctionDef {
+			if !stmt.is_void {
+				if ret := stmt.returns {
+					ret_type := t.typename_from_annotation(ret)
+					if ret_type.len > 0 {
+						t.func_return_types[stmt.name] = ret_type
+					}
+				}
+			}
+		}
 	}
 
 	// Process body (methods)
@@ -535,6 +674,17 @@ pub fn (mut t VTranspiler) visit_delete(node Delete) string {
 
 // Visit Assign
 pub fn (mut t VTranspiler) visit_assign(node Assign) string {
+	// Track variable types for print() optimization
+	for target in node.targets {
+		if target is Name {
+			n := target as Name
+			inferred := t.infer_expr_type(node.value)
+			if inferred.len > 0 {
+				t.var_types[n.id] = inferred
+			}
+		}
+	}
+
 	mut assigns := []string{}
 	use_temp := node.targets.len > 1 && node.value is Call
 
@@ -546,7 +696,7 @@ pub fn (mut t VTranspiler) visit_assign(node Assign) string {
 		mut is_redefined := false
 		if target is Name {
 			n := target as Name
-			is_redefined = n.id in node.redefined_targets
+			is_redefined = n.id in node.redefined_targets || (t.global_vars[n.id] or { false })
 		}
 
 		value_str := if use_temp { 'tmp' } else { t.visit_expr(node.value) }
@@ -607,7 +757,14 @@ pub fn (mut t VTranspiler) visit_assign(node Assign) string {
 							}
 							subtargets << '${subkw}${t.visit_expr(st)}'
 						}
-						op := if is_redefined || any_redefined || all_names_mutable || has_subscript_or_attr { '=' } else { ':=' }
+						// Check if any target is _ (discard) - V uses = for those
+						has_discard := elts.any(fn (e Expr) bool {
+							if e is Name {
+								return (e as Name).id == '_'
+							}
+							return false
+						})
+						op := if is_redefined || any_redefined || all_names_mutable || has_subscript_or_attr || has_discard { '=' } else { ':=' }
 						// Strip brackets from value
 						mut val := value_str
 						if val.starts_with('[') && val.ends_with(']') {
@@ -620,17 +777,15 @@ pub fn (mut t VTranspiler) visit_assign(node Assign) string {
 						tmp_var := t.new_tmp('unpack')
 						assigns << '${tmp_var} := ${value_str}'
 						for i, st in elts {
-							mut subkw := ''
 							mut any_redefined := false
 							if st is Name {
-								if st.is_mutable && st.id !in node.redefined_targets {
-									subkw = 'mut '
-								}
 								if st.id in node.redefined_targets {
 									any_redefined = true
 								}
 							}
 							op := if any_redefined { '=' } else { ':=' }
+							// All unpack targets get mut (V needs this for array element operations)
+							subkw := if !any_redefined { 'mut ' } else { '' }
 							assigns << '${subkw}${t.visit_expr(st)} ${op} ${tmp_var}[${i}]'
 						}
 					}
@@ -698,7 +853,8 @@ pub fn (mut t VTranspiler) visit_assign(node Assign) string {
 				assigns << '${t.visit_expr(target)} = ${value_str}'
 			}
 			Name {
-				kw := if target.is_mutable && !is_redefined { 'mut ' } else { '' }
+				needs_mut := target.is_mutable || (t.extra_mut_vars[target.id] or { false })
+				kw := if needs_mut && !is_redefined { 'mut ' } else { '' }
 				op := if is_redefined { '=' } else { ':=' }
 				assigns << '${kw}${t.visit_expr(target)} ${op} ${value_str}'
 			}
@@ -750,15 +906,8 @@ fn (mut t VTranspiler) handle_starred_unpack(elts []Expr, value_str string, node
 			}
 		}
 
-		mut subkw := ''
-		if target_elt is Name {
-			n := target_elt as Name
-			if n.is_mutable {
-				subkw = 'mut '
-			}
-		}
-
-		assigns << '${subkw}${t.visit_expr(target_elt)} := ${idx_val}'
+		// All starred unpack targets need mut for V array operations
+		assigns << 'mut ${t.visit_expr(target_elt)} := ${idx_val}'
 	}
 
 	return assigns.join('\n')
@@ -783,6 +932,11 @@ pub fn (mut t VTranspiler) visit_ann_assign(node AnnAssign) string {
 		if n.is_mutable {
 			kw = 'mut '
 		}
+	}
+
+	// Track variable type from annotation
+	if node.target is Name && type_str != '' {
+		t.var_types[(node.target as Name).id] = type_str
 	}
 
 	if val := node.value {
@@ -824,6 +978,13 @@ pub fn (mut t VTranspiler) visit_for(node For) string {
 	target := t.visit_expr(node.target)
 	mut buf := []string{}
 
+	// Handle for/else pattern - V doesn't have it, use has_break flag
+	has_else := node.orelse.len > 0
+
+	if has_else {
+		buf << 'has_break := false'
+	}
+
 	// Check for range with step
 	if node.iter is Call {
 		call := node.iter as Call
@@ -836,8 +997,23 @@ pub fn (mut t VTranspiler) visit_for(node For) string {
 				buf << 'for ${target} := ${start}; ${target} < ${end}; ${target} += ${step} {'
 				buf << t.visit_body_stmts(node.body, 1)
 				buf << '}'
+
+				if has_else {
+					buf << 'if has_break != true {'
+					buf << t.visit_body_stmts(node.orelse, 1)
+					buf << '}'
+				}
+
 				return buf.join('\n')
 			}
+		}
+	}
+
+	// Infer loop variable type from iterable
+	if node.target is Name {
+		iter_type := t.infer_iter_elem_type(node.iter)
+		if iter_type != '' {
+			t.var_types[(node.target as Name).id] = iter_type
 		}
 	}
 
@@ -845,6 +1021,12 @@ pub fn (mut t VTranspiler) visit_for(node For) string {
 	buf << 'for ${target} in ${iter} {'
 	buf << t.visit_body_stmts(node.body, 1)
 	buf << '}'
+
+	if has_else {
+		buf << 'if has_break != true {'
+		buf << t.visit_body_stmts(node.orelse, 1)
+		buf << '}'
+	}
 
 	return buf.join('\n')
 }
@@ -883,6 +1065,22 @@ pub fn (mut t VTranspiler) visit_while(node While) string {
 		}
 	}
 
+	// Check for walrus operator in while condition - convert to infinite loop with break
+	if has_walrus_in_compare(node.test) {
+		parts := t.extract_walrus_parts(node.test)
+		if parts.len == 2 {
+			buf << 'for {'
+			buf << '\t${parts[0]}'
+			buf << '\tif !(${parts[1]}) {'
+			buf << '\t\tbreak'
+			buf << '\t}'
+			buf << ''
+			buf << t.visit_body_stmts(node.body, 1)
+			buf << '}'
+			return buf.join('\n')
+		}
+	}
+
 	test := t.visit_expr(node.test)
 	buf << 'for ${test} {'
 	buf << t.visit_body_stmts(node.body, 1)
@@ -893,10 +1091,22 @@ pub fn (mut t VTranspiler) visit_while(node While) string {
 
 // Visit If
 pub fn (mut t VTranspiler) visit_if(node If) string {
-	test := t.visit_expr(node.test)
 	mut buf := []string{}
 
-	buf << 'if ${test} {'
+	// Check for walrus operator in condition - hoist assignment before if
+	if has_walrus_in_compare(node.test) {
+		parts := t.extract_walrus_parts(node.test)
+		if parts.len == 2 {
+			buf << parts[0]
+			buf << 'if ${parts[1]} {'
+		} else {
+			test := t.visit_expr(node.test)
+			buf << 'if ${test} {'
+		}
+	} else {
+		test := t.visit_expr(node.test)
+		buf << 'if ${test} {'
+	}
 	buf << t.visit_body_stmts(node.body, 1)
 
 	if node.orelse.len > 0 {
@@ -916,25 +1126,46 @@ pub fn (mut t VTranspiler) visit_if(node If) string {
 	return buf.join('\n')
 }
 
-// Visit With
+// Visit With - use 'if true {}' blocks for scoping
 pub fn (mut t VTranspiler) visit_with(node With) string {
 	mut buf := []string{}
 
+	buf << 'if true {'
 	for item in node.items {
 		context := t.visit_expr(item.context_expr)
 		if vars := item.optional_vars {
 			target := t.visit_expr(vars)
-			buf << '${target} := ${context}'
-			buf << 'defer { ${target}.__exit__() }'
+			// Check if target is mutable
+			mut kw := ''
+			if vars is Name {
+				n := vars as Name
+				if n.is_mutable || t.extra_mut_vars[n.id] {
+					kw = 'mut '
+				}
+			}
+			// File objects opened with open()/os.create()/os.open() should always be mut
+			if item.context_expr is Call {
+				ctx_call := item.context_expr as Call
+				if ctx_call.func is Name {
+					fn_name := (ctx_call.func as Name).id
+					if fn_name == 'open' {
+						kw = 'mut '
+					}
+				}
+			}
+			// Check if context is os.create or os.open
+			if context.starts_with('os.create(') || context.starts_with('os.open(') {
+				kw = 'mut '
+			}
+			buf << '\t${kw}${target} := ${context}'
 		} else {
-			buf << 'defer { ${context}.__exit__() }'
-			buf << '${context}.__enter__()'
+			buf << '\t${context}'
 		}
 	}
 
-	for stmt in node.body {
-		buf << t.visit_stmt(stmt)
-	}
+	buf << t.visit_body_stmts(node.body, 1)
+
+	buf << '}'
 
 	return buf.join('\n')
 }
@@ -1100,43 +1331,71 @@ pub fn (mut t VTranspiler) visit_binop(node BinOp) string {
 		if right_ann == 'int' && (left_ann == 'string' || left_ann.starts_with('[]')) {
 			return '(${left}.repeat(${right}))'
 		}
+		// Also check by inferring types when v_annotation is not set
+		left_type := t.infer_expr_type(node.left)
+		if left_type == 'string' {
+			return '(${left}.repeat(${right}))'
+		}
+		// Check if left is a List literal - list repetition
+		if node.left is List {
+			return '(${left}.repeat(${right}))'
+		}
 	}
 
 	// Handle list concatenation - V uses << operator
 	if node.op is Add {
-		left_ann := get_expr_annotation(node.left)
-		right_ann := get_expr_annotation(node.right)
-		if left_ann.starts_with('[]') && right_ann.starts_with('[]') {
+		mut la := get_expr_annotation(node.left)
+		mut ra := get_expr_annotation(node.right)
+		if la == '' {
+			la = t.infer_expr_type(node.left)
+		}
+		if ra == '' {
+			ra = t.infer_expr_type(node.right)
+		}
+		if la.starts_with('[]') && ra.starts_with('[]') {
 			// Use IIFE (immediately invoked function expression) to concat
 			// Need to capture variables in the closure
-			return '(fn [${left}, ${right}] () ${left_ann} { mut r := ${left}.clone(); r << ${right}; return r }())'
+			return '(fn [${left}, ${right}] () ${la} { mut r := ${left}.clone(); r << ${right}; return r }())'
 		}
 	}
 
 	// Handle int/float division - V requires explicit type conversion
 	if node.op is Div {
-		left_ann := get_expr_annotation(node.left)
-		right_ann := get_expr_annotation(node.right)
+		mut left_ann := get_expr_annotation(node.left)
+		mut right_ann := get_expr_annotation(node.right)
+		// Fallback to type inference if annotation is missing
+		if left_ann == '' {
+			left_ann = t.infer_expr_type(node.left)
+		}
+		if right_ann == '' {
+			right_ann = t.infer_expr_type(node.right)
+		}
 		// If either operand is float, ensure both are float
-		if left_ann == 'int' && right_ann == 'f64' {
+		if left_ann == 'int' && (right_ann == 'f64' || right_ann == 'float') {
 			return '(f64(${left}) ${op} ${right})'
 		}
-		if left_ann == 'f64' && right_ann == 'int' {
+		if (left_ann == 'f64' || left_ann == 'float') && right_ann == 'int' {
 			return '(${left} ${op} f64(${right}))'
 		}
 		// If right is float but left annotation is unknown/empty, wrap left in f64 to be safe
-		if right_ann == 'f64' && left_ann == '' {
+		if (right_ann == 'f64' || right_ann == 'float') && left_ann == '' {
 			return '(f64(${left}) ${op} ${right})'
 		}
-		if left_ann == 'f64' && right_ann == '' {
+		if (left_ann == 'f64' || left_ann == 'float') && right_ann == '' {
 			return '(${left} ${op} f64(${right}))'
 		}
 	}
 
 	// Handle bitwise operators on booleans - convert to logical operators
-	left_ann := get_expr_annotation(node.left)
-	right_ann := get_expr_annotation(node.right)
-	if left_ann == 'bool' || right_ann == 'bool' {
+	mut lann := get_expr_annotation(node.left)
+	mut rann := get_expr_annotation(node.right)
+	if lann == '' {
+		lann = t.infer_expr_type(node.left)
+	}
+	if rann == '' {
+		rann = t.infer_expr_type(node.right)
+	}
+	if lann == 'bool' || rann == 'bool' {
 		if node.op is BitAnd {
 			op = '&&'
 		} else if node.op is BitOr {
@@ -1149,20 +1408,21 @@ pub fn (mut t VTranspiler) visit_binop(node BinOp) string {
 	// Handle mixed signed/unsigned integer types - V requires explicit casts
 	// Signed types: i8, i16, int, i64
 	// Unsigned types: u8, u16, u32, u64
-	left_signed := left_ann in ['i8', 'i16', 'int', 'i64']
-	left_unsigned := left_ann in ['u8', 'u16', 'u32', 'u64']
-	right_signed := right_ann in ['i8', 'i16', 'int', 'i64']
-	right_unsigned := right_ann in ['u8', 'u16', 'u32', 'u64']
+	left_signed := lann in ['i8', 'i16', 'int', 'i64']
+	left_unsigned := lann in ['u8', 'u16', 'u32', 'u64']
+	right_signed := rann in ['i8', 'i16', 'int', 'i64']
+	right_unsigned := rann in ['u8', 'u16', 'u32', 'u64']
 
-	// If mixing signed and unsigned, cast both to the result type
+	// If mixing signed and unsigned, cast both to the wider type
 	if (left_signed && right_unsigned) || (left_unsigned && right_signed) {
 		// Use the result type annotation if available
 		result_type := node.v_annotation or { '' }
 		if result_type != '' {
 			return '(${result_type}(${left}) ${op} ${result_type}(${right}))'
 		}
-		// Default to i64 as a safe common type
-		return '(i64(${left}) ${op} i64(${right}))'
+		// Cast both to the wider of the two types
+		wider := get_wider_type(lann, rann)
+		return '(${wider}(${left}) ${op} ${wider}(${right}))'
 	}
 
 	return '(${left} ${op} ${right})'
@@ -1205,10 +1465,23 @@ pub fn (mut t VTranspiler) visit_compare(node Compare) string {
 	left := t.visit_expr(node.left)
 
 	if node.ops.len > 0 && node.ops[0] is In {
-		right := t.visit_expr(node.comparators[0])
+		// Check if right side is dict.values() - use .keys().map() for V compatibility
+		comp := node.comparators[0]
+		if comp is Call {
+			cc := comp as Call
+			if cc.func is Attribute {
+				attr := cc.func as Attribute
+				if attr.attr == 'values' {
+					dict_obj := t.visit_expr(attr.value)
+					return '${left} in ${dict_obj}.keys().map(${dict_obj}[it])'
+				}
+			}
+		}
+		right := t.visit_expr(comp)
 		// Check if right side is a string - use .contains() instead of 'in'
-		right_ann := get_expr_annotation(node.comparators[0])
-		if right_ann == 'string' {
+		right_ann := get_expr_annotation(comp)
+		right_type := if right_ann.len > 0 { right_ann } else { t.infer_expr_type(comp) }
+		if right_type == 'string' {
 			return '${right}.contains(${left})'
 		}
 		return '${left} in ${right}'
@@ -1218,14 +1491,29 @@ pub fn (mut t VTranspiler) visit_compare(node Compare) string {
 		right := t.visit_expr(node.comparators[0])
 		// Check if right side is a string - use !.contains() instead of '!in'
 		right_ann := get_expr_annotation(node.comparators[0])
-		if right_ann == 'string' {
+		right_type := if right_ann.len > 0 { right_ann } else { t.infer_expr_type(node.comparators[0]) }
+		if right_type == 'string' {
 			return '!${right}.contains(${left})'
 		}
 		return '${left} !in ${right}'
 	}
 
 	op := op_to_symbol(get_cmp_op_type(node.ops[0]))
-	right := t.visit_expr(node.comparators[0])
+	mut right := t.visit_expr(node.comparators[0])
+
+	// When comparing a numeric CONSTANT with None, replace 'none' with '0'
+	if right == 'none' && node.left is Constant {
+		c := node.left as Constant
+		if c.value is int || c.value is i64 || c.value is f64 {
+			right = '0'
+		}
+	}
+	if left == 'none' && node.comparators[0] is Constant {
+		c := node.comparators[0] as Constant
+		if c.value is int || c.value is i64 || c.value is f64 {
+			return '0 ${op} ${right}'
+		}
+	}
 
 	return '${left} ${op} ${right}'
 }
@@ -1756,7 +2044,7 @@ pub fn (mut t VTranspiler) visit_lambda(node Lambda) string {
 	body_has_arithmetic := body.contains(' + ') || body.contains(' - ') ||
 		body.contains(' * ') || body.contains(' / ')
 
-	default_type := if body_has_arithmetic { 'int' } else { 'string' }
+	lambda_type := if body_has_arithmetic { 'int' } else { 'string' }
 
 	for arg in node.args.args {
 		name := escape_keyword(arg.arg)
@@ -1768,14 +2056,14 @@ pub fn (mut t VTranspiler) visit_lambda(node Lambda) string {
 		} else {
 			// Use _ for unused parameters (starts with underscore)
 			if name.starts_with('_') && name != '_' {
-				args << '_ ${default_type}'
+				args << '_ ${lambda_type}'
 			} else {
-				args << '${name} ${default_type}'
+				args << '${name} ${lambda_type}'
 			}
 		}
 	}
 
-	return 'fn (${args.join(", ")}) ${default_type} {\n\treturn ${stripped_body}\n}'
+	return 'fn (${args.join(", ")}) ${lambda_type} {\n\treturn ${stripped_body}\n}'
 }
 
 // Visit ListComp
@@ -1918,30 +2206,65 @@ pub fn (mut t VTranspiler) visit_yield_from(node YieldFrom) string {
 
 // Visit FormattedValue
 pub fn (mut t VTranspiler) visit_formatted_value(node FormattedValue) string {
-	return '\${${t.visit_expr(node.value)}}'
+	expr := t.visit_expr(node.value)
+	return '(${expr}).str()'
 }
 
-// Visit JoinedStr (f-string)
+// Visit JoinedStr (f-string) - use [].join('') pattern
 pub fn (mut t VTranspiler) visit_joined_str(node JoinedStr) string {
 	mut parts := []string{}
 	for val in node.values {
 		if val is Constant {
 			c := val as Constant
 			if c.value is string {
-				parts << c.value as string
+				s := c.value as string
+				parts << "'${s}'"
 				continue
 			}
 		}
 		parts << t.visit_expr(val)
 	}
-	return "'${parts.join("")}'"
+	empty := "''"
+	return '[${parts.join(", ")}].join(${empty})'
 }
 
 // Visit NamedExpr (walrus operator - should be transformed)
+// When used standalone, just emit as assignment expression
 pub fn (mut t VTranspiler) visit_named_expr(node NamedExpr) string {
 	target := t.visit_expr(node.target)
 	value := t.visit_expr(node.value)
 	return '(${target} := ${value})'
+}
+
+// Check if a Compare expression has a NamedExpr (walrus) as its left operand
+fn has_walrus_in_compare(test Expr) bool {
+	if test is Compare {
+		cmp := test as Compare
+		if cmp.left is NamedExpr {
+			return true
+		}
+	}
+	return false
+}
+
+// Extract walrus assignment and modified test from a Compare with NamedExpr
+// Returns [assign_line, new_test]
+fn (mut t VTranspiler) extract_walrus_parts(test Expr) []string {
+	if test is Compare {
+		cmp := test as Compare
+		if cmp.left is NamedExpr {
+			ne := cmp.left as NamedExpr
+			target := t.visit_expr(ne.target)
+			value := t.visit_expr(ne.value)
+			assign_line := '${target} := ${value}'
+			// Rebuild Compare without NamedExpr: target op comparator
+			op := op_to_symbol(get_cmp_op_type(cmp.ops[0]))
+			right := t.visit_expr(cmp.comparators[0])
+			new_test := '${target} ${op} ${right}'
+			return [assign_line, new_test]
+		}
+	}
+	return []string{}
 }
 
 // Visit Starred
@@ -2073,22 +2396,23 @@ fn get_next_generic(existing []string) string {
 }
 
 fn get_expr_annotation(expr Expr) string {
-	return match expr {
-		Constant { expr.v_annotation or { '' } }
-		Name { expr.v_annotation or { '' } }
-		BinOp { expr.v_annotation or { '' } }
-		UnaryOp { expr.v_annotation or { '' } }
-		BoolOp { expr.v_annotation or { '' } }
-		Compare { expr.v_annotation or { '' } }
-		Call { expr.v_annotation or { '' } }
-		Attribute { expr.v_annotation or { '' } }
-		Subscript { expr.v_annotation or { '' } }
-		List { expr.v_annotation or { '' } }
-		Tuple { expr.v_annotation or { '' } }
-		Dict { expr.v_annotation or { '' } }
-		Set { expr.v_annotation or { '' } }
-		else { '' }
+	ann := match expr {
+		Constant { expr.v_annotation }
+		Name { expr.v_annotation }
+		BinOp { expr.v_annotation }
+		UnaryOp { expr.v_annotation }
+		BoolOp { expr.v_annotation }
+		Compare { expr.v_annotation }
+		Call { expr.v_annotation }
+		Attribute { expr.v_annotation }
+		Subscript { expr.v_annotation }
+		List { expr.v_annotation }
+		Tuple { expr.v_annotation }
+		Dict { expr.v_annotation }
+		Set { expr.v_annotation }
+		else { ?string(none) }
 	}
+	return ann or { '' }
 }
 
 fn is_number_expr(expr Expr) bool {
@@ -2097,4 +2421,391 @@ fn is_number_expr(expr Expr) bool {
 		return c.value is int || c.value is i64 || c.value is f64
 	}
 	return false
+}
+
+// Infer the type of an expression for variable tracking
+fn (t &VTranspiler) infer_expr_type(expr Expr) string {
+	if is_bool_expr(expr) {
+		return 'bool'
+	}
+	match expr {
+		Constant {
+			c := expr
+			// Check v_annotation first (e.g., Python float constants marked as "float")
+			ann := c.v_annotation or { '' }
+			if ann == 'float' {
+				return 'f64'
+			}
+			if c.value is string {
+				return 'string'
+			}
+			if c.value is int || c.value is i64 {
+				return 'int'
+			}
+			if c.value is f64 {
+				return 'f64'
+			}
+			return ''
+		}
+		Name {
+			// Propagate known type
+			known := t.var_types[expr.id]
+			if known.len > 0 {
+				return known
+			}
+			// Check if it's a function name - return its return type
+			return t.func_return_types[expr.id]
+		}
+		BinOp {
+			// If either operand is string, result is string (concatenation)
+			left_type := t.infer_expr_type(expr.left)
+			if left_type == 'string' {
+				return 'string'
+			}
+			right_type := t.infer_expr_type(expr.right)
+			if right_type == 'string' {
+				return 'string'
+			}
+			// Numeric type promotion for typed parameters
+			if left_type.len > 0 && right_type.len > 0 {
+				left_rank := v_width_rank[left_type] or { -1 }
+				right_rank := v_width_rank[right_type] or { -1 }
+				if left_rank > 0 && right_rank > 0 {
+					op_name := if expr.op is Sub { 'Sub' } else { 'Add' }
+					return promote_numeric_type(left_type, right_type, op_name)
+				}
+			}
+			// Simple numeric inference fallback
+			if left_type == 'f64' || right_type == 'f64' {
+				return 'f64'
+			}
+			if left_type == 'int' && right_type == 'int' {
+				return 'int'
+			}
+			return ''
+		}
+		Call {
+			// Check known function return types
+			if expr.func is Name {
+				fn_name := (expr.func as Name).id
+				// Check built-in function return types first
+				match fn_name {
+					'str' { return 'string' }
+					'int' { return 'int' }
+					'float' { return 'f64' }
+					'bool' { return 'bool' }
+					'len' { return 'int' }
+					'input' { return 'string' }
+					else { return t.func_return_types[fn_name] }
+				}
+			}
+			// Method call: check .str() returns string, .len returns int, etc.
+			if expr.func is Attribute {
+				attr := (expr.func as Attribute).attr
+				match attr {
+					'str' { return 'string' }
+					'len' { return 'int' }
+					'keys' { return 'array' }
+					'values' { return 'array' }
+					else {
+						// Check func_return_types for the method name
+						rt := t.func_return_types[attr]
+						if rt.len > 0 {
+							return rt
+						}
+					}
+				}
+			}
+			return ''
+		}
+		List {
+			// Infer list type from elements
+			lst := expr as List
+			if lst.elts.len > 0 {
+				elem_type := t.infer_expr_type(lst.elts[0])
+				if elem_type.len > 0 {
+					return '[]${elem_type}'
+				}
+			}
+			return ''
+		}
+		Dict {
+			// Infer dict type from keys/values
+			d := expr as Dict
+			if d.keys.len > 0 && d.values.len > 0 {
+				mut key_type := ''
+				mut val_type := ''
+				for k_opt in d.keys {
+					if k := k_opt {
+						key_type = t.infer_expr_type(k)
+						if key_type.len > 0 {
+							break
+						}
+					}
+				}
+				for v in d.values {
+					val_type = t.infer_expr_type(v)
+					if val_type.len > 0 {
+						break
+					}
+				}
+				if key_type.len > 0 && val_type.len > 0 {
+					return 'map[${key_type}]${val_type}'
+				}
+			}
+			return ''
+		}
+		Subscript {
+			// Check v_annotation on the subscript
+			ann := get_expr_annotation(expr)
+			if ann.len > 0 {
+				return ann
+			}
+			// Infer element type from the collection's type
+			sub := expr as Subscript
+			coll_type := t.infer_expr_type(sub.value)
+			if coll_type.starts_with('[]') {
+				return coll_type[2..]
+			}
+			// Handle map subscript: map[K]V → V
+			if coll_type.starts_with('map[') {
+				bracket_end := coll_type.index(']') or { -1 }
+				if bracket_end > 0 && bracket_end + 1 < coll_type.len {
+					return coll_type[bracket_end + 1..]
+				}
+			}
+			return ''
+		}
+		else {
+			// Try v_annotation as last resort
+			ann := get_expr_annotation(expr)
+			if ann.len > 0 {
+				return ann
+			}
+			return ''
+		}
+	}
+}
+
+// Infer the element type of an iterable expression (for loop variable typing)
+fn (mut t VTranspiler) infer_iter_elem_type(iter Expr) string {
+	// For a List literal, check element types
+	if iter is List {
+		lst := iter as List
+		if lst.elts.len > 0 {
+			return t.infer_expr_type(lst.elts[0])
+		}
+	}
+	// For a Name (variable), check var_types - strip [] prefix
+	if iter is Name {
+		vtype := t.var_types[(iter as Name).id]
+		if vtype.starts_with('[]') {
+			return vtype[2..]
+		}
+		if vtype == 'string' {
+			return 'u8'
+		}
+	}
+	// For range(), element type is int
+	if iter is Call {
+		c := iter as Call
+		if c.func is Name {
+			if (c.func as Name).id == 'range' {
+				return 'int'
+			}
+		}
+	}
+	return ''
+}
+
+// Pre-scan body statements to find variables passed to mut-parameter functions
+// so they can be declared with mut even before the call is processed
+fn (mut t VTranspiler) prescan_mut_call_args(stmts []Stmt) {
+	for stmt in stmts {
+		t.prescan_mut_call_args_in_stmt(stmt)
+	}
+}
+
+fn (mut t VTranspiler) prescan_mut_call_args_in_stmt(stmt Stmt) {
+	match stmt {
+		ExprStmt {
+			t.prescan_mut_call_args_in_expr(stmt.value)
+		}
+		Assign {
+			t.prescan_mut_call_args_in_expr(stmt.value)
+		}
+		Return {
+			if val := stmt.value {
+				t.prescan_mut_call_args_in_expr(val)
+			}
+		}
+		If {
+			t.prescan_mut_call_args_in_expr(stmt.test)
+			t.prescan_mut_call_args(stmt.body)
+			t.prescan_mut_call_args(stmt.orelse)
+		}
+		For {
+			t.prescan_mut_call_args(stmt.body)
+		}
+		While {
+			t.prescan_mut_call_args_in_expr(stmt.test)
+			t.prescan_mut_call_args(stmt.body)
+		}
+		Assert {
+			t.prescan_mut_call_args_in_expr(stmt.test)
+		}
+		else {}
+	}
+}
+
+fn (mut t VTranspiler) prescan_mut_call_args_in_expr(expr Expr) {
+	match expr {
+		Call {
+			// Check if this call has a known function with mut params
+			mut fname := ''
+			if expr.func is Name {
+				fname = (expr.func as Name).id
+			}
+			if fname.len > 0 {
+				mut_indices := t.mut_param_indices[fname] or { []int{} }
+				for i, arg in expr.args {
+					if i in mut_indices {
+						if arg is Name {
+							t.extra_mut_vars[(arg as Name).id] = true
+						}
+					}
+				}
+			}
+			// Recurse into args
+			for arg in expr.args {
+				t.prescan_mut_call_args_in_expr(arg)
+			}
+		}
+		BinOp {
+			t.prescan_mut_call_args_in_expr(expr.left)
+			t.prescan_mut_call_args_in_expr(expr.right)
+		}
+		Compare {
+			t.prescan_mut_call_args_in_expr(expr.left)
+			for c in expr.comparators {
+				t.prescan_mut_call_args_in_expr(c)
+			}
+		}
+		else {}
+	}
+}
+
+// Infer the return type of a function from its return statements
+fn (t &VTranspiler) infer_return_type(stmts []Stmt) string {
+	mut ret_type := ''
+	for stmt in stmts {
+		match stmt {
+			Return {
+				if val := stmt.value {
+					mut inferred := t.infer_expr_type(val)
+					// Fallback: check v_annotation from the frontend
+					if inferred.len == 0 {
+						inferred = get_expr_annotation(val)
+					}
+					if inferred.len > 0 && inferred != 'none' {
+						// Map Python type names to V types
+						inferred = match inferred {
+							'float' { 'f64' }
+							'str' { 'string' }
+							else { inferred }
+						}
+						if ret_type.len == 0 {
+							ret_type = inferred
+						}
+						// If we get conflicting types, keep the first non-empty one
+					}
+				}
+			}
+			If {
+				sub := t.infer_return_type(stmt.body)
+				if sub.len > 0 && ret_type.len == 0 {
+					ret_type = sub
+				}
+				sub2 := t.infer_return_type(stmt.orelse)
+				if sub2.len > 0 && ret_type.len == 0 {
+					ret_type = sub2
+				}
+			}
+			For {
+				sub := t.infer_return_type(stmt.body)
+				if sub.len > 0 && ret_type.len == 0 {
+					ret_type = sub
+				}
+			}
+			While {
+				sub := t.infer_return_type(stmt.body)
+				if sub.len > 0 && ret_type.len == 0 {
+					ret_type = sub
+				}
+			}
+			Try {
+				sub := t.infer_return_type(stmt.body)
+				if sub.len > 0 && ret_type.len == 0 {
+					ret_type = sub
+				}
+			}
+			else {}
+		}
+	}
+	return ret_type
+}
+
+// Pre-scan function body to populate var_types for return type inference
+fn (mut t VTranspiler) prescan_body_types(stmts []Stmt) {
+	for stmt in stmts {
+		match stmt {
+			Assign {
+				// Track variable types from assignments
+				for target in stmt.targets {
+					if target is Name {
+						n := target as Name
+						inferred := t.infer_expr_type(stmt.value)
+						if inferred.len > 0 {
+							t.var_types[n.id] = inferred
+						}
+					}
+				}
+			}
+			AnnAssign {
+				// Track annotated variables
+				if stmt.target is Name {
+					n := stmt.target as Name
+					type_str := t.typename_from_annotation(stmt.annotation)
+					if type_str.len > 0 {
+						t.var_types[n.id] = type_str
+					}
+				}
+			}
+			AugAssign {
+				// Track augmented assignment types (e.g., total += n preserves type)
+				if stmt.target is Name {
+					n := stmt.target as Name
+					existing := t.var_types[n.id]
+					if existing.len == 0 {
+						inferred := t.infer_expr_type(stmt.value)
+						if inferred.len > 0 {
+							t.var_types[n.id] = inferred
+						}
+					}
+				}
+			}
+			FunctionDef {
+				// Track nested function definitions for their return types
+				if !stmt.is_void {
+					if ret := stmt.returns {
+						ret_type := t.typename_from_annotation(ret)
+						if ret_type.len > 0 {
+							t.func_return_types[stmt.name] = ret_type
+						}
+					}
+				}
+			}
+			else {}
+		}
+	}
 }

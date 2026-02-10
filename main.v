@@ -77,7 +77,8 @@ fn main() {
 	}
 
 	// Run Python frontend to get JSON AST
-	result := os.execute('python3 "${ast_dump_path}" "${input_file}"')
+	python_cmd := $if windows { 'python' } $else { 'python3' }
+	result := os.execute('${python_cmd} "${ast_dump_path}" "${input_file}"')
 	if result.exit_code != 0 {
 		eprintln('Error running Python frontend:')
 		eprintln(result.output)
