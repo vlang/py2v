@@ -2,10 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [master]
+    branches: [master, fix/ci-setup-vlang]
   pull_request:
     branches: [master]
-
 jobs:
   build:
     runs-on: ubuntu-latest
