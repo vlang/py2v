@@ -11,7 +11,7 @@ fn sum_all(nums ...Any) int {
 
 fn main_func() {
 	println(('a'.repeat(5)))
-	println((([0].repeat(3))).str())
+	println(([0].repeat(3)).str())
 	numbers := [1, 2, 3]
 	println((sum_all(...numbers)).str())
 	others := [4, 5]

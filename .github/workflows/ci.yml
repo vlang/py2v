@@ -7,20 +7,138 @@ on:
     branches: [master]
 jobs:
   build:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Setup V
+      - name: Setup V (Linux)
+        if: runner.os == 'Linux'
         run: |
           wget -qO /tmp/v.zip https://github.com/vlang/v/releases/latest/download/v_linux.zip
           unzip -q /tmp/v.zip -d /tmp
           echo /tmp/v >> "$GITHUB_PATH"
-          
+
+      - name: Setup V (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $vZip = Join-Path $env:RUNNER_TEMP "v_windows.zip"
+          $vDir = Join-Path $env:RUNNER_TEMP "v"
+          Invoke-WebRequest -Uri "https://github.com/vlang/v/releases/latest/download/v_windows.zip" -OutFile $vZip
+          Expand-Archive -Path $vZip -DestinationPath $env:RUNNER_TEMP -Force
+          "$vDir" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
       - name: Build
         run: v .
 
-      - name: Run tests
-        run: sh tests/run_tests.sh
+      - name: Run tests (Linux, capture output)
+        id: tests
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set +e
+          bash tests/run_tests.sh 2>&1 | tee /tmp/py2v-tests.log
+          test_exit=${PIPESTATUS[0]}
+          echo "exit_code=$test_exit" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Run tests (Windows, capture output)
+        id: tests_windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $logFile = Join-Path $env:RUNNER_TEMP "py2v-tests.log"
+          $output = & powershell -ExecutionPolicy Bypass -File tests/run_tests.ps1 2>&1
+          $output | Tee-Object -FilePath $logFile
+          $exitCode = $LASTEXITCODE
+          "exit_code=$exitCode" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          exit 0
+
+      - name: Test summary (Linux)
+        if: always() && runner.os == 'Linux'
+        shell: bash
+        run: |
+          log_file=/tmp/py2v-tests.log
+          clean_log=/tmp/py2v-tests.clean.log
+          sed -r 's/\x1b\[[0-9;]*m//g' "$log_file" > "$clean_log"
+
+          passed=0
+          failed=0
+          skipped=0
+          if summary_line=$(grep -E "(-e[[:space:]]+)?Summary:[[:space:]]+[0-9]+ passed,[[:space:]]+[0-9]+ failed,[[:space:]]+[0-9]+ skipped" "$clean_log" | tail -n1); then
+            passed=$(echo "$summary_line" | sed -E 's/.*Summary:[[:space:]]+([0-9]+) passed,.*/\1/')
+            failed=$(echo "$summary_line" | sed -E 's/.*Summary:[[:space:]]+[0-9]+ passed,[[:space:]]+([0-9]+) failed,.*/\1/')
+            skipped=$(echo "$summary_line" | sed -E 's/.*Summary:[[:space:]]+[0-9]+ passed,[[:space:]]+[0-9]+ failed,[[:space:]]+([0-9]+) skipped.*/\1/')
+          fi
+          total=$((passed + failed + skipped))
+
+          {
+            echo "### Test Results"
+            echo ""
+            echo "- Total: $total"
+            echo "- Passed: $passed"
+            echo "- Failed: $failed"
+            echo "- Skipped: $skipped"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$failed" -gt 0 ]; then
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "#### Failed Tests" >> "$GITHUB_STEP_SUMMARY"
+            grep -E "^FAIL " "$clean_log" | sort -u | sed 's/^/- /' >> "$GITHUB_STEP_SUMMARY" || true
+          fi
+
+      - name: Test summary (Windows)
+        if: always() && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $logFile = Join-Path $env:RUNNER_TEMP "py2v-tests.log"
+          $cleanLog = Get-Content $logFile -Raw
+
+          $passed = 0
+          $failed = 0
+          $skipped = 0
+          $summaryMatch = [regex]::Match($cleanLog, 'Results:\s*(\d+)\s*passed,\s*(\d+)\s*failed,\s*(\d+)\s*skipped')
+          if ($summaryMatch.Success) {
+            $passed = [int]$summaryMatch.Groups[1].Value
+            $failed = [int]$summaryMatch.Groups[2].Value
+            $skipped = [int]$summaryMatch.Groups[3].Value
+          }
+          $total = $passed + $failed + $skipped
+
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "### Test Results (Windows)"
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ""
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- Total: $total"
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- Passed: $passed"
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- Failed: $failed"
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- Skipped: $skipped"
+
+          if ($failed -gt 0) {
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ""
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "#### Failed Tests"
+            $failLines = ($cleanLog -split "`r?`n") | Where-Object { $_ -match '^FAIL ' } | Sort-Object -Unique
+            foreach ($line in $failLines) {
+              Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- $line"
+            }
+          }
+
+      - name: Fail if tests failed (Linux)
+        if: always() && runner.os == 'Linux'
+        shell: bash
+        run: |
+          if [ "${{ steps.tests.outputs.exit_code }}" != "0" ]; then
+            echo "Tests failed."
+            exit 1
+          fi
+
+      - name: Fail if tests failed (Windows)
+        if: always() && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $exitCode = "${{ steps.tests_windows.outputs.exit_code }}"
+          if ($exitCode -ne "0") { Write-Host "Tests failed."; exit 1 }

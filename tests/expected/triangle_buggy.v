@@ -9,11 +9,11 @@ __global (
 pub struct TriangleType {
 pub mut:
 	EQUILATERAL int
-	ISOSCELES int
-	RIGHT int
-	ACUTE int
-	OBTUSE int
-	ILLEGAL int
+	ISOSCELES   int
+	RIGHT       int
+	ACUTE       int
+	OBTUSE      int
+	ILLEGAL     int
 }
 
 fn classify_triangle_correct(a int, b int, c int) TriangleType {

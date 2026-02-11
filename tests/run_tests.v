@@ -5,19 +5,19 @@ import term
 
 struct TestResult {
 mut:
-	name       string
-	passed     bool
-	error_msg  string
-	skip       bool
+	name        string
+	passed      bool
+	error_msg   string
+	skip        bool
 	skip_reason string
 }
 
 struct TestRunner {
 mut:
-	passed   int
-	failed   int
-	skipped  int
-	results  []TestResult
+	passed  int
+	failed  int
+	skipped int
+	results []TestResult
 }
 
 fn main() {
@@ -53,8 +53,8 @@ fn main() {
 		if !os.exists(expected_file) {
 			runner.skipped++
 			runner.results << TestResult{
-				name: test_name
-				skip: true
+				name:        test_name
+				skip:        true
 				skip_reason: 'no expected file'
 			}
 			continue
@@ -66,8 +66,8 @@ fn main() {
 		if result.exit_code != 0 {
 			runner.failed++
 			runner.results << TestResult{
-				name: test_name
-				passed: false
+				name:      test_name
+				passed:    false
 				error_msg: 'transpilation failed: ${result.output}'
 			}
 			continue
@@ -77,8 +77,8 @@ fn main() {
 		expected := os.read_file(expected_file) or {
 			runner.failed++
 			runner.results << TestResult{
-				name: test_name
-				passed: false
+				name:      test_name
+				passed:    false
 				error_msg: 'could not read expected file'
 			}
 			continue
@@ -88,21 +88,21 @@ fn main() {
 		if generated == expected.trim_space() {
 			runner.passed++
 			runner.results << TestResult{
-				name: test_name
+				name:   test_name
 				passed: true
 			}
 		} else {
 			runner.failed++
 			runner.results << TestResult{
-				name: test_name
-				passed: false
+				name:      test_name
+				passed:    false
 				error_msg: 'output mismatch'
 			}
 		}
 	}
 
 	// Print results
-	println('\n${"─".repeat(60)}')
+	println('\n${'─'.repeat(60)}')
 	println('Results:\n')
 
 	for r in runner.results {
@@ -118,8 +118,8 @@ fn main() {
 		}
 	}
 
-	println('\n${"─".repeat(60)}')
-	println('Summary: ${term.green("${runner.passed} passed")}, ${term.red("${runner.failed} failed")}, ${term.yellow("${runner.skipped} skipped")}')
+	println('\n${'─'.repeat(60)}')
+	println('Summary: ${term.green('${runner.passed} passed')}, ${term.red('${runner.failed} failed')}, ${term.yellow('${runner.skipped} skipped')}')
 
 	if runner.failed > 0 {
 		exit(1)

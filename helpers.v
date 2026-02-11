@@ -105,12 +105,13 @@ pub fn bytes_to_v_literal(data []u8) string {
 			parts << '0x${b:02x}'
 		}
 	}
-	return '[${parts.join(", ")}]'
+	return '[${parts.join(', ')}]'
 }
 
 // Check if expression is a simple literal (doesn't need parentheses)
 pub fn is_simple_expr(expr_type string) bool {
-	return expr_type in ['Constant', 'Name', 'Attribute', 'Subscript', 'Call', 'List', 'Dict', 'Tuple']
+	return expr_type in ['Constant', 'Name', 'Attribute', 'Subscript', 'Call', 'List', 'Dict',
+		'Tuple']
 }
 
 // Generate unique temporary variable name
@@ -120,7 +121,9 @@ mut:
 }
 
 pub fn new_tmp_var_gen() TmpVarGen {
-	return TmpVarGen{counter: 0}
+	return TmpVarGen{
+		counter: 0
+	}
 }
 
 pub fn (mut g TmpVarGen) next(prefix string) string {
@@ -155,8 +158,12 @@ pub fn maybe_paren(code string, needs_paren bool) string {
 // Check if an expression is syntactically a boolean expression
 pub fn is_bool_expr(expr Expr) bool {
 	match expr {
-		BoolOp { return true }
-		Compare { return true }
+		BoolOp {
+			return true
+		}
+		Compare {
+			return true
+		}
 		UnaryOp {
 			// not X is boolean
 			return expr.op is Not
@@ -164,7 +171,9 @@ pub fn is_bool_expr(expr Expr) bool {
 		Constant {
 			return expr.value is bool
 		}
-		else { return false }
+		else {
+			return false
+		}
 	}
 }
 

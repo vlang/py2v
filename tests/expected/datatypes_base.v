@@ -3,6 +3,6 @@ module main
 
 pub struct OpType {
 pub mut:
-	add Callable
-	mul Callable
+	add &Callable
+	mul &Callable
 }

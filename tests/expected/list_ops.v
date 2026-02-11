@@ -4,7 +4,11 @@ module main
 fn main_func() {
 	a := [1, 2, 3]
 	b := [4, 5, 6]
-	c := (fn [a, b] () []int { mut r := a.clone(); r << b; return r }())
+	c := (fn [a, b] () []int {
+		mut r := a.clone()
+		r << b
+		return r
+	}())
 	println(c.str())
 	d := ([0].repeat(5))
 	println(d.str())

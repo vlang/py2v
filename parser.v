@@ -83,8 +83,8 @@ fn parse_module(m map[string]json2.Any) !Module {
 		}
 	}
 	return Module{
-		body: body
-		loc: parse_location(m)
+		body:              body
+		loc:               parse_location(m)
 		docstring_comment: docstring
 	}
 }
@@ -92,9 +92,9 @@ fn parse_module(m map[string]json2.Any) !Module {
 // Parse location from a node map
 fn parse_location(m map[string]json2.Any) Location {
 	return Location{
-		lineno: m['lineno'] or { json2.Any(0) }.int()
-		col_offset: m['col_offset'] or { json2.Any(0) }.int()
-		end_lineno: m['end_lineno'] or { json2.Any(0) }.int()
+		lineno:         m['lineno'] or { json2.Any(0) }.int()
+		col_offset:     m['col_offset'] or { json2.Any(0) }.int()
+		end_lineno:     m['end_lineno'] or { json2.Any(0) }.int()
 		end_col_offset: m['end_col_offset'] or { json2.Any(0) }.int()
 	}
 }
@@ -103,32 +103,90 @@ fn parse_location(m map[string]json2.Any) Location {
 fn parse_stmt(m map[string]json2.Any) ?Stmt {
 	node_type := m['_type'] or { return none }.str()
 	match node_type {
-		'FunctionDef' { return Stmt(parse_function_def(m)) }
-		'AsyncFunctionDef' { return Stmt(parse_async_function_def(m)) }
-		'ClassDef' { return Stmt(parse_class_def(m)) }
-		'Return' { return Stmt(parse_return(m)) }
-		'Delete' { return Stmt(parse_delete(m)) }
-		'Assign' { return Stmt(parse_assign(m)) }
-		'AugAssign' { return Stmt(parse_aug_assign(m)) }
-		'AnnAssign' { return Stmt(parse_ann_assign(m)) }
-		'For' { return Stmt(parse_for(m)) }
-		'AsyncFor' { return Stmt(parse_async_for(m)) }
-		'While' { return Stmt(parse_while(m)) }
-		'If' { return Stmt(parse_if(m)) }
-		'With' { return Stmt(parse_with(m)) }
-		'AsyncWith' { return Stmt(parse_async_with(m)) }
-		'Raise' { return Stmt(parse_raise(m)) }
-		'Try' { return Stmt(parse_try(m)) }
-		'Assert' { return Stmt(parse_assert(m)) }
-		'Import' { return Stmt(parse_import(m)) }
-		'ImportFrom' { return Stmt(parse_import_from(m)) }
-		'Global' { return Stmt(parse_global(m)) }
-		'Nonlocal' { return Stmt(parse_nonlocal(m)) }
-		'Expr' { return Stmt(parse_expr_stmt(m)) }
-		'Pass' { return Stmt(Pass{loc: parse_location(m)}) }
-		'Break' { return Stmt(Break{loc: parse_location(m)}) }
-		'Continue' { return Stmt(Continue{loc: parse_location(m)}) }
-		else { return none }
+		'FunctionDef' {
+			return Stmt(parse_function_def(m))
+		}
+		'AsyncFunctionDef' {
+			return Stmt(parse_async_function_def(m))
+		}
+		'ClassDef' {
+			return Stmt(parse_class_def(m))
+		}
+		'Return' {
+			return Stmt(parse_return(m))
+		}
+		'Delete' {
+			return Stmt(parse_delete(m))
+		}
+		'Assign' {
+			return Stmt(parse_assign(m))
+		}
+		'AugAssign' {
+			return Stmt(parse_aug_assign(m))
+		}
+		'AnnAssign' {
+			return Stmt(parse_ann_assign(m))
+		}
+		'For' {
+			return Stmt(parse_for(m))
+		}
+		'AsyncFor' {
+			return Stmt(parse_async_for(m))
+		}
+		'While' {
+			return Stmt(parse_while(m))
+		}
+		'If' {
+			return Stmt(parse_if(m))
+		}
+		'With' {
+			return Stmt(parse_with(m))
+		}
+		'AsyncWith' {
+			return Stmt(parse_async_with(m))
+		}
+		'Raise' {
+			return Stmt(parse_raise(m))
+		}
+		'Try' {
+			return Stmt(parse_try(m))
+		}
+		'Assert' {
+			return Stmt(parse_assert(m))
+		}
+		'Import' {
+			return Stmt(parse_import(m))
+		}
+		'ImportFrom' {
+			return Stmt(parse_import_from(m))
+		}
+		'Global' {
+			return Stmt(parse_global(m))
+		}
+		'Nonlocal' {
+			return Stmt(parse_nonlocal(m))
+		}
+		'Expr' {
+			return Stmt(parse_expr_stmt(m))
+		}
+		'Pass' {
+			return Stmt(Pass{
+				loc: parse_location(m)
+			})
+		}
+		'Break' {
+			return Stmt(Break{
+				loc: parse_location(m)
+			})
+		}
+		'Continue' {
+			return Stmt(Continue{
+				loc: parse_location(m)
+			})
+		}
+		else {
+			return none
+		}
 	}
 }
 
@@ -192,18 +250,18 @@ fn parse_function_def(m map[string]json2.Any) FunctionDef {
 		}
 	}
 	return FunctionDef{
-		name: m['name'] or { json2.Any('') }.str()
-		args: parse_arguments(m['args'] or { json2.Any(map[string]json2.Any{}) })
-		body: body
-		decorator_list: decorators
-		returns: parse_optional_expr(m['returns'] or { json2.Any(json2.Null{}) })
-		type_comment: parse_optional_string(m['type_comment'] or { json2.Any(json2.Null{}) })
-		loc: parse_location(m)
-		is_generator: m['is_generator'] or { json2.Any(false) }.bool()
-		is_void: m['is_void'] or { json2.Any(false) }.bool()
-		mutable_vars: mutable_vars
+		name:            m['name'] or { json2.Any('') }.str()
+		args:            parse_arguments(m['args'] or { json2.Any(map[string]json2.Any{}) })
+		body:            body
+		decorator_list:  decorators
+		returns:         parse_optional_expr(m['returns'] or { json2.Any(json2.Null{}) })
+		type_comment:    parse_optional_string(m['type_comment'] or { json2.Any(json2.Null{}) })
+		loc:             parse_location(m)
+		is_generator:    m['is_generator'] or { json2.Any(false) }.bool()
+		is_void:         m['is_void'] or { json2.Any(false) }.bool()
+		mutable_vars:    mutable_vars
 		is_class_method: m['is_class_method'] or { json2.Any(false) }.bool()
-		class_name: m['class_name'] or { json2.Any('') }.str()
+		class_name:      m['class_name'] or { json2.Any('') }.str()
 	}
 }
 
@@ -211,18 +269,18 @@ fn parse_function_def(m map[string]json2.Any) FunctionDef {
 fn parse_async_function_def(m map[string]json2.Any) AsyncFunctionDef {
 	fd := parse_function_def(m)
 	return AsyncFunctionDef{
-		name: fd.name
-		args: fd.args
-		body: fd.body
-		decorator_list: fd.decorator_list
-		returns: fd.returns
-		type_comment: fd.type_comment
-		loc: fd.loc
-		is_generator: fd.is_generator
-		is_void: fd.is_void
-		mutable_vars: fd.mutable_vars
+		name:            fd.name
+		args:            fd.args
+		body:            fd.body
+		decorator_list:  fd.decorator_list
+		returns:         fd.returns
+		type_comment:    fd.type_comment
+		loc:             fd.loc
+		is_generator:    fd.is_generator
+		is_void:         fd.is_void
+		mutable_vars:    fd.mutable_vars
 		is_class_method: fd.is_class_method
-		class_name: fd.class_name
+		class_name:      fd.class_name
 	}
 }
 
@@ -266,13 +324,13 @@ fn parse_class_def(m map[string]json2.Any) ClassDef {
 		}
 	}
 	return ClassDef{
-		name: m['name'] or { json2.Any('') }.str()
-		bases: bases
-		keywords: keywords
-		body: body
+		name:           m['name'] or { json2.Any('') }.str()
+		bases:          bases
+		keywords:       keywords
+		body:           body
 		decorator_list: decorators
-		loc: parse_location(m)
-		declarations: declarations
+		loc:            parse_location(m)
+		declarations:   declarations
 	}
 }
 
@@ -313,22 +371,22 @@ fn parse_arguments(raw json2.Any) Arguments {
 	}
 	return Arguments{
 		posonlyargs: posonlyargs
-		args: args
-		vararg: parse_optional_arg(m['vararg'] or { json2.Any(json2.Null{}) })
-		kwonlyargs: kwonlyargs
+		args:        args
+		vararg:      parse_optional_arg(m['vararg'] or { json2.Any(json2.Null{}) })
+		kwonlyargs:  kwonlyargs
 		kw_defaults: kw_defaults
-		kwarg: parse_optional_arg(m['kwarg'] or { json2.Any(json2.Null{}) })
-		defaults: defaults
+		kwarg:       parse_optional_arg(m['kwarg'] or { json2.Any(json2.Null{}) })
+		defaults:    defaults
 	}
 }
 
 // Parse Arg
 fn parse_arg(m map[string]json2.Any) Arg {
 	return Arg{
-		arg: m['arg'] or { json2.Any('') }.str()
-		annotation: parse_optional_expr(m['annotation'] or { json2.Any(json2.Null{}) })
+		arg:          m['arg'] or { json2.Any('') }.str()
+		annotation:   parse_optional_expr(m['annotation'] or { json2.Any(json2.Null{}) })
 		type_comment: parse_optional_string(m['type_comment'] or { json2.Any(json2.Null{}) })
-		loc: parse_location(m)
+		loc:          parse_location(m)
 	}
 }
 
@@ -346,9 +404,11 @@ fn parse_optional_arg(raw json2.Any) ?Arg {
 // Parse Keyword
 fn parse_keyword(m map[string]json2.Any) Keyword {
 	return Keyword{
-		arg: parse_optional_string(m['arg'] or { json2.Any(json2.Null{}) })
-		value: parse_expr(m['value'].as_map()) or { Expr(Constant{value: NoneValue{}}) }
-		loc: parse_location(m)
+		arg:   parse_optional_string(m['arg'] or { json2.Any(json2.Null{}) })
+		value: parse_expr(m['value'].as_map()) or { Expr(Constant{
+			value: NoneValue{}
+		}) }
+		loc:   parse_location(m)
 	}
 }
 
@@ -356,7 +416,7 @@ fn parse_keyword(m map[string]json2.Any) Keyword {
 fn parse_return(m map[string]json2.Any) Return {
 	return Return{
 		value: parse_optional_expr(m['value'] or { json2.Any(json2.Null{}) })
-		loc: parse_location(m)
+		loc:   parse_location(m)
 	}
 }
 
@@ -372,7 +432,7 @@ fn parse_delete(m map[string]json2.Any) Delete {
 	}
 	return Delete{
 		targets: targets
-		loc: parse_location(m)
+		loc:     parse_location(m)
 	}
 }
 
@@ -393,10 +453,14 @@ fn parse_assign(m map[string]json2.Any) Assign {
 		}
 	}
 	return Assign{
-		targets: targets
-		value: parse_expr(m['value'].as_map()) or { Expr(Constant{value: NoneValue{}}) }
-		type_comment: parse_optional_string(m['type_comment'] or { json2.Any(json2.Null{}) })
-		loc: parse_location(m)
+		targets:           targets
+		value:             parse_expr(m['value'].as_map()) or {
+			Expr(Constant{
+				value: NoneValue{}
+			})
+		}
+		type_comment:      parse_optional_string(m['type_comment'] or { json2.Any(json2.Null{}) })
+		loc:               parse_location(m)
 		redefined_targets: redefined
 	}
 }
@@ -404,21 +468,33 @@ fn parse_assign(m map[string]json2.Any) Assign {
 // Parse AugAssign
 fn parse_aug_assign(m map[string]json2.Any) AugAssign {
 	return AugAssign{
-		target: parse_expr(m['target'].as_map()) or { Expr(Constant{value: NoneValue{}}) }
-		op: parse_operator(m['op'].as_map())
-		value: parse_expr(m['value'].as_map()) or { Expr(Constant{value: NoneValue{}}) }
-		loc: parse_location(m)
+		target: parse_expr(m['target'].as_map()) or { Expr(Constant{
+			value: NoneValue{}
+		}) }
+		op:     parse_operator(m['op'].as_map())
+		value:  parse_expr(m['value'].as_map()) or { Expr(Constant{
+			value: NoneValue{}
+		}) }
+		loc:    parse_location(m)
 	}
 }
 
 // Parse AnnAssign
 fn parse_ann_assign(m map[string]json2.Any) AnnAssign {
 	return AnnAssign{
-		target: parse_expr(m['target'].as_map()) or { Expr(Constant{value: NoneValue{}}) }
-		annotation: parse_expr(m['annotation'].as_map()) or { Expr(Constant{value: NoneValue{}}) }
-		value: parse_optional_expr(m['value'] or { json2.Any(json2.Null{}) })
-		simple: m['simple'] or { json2.Any(0) }.int()
-		loc: parse_location(m)
+		target:     parse_expr(m['target'].as_map()) or {
+			Expr(Constant{
+				value: NoneValue{}
+			})
+		}
+		annotation: parse_expr(m['annotation'].as_map()) or {
+			Expr(Constant{
+				value: NoneValue{}
+			})
+		}
+		value:      parse_optional_expr(m['value'] or { json2.Any(json2.Null{}) })
+		simple:     m['simple'] or { json2.Any(0) }.int()
+		loc:        parse_location(m)
 	}
 }
 
@@ -441,13 +517,21 @@ fn parse_for(m map[string]json2.Any) For {
 		}
 	}
 	return For{
-		target: parse_expr(m['target'].as_map()) or { Expr(Constant{value: NoneValue{}}) }
-		iter: parse_expr(m['iter'].as_map()) or { Expr(Constant{value: NoneValue{}}) }
-		body: body
-		orelse: orelse
+		target:       parse_expr(m['target'].as_map()) or {
+			Expr(Constant{
+				value: NoneValue{}
+			})
+		}
+		iter:         parse_expr(m['iter'].as_map()) or {
+			Expr(Constant{
+				value: NoneValue{}
+			})
+		}
+		body:         body
+		orelse:       orelse
 		type_comment: parse_optional_string(m['type_comment'] or { json2.Any(json2.Null{}) })
-		loc: parse_location(m)
-		level: m['level'] or { json2.Any(0) }.int()
+		loc:          parse_location(m)
+		level:        m['level'] or { json2.Any(0) }.int()
 	}
 }
 
@@ -455,13 +539,13 @@ fn parse_for(m map[string]json2.Any) For {
 fn parse_async_for(m map[string]json2.Any) AsyncFor {
 	f := parse_for(m)
 	return AsyncFor{
-		target: f.target
-		iter: f.iter
-		body: f.body
-		orelse: f.orelse
+		target:       f.target
+		iter:         f.iter
+		body:         f.body
+		orelse:       f.orelse
 		type_comment: f.type_comment
-		loc: f.loc
-		level: f.level
+		loc:          f.loc
+		level:        f.level
 	}
 }
 
@@ -484,11 +568,13 @@ fn parse_while(m map[string]json2.Any) While {
 		}
 	}
 	return While{
-		test: parse_expr(m['test'].as_map()) or { Expr(Constant{value: NoneValue{}}) }
-		body: body
+		test:   parse_expr(m['test'].as_map()) or { Expr(Constant{
+			value: NoneValue{}
+		}) }
+		body:   body
 		orelse: orelse
-		loc: parse_location(m)
-		level: m['level'] or { json2.Any(0) }.int()
+		loc:    parse_location(m)
+		level:  m['level'] or { json2.Any(0) }.int()
 	}
 }
 
@@ -511,11 +597,13 @@ fn parse_if(m map[string]json2.Any) If {
 		}
 	}
 	return If{
-		test: parse_expr(m['test'].as_map()) or { Expr(Constant{value: NoneValue{}}) }
-		body: body
+		test:   parse_expr(m['test'].as_map()) or { Expr(Constant{
+			value: NoneValue{}
+		}) }
+		body:   body
 		orelse: orelse
-		loc: parse_location(m)
-		level: m['level'] or { json2.Any(0) }.int()
+		loc:    parse_location(m)
+		level:  m['level'] or { json2.Any(0) }.int()
 	}
 }
 
@@ -536,16 +624,20 @@ fn parse_with(m map[string]json2.Any) With {
 		}
 	}
 	return With{
-		items: items
-		body: body
+		items:        items
+		body:         body
 		type_comment: parse_optional_string(m['type_comment'] or { json2.Any(json2.Null{}) })
-		loc: parse_location(m)
+		loc:          parse_location(m)
 	}
 }
 
 fn parse_with_item(m map[string]json2.Any) WithItem {
 	return WithItem{
-		context_expr: parse_expr(m['context_expr'].as_map()) or { Expr(Constant{value: NoneValue{}}) }
+		context_expr:  parse_expr(m['context_expr'].as_map()) or {
+			Expr(Constant{
+				value: NoneValue{}
+			})
+		}
 		optional_vars: parse_optional_expr(m['optional_vars'] or { json2.Any(json2.Null{}) })
 	}
 }
@@ -554,19 +646,19 @@ fn parse_with_item(m map[string]json2.Any) WithItem {
 fn parse_async_with(m map[string]json2.Any) AsyncWith {
 	w := parse_with(m)
 	return AsyncWith{
-		items: w.items
-		body: w.body
+		items:        w.items
+		body:         w.body
 		type_comment: w.type_comment
-		loc: w.loc
+		loc:          w.loc
 	}
 }
 
 // Parse Raise
 fn parse_raise(m map[string]json2.Any) Raise {
 	return Raise{
-		exc: parse_optional_expr(m['exc'] or { json2.Any(json2.Null{}) })
+		exc:   parse_optional_expr(m['exc'] or { json2.Any(json2.Null{}) })
 		cause: parse_optional_expr(m['cause'] or { json2.Any(json2.Null{}) })
-		loc: parse_location(m)
+		loc:   parse_location(m)
 	}
 }
 
@@ -603,11 +695,11 @@ fn parse_try(m map[string]json2.Any) Try {
 		}
 	}
 	return Try{
-		body: body
-		handlers: handlers
-		orelse: orelse
+		body:      body
+		handlers:  handlers
+		orelse:    orelse
 		finalbody: finalbody
-		loc: parse_location(m)
+		loc:       parse_location(m)
 	}
 }
 
@@ -621,19 +713,21 @@ fn parse_except_handler(m map[string]json2.Any) ExceptHandler {
 		}
 	}
 	return ExceptHandler{
-		typ: parse_optional_expr(m['type'] or { json2.Any(json2.Null{}) })
+		typ:  parse_optional_expr(m['type'] or { json2.Any(json2.Null{}) })
 		name: parse_optional_string(m['name'] or { json2.Any(json2.Null{}) })
 		body: body
-		loc: parse_location(m)
+		loc:  parse_location(m)
 	}
 }
 
 // Parse Assert
 fn parse_assert(m map[string]json2.Any) Assert {
 	return Assert{
-		test: parse_expr(m['test'].as_map()) or { Expr(Constant{value: NoneValue{}}) }
-		msg: parse_optional_expr(m['msg'] or { json2.Any(json2.Null{}) })
-		loc: parse_location(m)
+		test: parse_expr(m['test'].as_map()) or { Expr(Constant{
+			value: NoneValue{}
+		}) }
+		msg:  parse_optional_expr(m['msg'] or { json2.Any(json2.Null{}) })
+		loc:  parse_location(m)
 	}
 }
 
@@ -647,7 +741,7 @@ fn parse_import(m map[string]json2.Any) Import {
 	}
 	return Import{
 		names: names
-		loc: parse_location(m)
+		loc:   parse_location(m)
 	}
 }
 
@@ -660,18 +754,18 @@ fn parse_import_from(m map[string]json2.Any) ImportFrom {
 		}
 	}
 	return ImportFrom{
-		mod: parse_optional_string(m['module'] or { json2.Any(json2.Null{}) })
+		mod:   parse_optional_string(m['module'] or { json2.Any(json2.Null{}) })
 		names: names
 		level: m['level'] or { json2.Any(0) }.int()
-		loc: parse_location(m)
+		loc:   parse_location(m)
 	}
 }
 
 fn parse_alias(m map[string]json2.Any) Alias {
 	return Alias{
-		name: m['name'] or { json2.Any('') }.str()
+		name:   m['name'] or { json2.Any('') }.str()
 		asname: parse_optional_string(m['asname'] or { json2.Any(json2.Null{}) })
-		loc: parse_location(m)
+		loc:    parse_location(m)
 	}
 }
 
@@ -685,7 +779,7 @@ fn parse_global(m map[string]json2.Any) Global {
 	}
 	return Global{
 		names: names
-		loc: parse_location(m)
+		loc:   parse_location(m)
 	}
 }
 
@@ -699,15 +793,17 @@ fn parse_nonlocal(m map[string]json2.Any) Nonlocal {
 	}
 	return Nonlocal{
 		names: names
-		loc: parse_location(m)
+		loc:   parse_location(m)
 	}
 }
 
 // Parse ExprStmt
 fn parse_expr_stmt(m map[string]json2.Any) ExprStmt {
 	return ExprStmt{
-		value: parse_expr(m['value'].as_map()) or { Expr(Constant{value: NoneValue{}}) }
-		loc: parse_location(m)
+		value: parse_expr(m['value'].as_map()) or { Expr(Constant{
+			value: NoneValue{}
+		}) }
+		loc:   parse_location(m)
 	}
 }
 
@@ -716,9 +812,9 @@ fn parse_constant(m map[string]json2.Any) Constant {
 	raw_val := m['value'] or { json2.Any(json2.Null{}) }
 	value := parse_constant_value(raw_val)
 	return Constant{
-		value: value
-		kind: parse_optional_string(m['kind'] or { json2.Any(json2.Null{}) })
-		loc: parse_location(m)
+		value:        value
+		kind:         parse_optional_string(m['kind'] or { json2.Any(json2.Null{}) })
+		loc:          parse_location(m)
 		v_annotation: parse_type_annotation(m)
 	}
 }
@@ -741,12 +837,16 @@ fn parse_constant_value(raw json2.Any) ConstantValue {
 						data << u8(b.int())
 					}
 				}
-				return BytesValue{data: data}
+				return BytesValue{
+					data: data
+				}
 			}
 		}
 	}
 	match raw {
-		bool { return ConstantValue(raw as bool) }
+		bool {
+			return ConstantValue(raw as bool)
+		}
 		i64 {
 			val := raw as i64
 			if val >= i64(-2147483647) - 1 && val <= i64(2147483647) {
@@ -762,18 +862,22 @@ fn parse_constant_value(raw json2.Any) ConstantValue {
 			}
 			return ConstantValue(val)
 		}
-		string { return ConstantValue(raw as string) }
-		else { return NoneValue{} }
+		string {
+			return ConstantValue(raw as string)
+		}
+		else {
+			return NoneValue{}
+		}
 	}
 }
 
 // Parse Name
 fn parse_name(m map[string]json2.Any) Name {
 	return Name{
-		id: m['id'] or { json2.Any('') }.str()
-		ctx: parse_context(m['ctx'].as_map())
-		loc: parse_location(m)
-		is_mutable: m['is_mutable'] or { json2.Any(false) }.bool()
+		id:           m['id'] or { json2.Any('') }.str()
+		ctx:          parse_context(m['ctx'].as_map())
+		loc:          parse_location(m)
+		is_mutable:   m['is_mutable'] or { json2.Any(false) }.bool()
 		v_annotation: parse_type_annotation(m)
 	}
 }
@@ -791,10 +895,18 @@ fn parse_context(m map[string]json2.Any) ExprContext {
 // Parse BinOp
 fn parse_binop(m map[string]json2.Any) BinOp {
 	return BinOp{
-		left: parse_expr(m['left'].as_map()) or { Expr(Constant{value: NoneValue{}}) }
-		op: parse_operator(m['op'].as_map())
-		right: parse_expr(m['right'].as_map()) or { Expr(Constant{value: NoneValue{}}) }
-		loc: parse_location(m)
+		left:         parse_expr(m['left'].as_map()) or {
+			Expr(Constant{
+				value: NoneValue{}
+			})
+		}
+		op:           parse_operator(m['op'].as_map())
+		right:        parse_expr(m['right'].as_map()) or {
+			Expr(Constant{
+				value: NoneValue{}
+			})
+		}
+		loc:          parse_location(m)
 		v_annotation: parse_type_annotation(m)
 	}
 }
@@ -822,9 +934,13 @@ fn parse_operator(m map[string]json2.Any) Operator {
 // Parse UnaryOp
 fn parse_unaryop(m map[string]json2.Any) UnaryOp {
 	return UnaryOp{
-		op: parse_unary_operator(m['op'].as_map())
-		operand: parse_expr(m['operand'].as_map()) or { Expr(Constant{value: NoneValue{}}) }
-		loc: parse_location(m)
+		op:           parse_unary_operator(m['op'].as_map())
+		operand:      parse_expr(m['operand'].as_map()) or {
+			Expr(Constant{
+				value: NoneValue{}
+			})
+		}
+		loc:          parse_location(m)
 		v_annotation: parse_type_annotation(m)
 	}
 }
@@ -850,9 +966,9 @@ fn parse_boolop(m map[string]json2.Any) BoolOp {
 		}
 	}
 	return BoolOp{
-		op: parse_bool_operator(m['op'].as_map())
-		values: values
-		loc: parse_location(m)
+		op:           parse_bool_operator(m['op'].as_map())
+		values:       values
+		loc:          parse_location(m)
 		v_annotation: parse_type_annotation(m)
 	}
 }
@@ -882,10 +998,14 @@ fn parse_compare(m map[string]json2.Any) Compare {
 		}
 	}
 	return Compare{
-		left: parse_expr(m['left'].as_map()) or { Expr(Constant{value: NoneValue{}}) }
-		ops: ops
-		comparators: comparators
-		loc: parse_location(m)
+		left:         parse_expr(m['left'].as_map()) or {
+			Expr(Constant{
+				value: NoneValue{}
+			})
+		}
+		ops:          ops
+		comparators:  comparators
+		loc:          parse_location(m)
 		v_annotation: parse_type_annotation(m)
 	}
 }
@@ -923,10 +1043,14 @@ fn parse_call(m map[string]json2.Any) Call {
 		}
 	}
 	return Call{
-		func: parse_expr(m['func'].as_map()) or { Expr(Constant{value: NoneValue{}}) }
-		args: args
-		keywords: keywords
-		loc: parse_location(m)
+		func:         parse_expr(m['func'].as_map()) or {
+			Expr(Constant{
+				value: NoneValue{}
+			})
+		}
+		args:         args
+		keywords:     keywords
+		loc:          parse_location(m)
 		v_annotation: parse_type_annotation(m)
 	}
 }
@@ -934,10 +1058,14 @@ fn parse_call(m map[string]json2.Any) Call {
 // Parse Attribute
 fn parse_attribute(m map[string]json2.Any) Attribute {
 	return Attribute{
-		value: parse_expr(m['value'].as_map()) or { Expr(Constant{value: NoneValue{}}) }
-		attr: m['attr'] or { json2.Any('') }.str()
-		ctx: parse_context(m['ctx'].as_map())
-		loc: parse_location(m)
+		value:        parse_expr(m['value'].as_map()) or {
+			Expr(Constant{
+				value: NoneValue{}
+			})
+		}
+		attr:         m['attr'] or { json2.Any('') }.str()
+		ctx:          parse_context(m['ctx'].as_map())
+		loc:          parse_location(m)
 		v_annotation: parse_type_annotation(m)
 	}
 }
@@ -945,11 +1073,19 @@ fn parse_attribute(m map[string]json2.Any) Attribute {
 // Parse Subscript
 fn parse_subscript(m map[string]json2.Any) Subscript {
 	return Subscript{
-		value: parse_expr(m['value'].as_map()) or { Expr(Constant{value: NoneValue{}}) }
-		slice: parse_expr(m['slice'].as_map()) or { Expr(Constant{value: NoneValue{}}) }
-		ctx: parse_context(m['ctx'].as_map())
-		loc: parse_location(m)
-		v_annotation: parse_type_annotation(m)
+		value:         parse_expr(m['value'].as_map()) or {
+			Expr(Constant{
+				value: NoneValue{}
+			})
+		}
+		slice:         parse_expr(m['slice'].as_map()) or {
+			Expr(Constant{
+				value: NoneValue{}
+			})
+		}
+		ctx:           parse_context(m['ctx'].as_map())
+		loc:           parse_location(m)
+		v_annotation:  parse_type_annotation(m)
 		is_annotation: m['is_annotation'] or { json2.Any(false) }.bool()
 	}
 }
@@ -959,8 +1095,8 @@ fn parse_slice(m map[string]json2.Any) Slice {
 	return Slice{
 		lower: parse_optional_expr(m['lower'] or { json2.Any(json2.Null{}) })
 		upper: parse_optional_expr(m['upper'] or { json2.Any(json2.Null{}) })
-		step: parse_optional_expr(m['step'] or { json2.Any(json2.Null{}) })
-		loc: parse_location(m)
+		step:  parse_optional_expr(m['step'] or { json2.Any(json2.Null{}) })
+		loc:   parse_location(m)
 	}
 }
 
@@ -975,9 +1111,9 @@ fn parse_list(m map[string]json2.Any) List {
 		}
 	}
 	return List{
-		elts: elts
-		ctx: parse_context(m['ctx'].as_map())
-		loc: parse_location(m)
+		elts:         elts
+		ctx:          parse_context(m['ctx'].as_map())
+		loc:          parse_location(m)
 		v_annotation: parse_type_annotation(m)
 	}
 }
@@ -993,9 +1129,9 @@ fn parse_tuple(m map[string]json2.Any) Tuple {
 		}
 	}
 	return Tuple{
-		elts: elts
-		ctx: parse_context(m['ctx'].as_map())
-		loc: parse_location(m)
+		elts:         elts
+		ctx:          parse_context(m['ctx'].as_map())
+		loc:          parse_location(m)
 		v_annotation: parse_type_annotation(m)
 	}
 }
@@ -1017,9 +1153,9 @@ fn parse_dict(m map[string]json2.Any) Dict {
 		}
 	}
 	return Dict{
-		keys: keys
-		values: values
-		loc: parse_location(m)
+		keys:         keys
+		values:       values
+		loc:          parse_location(m)
 		v_annotation: parse_type_annotation(m)
 	}
 }
@@ -1035,8 +1171,8 @@ fn parse_set(m map[string]json2.Any) Set {
 		}
 	}
 	return Set{
-		elts: elts
-		loc: parse_location(m)
+		elts:         elts
+		loc:          parse_location(m)
 		v_annotation: parse_type_annotation(m)
 	}
 }
@@ -1044,10 +1180,16 @@ fn parse_set(m map[string]json2.Any) Set {
 // Parse IfExp
 fn parse_ifexp(m map[string]json2.Any) IfExp {
 	return IfExp{
-		test: parse_expr(m['test'].as_map()) or { Expr(Constant{value: NoneValue{}}) }
-		body: parse_expr(m['body'].as_map()) or { Expr(Constant{value: NoneValue{}}) }
-		orelse: parse_expr(m['orelse'].as_map()) or { Expr(Constant{value: NoneValue{}}) }
-		loc: parse_location(m)
+		test:   parse_expr(m['test'].as_map()) or { Expr(Constant{
+			value: NoneValue{}
+		}) }
+		body:   parse_expr(m['body'].as_map()) or { Expr(Constant{
+			value: NoneValue{}
+		}) }
+		orelse: parse_expr(m['orelse'].as_map()) or { Expr(Constant{
+			value: NoneValue{}
+		}) }
+		loc:    parse_location(m)
 	}
 }
 
@@ -1055,8 +1197,10 @@ fn parse_ifexp(m map[string]json2.Any) IfExp {
 fn parse_lambda(m map[string]json2.Any) Lambda {
 	return Lambda{
 		args: parse_arguments(m['args'] or { json2.Any(map[string]json2.Any{}) })
-		body: parse_expr(m['body'].as_map()) or { Expr(Constant{value: NoneValue{}}) }
-		loc: parse_location(m)
+		body: parse_expr(m['body'].as_map()) or { Expr(Constant{
+			value: NoneValue{}
+		}) }
+		loc:  parse_location(m)
 	}
 }
 
@@ -1069,9 +1213,11 @@ fn parse_list_comp(m map[string]json2.Any) ListComp {
 		}
 	}
 	return ListComp{
-		elt: parse_expr(m['elt'].as_map()) or { Expr(Constant{value: NoneValue{}}) }
+		elt:        parse_expr(m['elt'].as_map()) or { Expr(Constant{
+			value: NoneValue{}
+		}) }
 		generators: generators
-		loc: parse_location(m)
+		loc:        parse_location(m)
 	}
 }
 
@@ -1084,9 +1230,11 @@ fn parse_set_comp(m map[string]json2.Any) SetComp {
 		}
 	}
 	return SetComp{
-		elt: parse_expr(m['elt'].as_map()) or { Expr(Constant{value: NoneValue{}}) }
+		elt:        parse_expr(m['elt'].as_map()) or { Expr(Constant{
+			value: NoneValue{}
+		}) }
 		generators: generators
-		loc: parse_location(m)
+		loc:        parse_location(m)
 	}
 }
 
@@ -1099,10 +1247,14 @@ fn parse_dict_comp(m map[string]json2.Any) DictComp {
 		}
 	}
 	return DictComp{
-		key: parse_expr(m['key'].as_map()) or { Expr(Constant{value: NoneValue{}}) }
-		value: parse_expr(m['value'].as_map()) or { Expr(Constant{value: NoneValue{}}) }
+		key:        parse_expr(m['key'].as_map()) or { Expr(Constant{
+			value: NoneValue{}
+		}) }
+		value:      parse_expr(m['value'].as_map()) or { Expr(Constant{
+			value: NoneValue{}
+		}) }
 		generators: generators
-		loc: parse_location(m)
+		loc:        parse_location(m)
 	}
 }
 
@@ -1115,9 +1267,11 @@ fn parse_generator_exp(m map[string]json2.Any) GeneratorExp {
 		}
 	}
 	return GeneratorExp{
-		elt: parse_expr(m['elt'].as_map()) or { Expr(Constant{value: NoneValue{}}) }
+		elt:        parse_expr(m['elt'].as_map()) or { Expr(Constant{
+			value: NoneValue{}
+		}) }
 		generators: generators
-		loc: parse_location(m)
+		loc:        parse_location(m)
 	}
 }
 
@@ -1131,9 +1285,13 @@ fn parse_comprehension(m map[string]json2.Any) Comprehension {
 		}
 	}
 	return Comprehension{
-		target: parse_expr(m['target'].as_map()) or { Expr(Constant{value: NoneValue{}}) }
-		iter: parse_expr(m['iter'].as_map()) or { Expr(Constant{value: NoneValue{}}) }
-		ifs: ifs
+		target:   parse_expr(m['target'].as_map()) or { Expr(Constant{
+			value: NoneValue{}
+		}) }
+		iter:     parse_expr(m['iter'].as_map()) or { Expr(Constant{
+			value: NoneValue{}
+		}) }
+		ifs:      ifs
 		is_async: m['is_async'] or { json2.Any(false) }.bool()
 	}
 }
@@ -1141,8 +1299,10 @@ fn parse_comprehension(m map[string]json2.Any) Comprehension {
 // Parse Await
 fn parse_await(m map[string]json2.Any) Await {
 	return Await{
-		value: parse_expr(m['value'].as_map()) or { Expr(Constant{value: NoneValue{}}) }
-		loc: parse_location(m)
+		value: parse_expr(m['value'].as_map()) or { Expr(Constant{
+			value: NoneValue{}
+		}) }
+		loc:   parse_location(m)
 	}
 }
 
@@ -1150,25 +1310,31 @@ fn parse_await(m map[string]json2.Any) Await {
 fn parse_yield(m map[string]json2.Any) Yield {
 	return Yield{
 		value: parse_optional_expr(m['value'] or { json2.Any(json2.Null{}) })
-		loc: parse_location(m)
+		loc:   parse_location(m)
 	}
 }
 
 // Parse YieldFrom
 fn parse_yield_from(m map[string]json2.Any) YieldFrom {
 	return YieldFrom{
-		value: parse_expr(m['value'].as_map()) or { Expr(Constant{value: NoneValue{}}) }
-		loc: parse_location(m)
+		value: parse_expr(m['value'].as_map()) or { Expr(Constant{
+			value: NoneValue{}
+		}) }
+		loc:   parse_location(m)
 	}
 }
 
 // Parse FormattedValue
 fn parse_formatted_value(m map[string]json2.Any) FormattedValue {
 	return FormattedValue{
-		value: parse_expr(m['value'].as_map()) or { Expr(Constant{value: NoneValue{}}) }
-		conversion: m['conversion'] or { json2.Any(-1) }.int()
+		value:       parse_expr(m['value'].as_map()) or {
+			Expr(Constant{
+				value: NoneValue{}
+			})
+		}
+		conversion:  m['conversion'] or { json2.Any(-1) }.int()
 		format_spec: parse_optional_expr(m['format_spec'] or { json2.Any(json2.Null{}) })
-		loc: parse_location(m)
+		loc:         parse_location(m)
 	}
 }
 
@@ -1184,25 +1350,31 @@ fn parse_joined_str(m map[string]json2.Any) JoinedStr {
 	}
 	return JoinedStr{
 		values: values
-		loc: parse_location(m)
+		loc:    parse_location(m)
 	}
 }
 
 // Parse NamedExpr
 fn parse_named_expr(m map[string]json2.Any) NamedExpr {
 	return NamedExpr{
-		target: parse_expr(m['target'].as_map()) or { Expr(Constant{value: NoneValue{}}) }
-		value: parse_expr(m['value'].as_map()) or { Expr(Constant{value: NoneValue{}}) }
-		loc: parse_location(m)
+		target: parse_expr(m['target'].as_map()) or { Expr(Constant{
+			value: NoneValue{}
+		}) }
+		value:  parse_expr(m['value'].as_map()) or { Expr(Constant{
+			value: NoneValue{}
+		}) }
+		loc:    parse_location(m)
 	}
 }
 
 // Parse Starred
 fn parse_starred(m map[string]json2.Any) Starred {
 	return Starred{
-		value: parse_expr(m['value'].as_map()) or { Expr(Constant{value: NoneValue{}}) }
-		ctx: parse_context(m['ctx'].as_map())
-		loc: parse_location(m)
+		value: parse_expr(m['value'].as_map()) or { Expr(Constant{
+			value: NoneValue{}
+		}) }
+		ctx:   parse_context(m['ctx'].as_map())
+		loc:   parse_location(m)
 	}
 }
 

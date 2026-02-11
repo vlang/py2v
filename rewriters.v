@@ -39,13 +39,13 @@ pub fn rewrite_none_compare_int(left_type string, op string, right_val string) s
 // AST-level rewriter state (for future use if needed)
 pub struct RewriterState {
 mut:
-	redirects map[string]string
+	redirects        map[string]string
 	in_comprehension bool
 }
 
 pub fn new_rewriter_state() RewriterState {
 	return RewriterState{
-		redirects: map[string]string{}
+		redirects:        map[string]string{}
 		in_comprehension: false
 	}
 }

@@ -9,9 +9,9 @@ pub struct Permissions {
 
 fn show() {
 	color_map := {
-		Colors.RED: 'red'
+		Colors.RED:   'red'
 		Colors.GREEN: 'green'
-		Colors.BLUE: 'blue'
+		Colors.BLUE:  'blue'
 	}
 	a := Colors.GREEN
 	if a == Colors.GREEN {

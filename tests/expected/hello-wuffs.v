@@ -1,12 +1,14 @@
 @[translated]
 module main
 
+type Any = bool | int | i64 | f64 | string | []byte
+
 pub struct parser {
 pub mut:
 	val u32
 }
 
-fn test_parser(input A, expected B) {
+fn test_parser(input Any, expected Any) {
 	p := parser{
 		val: u32(0)
 	}

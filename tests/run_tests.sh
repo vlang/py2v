@@ -20,6 +20,20 @@ PASSED=0
 FAILED=0
 SKIPPED=0
 
+normalize_v_code() {
+    local input="$1"
+    local tmp
+    tmp=$(mktemp /tmp/py2v_fmt_XXXXXX.v)
+    # Preserve content as-is for formatting pass
+    printf "%s" "$input" > "$tmp"
+    if v fmt -w "$tmp" >/dev/null 2>&1; then
+        cat "$tmp" | tr -d '\r'
+    else
+        printf "%s" "$input" | tr -d '\r'
+    fi
+    rm -f "$tmp"
+}
+
 # Build py2v if needed
 if [ ! -f "$PY2V" ]; then
     echo "Building py2v..."
@@ -37,35 +51,35 @@ for case_file in "$CASES_DIR"/*.py; do
 
     # Skip if no expected file
     if [ ! -f "$expected_file" ]; then
-        echo -e "${YELLOW}SKIP${NC} $test_name (no expected file)"
+        printf "%b\n" "${YELLOW}SKIP${NC} $test_name (no expected file)"
         ((SKIPPED++)) || true
         continue
     fi
 
     # Run py2v
     generated=$("$PY2V" "$case_file" 2>&1) || {
-        echo -e "${RED}FAIL${NC} $test_name (transpilation error)"
+        printf "%b\n" "${RED}FAIL${NC} $test_name (transpilation error)"
         ((FAILED++)) || true
         continue
     }
 
-    # Compare output (normalize line endings for cross-platform compatibility)
-    expected=$(cat "$expected_file" | tr -d '\r')
-    generated=$(echo "$generated" | tr -d '\r')
+    expected=$(cat "$expected_file")
+    generated_norm=$(normalize_v_code "$generated")
+    expected_norm=$(normalize_v_code "$expected")
 
-    if [ "$generated" = "$expected" ]; then
-        echo -e "${GREEN}PASS${NC} $test_name"
+    if [ "$generated_norm" = "$expected_norm" ]; then
+        printf "%b\n" "${GREEN}PASS${NC} $test_name"
         ((PASSED++)) || true
     else
-        echo -e "${RED}FAIL${NC} $test_name (output mismatch)"
+        printf "%b\n" "${RED}FAIL${NC} $test_name (output mismatch)"
         ((FAILED++)) || true
 
         # Show diff if VERBOSE is set
         if [ -n "$VERBOSE" ]; then
             echo "--- Expected ---"
-            echo "$expected" | head -20
+            echo "$expected_norm" | head -20
             echo "--- Generated ---"
-            echo "$generated" | head -20
+            echo "$generated_norm" | head -20
             echo "----------------"
         fi
     fi
@@ -73,7 +87,7 @@ done
 
 echo ""
 echo "────────────────────────────────────────────────────────────"
-echo -e "Summary: ${GREEN}$PASSED passed${NC}, ${RED}$FAILED failed${NC}, ${YELLOW}$SKIPPED skipped${NC}"
+printf "%b\n" "Summary: ${GREEN}$PASSED passed${NC}, ${RED}$FAILED failed${NC}, ${YELLOW}$SKIPPED skipped${NC}"
 
 if [ $FAILED -gt 0 ]; then
     exit 1

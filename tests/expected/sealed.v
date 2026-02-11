@@ -8,8 +8,8 @@ pub mut:
 
 pub struct Register {
 pub mut:
-	PACKET Packet
-	VALUE int
+	PACKET &Packet
+	VALUE  int
 }
 
 fn main() {

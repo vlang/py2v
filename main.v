@@ -12,13 +12,14 @@ fn main() {
 		eprintln('')
 		eprintln('Options:')
 		eprintln('  -o <file>    Write output to file instead of stdout')
-		eprintln('  -h, --help   Show this help message')
+		eprintln('  -h, --help       Show this help message')
 		exit(1)
 	}
 
 	// Parse arguments
 	mut input_file := ''
 	mut output_file := ''
+	mut module_name := 'main'
 	mut i := 0
 
 	for i < args.len {
@@ -33,7 +34,7 @@ fn main() {
 			eprintln('')
 			eprintln('Options:')
 			eprintln('  -o <file>    Write output to file instead of stdout')
-			eprintln('  -h, --help   Show this help message')
+			eprintln('  -h, --help       Show this help message')
 			exit(0)
 		} else if !arg.starts_with('-') {
 			input_file = arg
@@ -47,6 +48,9 @@ fn main() {
 	if input_file == '' {
 		eprintln('Error: No input file specified')
 		exit(1)
+	}
+	if output_file != '' {
+		module_name = module_name_from_output_path(output_file)
 	}
 
 	// Get the directory where this executable is located
@@ -95,6 +99,7 @@ fn main() {
 
 	// Transpile to V
 	mut transpiler := new_transpiler()
+	transpiler.module_name = module_name
 	v_code := transpiler.visit_module(ast)
 
 	// Format with vfmt
@@ -110,6 +115,49 @@ fn main() {
 	} else {
 		print(formatted_code)
 	}
+}
+
+fn module_name_from_output_path(output_file string) string {
+	dir_name := os.base(os.dir(output_file))
+	if dir_name == '' || dir_name == '.' || dir_name == '/' || dir_name == '\\' {
+		return 'main'
+	}
+	return sanitize_module_name(dir_name)
+}
+
+fn sanitize_module_name(raw string) string {
+	if raw.len == 0 {
+		return 'main'
+	}
+	mut out := []u8{}
+	for i, ch in raw {
+		is_alpha := (ch >= `a` && ch <= `z`) || (ch >= `A` && ch <= `Z`)
+		is_digit := ch >= `0` && ch <= `9`
+		is_valid_start := is_alpha || ch == `_`
+		is_valid_body := is_alpha || is_digit || ch == `_`
+		if i == 0 {
+			if is_valid_start {
+				out << ch
+			} else if is_digit {
+				out << `m`
+				out << `_`
+				out << ch
+			} else {
+				out << `m`
+				out << `_`
+			}
+			continue
+		}
+		if is_valid_body {
+			out << ch
+		} else {
+			out << `_`
+		}
+	}
+	if out.len == 0 {
+		return 'main'
+	}
+	return out.bytestr()
 }
 
 fn format_v_code(code string) string {

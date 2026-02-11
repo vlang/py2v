@@ -1,14 +1,16 @@
 @[translated]
 module main
 
+type Any = bool | int | i64 | f64 | string | []byte
+
 pub struct IntListNonEmpty {
 pub mut:
 	first int
-	rest IntList
+	rest  &IntList
 }
 
 pub struct IntList {
 pub mut:
-	NONE auto
-	REST IntListNonEmpty
+	NONE Any
+	REST &IntListNonEmpty
 }

@@ -40,7 +40,7 @@ fn show() {
 	for i := 0; i < 10; i += 2 {
 		println(i.str())
 	}
-	a3 := -(a1)
+	a3 := -a1
 	a4 := (a3 + a1)
 	println(a4.str())
 	t1 := if a1 > 5 { 10 } else { 5 }
@@ -85,9 +85,9 @@ fn show() {
 	s := '1    2'
 	println(s)
 	assert infer_bool(1)
-	_escape_quotes := ' foo \"bar\" baz '
+	_escape_quotes := ' foo "bar" baz '
 	assert 'aaabbccc'.contains('bbc')
-	assert (1 != 0)
+	assert 1 != 0
 	_c1, _, _c2 = 1, 2, 3
 }
 
