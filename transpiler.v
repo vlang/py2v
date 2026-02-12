@@ -21,6 +21,7 @@ mut:
 	func_return_types           map[string]string   // function name -> return type ("string", "int", etc.)
 	extra_mut_vars              map[string]bool     // variables that need mut because passed to mut params
 	global_vars                 map[string]bool     // module-level variables (declared in __global)
+	escaped_identifiers         map[string]bool     // identifiers escaped due to V built-in type name conflict
 }
 
 // Create a new VTranspiler
@@ -470,8 +471,10 @@ pub fn (mut t VTranspiler) visit_expr(expr Expr) string {
 
 // Visit FunctionDef
 pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
-	// Save var_types for function scope (keep globals, reset locals)
+	// Save var_types and escaped_identifiers for function scope (keep globals, reset locals)
 	saved_var_types := t.var_types.clone()
+	saved_escaped_identifiers := t.escaped_identifiers.clone()
+	t.escaped_identifiers = map[string]bool{}
 	saved_current_class := t.current_class_name
 	if node.is_class_method {
 		t.current_class_name = node.class_name
@@ -513,7 +516,11 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 			typename = t.typename_from_annotation(ann)
 		}
 
-		mut arg_name := escape_keyword(arg.arg)
+		mut arg_name := escape_identifier(arg.arg)
+		// Track identifiers escaped due to built-in type name conflicts
+		if arg.arg in v_builtin_types {
+			t.escaped_identifiers[arg.arg] = true
+		}
 		// Check if this argument is mutable
 		if arg.arg in node.mutable_vars {
 			arg_name = 'mut ${arg_name}'
@@ -568,7 +575,7 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 		} else {
 			typename = '...' + typename
 		}
-		args_strs << '${escape_keyword(vararg.arg)} ${typename}'
+		args_strs << '${escape_identifier(vararg.arg)} ${typename}'
 	}
 
 	// For generator functions, add channel parameter
@@ -590,11 +597,14 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 			t.func_return_types[node.name] = ret_type
 		} else {
 			// Infer return type from return statements
-			inferred := t.infer_return_type(node.body)
-			if inferred.len > 0 {
-				signature << inferred
-				t.func_return_types[node.name] = inferred
+			mut inferred := t.infer_return_type(node.body)
+			// Fall back to Any when function returns a value but type can't be inferred
+			if inferred.len == 0 {
+				inferred = 'Any'
+				t.generated_code_has_any_type = true
 			}
+			signature << inferred
+			t.func_return_types[node.name] = inferred
 		}
 	}
 
@@ -642,8 +652,9 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 
 	func_code := '${signature.join(' ')} {\n${body}\n}'
 
-	// Restore var_types from parent scope
+	// Restore var_types and escaped_identifiers from parent scope
 	t.var_types = saved_var_types.clone()
+	t.escaped_identifiers = saved_escaped_identifiers.clone()
 
 	if nested_fndefs.len > 0 {
 		t.current_class_name = saved_current_class
@@ -1527,6 +1538,10 @@ pub fn (mut t VTranspiler) visit_constant(node Constant) string {
 
 // Visit Name
 pub fn (mut t VTranspiler) visit_name(node Name) string {
+	// Check if this identifier was escaped due to V built-in type name conflict
+	if t.escaped_identifiers[node.id] or { false } {
+		return '@${node.id}'
+	}
 	return escape_keyword(node.id)
 }
 
@@ -2383,7 +2398,7 @@ pub fn (mut t VTranspiler) visit_lambda(node Lambda) string {
 	lambda_type := if body_has_arithmetic { 'int' } else { 'string' }
 
 	for arg in node.args.args {
-		name := escape_keyword(arg.arg)
+		name := escape_identifier(arg.arg)
 		// V requires type annotations on each parameter
 		// Use annotation if available, otherwise default based on body analysis
 		if ann := arg.annotation {
@@ -2909,9 +2924,14 @@ fn (t &VTranspiler) infer_expr_type(expr Expr) string {
 						break
 					}
 				}
-				if key_type.len > 0 && val_type.len > 0 {
-					return 'map[${key_type}]${val_type}'
+				// Fall back to Any for unknown key/value types
+				if key_type.len == 0 {
+					key_type = 'string'
 				}
+				if val_type.len == 0 {
+					val_type = 'Any'
+				}
+				return 'map[${key_type}]${val_type}'
 			}
 			return ''
 		}

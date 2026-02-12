@@ -14,7 +14,7 @@ fn (mut self MockFile) __init__(name Any) {
 	self.closed = false
 }
 
-fn (self MockFile) __enter__() {
+fn (self MockFile) __enter__() Any {
 	println(('Opening ' + (self.name).str()).str())
 	return self
 }
