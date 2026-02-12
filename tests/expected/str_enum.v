@@ -6,9 +6,9 @@ pub struct Colors {
 
 fn show() {
 	color_map := {
-		Colors.RED: '1'
+		Colors.RED:   '1'
 		Colors.GREEN: '2'
-		Colors.BLUE: '3'
+		Colors.BLUE:  '3'
 	}
 	a := Colors.GREEN
 	if a == Colors.GREEN {

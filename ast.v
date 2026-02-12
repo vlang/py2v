@@ -35,7 +35,19 @@ pub struct UAdd {}
 
 pub struct USub {}
 
-pub type Operator = Add | Sub | Mult | MatMult | Div | Mod | Pow | LShift | RShift | BitOr | BitXor | BitAnd | FloorDiv
+pub type Operator = Add
+	| Sub
+	| Mult
+	| MatMult
+	| Div
+	| Mod
+	| Pow
+	| LShift
+	| RShift
+	| BitOr
+	| BitXor
+	| BitAnd
+	| FloorDiv
 
 pub struct Add {}
 
@@ -86,9 +98,59 @@ pub struct In {}
 pub struct NotIn {}
 
 // Forward declarations - all expression and statement types
-pub type Expr = Constant | Name | BinOp | UnaryOp | BoolOp | Compare | Call | Attribute | Subscript | Slice | List | Tuple | Dict | Set | IfExp | Lambda | ListComp | SetComp | DictComp | GeneratorExp | Await | Yield | YieldFrom | FormattedValue | JoinedStr | NamedExpr | Starred
+pub type Expr = Constant
+	| Name
+	| BinOp
+	| UnaryOp
+	| BoolOp
+	| Compare
+	| Call
+	| Attribute
+	| Subscript
+	| Slice
+	| List
+	| Tuple
+	| Dict
+	| Set
+	| IfExp
+	| Lambda
+	| ListComp
+	| SetComp
+	| DictComp
+	| GeneratorExp
+	| Await
+	| Yield
+	| YieldFrom
+	| FormattedValue
+	| JoinedStr
+	| NamedExpr
+	| Starred
 
-pub type Stmt = FunctionDef | AsyncFunctionDef | ClassDef | Return | Delete | Assign | AugAssign | AnnAssign | For | AsyncFor | While | If | With | AsyncWith | Raise | Try | Assert | Import | ImportFrom | Global | Nonlocal | ExprStmt | Pass | Break | Continue
+pub type Stmt = FunctionDef
+	| AsyncFunctionDef
+	| ClassDef
+	| Return
+	| Delete
+	| Assign
+	| AugAssign
+	| AnnAssign
+	| For
+	| AsyncFor
+	| While
+	| If
+	| With
+	| AsyncWith
+	| Raise
+	| Try
+	| Assert
+	| Import
+	| ImportFrom
+	| Global
+	| Nonlocal
+	| ExprStmt
+	| Pass
+	| Break
+	| Continue
 
 // Module is the root node
 pub struct Module {
@@ -101,9 +163,9 @@ pub mut:
 // Expressions
 pub struct Constant {
 pub mut:
-	value       ConstantValue
-	kind        ?string
-	loc         Location
+	value        ConstantValue
+	kind         ?string
+	loc          Location
 	v_annotation ?string
 }
 
@@ -188,11 +250,11 @@ pub mut:
 
 pub struct Subscript {
 pub mut:
-	value        Expr
-	slice        Expr
-	ctx          ExprContext
-	loc          Location
-	v_annotation ?string
+	value         Expr
+	slice         Expr
+	ctx           ExprContext
+	loc           Location
+	v_annotation  ?string
 	is_annotation bool
 }
 
@@ -281,10 +343,10 @@ pub mut:
 
 pub struct Comprehension {
 pub mut:
-	target    Expr
-	iter      Expr
-	ifs       []Expr
-	is_async  bool
+	target   Expr
+	iter     Expr
+	ifs      []Expr
+	is_async bool
 }
 
 pub struct Await {
@@ -307,10 +369,10 @@ pub mut:
 
 pub struct FormattedValue {
 pub mut:
-	value      Expr
-	conversion int
+	value       Expr
+	conversion  int
 	format_spec ?Expr
-	loc        Location
+	loc         Location
 }
 
 pub struct JoinedStr {
@@ -336,34 +398,34 @@ pub mut:
 // Statements
 pub struct FunctionDef {
 pub mut:
-	name           string
-	args           Arguments
-	body           []Stmt
-	decorator_list []Expr
-	returns        ?Expr
-	type_comment   ?string
-	loc            Location
-	is_generator   bool
-	is_void        bool
-	mutable_vars   []string
+	name            string
+	args            Arguments
+	body            []Stmt
+	decorator_list  []Expr
+	returns         ?Expr
+	type_comment    ?string
+	loc             Location
+	is_generator    bool
+	is_void         bool
+	mutable_vars    []string
 	is_class_method bool
-	class_name     string
+	class_name      string
 }
 
 pub struct AsyncFunctionDef {
 pub mut:
-	name           string
-	args           Arguments
-	body           []Stmt
-	decorator_list []Expr
-	returns        ?Expr
-	type_comment   ?string
-	loc            Location
-	is_generator   bool
-	is_void        bool
-	mutable_vars   []string
+	name            string
+	args            Arguments
+	body            []Stmt
+	decorator_list  []Expr
+	returns         ?Expr
+	type_comment    ?string
+	loc             Location
+	is_generator    bool
+	is_void         bool
+	mutable_vars    []string
 	is_class_method bool
-	class_name     string
+	class_name      string
 }
 
 pub struct Arguments {
@@ -410,11 +472,11 @@ pub mut:
 
 pub struct Assign {
 pub mut:
-	targets            []Expr
-	value              Expr
-	type_comment       ?string
-	loc                Location
-	redefined_targets  []string
+	targets           []Expr
+	value             Expr
+	type_comment      ?string
+	loc               Location
+	redefined_targets []string
 }
 
 pub struct AugAssign {
@@ -436,24 +498,24 @@ pub mut:
 
 pub struct For {
 pub mut:
-	target Expr
-	iter   Expr
-	body   []Stmt
-	orelse []Stmt
+	target       Expr
+	iter         Expr
+	body         []Stmt
+	orelse       []Stmt
 	type_comment ?string
-	loc    Location
-	level  int
+	loc          Location
+	level        int
 }
 
 pub struct AsyncFor {
 pub mut:
-	target Expr
-	iter   Expr
-	body   []Stmt
-	orelse []Stmt
+	target       Expr
+	iter         Expr
+	body         []Stmt
+	orelse       []Stmt
 	type_comment ?string
-	loc    Location
-	level  int
+	loc          Location
+	level        int
 }
 
 pub struct While {
@@ -535,10 +597,10 @@ pub mut:
 
 pub struct ImportFrom {
 pub mut:
-	mod    ?string
-	names  []Alias
-	level  int
-	loc    Location
+	mod   ?string
+	names []Alias
+	level int
+	loc   Location
 }
 
 pub struct Alias {
@@ -584,9 +646,9 @@ pub mut:
 // Helper functions to create locations
 pub fn make_loc(lineno int, col_offset int, end_lineno int, end_col_offset int) Location {
 	return Location{
-		lineno: lineno
-		col_offset: col_offset
-		end_lineno: end_lineno
+		lineno:         lineno
+		col_offset:     col_offset
+		end_lineno:     end_lineno
 		end_col_offset: end_col_offset
 	}
 }

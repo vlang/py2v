@@ -18,7 +18,7 @@ fn main_func() {
 	popped := (d['b'] or { 0 })
 	println(popped.str())
 	println(d.str())
-	/* d.update() - manually merge dicts */
+	// d.update() - manually merge dicts
 	println(d.str())
 }
 

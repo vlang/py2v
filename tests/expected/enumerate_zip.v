@@ -3,13 +3,14 @@ module main
 
 fn main_func() {
 	fruits := ['apple', 'banana', 'cherry']
-	for [i, fruit] in fruits /* enumerate is usually used in for loops in V */ {
+	for i, fruit in fruits {
 		println(i.str())
 		println(fruit.str())
 	}
 	names := ['Alice', 'Bob']
 	ages := [25, 30]
-	for [name, age] in /* zip(names, ages) not fully supported as expression */ {
+	for __zipi1, name in names {
+		age := ages[__zipi1]
 		println(name.str())
 		println(age.str())
 	}

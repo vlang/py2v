@@ -145,7 +145,7 @@ fn visit_print(t &VTranspiler, node Call, args []string) (string, bool) {
 
 		// Non-string - need to convert with .str()
 		// Name nodes don't need parens, but Attribute/Subscript and other expressions do
-		needs_parens := !(arg is Name)
+		needs_parens := arg !is Name
 		if needs_parens {
 			parts << '(${arg_str}).str()'
 		} else {
@@ -158,7 +158,7 @@ fn visit_print(t &VTranspiler, node Call, args []string) (string, bool) {
 	}
 
 	// Join with spaces using string interpolation
-	return "println(${parts.join(" + ' ' + ")})", true
+	return 'println(${parts.join(" + ' ' + ")})', true
 }
 
 // Handle bool() call
@@ -174,7 +174,7 @@ fn visit_bool(t &VTranspiler, node Call, args []string) (string, bool) {
 		}
 		// Check for string - empty string is false
 		if ann == 'string' {
-			return "(${args[0]}.len > 0)", true
+			return '(${args[0]}.len > 0)', true
 		}
 		// Use infer_expr_type as fallback
 		inferred := t.infer_expr_type(node.args[0])
@@ -182,10 +182,10 @@ fn visit_bool(t &VTranspiler, node Call, args []string) (string, bool) {
 			return '(${args[0]} != 0)', true
 		}
 		if inferred == 'string' {
-			return "(${args[0]}.len > 0)", true
+			return '(${args[0]}.len > 0)', true
 		}
 	}
-	return '(${args[0]} != 0)', true  // Default to numeric comparison
+	return '(${args[0]} != 0)', true // Default to numeric comparison
 }
 
 // Handle int() call
@@ -311,7 +311,7 @@ fn visit_sum(args []string) (string, bool, string) {
 
 // Handle sorted() call
 fn visit_sorted(args []string) (string, bool) {
-	return "(fn (a []Any) []Any { mut b := a.clone(); b.sort(); return b }(${args[0]}))", true
+	return '(fn (a []Any) []Any { mut b := a.clone(); b.sort(); return b }(${args[0]}))', true
 }
 
 // Handle map() call (not V's map data structure)
@@ -344,14 +344,15 @@ fn visit_any_builtin(args []string) (string, bool) {
 
 // Handle enumerate() call
 fn visit_enumerate(args []string) (string, bool) {
-	// V doesn't have enumerate outside of for loops easily
-	return '${args[0]} /* enumerate is usually used in for loops in V */', true
+	if args.len == 0 {
+		return '[]Any{}', true
+	}
+	return args[0], true
 }
 
 // Handle zip() call
 fn visit_zip(args []string) (string, bool) {
-	// Placeholder for zip
-	return "/* zip(${args.join(', ')}) not fully supported as expression */", true
+	return '[]Any{}', true
 }
 
 // Handle open() call

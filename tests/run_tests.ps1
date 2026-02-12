@@ -4,6 +4,27 @@ $casesDir = Join-Path $scriptDir 'cases'
 $expectedDir = Join-Path $scriptDir 'expected'
 $py2v = Join-Path $projectDir 'py2v.exe'
 
+function Normalize-VCode {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Code
+    )
+
+    $tmp = Join-Path $env:TEMP ("py2v_fmt_" + [guid]::NewGuid().ToString() + ".v")
+    try {
+        Set-Content -Path $tmp -Value $Code -NoNewline -Encoding utf8
+        $null = & v fmt -w $tmp 2>$null
+        if ($LASTEXITCODE -eq 0 -and (Test-Path $tmp)) {
+            return (Get-Content $tmp -Raw).Replace("`r`n", "`n").TrimEnd("`n", "`r", " ")
+        }
+        return $Code.Replace("`r`n", "`n").TrimEnd("`n", "`r", " ")
+    } finally {
+        if (Test-Path $tmp) {
+            Remove-Item $tmp -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
 # Build if needed
 if (-not (Test-Path $py2v)) {
     Write-Host "Building py2v..."
@@ -42,8 +63,8 @@ foreach ($f in Get-ChildItem $casesDir -Filter '*.py' | Sort-Object Name) {
         continue
     }
 
-    $generated = ($output | Out-String).TrimEnd("`r", "`n", " ")
-    $expected = (Get-Content $expFile -Raw).TrimEnd("`r", "`n", " ")
+    $generated = Normalize-VCode -Code ($output | Out-String)
+    $expected = Normalize-VCode -Code (Get-Content $expFile -Raw)
 
     if ($generated -eq $expected) {
         $passed++

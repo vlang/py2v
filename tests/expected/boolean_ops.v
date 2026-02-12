@@ -6,8 +6,8 @@ fn main_func() {
 	b := false
 	println(if a && b { 'True' } else { 'False' })
 	println(if a || b { 'True' } else { 'False' })
-	println(if !(a) { 'True' } else { 'False' })
-	println(if !(b) { 'True' } else { 'False' })
+	println(if !a { 'True' } else { 'False' })
+	println(if !b { 'True' } else { 'False' })
 	println(if a && a { 'True' } else { 'False' })
 	println(if b || b { 'True' } else { 'False' })
 	println(if (a || b) && (a || b) { 'True' } else { 'False' })

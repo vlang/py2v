@@ -2,39 +2,39 @@ module main
 
 // V type mapping from Python types
 pub const v_type_map = {
-	'int':     'int'
-	'float':   'f64'
-	'str':     'string'
-	'bool':    'bool'
-	'Bool':    'bool'    // SMT Bool type
-	'bytes':   '[]u8'
-	'tuple':   '[]int'   // V doesn't have tuples, use arrays
-	'c_int8':  'i8'
-	'c_int16': 'i16'
-	'c_int32': 'int'
-	'c_int64': 'i64'
-	'c_uint8': 'u8'
+	'int':      'int'
+	'float':    'f64'
+	'str':      'string'
+	'bool':     'bool'
+	'Bool':     'bool' // SMT Bool type
+	'bytes':    '[]u8'
+	'tuple':    '[]int' // V doesn't have tuples, use arrays
+	'c_int8':   'i8'
+	'c_int16':  'i16'
+	'c_int32':  'int'
+	'c_int64':  'i64'
+	'c_uint8':  'u8'
 	'c_uint16': 'u16'
 	'c_uint32': 'u32'
 	'c_uint64': 'u64'
-	'i8':      'i8'
-	'i16':     'i16'
-	'i32':     'int'
-	'i64':     'i64'
-	'u8':      'u8'
-	'u16':     'u16'
-	'u32':     'u32'
-	'u64':     'u64'
-	'None':    'auto'
+	'i8':       'i8'
+	'i16':      'i16'
+	'i32':      'int'
+	'i64':      'i64'
+	'u8':       'u8'
+	'u16':      'u16'
+	'u32':      'u32'
+	'u64':      'u64'
+	'None':     'Any'
 }
 
 // V container type mapping
 pub const v_container_type_map = {
 	'List':     '[]'
 	'Dict':     'map'
-	'Set':      '[]'  // V doesn't have sets, use arrays
+	'Set':      '[]' // V doesn't have sets, use arrays
 	'Optional': '?'
-	'Tuple':    '[]'  // V doesn't have tuples, use arrays
+	'Tuple':    '[]' // V doesn't have tuples, use arrays
 }
 
 // V keywords that need escaping with @
@@ -121,13 +121,13 @@ pub fn op_to_symbol(op_type string) string {
 		'Div' { '/' }
 		'FloorDiv' { '/' }
 		'Mod' { '%' }
-		'Pow' { '^' }  // Note: V uses ^ for power, not **
+		'Pow' { '^' } // Note: V uses ^ for power, not **
 		'LShift' { '<<' }
 		'RShift' { '>>' }
 		'BitOr' { '|' }
 		'BitXor' { '^' }
 		'BitAnd' { '&' }
-		'MatMult' { '*' }  // No matrix mult in V, fallback to *
+		'MatMult' { '*' } // No matrix mult in V, fallback to *
 		'And' { '&&' }
 		'Or' { '||' }
 		'Not' { '!' }
@@ -162,7 +162,7 @@ pub fn map_type(typename string) string {
 	}
 	if typename.starts_with('Set[') {
 		inner := typename[4..typename.len - 1]
-		return '[]${map_type(inner)}'  // V doesn't have sets
+		return '[]${map_type(inner)}' // V doesn't have sets
 	}
 	if typename.starts_with('Tuple[') {
 		// Tuples become arrays in V

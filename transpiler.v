@@ -1,20 +1,26 @@
 module main
 
+const max_generated_line_len = 121
+
 // VTranspiler - transpiles Python AST to V code
 pub struct VTranspiler {
 mut:
 	usings                      []string
 	indent_str                  string = '\t'
+	module_name                 string = 'main'
 	tmp_var_id                  int
 	generated_code_has_any_type bool
-	known_classes               map[string][]string   // class name -> field names in order
-	mut_param_indices           map[string][]int      // function name -> indices of mut parameters
-	func_defaults               map[string][]string   // function name -> default values for trailing params
-	func_param_count            map[string]int        // function name -> total parameter count
-	var_types                   map[string]string     // variable name -> inferred type ("bool", "string", etc.)
-	func_return_types           map[string]string     // function name -> return type ("string", "int", etc.)
-	extra_mut_vars              map[string]bool       // variables that need mut because passed to mut params
-	global_vars                 map[string]bool       // module-level variables (declared in __global)
+	known_classes               map[string][]string // class name -> field names in order
+	class_direct_fields         map[string][]string // class name -> direct (non-inherited) fields
+	class_base_names            map[string][]string // class name -> direct base class names
+	current_class_name          string
+	mut_param_indices           map[string][]int    // function name -> indices of mut parameters
+	func_defaults               map[string][]string // function name -> default values for trailing params
+	func_param_count            map[string]int      // function name -> total parameter count
+	var_types                   map[string]string   // variable name -> inferred type ("bool", "string", etc.)
+	func_return_types           map[string]string   // function name -> return type ("string", "int", etc.)
+	extra_mut_vars              map[string]bool     // variables that need mut because passed to mut params
+	global_vars                 map[string]bool     // module-level variables (declared in __global)
 }
 
 // Create a new VTranspiler
@@ -46,7 +52,7 @@ pub fn (t VTranspiler) indent_code(code string, level int) string {
 pub fn (t VTranspiler) usings_code() string {
 	mut buf := []string{}
 	buf << '@[translated]'
-	buf << 'module main'
+	buf << 'module ${t.module_name}'
 
 	if t.usings.len > 0 {
 		buf << ''
@@ -70,9 +76,11 @@ pub fn (mut t VTranspiler) visit_module(mod Module) string {
 	// Separate module-level assignments from definitions
 	// V requires __global block for module-level variables, and definitions before code
 	mut global_assigns := []string{}
-	mut defined_vars := map[string]bool{}  // Track already defined variables
+	mut defined_vars := map[string]bool{} // Track already defined variables
 	mut definitions := []string{}
 	mut other_stmts := []string{}
+	mut imported_exceptions := []string{}
+	mut exported_names := []string{}
 
 	// Pre-pass: identify module-level variable names and infer types (will become __global)
 	for stmt in mod.body {
@@ -108,6 +116,28 @@ pub fn (mut t VTranspiler) visit_module(mod Module) string {
 	// First pass: process function/class definitions to register signatures
 	for stmt in mod.body {
 		match stmt {
+			ImportFrom {
+				mod_name := stmt.mod or { '' }
+				// Package __init__.py pattern: from ...exceptions import FooException, ...
+				if mod_name.ends_with('.exceptions') || mod_name == 'exceptions' {
+					for alias in stmt.names {
+						if alias.name.ends_with('Exception') || alias.name == 'WebDriverException' {
+							if alias.name !in imported_exceptions {
+								imported_exceptions << alias.name
+							}
+						}
+					}
+				}
+			}
+			Assign {
+				// Track __all__ for exported-name filtering/order.
+				if stmt.targets.len == 1 && stmt.targets[0] is Name {
+					n := stmt.targets[0] as Name
+					if n.id == '__all__' {
+						exported_names = extract_string_list(stmt.value)
+					}
+				}
+			}
 			FunctionDef, AsyncFunctionDef, ClassDef {
 				result := t.visit_stmt(stmt)
 				if result.len > 0 {
@@ -232,6 +262,24 @@ pub fn (mut t VTranspiler) visit_module(mod Module) string {
 		code_parts << def
 	}
 
+	// Add exception union alias for package-style exports (e.g., selenium/common/__init__.py)
+	mut union_names := []string{}
+	if exported_names.len > 0 && imported_exceptions.len > 0 {
+		for name in exported_names {
+			if name in imported_exceptions {
+				union_names << name
+			}
+		}
+	} else if imported_exceptions.len > 1 {
+		union_names = imported_exceptions.clone()
+	}
+	if union_names.len > 1 {
+		if code_parts.len > 0 {
+			code_parts << ''
+		}
+		code_parts << format_union_type_alias('WebDriverExceptions', union_names, max_generated_line_len)
+	}
+
 	// Add other statements - must be wrapped in fn main() if present
 	if other_stmts.len > 0 {
 		code_parts << ''
@@ -254,14 +302,61 @@ pub fn (mut t VTranspiler) visit_module(mod Module) string {
 	}
 
 	// Check if code contains "Any" type
-	t.generated_code_has_any_type = code.contains(' Any') || code.contains('[Any]') ||
-		code.contains('Any{')
+	t.generated_code_has_any_type = code.contains(' Any') || code.contains('[Any]')
+		|| code.contains('Any{')
 
 	header := t.usings_code()
 	if header.len > 0 {
 		return header + '\n\n' + code + '\n'
 	}
 	return code + '\n'
+}
+
+fn extract_string_list(expr Expr) []string {
+	mut out := []string{}
+	match expr {
+		List {
+			for e in expr.elts {
+				if e is Constant {
+					c := e as Constant
+					if c.value is string {
+						out << (c.value as string)
+					}
+				}
+			}
+		}
+		Tuple {
+			for e in expr.elts {
+				if e is Constant {
+					c := e as Constant
+					if c.value is string {
+						out << (c.value as string)
+					}
+				}
+			}
+		}
+		else {}
+	}
+	return out
+}
+
+fn format_union_type_alias(name string, variants []string, max_col int) string {
+	if variants.len == 0 {
+		return 'type ${name} = Any'
+	}
+	mut lines := []string{}
+	mut line := 'type ${name} = ${variants[0]}'
+	for i := 1; i < variants.len; i++ {
+		candidate := '${line} | ${variants[i]}'
+		if candidate.len <= max_col {
+			line = candidate
+		} else {
+			lines << line
+			line = '\t| ${variants[i]}'
+		}
+	}
+	lines << line
+	return lines.join('\n')
 }
 
 // Visit a list of statements
@@ -377,6 +472,10 @@ pub fn (mut t VTranspiler) visit_expr(expr Expr) string {
 pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 	// Save var_types for function scope (keep globals, reset locals)
 	saved_var_types := t.var_types.clone()
+	saved_current_class := t.current_class_name
+	if node.is_class_method {
+		t.current_class_name = node.class_name
+	}
 	// Keep global variable types, reset function-local ones
 	mut func_var_types := map[string]string{}
 	for k, v in t.var_types {
@@ -391,13 +490,17 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 
 	// Handle class method receiver
 	if node.is_class_method {
-		signature << '(self ${node.class_name})'
+		if 'self' in node.mutable_vars || node.name == '__init__' {
+			signature << '(mut self ${node.class_name})'
+		} else {
+			signature << '(self ${node.class_name})'
+		}
 	}
 
 	// Process arguments
 	mut args_strs := []string{}
 	mut generics := []string{}
-	mut mut_indices := []int{}  // Track which parameter indices are mutable
+	mut mut_indices := []int{} // Track which parameter indices are mutable
 	mut param_idx := 0
 
 	for arg in node.args.args {
@@ -418,15 +521,9 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 		}
 
 		if typename == '' {
-			// Need to infer or use generic
-			if node.is_class_method {
-				typename = 'Any'
-			} else {
-				// Use a generic type parameter
-				gen := get_next_generic(generics)
-				generics << gen
-				typename = gen
-			}
+			// V functions require explicit parameter types.
+			typename = 'Any'
+			t.generated_code_has_any_type = true
 		} else if typename.len == 1 && typename[0] >= `A` && typename[0] <= `Z` {
 			// Single uppercase letter is a generic
 			if typename !in generics {
@@ -436,7 +533,8 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 
 		args_strs << '${arg_name} ${typename}'
 		// Track parameter type for return type inference
-		if typename.len > 0 && typename != 'Any' && !(typename.len == 1 && typename[0] >= `A` && typename[0] <= `Z`) {
+		if typename.len > 0 && typename != 'Any' && !(typename.len == 1 && typename[0] >= `A`
+			&& typename[0] <= `Z`) {
 			t.var_types[arg.arg] = typename
 		}
 		param_idx++
@@ -479,13 +577,13 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 		args_strs << 'ch chan ${yield_type}'
 	}
 
-	signature << '${node.name}(${args_strs.join(", ")})'
+	signature << '${node.name}(${args_strs.join(', ')})'
 
 	// Pre-scan body to populate var_types for return type inference
 	t.prescan_body_types(node.body)
 
 	// Return type
-	if !node.is_void && !node.is_generator {
+	if !node.is_void && !node.is_generator && node.name != '__init__' {
 		if ret := node.returns {
 			ret_type := t.typename_from_annotation(ret)
 			signature << ret_type
@@ -542,14 +640,16 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 	body_lines << t.visit_body_stmts(body_stmts, 1)
 	body := body_lines.join('\n')
 
-	func_code := '${signature.join(" ")} {\n${body}\n}'
+	func_code := '${signature.join(' ')} {\n${body}\n}'
 
 	// Restore var_types from parent scope
 	t.var_types = saved_var_types.clone()
 
 	if nested_fndefs.len > 0 {
+		t.current_class_name = saved_current_class
 		return nested_fndefs.join('\n') + '\n' + func_code
 	}
+	t.current_class_name = saved_current_class
 	return func_code
 }
 
@@ -557,18 +657,18 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 pub fn (mut t VTranspiler) visit_async_function_def(node AsyncFunctionDef) string {
 	// Convert to regular FunctionDef
 	fd := FunctionDef{
-		name: node.name
-		args: node.args
-		body: node.body
-		decorator_list: node.decorator_list
-		returns: node.returns
-		type_comment: node.type_comment
-		loc: node.loc
-		is_generator: node.is_generator
-		is_void: node.is_void
-		mutable_vars: node.mutable_vars
+		name:            node.name
+		args:            node.args
+		body:            node.body
+		decorator_list:  node.decorator_list
+		returns:         node.returns
+		type_comment:    node.type_comment
+		loc:             node.loc
+		is_generator:    node.is_generator
+		is_void:         node.is_void
+		mutable_vars:    node.mutable_vars
 		is_class_method: node.is_class_method
-		class_name: node.class_name
+		class_name:      node.class_name
 	}
 	return t.visit_function_def(fd)
 }
@@ -577,28 +677,66 @@ pub fn (mut t VTranspiler) visit_async_function_def(node AsyncFunctionDef) strin
 pub fn (mut t VTranspiler) visit_class_def(node ClassDef) string {
 	mut fields := []string{}
 	mut field_names := []string{}
+	mut base_names := []string{}
 
 	if node.declarations.len > 0 {
 		mut has_typed_fields := false
 		for decl, typename in node.declarations {
-			if typename == '' {
-				// Skip untyped fields (from __init__ self.x = y assignments)
-				continue
+			mut decl_type := typename
+			if decl_type == '' {
+				// Preserve untyped __init__ fields so method assignments compile.
+				decl_type = 'Any'
+				t.generated_code_has_any_type = true
 			}
 			if !has_typed_fields {
 				fields << 'pub mut:'
 				has_typed_fields = true
 			}
-			typ := map_type(typename)
+			mut typ := map_type(decl_type)
+			if typ == 'auto' {
+				typ = 'Any'
+				t.generated_code_has_any_type = true
+			}
+			if should_emit_ref_field_type(typ) {
+				typ = '&${typ}'
+			}
 			fields << t.indent_code('${decl} ${typ}', 1)
 			field_names << decl
 		}
 	}
-	// Register ALL classes for struct literal generation
-	t.known_classes[node.name] = field_names
+	for base in node.bases {
+		if base is Name {
+			base_name := (base as Name).id
+			if base_name.len > 0 {
+				base_names << base_name
+			}
+		}
+	}
+	// Register class shape metadata for constructor generation
+	t.class_direct_fields[node.name] = field_names
+	t.class_base_names[node.name] = base_names
+	mut all_field_names := []string{}
+	for base_name in base_names {
+		base_fields := t.known_classes[base_name] or { []string{} }
+		all_field_names << base_fields
+	}
+	all_field_names << field_names
+	t.known_classes[node.name] = all_field_names
 
-	struct_def := if fields.len > 0 {
-		'pub struct ${node.name} {\n${fields.join("\n")}\n}'
+	// Embed base classes (inheritance -> struct embedding)
+	mut embeds := []string{}
+	for base_name in base_names {
+		if base_name in t.known_classes {
+			embeds << t.indent_code(base_name, 1)
+		}
+	}
+
+	mut all_parts := []string{}
+	all_parts << embeds
+	all_parts << fields
+
+	struct_def := if all_parts.len > 0 {
+		'pub struct ${node.name} {\n${all_parts.join('\n')}\n}'
 	} else {
 		'pub struct ${node.name} {\n}'
 	}
@@ -715,7 +853,8 @@ pub fn (mut t VTranspiler) visit_assign(node Assign) string {
 					assigns << t.handle_starred_unpack(elts, value_str, node)
 				} else {
 					// Check if value is a tuple/list literal with same length - can unpack directly
-					is_tuple_swap := node.value is Tuple && (node.value as Tuple).elts.len == elts.len
+					is_tuple_swap := node.value is Tuple
+						&& (node.value as Tuple).elts.len == elts.len
 
 					if is_tuple_swap {
 						// Direct tuple swap: x, y = y, x or a, b, c = 1, 2, 3
@@ -764,13 +903,18 @@ pub fn (mut t VTranspiler) visit_assign(node Assign) string {
 							}
 							return false
 						})
-						op := if is_redefined || any_redefined || all_names_mutable || has_subscript_or_attr || has_discard { '=' } else { ':=' }
+						op := if is_redefined || any_redefined || all_names_mutable
+							|| has_subscript_or_attr || has_discard {
+							'='
+						} else {
+							':='
+						}
 						// Strip brackets from value
 						mut val := value_str
 						if val.starts_with('[') && val.ends_with(']') {
 							val = val[1..val.len - 1]
 						}
-						assigns << '${subtargets.join(", ")} ${op} ${val}'
+						assigns << '${subtargets.join(', ')} ${op} ${val}'
 					} else {
 						// Unpacking from array/variable - V doesn't support this directly
 						// Generate individual assignments: a := arr[0]; b := arr[1]; c := arr[2]
@@ -804,8 +948,9 @@ pub fn (mut t VTranspiler) visit_assign(node Assign) string {
 					assigns << t.handle_starred_unpack(elts, value_str, node)
 				} else {
 					// Check if value is a list/tuple literal with same length
-					is_list_literal := (node.value is List && (node.value as List).elts.len == elts.len) ||
-						(node.value is Tuple && (node.value as Tuple).elts.len == elts.len)
+					is_list_literal :=
+						(node.value is List && (node.value as List).elts.len == elts.len)
+						|| (node.value is Tuple && (node.value as Tuple).elts.len == elts.len)
 
 					if is_list_literal {
 						mut subtargets := []string{}
@@ -827,7 +972,7 @@ pub fn (mut t VTranspiler) visit_assign(node Assign) string {
 						if val.starts_with('[') && val.ends_with(']') {
 							val = val[1..val.len - 1]
 						}
-						assigns << '${subtargets.join(", ")} ${op} ${val}'
+						assigns << '${subtargets.join(', ')} ${op} ${val}'
 					} else {
 						// Unpacking from array/variable - generate individual assignments
 						tmp_var := t.new_tmp('unpack')
@@ -962,7 +1107,7 @@ pub fn (mut t VTranspiler) visit_ann_assign(node AnnAssign) string {
 				for i := 1; i < lst.elts.len; i++ {
 					elts << t.visit_expr(lst.elts[i])
 				}
-				return '${kw}${target} := [${elts.join(", ")}]'
+				return '${kw}${target} := [${elts.join(', ')}]'
 			}
 			return '${kw}${target} := ${type_str}{}'
 		}
@@ -975,7 +1120,7 @@ pub fn (mut t VTranspiler) visit_ann_assign(node AnnAssign) string {
 
 // Visit For
 pub fn (mut t VTranspiler) visit_for(node For) string {
-	target := t.visit_expr(node.target)
+	mut target := t.visit_expr(node.target)
 	mut buf := []string{}
 
 	// Handle for/else pattern - V doesn't have it, use has_break flag
@@ -983,6 +1128,64 @@ pub fn (mut t VTranspiler) visit_for(node For) string {
 
 	if has_else {
 		buf << 'has_break := false'
+	}
+
+	// Support tuple/list loop targets with V syntax: for a, b in ...
+	if node.target is Tuple || node.target is List {
+		elts := if node.target is Tuple {
+			(node.target as Tuple).elts
+		} else {
+			(node.target as List).elts
+		}
+		mut target_names := []string{}
+		mut all_names := true
+		for e in elts {
+			if e is Name {
+				target_names << t.visit_expr(e)
+			} else {
+				all_names = false
+				break
+			}
+		}
+		if all_names && target_names.len > 0 {
+			target = target_names.join(', ')
+
+			// enumerate(seq) => for i, v in seq
+			if node.iter is Call {
+				call := node.iter as Call
+				if call.func is Name {
+					fname := (call.func as Name).id
+					if fname == 'enumerate' && target_names.len == 2 && call.args.len > 0 {
+						iter0 := t.visit_expr(call.args[0])
+						buf << 'for ${target_names[0]}, ${target_names[1]} in ${iter0} {'
+						buf << t.visit_body_stmts(node.body, 1)
+						buf << '}'
+						if has_else {
+							buf << 'if has_break != true {'
+							buf << t.visit_body_stmts(node.orelse, 1)
+							buf << '}'
+						}
+						return buf.join('\n')
+					}
+					// zip(a, b) => for i, x in a { y := b[i]; ... }
+					if fname == 'zip' && target_names.len == 2 && call.args.len >= 2 {
+						left := t.visit_expr(call.args[0])
+						right := t.visit_expr(call.args[1])
+						idx := t.new_tmp('zipi')
+						buf << 'for ${idx}, ${target_names[0]} in ${left} {'
+						buf << '\t${target_names[1]} := ${right}[${idx}]'
+						buf << t.visit_body_stmts(node.body, 1)
+						buf << '}'
+						if has_else {
+							buf << 'if has_break != true {'
+							buf << t.visit_body_stmts(node.orelse, 1)
+							buf << '}'
+						}
+						return buf.join('\n')
+					}
+				}
+			}
+		}
 	}
 
 	// Check for range with step
@@ -1037,13 +1240,13 @@ pub fn (mut t VTranspiler) visit_async_for(node AsyncFor) string {
 	buf << '// WARNING: async for converted to sync for'
 
 	f := For{
-		target: node.target
-		iter: node.iter
-		body: node.body
-		orelse: node.orelse
+		target:       node.target
+		iter:         node.iter
+		body:         node.body
+		orelse:       node.orelse
 		type_comment: node.type_comment
-		loc: node.loc
-		level: node.level
+		loc:          node.loc
+		level:        node.level
 	}
 	buf << t.visit_for(f)
 
@@ -1176,10 +1379,10 @@ pub fn (mut t VTranspiler) visit_async_with(node AsyncWith) string {
 	buf << '// WARNING: async with converted to sync with defer'
 
 	w := With{
-		items: node.items
-		body: node.body
+		items:        node.items
+		body:         node.body
 		type_comment: node.type_comment
-		loc: node.loc
+		loc:          node.loc
 	}
 	buf << t.visit_with(w)
 
@@ -1218,7 +1421,7 @@ pub fn (mut t VTranspiler) visit_try(node Try) string {
 		for handler in node.handlers {
 			if typ := handler.typ {
 				typ_name := t.visit_expr(typ)
-				buf << "// except ${typ_name}:"
+				buf << '// except ${typ_name}:'
 			} else {
 				buf << '// except:'
 			}
@@ -1294,13 +1497,27 @@ pub fn (mut t VTranspiler) visit_expr_stmt(node ExprStmt) string {
 // Visit Constant
 pub fn (mut t VTranspiler) visit_constant(node Constant) string {
 	match node.value {
-		NoneValue { return 'none' }
-		EllipsisValue { return '' }
-		bool { return if node.value as bool { 'true' } else { 'false' } }
-		int { return (node.value as int).str() }
-		i64 { return (node.value as i64).str() }
-		f64 { return (node.value as f64).str() }
-		string { return "'${escape_string(node.value as string)}'" }
+		NoneValue {
+			return 'none'
+		}
+		EllipsisValue {
+			return ''
+		}
+		bool {
+			return if node.value as bool { 'true' } else { 'false' }
+		}
+		int {
+			return (node.value as int).str()
+		}
+		i64 {
+			return (node.value as i64).str()
+		}
+		f64 {
+			return (node.value as f64).str()
+		}
+		string {
+			return "'${escape_string(node.value as string)}'"
+		}
 		BytesValue {
 			bv := node.value as BytesValue
 			return bytes_to_v_literal(bv.data)
@@ -1491,7 +1708,11 @@ pub fn (mut t VTranspiler) visit_compare(node Compare) string {
 		right := t.visit_expr(node.comparators[0])
 		// Check if right side is a string - use !.contains() instead of '!in'
 		right_ann := get_expr_annotation(node.comparators[0])
-		right_type := if right_ann.len > 0 { right_ann } else { t.infer_expr_type(node.comparators[0]) }
+		right_type := if right_ann.len > 0 {
+			right_ann
+		} else {
+			t.infer_expr_type(node.comparators[0])
+		}
 		if right_type == 'string' {
 			return '!${right}.contains(${left})'
 		}
@@ -1560,6 +1781,21 @@ pub fn (mut t VTranspiler) visit_call(node Call) string {
 		obj := t.visit_expr(attr_node.value)
 		method := attr_node.attr
 
+		// Translate Python super().method(...) to embedded-base calls.
+		if attr_node.value is Call {
+			super_call := attr_node.value as Call
+			if super_call.func is Name && (super_call.func as Name).id == 'super' {
+				base_name := t.resolve_super_base()
+				if base_name.len > 0 {
+					if vargs.len > 0 {
+						return 'self.${base_name}.${method}(${vargs.join(', ')})'
+					}
+					return 'self.${base_name}.${method}()'
+				}
+				return ''
+			}
+		}
+
 		// String methods
 		match method {
 			'strip' {
@@ -1603,6 +1839,11 @@ pub fn (mut t VTranspiler) visit_call(node Call) string {
 			}
 			'join' {
 				if vargs.len > 0 {
+					arg_type := t.infer_expr_type(node.args[0])
+					if arg_type.len == 0 || arg_type == 'Any' {
+						// Fallback when iterable element type is unknown.
+						return '(${vargs[0]}).str()'
+					}
 					return '${vargs[0]}.join(${obj})'
 				}
 				return obj
@@ -1628,7 +1869,7 @@ pub fn (mut t VTranspiler) visit_call(node Call) string {
 			'format' {
 				// Convert .format() to string interpolation isn't easy
 				// For now, just comment it
-				return '${obj} /* .format(${vargs.join(", ")}) not supported */'
+				return '${obj} /* .format(${vargs.join(', ')}) not supported */'
 			}
 			'count' {
 				if vargs.len > 0 {
@@ -1747,17 +1988,26 @@ pub fn (mut t VTranspiler) visit_call(node Call) string {
 			}
 		}
 
+		direct_fields := t.class_direct_fields[fname] or { fields.clone() }
+		base_names := t.class_base_names[fname] or { []string{} }
+
 		// Generate struct literal with indentation for vfmt
 		mut field_parts := []string{}
-		for field in fields {
+		for field in direct_fields {
 			if val := field_vals[field] {
 				field_parts << '\t${field}: ${val}'
+			}
+		}
+		for base_name in base_names {
+			base_init := t.build_inline_class_init(base_name, field_vals)
+			if base_init.len > 0 {
+				field_parts << '\t${base_name}: ${base_init}'
 			}
 		}
 		if field_parts.len == 0 {
 			return '${fname}{}'
 		}
-		return '${fname}{\n${field_parts.join("\n")}\n}'
+		return '${fname}{\n${field_parts.join('\n')}\n}'
 	}
 
 	for kw in node.keywords {
@@ -1779,10 +2029,86 @@ pub fn (mut t VTranspiler) visit_call(node Call) string {
 	}
 
 	// Default call
-	if vargs.len > 0 {
-		return '${fname}(${vargs.join(", ")})'
+	mut call_name := fname
+	if should_lowercase_call_name(call_name, t.known_classes) {
+		call_name = lower_first_ascii(call_name)
 	}
-	return '${fname}()'
+	if vargs.len > 0 {
+		return '${call_name}(${vargs.join(', ')})'
+	}
+	return '${call_name}()'
+}
+
+fn (t &VTranspiler) build_inline_class_init(class_name string, field_vals map[string]string) string {
+	mut parts := []string{}
+	direct_fields := t.class_direct_fields[class_name] or { []string{} }
+	for field in direct_fields {
+		if val := field_vals[field] {
+			parts << '${field}: ${val}'
+		}
+	}
+	base_names := t.class_base_names[class_name] or { []string{} }
+	for base_name in base_names {
+		base_init := t.build_inline_class_init(base_name, field_vals)
+		if base_init.len > 0 {
+			parts << '${base_name}: ${base_init}'
+		}
+	}
+	if parts.len == 0 {
+		return ''
+	}
+	return '${class_name}{${parts.join(', ')}}'
+}
+
+fn (t &VTranspiler) resolve_super_base() string {
+	if t.current_class_name.len == 0 {
+		return ''
+	}
+	bases := t.class_base_names[t.current_class_name] or { []string{} }
+	if bases.len == 0 {
+		return ''
+	}
+	base := bases[0]
+	// Python builtins like Exception are not modeled as embedded structs in V.
+	if base !in t.known_classes {
+		return ''
+	}
+	return base
+}
+
+fn should_emit_ref_field_type(typ string) bool {
+	if typ.len == 0 || typ[0] == `&` {
+		return false
+	}
+	if typ.starts_with('[]') || typ.starts_with('map[') || typ.starts_with('?') {
+		return false
+	}
+	return typ[0] >= `A` && typ[0] <= `Z` && typ != 'Any'
+}
+
+fn should_lowercase_call_name(name string, known map[string][]string) bool {
+	if name.len == 0 {
+		return false
+	}
+	if name in known {
+		return false
+	}
+	if name.contains('.') {
+		return false
+	}
+	c := name[0]
+	return c >= `A` && c <= `Z`
+}
+
+fn lower_first_ascii(name string) string {
+	if name.len == 0 {
+		return name
+	}
+	first := name[0]
+	if first >= `A` && first <= `Z` {
+		return (first + 32).ascii_str() + name[1..]
+	}
+	return name
 }
 
 // Visit Attribute
@@ -1915,7 +2241,7 @@ pub fn (mut t VTranspiler) visit_list(node List) string {
 		for e in node.elts {
 			if e is Starred {
 				if curr_list.len > 0 {
-					parts << '[${curr_list.join(", ")}]'
+					parts << '[${curr_list.join(', ')}]'
 					curr_list = []
 				}
 				parts << t.visit_expr((e as Starred).value)
@@ -1925,7 +2251,7 @@ pub fn (mut t VTranspiler) visit_list(node List) string {
 		}
 
 		if curr_list.len > 0 {
-			parts << '[${curr_list.join(", ")}]'
+			parts << '[${curr_list.join(', ')}]'
 		}
 
 		if parts.len == 0 {
@@ -1946,7 +2272,17 @@ pub fn (mut t VTranspiler) visit_list(node List) string {
 	for e in node.elts {
 		elts << t.visit_expr(e)
 	}
-	return '[${elts.join(", ")}]'
+	flat := '[${elts.join(', ')}]'
+	if flat.len <= max_generated_line_len {
+		return flat
+	}
+	mut lines := []string{}
+	lines << '['
+	for e in elts {
+		lines << '\t${e},'
+	}
+	lines << ']'
+	return lines.join('\n')
 }
 
 // Visit Tuple (same as List in V)
@@ -1964,7 +2300,7 @@ pub fn (mut t VTranspiler) visit_tuple(node Tuple) string {
 		for e in node.elts {
 			if e is Starred {
 				if curr_list.len > 0 {
-					parts << '[${curr_list.join(", ")}]'
+					parts << '[${curr_list.join(', ')}]'
 					curr_list = []
 				}
 				parts << t.visit_expr((e as Starred).value)
@@ -1974,7 +2310,7 @@ pub fn (mut t VTranspiler) visit_tuple(node Tuple) string {
 		}
 
 		if curr_list.len > 0 {
-			parts << '[${curr_list.join(", ")}]'
+			parts << '[${curr_list.join(', ')}]'
 		}
 
 		if parts.len == 0 {
@@ -1995,7 +2331,7 @@ pub fn (mut t VTranspiler) visit_tuple(node Tuple) string {
 	for e in node.elts {
 		elts << t.visit_expr(e)
 	}
-	return '[${elts.join(", ")}]'
+	return '[${elts.join(', ')}]'
 }
 
 // Visit Dict
@@ -2011,7 +2347,7 @@ pub fn (mut t VTranspiler) visit_dict(node Dict) string {
 	if pairs.len == 0 {
 		return '{}'
 	}
-	return '{\n${pairs.join("\n")}\n}'
+	return '{\n${pairs.join('\n')}\n}'
 }
 
 // Visit Set (same as List in V)
@@ -2020,7 +2356,7 @@ pub fn (mut t VTranspiler) visit_set(node Set) string {
 	for e in node.elts {
 		elts << t.visit_expr(e)
 	}
-	return '[${elts.join(", ")}]'
+	return '[${elts.join(', ')}]'
 }
 
 // Visit IfExp
@@ -2041,8 +2377,8 @@ pub fn (mut t VTranspiler) visit_lambda(node Lambda) string {
 	stripped_body := strip_outer_parens(body)
 
 	// Check if body contains arithmetic operations
-	body_has_arithmetic := body.contains(' + ') || body.contains(' - ') ||
-		body.contains(' * ') || body.contains(' / ')
+	body_has_arithmetic := body.contains(' + ') || body.contains(' - ') || body.contains(' * ')
+		|| body.contains(' / ')
 
 	lambda_type := if body_has_arithmetic { 'int' } else { 'string' }
 
@@ -2063,7 +2399,7 @@ pub fn (mut t VTranspiler) visit_lambda(node Lambda) string {
 		}
 	}
 
-	return 'fn (${args.join(", ")}) ${lambda_type} {\n\treturn ${stripped_body}\n}'
+	return 'fn (${args.join(', ')}) ${lambda_type} {\n\treturn ${stripped_body}\n}'
 }
 
 // Visit ListComp
@@ -2210,7 +2546,7 @@ pub fn (mut t VTranspiler) visit_formatted_value(node FormattedValue) string {
 	return '(${expr}).str()'
 }
 
-// Visit JoinedStr (f-string) - use [].join('') pattern
+// Visit JoinedStr (f-string)
 pub fn (mut t VTranspiler) visit_joined_str(node JoinedStr) string {
 	mut parts := []string{}
 	for val in node.values {
@@ -2218,14 +2554,30 @@ pub fn (mut t VTranspiler) visit_joined_str(node JoinedStr) string {
 			c := val as Constant
 			if c.value is string {
 				s := c.value as string
-				parts << "'${s}'"
+				parts << "'${escape_string(s)}'"
 				continue
 			}
 		}
 		parts << t.visit_expr(val)
 	}
-	empty := "''"
-	return '[${parts.join(", ")}].join(${empty})'
+	if parts.len == 0 {
+		return "''"
+	}
+	if parts.len == 1 {
+		return parts[0]
+	}
+	flat := parts.join(' + ')
+	if flat.len <= max_generated_line_len {
+		return flat
+	}
+	mut lines := []string{}
+	lines << '('
+	lines << '\t${parts[0]}'
+	for p in parts[1..] {
+		lines << '\t+ ${p}'
+	}
+	lines << ')'
+	return lines.join('\n')
 }
 
 // Visit NamedExpr (walrus operator - should be transformed)
@@ -2503,10 +2855,18 @@ fn (t &VTranspiler) infer_expr_type(expr Expr) string {
 			if expr.func is Attribute {
 				attr := (expr.func as Attribute).attr
 				match attr {
-					'str' { return 'string' }
-					'len' { return 'int' }
-					'keys' { return 'array' }
-					'values' { return 'array' }
+					'str' {
+						return 'string'
+					}
+					'len' {
+						return 'int'
+					}
+					'keys' {
+						return 'array'
+					}
+					'values' {
+						return 'array'
+					}
 					else {
 						// Check func_return_types for the method name
 						rt := t.func_return_types[attr]

@@ -9,7 +9,11 @@ fn main_func() {
 	nums2.sort(a < b)
 	println(nums2.str())
 	original := [5, 2, 8, 1, 9]
-	sorted_list := (fn (a []Any) []Any { mut b := a.clone(); b.sort(); return b }(original))
+	sorted_list := (fn (a []Any) []Any {
+		mut b := a.clone()
+		b.sort()
+		return b
+	}(original))
 	println(original.str())
 	println(sorted_list.str())
 	items := [1, 2, 3, 4, 5]
