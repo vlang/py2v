@@ -86,6 +86,28 @@ pub const v_keywords = [
 	'unsafe',
 ]
 
+// V built-in type names that conflict when used as identifiers (variable/parameter names)
+// These need escaping with @ only in identifier context, not as type casts
+pub const v_builtin_types = [
+	'string',
+	'int',
+	'i8',
+	'i16',
+	'i64',
+	'u8',
+	'u16',
+	'u32',
+	'u64',
+	'f32',
+	'f64',
+	'bool',
+	'byte',
+	'rune',
+	'voidptr',
+	'charptr',
+	'byteptr',
+]
+
 // V width rank for numeric type promotion
 pub const v_width_rank = {
 	'bool': 0
@@ -201,6 +223,15 @@ pub fn is_keyword(name string) bool {
 // Escape a name if it's a V keyword
 pub fn escape_keyword(name string) string {
 	if is_keyword(name) {
+		return '@${name}'
+	}
+	return name
+}
+
+// Escape a name used as an identifier (variable/parameter name) if it conflicts
+// with V keywords or built-in type names
+pub fn escape_identifier(name string) string {
+	if is_keyword(name) || name in v_builtin_types {
 		return '@${name}'
 	}
 	return name
