@@ -12,7 +12,7 @@ fn (mut self Base) __init__(value Any) {
 	self.value = value
 }
 
-fn (self Base) greet() {
+fn (self Base) greet() Any {
 	return 'hi ' + (self.value).str()
 }
 
@@ -24,7 +24,7 @@ fn (mut self Child) __init__(value Any) {
 	self.Base.__init__(value)
 }
 
-fn (self Child) greet() {
+fn (self Child) greet() Any {
 	return self.Base.greet()
 }
 
