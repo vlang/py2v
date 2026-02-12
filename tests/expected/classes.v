@@ -1,6 +1,9 @@
 @[translated]
 module main
 
+// Foo is a simple test class.
+//
+// It has two methods: bar and baz.
 pub struct Foo {
 }
 
