@@ -328,14 +328,22 @@ fn parse_class_def(m map[string]json2.Any) ClassDef {
 			declarations[key] = val.str()
 		}
 	}
+	mut docstring := ?string(none)
+	if raw_doc := m['docstring_comment'] {
+		s := raw_doc.str()
+		if s.len > 0 {
+			docstring = s
+		}
+	}
 	return ClassDef{
-		name:           m['name'] or { json2.Any('') }.str()
-		bases:          bases
-		keywords:       keywords
-		body:           body
-		decorator_list: decorators
-		loc:            parse_location(m)
-		declarations:   declarations
+		name:              m['name'] or { json2.Any('') }.str()
+		bases:             bases
+		keywords:          keywords
+		body:              body
+		decorator_list:    decorators
+		loc:               parse_location(m)
+		declarations:      declarations
+		docstring_comment: docstring
 	}
 }
 

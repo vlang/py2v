@@ -449,13 +449,14 @@ pub mut:
 
 pub struct ClassDef {
 pub mut:
-	name           string
-	bases          []Expr
-	keywords       []Keyword
-	body           []Stmt
-	decorator_list []Expr
-	loc            Location
-	declarations   map[string]string
+	name              string
+	bases             []Expr
+	keywords          []Keyword
+	body              []Stmt
+	decorator_list    []Expr
+	loc               Location
+	declarations      map[string]string
+	docstring_comment ?string
 }
 
 pub struct Return {
