@@ -29,9 +29,7 @@ fn normalize_v_code(code string, id int) string {
 	}
 	fmt_result := os.execute('v fmt -w "${tmp}"')
 	if fmt_result.exit_code == 0 && os.exists(tmp) {
-		formatted := os.read_file(tmp) or {
-			return code.replace('\r\n', '\n').trim_space()
-		}
+		formatted := os.read_file(tmp) or { return code.replace('\r\n', '\n').trim_space() }
 		return formatted.replace('\r\n', '\n').trim_space()
 	}
 	return code.replace('\r\n', '\n').trim_space()
