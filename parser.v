@@ -1255,9 +1255,11 @@ fn parse_dict_comp(m map[string]json2.Any) DictComp {
 		key:        parse_expr(map_field(m, 'key')) or { Expr(Constant{
 			value: NoneValue{}
 		}) }
-		value:      parse_expr(map_field(m, 'value')) or { Expr(Constant{
-			value: NoneValue{}
-		}) }
+		value:      parse_expr(map_field(m, 'value')) or {
+			Expr(Constant{
+				value: NoneValue{}
+			})
+		}
 		generators: generators
 		loc:        parse_location(m)
 	}
@@ -1290,9 +1292,11 @@ fn parse_comprehension(m map[string]json2.Any) Comprehension {
 		}
 	}
 	return Comprehension{
-		target:   parse_expr(map_field(m, 'target')) or { Expr(Constant{
-			value: NoneValue{}
-		}) }
+		target:   parse_expr(map_field(m, 'target')) or {
+			Expr(Constant{
+				value: NoneValue{}
+			})
+		}
 		iter:     parse_expr(map_field(m, 'iter')) or { Expr(Constant{
 			value: NoneValue{}
 		}) }
