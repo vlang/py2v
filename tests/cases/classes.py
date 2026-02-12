@@ -1,4 +1,8 @@
 class Foo:
+    """Foo is a simple test class.
+
+    It has two methods: bar and baz.
+    """
 
     def bar(self):
         return self.baz()

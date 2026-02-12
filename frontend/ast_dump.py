@@ -442,6 +442,12 @@ def _node_to_dict(node: ast.AST, mutable_vars: Set[str],
         result["body"] = [_node_to_dict(n, mutable_vars, redefined) for n in node.body]
         result["decorator_list"] = [_node_to_dict(d, mutable_vars, redefined) for d in node.decorator_list]
         result["declarations"] = _extract_class_declarations(node)
+        # Extract class-level docstring
+        if (node.body
+                and isinstance(node.body[0], ast.Expr)
+                and isinstance(node.body[0].value, ast.Constant)
+                and isinstance(node.body[0].value.value, str)):
+            result["docstring_comment"] = node.body[0].value.value
 
     elif isinstance(node, ast.Return):
         result["value"] = _node_to_dict(node.value, mutable_vars, redefined) if node.value else None

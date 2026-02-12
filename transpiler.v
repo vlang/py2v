@@ -746,10 +746,33 @@ pub fn (mut t VTranspiler) visit_class_def(node ClassDef) string {
 	all_parts << embeds
 	all_parts << fields
 
-	struct_def := if all_parts.len > 0 {
+	mut struct_def := if all_parts.len > 0 {
 		'pub struct ${node.name} {\n${all_parts.join('\n')}\n}'
 	} else {
 		'pub struct ${node.name} {\n}'
+	}
+
+	// Add class docstring as struct comment (V convention: "// StructName ...")
+	if doc := node.docstring_comment {
+		lines := doc.split('\n')
+		mut comment_lines := []string{}
+		for i, raw_line in lines {
+			line := raw_line.trim_space()
+			if line.len == 0 {
+				if i > 0 && i < lines.len - 1 {
+					comment_lines << '//'
+				}
+				continue
+			}
+			if i == 0 && !line.starts_with(node.name) {
+				comment_lines << '// ${node.name} - ${line}'
+			} else {
+				comment_lines << '// ${line}'
+			}
+		}
+		if comment_lines.len > 0 {
+			struct_def = comment_lines.join('\n') + '\n' + struct_def
+		}
 	}
 
 	// Pre-pass: register return types of all methods that have explicit annotations
