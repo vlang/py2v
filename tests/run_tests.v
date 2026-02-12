@@ -20,6 +20,23 @@ mut:
 	results []TestResult
 }
 
+// Normalize V code through v fmt for consistent comparison
+fn normalize_v_code(code string, id int) string {
+	tmp := os.join_path(os.temp_dir(), 'py2v_fmt_${os.getpid()}_${id}.v')
+	os.write_file(tmp, code) or { return code.replace('\r\n', '\n').trim_space() }
+	defer {
+		os.rm(tmp) or {}
+	}
+	fmt_result := os.execute('v fmt -w "${tmp}"')
+	if fmt_result.exit_code == 0 && os.exists(tmp) {
+		formatted := os.read_file(tmp) or {
+			return code.replace('\r\n', '\n').trim_space()
+		}
+		return formatted.replace('\r\n', '\n').trim_space()
+	}
+	return code.replace('\r\n', '\n').trim_space()
+}
+
 fn main() {
 	mut runner := TestRunner{}
 
@@ -29,7 +46,14 @@ fn main() {
 	expected_dir := os.join_path(script_dir, 'expected')
 
 	// Find py2v executable (in parent directory)
-	py2v_path := os.join_path(os.dir(script_dir), 'py2v')
+	mut py2v_path := os.join_path(os.dir(script_dir), 'py2v')
+	// On Windows, try .exe extension
+	if !os.exists(py2v_path) {
+		py2v_path_exe := py2v_path + '.exe'
+		if os.exists(py2v_path_exe) {
+			py2v_path = py2v_path_exe
+		}
+	}
 
 	if !os.exists(py2v_path) {
 		eprintln('Error: py2v executable not found at ${py2v_path}')
@@ -73,8 +97,8 @@ fn main() {
 			continue
 		}
 
-		generated := result.output.trim_space()
-		expected := os.read_file(expected_file) or {
+		generated := normalize_v_code(result.output, runner.passed + runner.failed)
+		expected_raw := os.read_file(expected_file) or {
 			runner.failed++
 			runner.results << TestResult{
 				name:      test_name
@@ -83,9 +107,10 @@ fn main() {
 			}
 			continue
 		}
+		expected := normalize_v_code(expected_raw, 1000 + runner.passed + runner.failed)
 
 		// Compare output
-		if generated == expected.trim_space() {
+		if generated == expected {
 			runner.passed++
 			runner.results << TestResult{
 				name:   test_name
