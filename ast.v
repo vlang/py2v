@@ -456,6 +456,7 @@ pub mut:
 	decorator_list    []Expr
 	loc               Location
 	declarations      map[string]string
+	class_defaults    map[string]Expr
 	docstring_comment ?string
 }
 

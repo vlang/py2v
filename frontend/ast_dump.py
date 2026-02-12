@@ -352,13 +352,40 @@ def _detect_class_methods(tree: ast.Module):
                     item._class_name = node.name
 
 
+def _infer_type_from_value(node: ast.AST) -> str:
+    """Infer a type string from a value expression."""
+    if isinstance(node, ast.Constant):
+        if isinstance(node.value, bool):
+            return "bool"
+        if isinstance(node.value, int):
+            return "int"
+        if isinstance(node.value, float):
+            return "float"
+        if isinstance(node.value, str):
+            return "str"
+    if isinstance(node, ast.List):
+        return "list"
+    if isinstance(node, ast.Dict):
+        return "dict"
+    # For None literal (ast.Constant with value=None)
+    if isinstance(node, ast.Constant) and node.value is None:
+        return ""
+    return ""
+
+
 def _extract_class_declarations(node: ast.ClassDef) -> Dict[str, str]:
-    """Extract field declarations from a class body (AnnAssign in __init__ or class body)."""
+    """Extract field declarations from a class body (AnnAssign, Assign, or __init__)."""
     decls: Dict[str, str] = {}
     for item in node.body:
         if isinstance(item, ast.AnnAssign) and isinstance(item.target, ast.Name):
             type_name = _annotation_to_str(item.annotation)
             decls[item.target.id] = type_name
+        elif isinstance(item, ast.Assign):
+            # Class-level bare assignment: FIELD = value
+            if (len(item.targets) == 1
+                    and isinstance(item.targets[0], ast.Name)):
+                field_name = item.targets[0].id
+                decls[field_name] = _infer_type_from_value(item.value)
         elif isinstance(item, ast.FunctionDef) and item.name == "__init__":
             for stmt in item.body:
                 if (isinstance(stmt, ast.AnnAssign)
@@ -374,6 +401,20 @@ def _extract_class_declarations(node: ast.ClassDef) -> Dict[str, str]:
                       and stmt.targets[0].value.id == "self"):
                     decls[stmt.targets[0].attr] = ""
     return decls
+
+
+def _extract_class_defaults(node: ast.ClassDef, mutable_vars, redefined) -> Dict[str, Any]:
+    """Extract default values for class-level fields."""
+    defaults = {}
+    for item in node.body:
+        if isinstance(item, ast.AnnAssign) and isinstance(item.target, ast.Name):
+            if item.value is not None:
+                defaults[item.target.id] = _node_to_dict(item.value, mutable_vars, redefined)
+        elif isinstance(item, ast.Assign):
+            if (len(item.targets) == 1
+                    and isinstance(item.targets[0], ast.Name)):
+                defaults[item.targets[0].id] = _node_to_dict(item.value, mutable_vars, redefined)
+    return defaults
 
 
 def _annotation_to_str(node: Optional[ast.AST]) -> str:
@@ -442,6 +483,7 @@ def _node_to_dict(node: ast.AST, mutable_vars: Set[str],
         result["body"] = [_node_to_dict(n, mutable_vars, redefined) for n in node.body]
         result["decorator_list"] = [_node_to_dict(d, mutable_vars, redefined) for d in node.decorator_list]
         result["declarations"] = _extract_class_declarations(node)
+        result["class_defaults"] = _extract_class_defaults(node, mutable_vars, redefined)
         # Extract class-level docstring
         if (node.body
                 and isinstance(node.body[0], ast.Expr)

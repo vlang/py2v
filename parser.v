@@ -328,6 +328,15 @@ fn parse_class_def(m map[string]json2.Any) ClassDef {
 			declarations[key] = val.str()
 		}
 	}
+	mut class_defaults := map[string]Expr{}
+	if raw_defaults := m['class_defaults'] {
+		raw_map := raw_defaults.as_map()
+		for key, val in raw_map {
+			if expr := parse_expr(val.as_map()) {
+				class_defaults[key] = expr
+			}
+		}
+	}
 	mut docstring := ?string(none)
 	if raw_doc := m['docstring_comment'] {
 		s := raw_doc.str()
@@ -343,6 +352,7 @@ fn parse_class_def(m map[string]json2.Any) ClassDef {
 		decorator_list:    decorators
 		loc:               parse_location(m)
 		declarations:      declarations
+		class_defaults:    class_defaults
 		docstring_comment: docstring
 	}
 }
