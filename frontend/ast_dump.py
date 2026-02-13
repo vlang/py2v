@@ -430,6 +430,18 @@ def _annotation_to_str(node: Optional[ast.AST]) -> str:
         return f"{_annotation_to_str(node.value)}.{node.attr}"
     if isinstance(node, ast.Tuple):
         return ", ".join(_annotation_to_str(e) for e in node.elts)
+    # PEP 604: X | Y union types (Python 3.10+)
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
+        left = _annotation_to_str(node.left)
+        right = _annotation_to_str(node.right)
+        # X | None  ->  Optional[X]
+        if right == "None":
+            return f"Optional[{left}]"
+        # None | X  ->  Optional[X]
+        if left == "None":
+            return f"Optional[{right}]"
+        # General union: X | Y  ->  just use left for now
+        return left
     return ""
 
 
