@@ -6,6 +6,10 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 PY2V="$PROJECT_DIR/py2v"
+# On Windows (MINGW/MSYS), prefer .exe
+if [ ! -x "$PY2V" ] && [ -x "$PY2V.exe" ]; then
+    PY2V="$PY2V.exe"
+fi
 CASES_DIR="$SCRIPT_DIR/cases"
 EXPECTED_DIR="$SCRIPT_DIR/expected"
 
