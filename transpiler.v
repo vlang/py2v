@@ -10,9 +10,10 @@ mut:
 	module_name                 string = 'main'
 	tmp_var_id                  int
 	generated_code_has_any_type bool
-	known_classes               map[string][]string // class name -> field names in order
-	class_direct_fields         map[string][]string // class name -> direct (non-inherited) fields
-	class_base_names            map[string][]string // class name -> direct base class names
+	known_classes               map[string][]string          // class name -> field names in order
+	class_direct_fields         map[string][]string          // class name -> direct (non-inherited) fields
+	class_base_names            map[string][]string          // class name -> direct base class names
+	class_attr_symbols          map[string]map[string]string // class name -> class attr -> module-level symbol
 	current_class_name          string
 	mut_param_indices           map[string][]int    // function name -> indices of mut parameters
 	func_defaults               map[string][]string // function name -> default values for trailing params
@@ -689,10 +690,72 @@ pub fn (mut t VTranspiler) visit_class_def(node ClassDef) string {
 	mut fields := []string{}
 	mut field_names := []string{}
 	mut base_names := []string{}
+	mut class_attr_values := []string{}
+	mut class_attr_syms := map[string]string{}
+	mut init_field_names := map[string]bool{}
+
+	for stmt in node.body {
+		match stmt {
+			FunctionDef {
+				if stmt.name != '__init__' {
+					continue
+				}
+				for init_stmt in stmt.body {
+					match init_stmt {
+						Assign {
+							if init_stmt.targets.len == 1 && init_stmt.targets[0] is Attribute {
+								attr := init_stmt.targets[0] as Attribute
+								if attr.value is Name && (attr.value as Name).id == 'self' {
+									init_field_names[attr.attr] = true
+								}
+							}
+						}
+						AnnAssign {
+							if init_stmt.target is Attribute {
+								attr := init_stmt.target as Attribute
+								if attr.value is Name && (attr.value as Name).id == 'self' {
+									init_field_names[attr.attr] = true
+								}
+							}
+						}
+						else {}
+					}
+				}
+			}
+			Assign {
+				if stmt.targets.len == 1 && stmt.targets[0] is Name {
+					attr_name := (stmt.targets[0] as Name).id
+					if !is_v_field_ident(attr_name) {
+						class_attr_syms[attr_name] = class_attr_symbol_name(node.name,
+							attr_name)
+					}
+				}
+			}
+			else {}
+		}
+	}
+	t.class_attr_symbols[node.name] = class_attr_syms.clone()
+
+	for stmt in node.body {
+		match stmt {
+			Assign {
+				if stmt.targets.len == 1 && stmt.targets[0] is Name {
+					attr_name := (stmt.targets[0] as Name).id
+					if sym := class_attr_syms[attr_name] {
+						class_attr_values << 'const ${sym} = ${t.visit_expr(stmt.value)}'
+					}
+				}
+			}
+			else {}
+		}
+	}
 
 	if node.declarations.len > 0 {
 		mut has_typed_fields := false
 		for decl, typename in node.declarations {
+			if decl in class_attr_syms && decl !in init_field_names {
+				continue
+			}
 			mut decl_type := typename
 			if decl_type == '' {
 				// Preserve untyped __init__ fields so method assignments compile.
@@ -711,7 +774,12 @@ pub fn (mut t VTranspiler) visit_class_def(node ClassDef) string {
 			if should_emit_ref_field_type(typ) {
 				typ = '&${typ}'
 			}
-			fields << t.indent_code('${decl} ${typ}', 1)
+			if default_expr := node.class_defaults[decl] {
+				default_str := t.visit_expr(default_expr)
+				fields << t.indent_code('${decl} ${typ} = ${default_str}', 1)
+			} else {
+				fields << t.indent_code('${decl} ${typ}', 1)
+			}
 			field_names << decl
 		}
 	}
@@ -773,6 +841,11 @@ pub fn (mut t VTranspiler) visit_class_def(node ClassDef) string {
 		if comment_lines.len > 0 {
 			struct_def = comment_lines.join('\n') + '\n' + struct_def
 		}
+	}
+
+	// Emit class-level attributes as module-level symbols.
+	if class_attr_values.len > 0 {
+		struct_def = class_attr_values.join('\n') + '\n\n' + struct_def
 	}
 
 	// Pre-pass: register return types of all methods that have explicit annotations
@@ -2124,6 +2197,68 @@ fn should_emit_ref_field_type(typ string) bool {
 	return typ[0] >= `A` && typ[0] <= `Z` && typ != 'Any'
 }
 
+fn to_symbol_ident(name string) string {
+	if name.len == 0 {
+		return 'v'
+	}
+	mut out := []u8{}
+	mut prev_sep := true
+	mut prev_input_upper := false
+	for i := 0; i < name.len; i++ {
+		c := name[i]
+		is_upper := c >= `A` && c <= `Z`
+		is_lower := c >= `a` && c <= `z`
+		is_digit := c >= `0` && c <= `9`
+		if is_upper {
+			if out.len > 0 && !prev_sep && ((out[out.len - 1] >= `a` && out[out.len - 1] <= `z`)
+				|| (out[out.len - 1] >= `0` && out[out.len - 1] <= `9`)) && !prev_input_upper {
+				out << `_`
+			}
+			out << (c + 32)
+			prev_sep = false
+			prev_input_upper = true
+		} else if is_lower || is_digit {
+			out << c
+			prev_sep = false
+			prev_input_upper = false
+		} else if !prev_sep {
+			out << `_`
+			prev_sep = true
+			prev_input_upper = false
+		}
+	}
+	mut cleaned := out.bytestr().trim('_')
+	if cleaned.len == 0 {
+		return 'v'
+	}
+	if cleaned[0] >= `0` && cleaned[0] <= `9` {
+		cleaned = 'v_${cleaned}'
+	}
+	return cleaned
+}
+
+fn class_attr_symbol_name(class_name string, attr_name string) string {
+	return '${to_symbol_ident(class_name)}_${to_symbol_ident(attr_name)}'
+}
+
+fn is_v_field_ident(name string) bool {
+	if name.len == 0 {
+		return false
+	}
+	first := name[0]
+	if !((first >= `a` && first <= `z`) || first == `_`) {
+		return false
+	}
+	for c in name[1..].bytes() {
+		is_lower := c >= `a` && c <= `z`
+		is_digit := c >= `0` && c <= `9`
+		if !(is_lower || is_digit || c == `_`) {
+			return false
+		}
+	}
+	return true
+}
+
 fn should_lowercase_call_name(name string, known map[string][]string) bool {
 	if name.len == 0 {
 		return false
@@ -2151,6 +2286,15 @@ fn lower_first_ascii(name string) string {
 
 // Visit Attribute
 pub fn (mut t VTranspiler) visit_attribute(node Attribute) string {
+	if node.value is Name {
+		class_name := (node.value as Name).id
+		if class_attrs := t.class_attr_symbols[class_name] {
+			if sym := class_attrs[node.attr] {
+				return sym
+			}
+		}
+	}
+
 	value := t.visit_expr(node.value)
 	attr := node.attr
 	attr_path := '${value}.${attr}'

@@ -3,8 +3,8 @@ module main
 
 pub struct Options {
 pub mut:
-	v bool
-	n int
+	v bool = false
+	n int  = 0
 }
 
 fn fib(i int) int {
