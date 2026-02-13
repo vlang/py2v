@@ -165,14 +165,14 @@ pub fn map_type(typename string) string {
 	if typename in v_type_map {
 		return v_type_map[typename]
 	}
-	// Check if it's a container type
-	if typename.starts_with('List[') {
-		inner := typename[5..typename.len - 1]
+	// Check if it's a container type (uppercase or PEP 585 lowercase)
+	if typename.starts_with('List[') || typename.starts_with('list[') {
+		inner := typename[typename.index_u8(`[`) + 1..typename.len - 1]
 		return '[]${map_type(inner)}'
 	}
-	if typename.starts_with('Dict[') {
-		// Dict[K, V] -> map[K]V
-		inner := typename[5..typename.len - 1]
+	if typename.starts_with('Dict[') || typename.starts_with('dict[') {
+		// Dict[K, V] / dict[K, V] -> map[K]V
+		inner := typename[typename.index_u8(`[`) + 1..typename.len - 1]
 		parts := split_type_args(inner)
 		if parts.len == 2 {
 			return 'map[${map_type(parts[0])}]${map_type(parts[1])}'
@@ -182,11 +182,11 @@ pub fn map_type(typename string) string {
 		inner := typename[9..typename.len - 1]
 		return '?${map_type(inner)}'
 	}
-	if typename.starts_with('Set[') {
-		inner := typename[4..typename.len - 1]
+	if typename.starts_with('Set[') || typename.starts_with('set[') {
+		inner := typename[typename.index_u8(`[`) + 1..typename.len - 1]
 		return '[]${map_type(inner)}' // V doesn't have sets
 	}
-	if typename.starts_with('Tuple[') {
+	if typename.starts_with('Tuple[') || typename.starts_with('tuple[') {
 		// Tuples become arrays in V
 		return '[]Any'
 	}

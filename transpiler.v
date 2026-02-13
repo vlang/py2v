@@ -1186,6 +1186,10 @@ pub fn (mut t VTranspiler) visit_ann_assign(node AnnAssign) string {
 		}
 	}
 
+	// Attribute targets (self.x) are struct fields — use = not :=
+	is_attr := node.target is Attribute
+	op := if is_attr { '=' } else { ':=' }
+
 	// Track variable type from annotation
 	if node.target is Name && type_str != '' {
 		t.var_types[(node.target as Name).id] = type_str
@@ -1214,15 +1218,15 @@ pub fn (mut t VTranspiler) visit_ann_assign(node AnnAssign) string {
 				for i := 1; i < lst.elts.len; i++ {
 					elts << t.visit_expr(lst.elts[i])
 				}
-				return '${kw}${target} := [${elts.join(', ')}]'
+				return '${kw}${target} ${op} [${elts.join(', ')}]'
 			}
-			return '${kw}${target} := ${type_str}{}'
+			return '${kw}${target} ${op} ${type_str}{}'
 		}
 
-		return '${kw}${target} := ${val_str}'
+		return '${kw}${target} ${op} ${val_str}'
 	}
 
-	return '${kw}${target} := ${type_str}{}'
+	return '${kw}${target} ${op} ${type_str}{}'
 }
 
 // Visit For
@@ -2849,9 +2853,36 @@ pub fn (mut t VTranspiler) typename_from_annotation(ann Expr) string {
 			}
 			return attr
 		}
+		BinOp {
+			// PEP 604: X | None -> ?X
+			if ann.op is BitOr {
+				left := t.typename_from_annotation(ann.left)
+				right := t.typename_from_annotation(ann.right)
+				// X | None -> ?X
+				if ann.right is Constant {
+					r := ann.right as Constant
+					if r.value is NoneValue {
+						return '?${map_type(left)}'
+					}
+				}
+				// None | X -> ?X
+				if ann.left is Constant {
+					l := ann.left as Constant
+					if l.value is NoneValue {
+						return '?${map_type(right)}'
+					}
+				}
+				// General union: just use left type
+				return map_type(left)
+			}
+			return default_type
+		}
 		Constant {
 			if ann.value is string {
 				return ann.value as string
+			}
+			if ann.value is NoneValue {
+				return 'None'
 			}
 			return default_type
 		}
