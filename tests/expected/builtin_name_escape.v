@@ -3,10 +3,10 @@ module main
 
 type Any = bool | int | i64 | f64 | string | []byte
 
-fn make_pair(@string Any, @int Any) map[string]Any {
+fn make_pair(string_ Any, int_ Any) map[string]Any {
 	return {
-		'name':  @string
-		'value': @int
+		'name':  string_
+		'value': int_
 	}
 }
 
