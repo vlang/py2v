@@ -1640,7 +1640,7 @@ pub fn (mut t VTranspiler) visit_constant(node Constant) string {
 pub fn (mut t VTranspiler) visit_name(node Name) string {
 	// Check if this identifier was escaped due to V built-in type name conflict
 	if t.escaped_identifiers[node.id] or { false } {
-		return '@${node.id}'
+		return '${node.id}_'
 	}
 	return escape_keyword(node.id)
 }
@@ -2570,6 +2570,10 @@ pub fn (mut t VTranspiler) visit_lambda(node Lambda) string {
 
 	for arg in node.args.args {
 		name := escape_identifier(arg.arg)
+		// Track identifiers escaped due to built-in type name conflicts
+		if arg.arg in v_builtin_types {
+			t.escaped_identifiers[arg.arg] = true
+		}
 		// V requires type annotations on each parameter
 		// Use annotation if available, otherwise default based on body analysis
 		if ann := arg.annotation {
@@ -2825,10 +2829,10 @@ pub fn (mut t VTranspiler) typename_from_annotation(ann Expr) string {
 			index := t.typename_from_annotation(ann.slice)
 
 			mapped := v_container_type_map[value] or { value }
-			if value == 'Tuple' {
+			if value == 'Tuple' || value == 'tuple' {
 				return '(${index})'
 			}
-			if value == 'Dict' {
+			if value == 'Dict' || value == 'dict' {
 				// Handle Dict[K, V]
 				return 'map[${index}]'
 			}

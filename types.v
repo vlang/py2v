@@ -31,10 +31,14 @@ pub const v_type_map = {
 // V container type mapping
 pub const v_container_type_map = {
 	'List':     '[]'
+	'list':     '[]' // Python 3.9+ lowercase generic
 	'Dict':     'map'
+	'dict':     'map' // Python 3.9+ lowercase generic
 	'Set':      '[]' // V doesn't have sets, use arrays
+	'set':      '[]' // Python 3.9+ lowercase generic
 	'Optional': '?'
 	'Tuple':    '[]' // V doesn't have tuples, use arrays
+	'tuple':    '[]' // Python 3.9+ lowercase generic
 }
 
 // V keywords that need escaping with @
@@ -231,8 +235,12 @@ pub fn escape_keyword(name string) string {
 // Escape a name used as an identifier (variable/parameter name) if it conflicts
 // with V keywords or built-in type names
 pub fn escape_identifier(name string) string {
-	if is_keyword(name) || name in v_builtin_types {
+	if is_keyword(name) {
 		return '@${name}'
+	}
+	// V built-in type names can't use @ prefix — rename with underscore suffix
+	if name in v_builtin_types {
+		return '${name}_'
 	}
 	return name
 }
