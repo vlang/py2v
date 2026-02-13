@@ -470,6 +470,30 @@ pub fn (mut t VTranspiler) visit_expr(expr Expr) string {
 	}
 }
 
+// has_property_decorator returns true if the function has @property decorator.
+fn has_property_decorator(decorators []Expr) bool {
+	for d in decorators {
+		if d is Name {
+			if d.id == 'property' {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// has_setter_decorator returns true if the function has @<name>.setter decorator.
+fn has_setter_decorator(decorators []Expr) bool {
+	for d in decorators {
+		if d is Attribute {
+			if d.attr == 'setter' {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // Visit FunctionDef
 pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 	// Save var_types and escaped_identifiers for function scope (keep globals, reset locals)
@@ -871,6 +895,10 @@ pub fn (mut t VTranspiler) visit_class_def(node ClassDef) string {
 				mut fd := stmt
 				fd.is_class_method = true
 				fd.class_name = node.name
+				// Rename @property.setter methods to set_<name> to avoid duplicate method names
+				if has_setter_decorator(fd.decorator_list) {
+					fd.name = 'set_${fd.name}'
+				}
 				methods << t.visit_function_def(fd)
 			}
 			else {}
