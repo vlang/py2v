@@ -1475,6 +1475,7 @@ pub fn (mut t VTranspiler) visit_with(node With) string {
 	buf << 'if true {'
 	for item in node.items {
 		context := t.visit_expr(item.context_expr)
+		mut is_file_handle := false
 		if vars := item.optional_vars {
 			target := t.visit_expr(vars)
 			// Check if target is mutable
@@ -1492,14 +1493,20 @@ pub fn (mut t VTranspiler) visit_with(node With) string {
 					fn_name := (ctx_call.func as Name).id
 					if fn_name == 'open' {
 						kw = 'mut '
+						is_file_handle = true
 					}
 				}
 			}
 			// Check if context is os.create or os.open
 			if context.starts_with('os.create(') || context.starts_with('os.open(') {
 				kw = 'mut '
+				is_file_handle = true
 			}
 			buf << '\t${kw}${target} := ${context}'
+			// Ensure file handles are closed when leaving the with-block scope
+			if is_file_handle {
+				buf << '\tdefer { ${target}.close() }'
+			}
 		} else {
 			buf << '\t${context}'
 		}
@@ -1547,16 +1554,31 @@ pub fn (mut t VTranspiler) visit_raise(node Raise) string {
 // Visit Try
 pub fn (mut t VTranspiler) visit_try(node Try) string {
 	mut buf := []string{}
+	has_handlers := node.handlers.len > 0
 
-	// V doesn't have try/except - convert to comments and execute body directly
-	// In the future, this could use V's or{} blocks for error handling
-	buf << '// try {'
+	// Convert finally blocks to V's defer for guaranteed cleanup
+	if node.finalbody.len > 0 {
+		buf << 'defer {'
+		for stmt in node.finalbody {
+			result := t.visit_stmt(stmt)
+			for line in result.split('\n') {
+				if line.len > 0 {
+					buf << '\t${line}'
+				}
+			}
+		}
+		buf << '}'
+	}
+
+	if has_handlers {
+		buf << '// try {'
+	}
 	for stmt in node.body {
 		buf << t.visit_stmt(stmt)
 	}
-	buf << '// } catch {'
 
-	if node.handlers.len > 0 {
+	if has_handlers {
+		buf << '// } catch {'
 		for handler in node.handlers {
 			if typ := handler.typ {
 				typ_name := t.visit_expr(typ)
@@ -1564,8 +1586,7 @@ pub fn (mut t VTranspiler) visit_try(node Try) string {
 			} else {
 				buf << '// except:'
 			}
-			buf << '// NOTE: V does not have exception handling - this code is unreachable'
-			// Comment out the handler body
+			buf << '// NOTE: V uses Result types (!) and or{} blocks instead of exceptions'
 			for stmt in handler.body {
 				result := t.visit_stmt(stmt)
 				for line in result.split('\n') {
@@ -1573,16 +1594,8 @@ pub fn (mut t VTranspiler) visit_try(node Try) string {
 				}
 			}
 		}
+		buf << '// }'
 	}
-
-	if node.finalbody.len > 0 {
-		buf << '// finally:'
-		for stmt in node.finalbody {
-			buf << t.visit_stmt(stmt)
-		}
-	}
-
-	buf << '// }'
 
 	return buf.join('\n')
 }

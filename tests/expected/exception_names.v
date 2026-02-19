@@ -6,7 +6,7 @@ fn show() {
 	(3 / 0)
 	// } catch {
 	// except ZeroDivisionError:
-	// NOTE: V does not have exception handling - this code is unreachable
+	// NOTE: V uses Result types (!) and or{} blocks instead of exceptions
 	// println('ZeroDivisionError')
 	// }
 }
