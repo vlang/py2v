@@ -386,6 +386,22 @@ fn visit_id(args []string) (string, bool) {
 
 // Handle isinstance() call
 fn visit_isinstance(args []string) (string, bool) {
+	types_arg := args[1]
+	// Handle tuple of types: isinstance(x, (A, B)) → x is A || x is B
+	// visit_tuple renders Python tuples as V arrays: [A, B, ...]
+	if types_arg.starts_with('[') && types_arg.ends_with(']') {
+		inner := types_arg[1..types_arg.len - 1]
+		types := inner.split(', ')
+		if types.len > 1 {
+			mut parts := []string{}
+			for typ in types {
+				parts << '${args[0]} is ${typ}'
+			}
+			return '(${parts.join(' || ')})', true
+		}
+		// Single-element tuple: isinstance(x, (A,)) → x is A
+		return '${args[0]} is ${types[0]}', true
+	}
 	return '${args[0]} is ${args[1]}', true
 }
 
