@@ -449,6 +449,19 @@ fn visit_sys_exit(args []string) (string, bool) {
 	return 'exit(${args[0]})', true
 }
 
+// Handle logging.X() calls
+fn visit_logging(level string, args []string) (string, bool) {
+	if args.len == 0 {
+		return '', false
+	}
+	v_level := match level {
+		'warning' { 'warn' }
+		'critical', 'exception' { 'error' }
+		else { level }
+	}
+	return 'log.${v_level}(${args[0]})', true
+}
+
 // DispatchResult holds the result of a dispatch
 struct DispatchResult {
 	code    string
@@ -606,6 +619,15 @@ fn dispatch_builtin_impl(t &VTranspiler, fname string, node Call, args []string)
 		'reversed' {
 			code, handled := visit_reversed(args)
 			return DispatchResult{code, handled, ''}
+		}
+		'logging.debug', 'logging.info', 'logging.warning', 'logging.warn',
+		'logging.error', 'logging.critical', 'logging.exception' {
+			level := fname.all_after('logging.')
+			code, handled := visit_logging(level, args)
+			return DispatchResult{code, handled, 'log'}
+		}
+		'logging.basicConfig', 'logging.getLogger' {
+			return DispatchResult{'', true, ''}
 		}
 		else {
 			return DispatchResult{'', false, ''}
