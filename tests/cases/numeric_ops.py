@@ -17,6 +17,11 @@ def main():
     print(a % 7)
     print(a ** 2)
 
+    # Floor division augmented assignment
+    c = -7
+    c //= 2
+    print(c)
+
     # Negative numbers
     print(-5 // 2)
     print(-5 % 2)

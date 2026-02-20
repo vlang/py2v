@@ -1196,8 +1196,26 @@ fn (mut t VTranspiler) handle_starred_unpack(elts []Expr, value_str string, node
 // Visit AugAssign
 pub fn (mut t VTranspiler) visit_aug_assign(node AugAssign) string {
 	target := t.visit_expr(node.target)
-	op := op_to_symbol(get_op_type(node.op))
 	val := t.visit_expr(node.value)
+	op_type := get_op_type(node.op)
+	// FloorDiv: V / truncates toward zero, Python // floors toward -inf
+	if op_type == 'FloorDiv' {
+		t.add_using('math')
+		mut left_ann := get_expr_annotation(node.target)
+		mut right_ann := get_expr_annotation(node.value)
+		if left_ann == '' {
+			left_ann = t.infer_expr_type(node.target)
+		}
+		if right_ann == '' {
+			right_ann = t.infer_expr_type(node.value)
+		}
+		is_float := left_ann in ['f64', 'float', 'f32'] || right_ann in ['f64', 'float', 'f32']
+		if is_float {
+			return '${target} = math.floor(${target} / ${val})'
+		}
+		return '${target} = math.divide_floored(${target}, ${val}).quot'
+	}
+	op := op_to_symbol(op_type)
 	return '${target} ${op}= ${val}'
 }
 
@@ -1715,6 +1733,25 @@ pub fn (mut t VTranspiler) visit_binop(node BinOp) string {
 				return convert_percent_format(fmt_str, values)
 			}
 		}
+	}
+
+	// Handle floor division - V / truncates toward zero, Python // floors toward -inf
+	// e.g. -7 // 2 = -4 in Python, -7 / 2 = -3 in V
+	if node.op is FloorDiv {
+		t.add_using('math')
+		mut left_ann := get_expr_annotation(node.left)
+		mut right_ann := get_expr_annotation(node.right)
+		if left_ann == '' {
+			left_ann = t.infer_expr_type(node.left)
+		}
+		if right_ann == '' {
+			right_ann = t.infer_expr_type(node.right)
+		}
+		is_float := left_ann in ['f64', 'float', 'f32'] || right_ann in ['f64', 'float', 'f32']
+		if is_float {
+			return 'math.floor(${left} / ${right})'
+		}
+		return 'math.divide_floored(${left}, ${right}).quot'
 	}
 
 	// Handle string/list repetition
