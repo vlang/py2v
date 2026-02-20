@@ -6,7 +6,7 @@ fn main_func() {
 	nums.sort(a < b)
 	println(nums.str())
 	nums2 := [3, 1, 4, 1, 5, 9, 2, 6]
-	nums2.sort(a < b)
+	nums2.sort(a > b)
 	println(nums2.str())
 	original := [5, 2, 8, 1, 9]
 	sorted_list := (fn (a []Any) []Any {
