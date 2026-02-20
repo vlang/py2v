@@ -1215,6 +1215,25 @@ pub fn (mut t VTranspiler) visit_aug_assign(node AugAssign) string {
 		}
 		return '${target} = math.divide_floored(${target}, ${val}).quot'
 	}
+	// Pow has no V operator; expand to assignment with math function
+	if op_type == 'Pow' {
+		t.add_using('math')
+		mut left_ann := get_expr_annotation(node.target)
+		mut right_ann := get_expr_annotation(node.value)
+		if left_ann == '' {
+			left_ann = t.infer_expr_type(node.target)
+		}
+		if right_ann == '' {
+			right_ann = t.infer_expr_type(node.value)
+		}
+		is_float := left_ann in ['f64', 'float', 'f32'] || right_ann in ['f64', 'float', 'f32']
+		// Negative exponent: Python auto-promotes to float (x **= -1 gives float)
+		is_neg_exp := node.value is UnaryOp && (node.value as UnaryOp).op is USub
+		if is_float || is_neg_exp {
+			return '${target} = math.pow(${target}, ${val})'
+		}
+		return '${target} = math.powi(${target}, ${val})'
+	}
 	op := op_to_symbol(op_type)
 	return '${target} ${op}= ${val}'
 }
@@ -1710,9 +1729,24 @@ pub fn (mut t VTranspiler) visit_binop(node BinOp) string {
 	right := t.visit_expr(node.right)
 	mut op := op_to_symbol(get_op_type(node.op))
 
-	// Handle power operator specially
+	// Handle power operator - V doesn't have **, use math.pow/powi
 	if node.op is Pow {
-		return '${left} ^ ${right}'
+		t.add_using('math')
+		mut left_ann := get_expr_annotation(node.left)
+		mut right_ann := get_expr_annotation(node.right)
+		if left_ann == '' {
+			left_ann = t.infer_expr_type(node.left)
+		}
+		if right_ann == '' {
+			right_ann = t.infer_expr_type(node.right)
+		}
+		is_float := left_ann in ['f64', 'float', 'f32'] || right_ann in ['f64', 'float', 'f32']
+		// Negative exponent: Python auto-promotes to float (2**-1 = 0.5)
+		is_neg_exp := node.right is UnaryOp && (node.right as UnaryOp).op is USub
+		if is_float || is_neg_exp {
+			return 'math.pow(${left}, ${right})'
+		}
+		return 'math.powi(${left}, ${right})'
 	}
 
 	// Handle Python % string formatting -> V string interpolation
