@@ -202,3 +202,203 @@ pub fn strip_outer_parens(s string) string {
 	}
 	return s[1..s.len - 1]
 }
+
+// Convert Python % format string to V string interpolation
+pub fn convert_percent_format(fmt_str string, values []string) string {
+	mut result := strings.new_builder(fmt_str.len * 2)
+	result.write_u8(`'`)
+	mut val_idx := 0
+	mut i := 0
+
+	for i < fmt_str.len {
+		ch := fmt_str[i]
+		if ch == `%` {
+			i++
+			if i >= fmt_str.len {
+				break
+			}
+			if fmt_str[i] == `%` {
+				result.write_u8(`%`)
+				i++
+				continue
+			}
+
+			// Parse flags: -, +, space, 0, #
+			mut zero_pad := false
+			mut left_align := false
+			for i < fmt_str.len && fmt_str[i] in [`-`, `+`, ` `, `0`, `#`] {
+				if fmt_str[i] == `0` {
+					zero_pad = true
+				}
+				if fmt_str[i] == `-` {
+					left_align = true
+				}
+				i++
+			}
+			// Python: left-align overrides zero-pad
+			if left_align {
+				zero_pad = false
+			}
+
+			// Parse width
+			mut width := strings.new_builder(4)
+			for i < fmt_str.len && fmt_str[i] >= `0` && fmt_str[i] <= `9` {
+				width.write_u8(fmt_str[i])
+				i++
+			}
+
+			// Parse precision (.N or bare . meaning 0)
+			mut precision := strings.new_builder(4)
+			mut has_dot := false
+			if i < fmt_str.len && fmt_str[i] == `.` {
+				has_dot = true
+				i++
+				for i < fmt_str.len && fmt_str[i] >= `0` && fmt_str[i] <= `9` {
+					precision.write_u8(fmt_str[i])
+					i++
+				}
+			}
+
+			// Parse type character
+			mut type_char := u8(0)
+			if i < fmt_str.len {
+				type_char = fmt_str[i]
+				i++
+			}
+
+			if val_idx < values.len {
+				value := values[val_idx]
+				val_idx++
+
+				w := width.str()
+				p := precision.str()
+				// V uses negative width for left-alignment
+				effective_w := if left_align && w.len > 0 { '-${w}' } else { w }
+
+				mut v_fmt := strings.new_builder(8)
+
+				match type_char {
+					`s` {
+						if effective_w.len > 0 {
+							v_fmt.write_string(':${effective_w}')
+						}
+					}
+					`d`, `i` {
+						if zero_pad && w.len > 0 {
+							v_fmt.write_string(':0${effective_w}')
+						} else if effective_w.len > 0 {
+							v_fmt.write_string(':${effective_w}')
+						}
+					}
+					`f`, `F` {
+						// %.f = precision 0; bare %f = Python default 6
+						actual_p := if p.len > 0 {
+							p
+						} else if has_dot {
+							'0'
+						} else {
+							'6'
+						}
+						letter := if type_char == `F` { 'F' } else { 'f' }
+						if effective_w.len > 0 {
+							if zero_pad {
+								v_fmt.write_string(':0${effective_w}.${actual_p}${letter}')
+							} else {
+								v_fmt.write_string(':${effective_w}.${actual_p}${letter}')
+							}
+						} else {
+							v_fmt.write_string(':.${actual_p}${letter}')
+						}
+					}
+					`e`, `E` {
+						// %.e = precision 0; bare %e = Python default 6
+						actual_p := if p.len > 0 {
+							p
+						} else if has_dot {
+							'0'
+						} else {
+							'6'
+						}
+						letter := if type_char == `E` { 'E' } else { 'e' }
+						if effective_w.len > 0 {
+							v_fmt.write_string(':${effective_w}.${actual_p}${letter}')
+						} else {
+							v_fmt.write_string(':.${actual_p}${letter}')
+						}
+					}
+					`g`, `G` {
+						actual_p := if p.len > 0 {
+							p
+						} else if has_dot {
+							'0'
+						} else {
+							'6'
+						}
+						letter := if type_char == `G` { 'G' } else { 'g' }
+						if effective_w.len > 0 {
+							v_fmt.write_string(':${effective_w}.${actual_p}${letter}')
+						} else {
+							v_fmt.write_string(':.${actual_p}${letter}')
+						}
+					}
+					`x` {
+						if effective_w.len > 0 {
+							if zero_pad {
+								v_fmt.write_string(':0${effective_w}x')
+							} else {
+								v_fmt.write_string(':${effective_w}x')
+							}
+						} else {
+							v_fmt.write_string(':x')
+						}
+					}
+					`X` {
+						if effective_w.len > 0 {
+							if zero_pad {
+								v_fmt.write_string(':0${effective_w}X')
+							} else {
+								v_fmt.write_string(':${effective_w}X')
+							}
+						} else {
+							v_fmt.write_string(':X')
+						}
+					}
+					`o` {
+						if effective_w.len > 0 {
+							if zero_pad {
+								v_fmt.write_string(':0${effective_w}o')
+							} else {
+								v_fmt.write_string(':${effective_w}o')
+							}
+						} else {
+							v_fmt.write_string(':o')
+						}
+					}
+					else {}
+				}
+
+				fmt_spec := v_fmt.str()
+				result.write_u8(`$`)
+				result.write_u8(`{`)
+				result.write_string(value)
+				result.write_string(fmt_spec)
+				result.write_u8(`}`)
+			}
+		} else {
+			// Escape characters that are special in V string literals
+			match ch {
+				`'` { result.write_string("\\'") }
+				`$` { result.write_string('\\$') }
+				`\\` { result.write_string('\\\\') }
+				`\n` { result.write_string('\\n') }
+				`\r` { result.write_string('\\r') }
+				`\t` { result.write_string('\\t') }
+				else { result.write_u8(ch) }
+			}
+			i++
+		}
+	}
+
+	result.write_u8(`'`)
+	return result.str()
+}

@@ -1697,6 +1697,26 @@ pub fn (mut t VTranspiler) visit_binop(node BinOp) string {
 		return '${left} ^ ${right}'
 	}
 
+	// Handle Python % string formatting -> V string interpolation
+	if node.op is Mod {
+		if node.left is Constant {
+			c := node.left as Constant
+			if c.value is string {
+				fmt_str := c.value as string
+				mut values := []string{}
+				if node.right is Tuple {
+					tup := node.right as Tuple
+					for elt in tup.elts {
+						values << t.visit_expr(elt)
+					}
+				} else {
+					values << right
+				}
+				return convert_percent_format(fmt_str, values)
+			}
+		}
+	}
+
 	// Handle string/list repetition
 	if node.op is Mult {
 		left_ann := get_expr_annotation(node.left)
