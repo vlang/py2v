@@ -291,6 +291,9 @@ fn visit_abs(args []string) (string, bool, string) {
 
 // Handle round() call
 fn visit_round(args []string) (string, bool, string) {
+	if args.len >= 2 {
+		return 'math.round_sig(${args[0]}, ${args[1]})', true, 'math'
+	}
 	return 'math.round(${args[0]})', true, 'math'
 }
 

@@ -10,8 +10,8 @@ fn main_func() {
 	println((math.round(3.7)).str())
 	println((math.round(3.2)).str())
 	println((math.round(3.5)).str())
-	println((math.round(3.1415900000000003)).str())
-	println((math.round(2.71828)).str())
+	println((math.round_sig(3.1415900000000003, 2)).str())
+	println((math.round_sig(2.71828, 3)).str())
 	println((math.abs(-3.14)).str())
 }
 
