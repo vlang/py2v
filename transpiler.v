@@ -2087,9 +2087,13 @@ pub fn (mut t VTranspiler) visit_call(node Call) string {
 				return '${obj}.reverse()'
 			}
 			'sort' {
-				if vargs.len > 0 {
-					// Python sort with key/reverse - complex to translate
-					return '${obj}.sort(a < b)'
+				// Check for reverse=True keyword argument
+				for kw in node.keywords {
+					if arg := kw.arg {
+						if arg == 'reverse' && t.visit_expr(kw.value) == 'true' {
+							return '${obj}.sort(a > b)'
+						}
+					}
 				}
 				return '${obj}.sort(a < b)'
 			}
