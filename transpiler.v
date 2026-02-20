@@ -2034,10 +2034,25 @@ pub fn (mut t VTranspiler) visit_call(node Call) string {
 				return '0'
 			}
 			'isdigit' {
-				return '${obj}.is_digit()'
+				return '${obj}.bytes().all(fn (c u8) bool { return c.is_digit() })'
 			}
 			'isalpha' {
-				return '${obj}.is_alpha()'
+				return '${obj}.bytes().all(fn (c u8) bool { return c.is_letter() })'
+			}
+			'isalnum' {
+				return '${obj}.bytes().all(fn (c u8) bool { return c.is_alnum() })'
+			}
+			'isspace' {
+				return '${obj}.bytes().all(fn (c u8) bool { return c.is_space() })'
+			}
+			'islower' {
+				return '${obj}.is_lower()'
+			}
+			'isupper' {
+				return '${obj}.is_upper()'
+			}
+			'istitle' {
+				return '${obj}.is_title()'
 			}
 			// List methods
 			'remove' {
