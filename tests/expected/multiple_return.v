@@ -1,6 +1,8 @@
 @[translated]
 module main
 
+import math
+
 fn get_pair() []int {
 	return [1, 2]
 }
@@ -10,7 +12,7 @@ fn get_triple() []int {
 }
 
 fn divmod_custom(a int, b int) []int {
-	return [(a / b), (a % b)]
+	return [math.divide_floored(a, b).quot, (a % b)]
 }
 
 fn main_func() {
