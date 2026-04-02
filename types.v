@@ -88,7 +88,7 @@ pub const v_keywords = [
 	'pub',
 	'static',
 	'unsafe',
-]
+]!
 
 // V built-in type names that conflict when used as identifiers (variable/parameter names)
 // These need escaping with @ only in identifier context, not as type casts
@@ -110,7 +110,7 @@ pub const v_builtin_types = [
 	'voidptr',
 	'charptr',
 	'byteptr',
-]
+]!
 
 // V width rank for numeric type promotion
 pub const v_width_rank = {
@@ -128,7 +128,7 @@ pub const v_width_rank = {
 	'f64':  10
 }
 
-// Map Python AST operator names to V symbols
+// op_to_symbol maps Python AST operator names to V symbols.
 pub fn op_to_symbol(op_type string) string {
 	return match op_type {
 		'Eq' { '==' }
@@ -164,7 +164,7 @@ pub fn op_to_symbol(op_type string) string {
 	}
 }
 
-// Map Python type annotation to V type
+// map_type maps a Python type annotation string to a V type string.
 pub fn map_type(typename string) string {
 	if typename in v_type_map {
 		return v_type_map[typename]
@@ -198,7 +198,7 @@ pub fn map_type(typename string) string {
 	return typename
 }
 
-// Split type arguments like "str, int" into ["str", "int"]
+// split_type_args splits type arguments like "str, int" into ["str", "int"].
 fn split_type_args(s string) []string {
 	mut result := []string{}
 	mut depth := 0
@@ -219,12 +219,12 @@ fn split_type_args(s string) []string {
 	return result
 }
 
-// Check if a name is a V keyword
+// is_keyword returns true if `name` is a V keyword.
 pub fn is_keyword(name string) bool {
 	return name in v_keywords
 }
 
-// Escape a name if it's a V keyword
+// escape_keyword escapes `name` with @ if it's a V keyword.
 pub fn escape_keyword(name string) string {
 	if is_keyword(name) {
 		return '@${name}'
@@ -232,8 +232,7 @@ pub fn escape_keyword(name string) string {
 	return name
 }
 
-// Escape a name used as an identifier (variable/parameter name) if it conflicts
-// with V keywords or built-in type names
+// escape_identifier escapes names that conflict with V keywords or built-in type names.
 pub fn escape_identifier(name string) string {
 	if is_keyword(name) {
 		return '@${name}'
@@ -245,7 +244,7 @@ pub fn escape_identifier(name string) string {
 	return name
 }
 
-// Get the wider type for binary operations
+// get_wider_type returns the wider numeric type for binary operations.
 pub fn get_wider_type(left_type string, right_type string) string {
 	left_rank := v_width_rank[left_type] or { -1 }
 	right_rank := v_width_rank[right_type] or { -1 }
@@ -255,7 +254,7 @@ pub fn get_wider_type(left_type string, right_type string) string {
 	return right_type
 }
 
-// Promote numeric type for add/mul operations (widens by one step)
+// promote_numeric_type promotes numeric types for operations like Add/Mult.
 pub fn promote_numeric_type(left_type string, right_type string, op string) string {
 	// Float always wins
 	if left_type == 'f64' || right_type == 'f64' || left_type == 'f32' || right_type == 'f32' {

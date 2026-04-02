@@ -645,7 +645,7 @@ pub mut:
 	loc Location
 }
 
-// Helper functions to create locations
+// make_loc creates a Location with the given line/column offsets.
 pub fn make_loc(lineno int, col_offset int, end_lineno int, end_col_offset int) Location {
 	return Location{
 		lineno:         lineno

@@ -126,7 +126,7 @@ fn module_name_from_output_path(output_file string) string {
 }
 
 fn sanitize_module_name(raw string) string {
-	if raw.len == 0 {
+	if raw == '' {
 		return 'main'
 	}
 	mut out := []u8{}

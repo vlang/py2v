@@ -2,9 +2,9 @@ module main
 
 import strings
 
-// Indentation helper
+// indent indents each non-empty line of `code` by `level` using `indent_str`.
 pub fn indent(code string, level int, indent_str string) string {
-	if code.len == 0 {
+	if code == '' {
 		return code
 	}
 	prefix := indent_str.repeat(level)
@@ -20,7 +20,7 @@ pub fn indent(code string, level int, indent_str string) string {
 	return result.join('\n')
 }
 
-// Join strings with separator, filtering out empty strings
+// join_non_empty joins non-empty `items` with `sep`.
 pub fn join_non_empty(items []string, sep string) string {
 	mut filtered := []string{}
 	for item in items {
@@ -37,28 +37,32 @@ mut:
 	buf strings.Builder
 }
 
+// new_string_builder returns a pre-sized StringBuilder.
 pub fn new_string_builder() StringBuilder {
 	return StringBuilder{
 		buf: strings.new_builder(1024)
 	}
 }
 
+// write appends `s` to the builder.
 pub fn (mut sb StringBuilder) write(s string) {
 	sb.buf.write_string(s)
 }
 
+// writeln appends `s` and a newline to the builder.
 pub fn (mut sb StringBuilder) writeln(s string) {
 	sb.buf.write_string(s)
 	sb.buf.write_string('\n')
 }
 
+// str returns the built string.
 pub fn (mut sb StringBuilder) str() string {
 	return sb.buf.str()
 }
 
-// Check if a string looks like a number
+// is_numeric_string returns true if `s` represents an integer or float literal.
 pub fn is_numeric_string(s string) bool {
-	if s.len == 0 {
+	if s == '' {
 		return false
 	}
 	for i, c in s {
@@ -75,7 +79,7 @@ pub fn is_numeric_string(s string) bool {
 	return true
 }
 
-// Escape string for V string literal
+// escape_string escapes characters in `s` for inclusion in a V string literal.
 pub fn escape_string(s string) string {
 	mut result := strings.new_builder(s.len)
 	for c in s {
@@ -92,7 +96,7 @@ pub fn escape_string(s string) string {
 	return result.str()
 }
 
-// Convert bytes to V byte array literal
+// bytes_to_v_literal converts `data` to a V byte array literal string.
 pub fn bytes_to_v_literal(data []u8) string {
 	if data.len == 0 {
 		return '[]u8{}'
@@ -108,35 +112,37 @@ pub fn bytes_to_v_literal(data []u8) string {
 	return '[${parts.join(', ')}]'
 }
 
-// Check if expression is a simple literal (doesn't need parentheses)
+// is_simple_expr returns true if `expr_type` is a simple expression that doesn't need parentheses.
 pub fn is_simple_expr(expr_type string) bool {
 	return expr_type in ['Constant', 'Name', 'Attribute', 'Subscript', 'Call', 'List', 'Dict',
 		'Tuple']
 }
 
-// Generate unique temporary variable name
+// TmpVarGen generates unique temporary variable names.
 pub struct TmpVarGen {
 mut:
 	counter int
 }
 
+// new_tmp_var_gen creates a new TmpVarGen with counter initialized.
 pub fn new_tmp_var_gen() TmpVarGen {
 	return TmpVarGen{
 		counter: 0
 	}
 }
 
+// next returns a fresh temporary name with `prefix`.
 pub fn (mut g TmpVarGen) next(prefix string) string {
 	g.counter++
 	return '__${prefix}${g.counter}'
 }
 
-// Check if a type is numeric
+// is_numeric_type returns true if `typ` is a known numeric type.
 pub fn is_numeric_type(typ string) bool {
 	return typ in v_width_rank
 }
 
-// Strip leading/trailing whitespace from each line
+// normalize_code strips trailing spaces/tabs from each line in `code`.
 pub fn normalize_code(code string) string {
 	lines := code.split('\n')
 	mut result := []string{}
@@ -147,7 +153,7 @@ pub fn normalize_code(code string) string {
 	return result.join('\n')
 }
 
-// Wrap code in parentheses if needed
+// maybe_paren wraps `code` in parentheses if `needs_paren`.
 pub fn maybe_paren(code string, needs_paren bool) string {
 	if needs_paren {
 		return '(${code})'
@@ -155,7 +161,7 @@ pub fn maybe_paren(code string, needs_paren bool) string {
 	return code
 }
 
-// Check if an expression is syntactically a boolean expression
+// is_bool_expr returns true if `expr` is syntactically a boolean expression.
 pub fn is_bool_expr(expr Expr) bool {
 	match expr {
 		BoolOp {
@@ -177,12 +183,12 @@ pub fn is_bool_expr(expr Expr) bool {
 	}
 }
 
-// Wrap a boolean expression as Python-style True/False string
+// bool_to_python_str returns a Python-style 'True'/'False' expression for `expr_str`.
 pub fn bool_to_python_str(expr_str string) string {
 	return "if ${expr_str} { 'True' } else { 'False' }"
 }
 
-// Strip outer parentheses from expression if they wrap the entire expression
+// strip_outer_parens removes a single pair of outer parentheses if they wrap the whole expression `s`.
 pub fn strip_outer_parens(s string) string {
 	if s.len < 2 || s[0] != `(` || s[s.len - 1] != `)` {
 		return s
@@ -203,7 +209,7 @@ pub fn strip_outer_parens(s string) string {
 	return s[1..s.len - 1]
 }
 
-// Convert Python % format string to V string interpolation
+// convert_percent_format converts a Python-style % format `fmt_str` with `values` into V interpolation.
 pub fn convert_percent_format(fmt_str string, values []string) string {
 	mut result := strings.new_builder(fmt_str.len * 2)
 	result.write_u8(`'`)

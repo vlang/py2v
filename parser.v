@@ -59,7 +59,7 @@ fn parse_type_annotation(m map[string]json2.Any) ?string {
 	return none
 }
 
-// Parse JSON AST string into Module
+// parse_ast parses a JSON AST string into a Module.
 pub fn parse_ast(json_str string) !Module {
 	raw := json2.decode[json2.Any](json_str)!
 	return parse_module(raw.as_map())

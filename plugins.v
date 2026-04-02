@@ -244,7 +244,7 @@ fn visit_str(args []string) (string, bool) {
 }
 
 fn is_simple_identifier(s string) bool {
-	if s.len == 0 {
+	if s == '' {
 		return false
 	}
 	// Check if it's a simple identifier (letters, digits, underscores, starting with letter/underscore)
@@ -488,10 +488,10 @@ struct DispatchResult {
 	using   string
 }
 
-// Dispatch function that routes to the appropriate handler
+// dispatch_builtin dispatches builtins to their special-case handlers.
 pub fn dispatch_builtin(mut t VTranspiler, fname string, node Call, args []string) (string, bool) {
 	result := dispatch_builtin_impl(t, fname, node, args)
-	if result.handled && result.using.len > 0 {
+	if result.handled && result.using != '' {
 		t.add_using(result.using)
 	}
 	return result.code, result.handled
@@ -639,8 +639,8 @@ fn dispatch_builtin_impl(t &VTranspiler, fname string, node Call, args []string)
 			code, handled := visit_reversed(args)
 			return DispatchResult{code, handled, ''}
 		}
-		'logging.debug', 'logging.info', 'logging.warning', 'logging.warn',
-		'logging.error', 'logging.critical', 'logging.exception' {
+		'logging.debug', 'logging.info', 'logging.warning', 'logging.warn', 'logging.error',
+		'logging.critical', 'logging.exception' {
 			level := fname.all_after('logging.')
 			code, handled := visit_logging(level, args)
 			return DispatchResult{code, handled, 'log'}
@@ -654,7 +654,7 @@ fn dispatch_builtin_impl(t &VTranspiler, fname string, node Call, args []string)
 	}
 }
 
-// Dispatch for attribute accesses like sys.argv
+// dispatch_attr handles attribute accesses like sys.argv.
 pub fn dispatch_attr(mut t VTranspiler, attr_path string) (string, bool) {
 	match attr_path {
 		'sys.argv' {

@@ -25,32 +25,32 @@ mut:
 	escaped_identifiers         map[string]bool     // identifiers escaped due to V built-in type name conflict
 }
 
-// Create a new VTranspiler
+// new_transpiler creates a new VTranspiler.
 pub fn new_transpiler() VTranspiler {
 	return VTranspiler{
 		usings: []string{}
 	}
 }
 
-// Add a using/import
+// add_using adds a using/import module to the transpiler.
 pub fn (mut t VTranspiler) add_using(mod string) {
 	if mod !in t.usings {
 		t.usings << mod
 	}
 }
 
-// Generate a new temporary variable name
+// new_tmp generates a new temporary variable name with the given prefix.
 pub fn (mut t VTranspiler) new_tmp(prefix string) string {
 	t.tmp_var_id++
 	return '__${prefix}${t.tmp_var_id}'
 }
 
-// Indent code
+// indent_code indents `code` using the transpiler's indent string.
 pub fn (t VTranspiler) indent_code(code string, level int) string {
 	return indent(code, level, t.indent_str)
 }
 
-// Generate the module header with imports
+// usings_code generates the module header with imports and Any type if needed.
 pub fn (t VTranspiler) usings_code() string {
 	mut buf := []string{}
 	buf << '@[translated]'
@@ -73,7 +73,7 @@ pub fn (t VTranspiler) usings_code() string {
 	return buf.join('\n')
 }
 
-// Main entry point - transpile a module
+// visit_module transpiles a Module into V source code.
 pub fn (mut t VTranspiler) visit_module(mod Module) string {
 	// Separate module-level assignments from definitions
 	// V requires __global block for module-level variables, and definitions before code
@@ -361,7 +361,7 @@ fn format_union_type_alias(name string, variants []string, max_col int) string {
 	return lines.join('\n')
 }
 
-// Visit a list of statements
+// visit_body visits a list of statements and returns their V code joined.
 pub fn (mut t VTranspiler) visit_body(stmts []Stmt) string {
 	mut parts := []string{}
 	mut prev_was_func_or_class := false
@@ -380,7 +380,7 @@ pub fn (mut t VTranspiler) visit_body(stmts []Stmt) string {
 	return parts.join('\n')
 }
 
-// Visit statements in a body and apply indentation
+// visit_body_stmts visits statements in a body and applies indentation.
 fn (mut t VTranspiler) visit_body_stmts(stmts []Stmt, indent_level int) []string {
 	mut lines := []string{}
 	mut prev_was_if_no_else := false
@@ -406,7 +406,7 @@ fn (mut t VTranspiler) visit_body_stmts(stmts []Stmt, indent_level int) []string
 	return lines
 }
 
-// Visit a statement
+// visit_stmt visits a statement and dispatches to the appropriate visitor.
 pub fn (mut t VTranspiler) visit_stmt(stmt Stmt) string {
 	match stmt {
 		FunctionDef { return t.visit_function_def(stmt) }
@@ -437,7 +437,7 @@ pub fn (mut t VTranspiler) visit_stmt(stmt Stmt) string {
 	}
 }
 
-// Visit an expression
+// visit_expr visits an expression and dispatches to expression visitors.
 pub fn (mut t VTranspiler) visit_expr(expr Expr) string {
 	match expr {
 		Constant { return t.visit_constant(expr) }
@@ -494,7 +494,7 @@ fn has_setter_decorator(decorators []Expr) bool {
 	return false
 }
 
-// Visit FunctionDef
+// visit_function_def emits V code for a Python FunctionDef node.
 pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 	// Save var_types and escaped_identifiers for function scope (keep globals, reset locals)
 	saved_var_types := t.var_types.clone()
@@ -689,7 +689,7 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 	return func_code
 }
 
-// Visit AsyncFunctionDef (converted to sync)
+// visit_async_function_def emits V code for an AsyncFunctionDef node (converted to sync).
 pub fn (mut t VTranspiler) visit_async_function_def(node AsyncFunctionDef) string {
 	// Convert to regular FunctionDef
 	fd := FunctionDef{
@@ -709,7 +709,7 @@ pub fn (mut t VTranspiler) visit_async_function_def(node AsyncFunctionDef) strin
 	return t.visit_function_def(fd)
 }
 
-// Visit ClassDef
+// visit_class_def emits V code for a ClassDef node.
 pub fn (mut t VTranspiler) visit_class_def(node ClassDef) string {
 	mut fields := []string{}
 	mut field_names := []string{}
@@ -911,7 +911,7 @@ pub fn (mut t VTranspiler) visit_class_def(node ClassDef) string {
 	return struct_def
 }
 
-// Visit Return
+// visit_return emits V code for a Return statement.
 pub fn (mut t VTranspiler) visit_return(node Return) string {
 	if val := node.value {
 		expr := t.visit_expr(val)
@@ -922,7 +922,7 @@ pub fn (mut t VTranspiler) visit_return(node Return) string {
 	return 'return'
 }
 
-// Visit Delete
+// visit_delete emits V code for a Delete statement.
 pub fn (mut t VTranspiler) visit_delete(node Delete) string {
 	mut parts := []string{}
 	for target in node.targets {
@@ -945,7 +945,7 @@ pub fn (mut t VTranspiler) visit_delete(node Delete) string {
 	return parts.join('\n')
 }
 
-// Visit Assign
+// visit_assign emits V code for an Assign statement.
 pub fn (mut t VTranspiler) visit_assign(node Assign) string {
 	// Track variable types for print() optimization
 	for target in node.targets {
@@ -1147,7 +1147,7 @@ pub fn (mut t VTranspiler) visit_assign(node Assign) string {
 	return assigns.join('\n')
 }
 
-// Handle starred unpacking in assignments
+// handle_starred_unpack handles starred unpacking in assignments
 fn (mut t VTranspiler) handle_starred_unpack(elts []Expr, value_str string, node Assign) string {
 	mut starred_idx := -1
 	for i, e in elts {
@@ -1193,7 +1193,7 @@ fn (mut t VTranspiler) handle_starred_unpack(elts []Expr, value_str string, node
 	return assigns.join('\n')
 }
 
-// Visit AugAssign
+// visit_aug_assign emits V code for an AugAssign statement.
 pub fn (mut t VTranspiler) visit_aug_assign(node AugAssign) string {
 	target := t.visit_expr(node.target)
 	val := t.visit_expr(node.value)
@@ -1238,7 +1238,7 @@ pub fn (mut t VTranspiler) visit_aug_assign(node AugAssign) string {
 	return '${target} ${op}= ${val}'
 }
 
-// Visit AnnAssign
+// visit_ann_assign emits V code for an AnnAssign statement.
 pub fn (mut t VTranspiler) visit_ann_assign(node AnnAssign) string {
 	target := t.visit_expr(node.target)
 	type_str := t.typename_from_annotation(node.annotation)
@@ -1294,7 +1294,7 @@ pub fn (mut t VTranspiler) visit_ann_assign(node AnnAssign) string {
 	return '${kw}${target} ${op} ${type_str}{}'
 }
 
-// Visit For
+// visit_for emits V code for a For loop.
 pub fn (mut t VTranspiler) visit_for(node For) string {
 	mut target := t.visit_expr(node.target)
 	mut buf := []string{}
@@ -1410,7 +1410,7 @@ pub fn (mut t VTranspiler) visit_for(node For) string {
 	return buf.join('\n')
 }
 
-// Visit AsyncFor (converted to sync)
+// visit_async_for emits V code for an AsyncFor loop (converted to sync).
 pub fn (mut t VTranspiler) visit_async_for(node AsyncFor) string {
 	mut buf := []string{}
 	buf << '// WARNING: async for converted to sync for'
@@ -1429,7 +1429,7 @@ pub fn (mut t VTranspiler) visit_async_for(node AsyncFor) string {
 	return buf.join('\n')
 }
 
-// Visit While
+// visit_while emits V code for a While loop.
 pub fn (mut t VTranspiler) visit_while(node While) string {
 	mut buf := []string{}
 
@@ -1468,7 +1468,7 @@ pub fn (mut t VTranspiler) visit_while(node While) string {
 	return buf.join('\n')
 }
 
-// Visit If
+// visit_if emits V code for an If statement.
 pub fn (mut t VTranspiler) visit_if(node If) string {
 	mut buf := []string{}
 
@@ -1505,7 +1505,7 @@ pub fn (mut t VTranspiler) visit_if(node If) string {
 	return buf.join('\n')
 }
 
-// Visit With - use 'if true {}' blocks for scoping
+// visit_with emits V code for a With statement (uses `if true {}` for scoping).
 pub fn (mut t VTranspiler) visit_with(node With) string {
 	mut buf := []string{}
 
@@ -1556,7 +1556,7 @@ pub fn (mut t VTranspiler) visit_with(node With) string {
 	return buf.join('\n')
 }
 
-// Visit AsyncWith (converted to sync)
+// visit_async_with emits V code for an AsyncWith statement (converted to sync).
 pub fn (mut t VTranspiler) visit_async_with(node AsyncWith) string {
 	mut buf := []string{}
 	buf << '// WARNING: async with converted to sync with defer'
@@ -1572,7 +1572,7 @@ pub fn (mut t VTranspiler) visit_async_with(node AsyncWith) string {
 	return buf.join('\n')
 }
 
-// Visit Raise
+// visit_raise emits V code for a Raise statement.
 pub fn (mut t VTranspiler) visit_raise(node Raise) string {
 	if exc := node.exc {
 		if exc is Call {
@@ -1588,7 +1588,7 @@ pub fn (mut t VTranspiler) visit_raise(node Raise) string {
 	return "panic('Exception')"
 }
 
-// Visit Try
+// visit_try emits V code for a Try statement.
 pub fn (mut t VTranspiler) visit_try(node Try) string {
 	mut buf := []string{}
 	has_handlers := node.handlers.len > 0
@@ -1637,37 +1637,37 @@ pub fn (mut t VTranspiler) visit_try(node Try) string {
 	return buf.join('\n')
 }
 
-// Visit Assert
+// visit_assert emits V code for an Assert statement.
 pub fn (mut t VTranspiler) visit_assert(node Assert) string {
 	test := t.visit_expr(node.test)
 	return 'assert ${test}'
 }
 
-// Visit Import
+// visit_import handles Python import statements (suppressed for V).
 pub fn (mut t VTranspiler) visit_import(node Import) string {
 	// Suppress imports - they're handled differently in V
 	return ''
 }
 
-// Visit ImportFrom
+// visit_import_from handles Python 'from X import Y' (suppressed for V).
 pub fn (mut t VTranspiler) visit_import_from(node ImportFrom) string {
 	// Suppress imports
 	return ''
 }
 
-// Visit Global
+// visit_global emits a comment for Python global declarations (V lacks global).
 pub fn (mut t VTranspiler) visit_global(node Global) string {
 	names := node.names.join(', ')
 	return "// global ${names}  // V doesn't support global keyword"
 }
 
-// Visit Nonlocal
+// visit_nonlocal emits a comment for Python nonlocal declarations (V lacks nonlocal).
 pub fn (mut t VTranspiler) visit_nonlocal(node Nonlocal) string {
 	names := node.names.join(', ')
 	return "// nonlocal ${names}  // V doesn't support nonlocal keyword"
 }
 
-// Visit ExprStmt
+// visit_expr_stmt emits V code for an expression statement (ExprStmt).
 pub fn (mut t VTranspiler) visit_expr_stmt(node ExprStmt) string {
 	// Check for ellipsis
 	if node.value is Constant {
@@ -1683,7 +1683,7 @@ pub fn (mut t VTranspiler) visit_expr_stmt(node ExprStmt) string {
 	return result
 }
 
-// Visit Constant
+// visit_constant emits V code for a Constant expression.
 pub fn (mut t VTranspiler) visit_constant(node Constant) string {
 	match node.value {
 		NoneValue {
@@ -1714,7 +1714,7 @@ pub fn (mut t VTranspiler) visit_constant(node Constant) string {
 	}
 }
 
-// Visit Name
+// visit_name emits V code for a Name expression.
 pub fn (mut t VTranspiler) visit_name(node Name) string {
 	// Check if this identifier was escaped due to V built-in type name conflict
 	if t.escaped_identifiers[node.id] or { false } {
@@ -1723,7 +1723,7 @@ pub fn (mut t VTranspiler) visit_name(node Name) string {
 	return escape_keyword(node.id)
 }
 
-// Visit BinOp
+// visit_binop emits V code for a binary operation (BinOp).
 pub fn (mut t VTranspiler) visit_binop(node BinOp) string {
 	left := t.visit_expr(node.left)
 	right := t.visit_expr(node.right)
@@ -1892,7 +1892,7 @@ pub fn (mut t VTranspiler) visit_binop(node BinOp) string {
 	return '(${left} ${op} ${right})'
 }
 
-// Visit UnaryOp
+// visit_unaryop emits V code for a unary operation (UnaryOp).
 pub fn (mut t VTranspiler) visit_unaryop(node UnaryOp) string {
 	op := op_to_symbol(get_unary_op_type(node.op))
 	operand := t.visit_expr(node.operand)
@@ -1908,7 +1908,7 @@ pub fn (mut t VTranspiler) visit_unaryop(node UnaryOp) string {
 	return '${op}(${operand})'
 }
 
-// Visit BoolOp
+// visit_boolop emits V code for a boolean operation (BoolOp).
 pub fn (mut t VTranspiler) visit_boolop(node BoolOp) string {
 	op := op_to_symbol(get_bool_op_type(node.op))
 	mut parts := []string{}
@@ -1924,7 +1924,7 @@ pub fn (mut t VTranspiler) visit_boolop(node BoolOp) string {
 	return parts.join(' ${op} ')
 }
 
-// Visit Compare
+// visit_compare emits V code for comparison expressions (Compare).
 pub fn (mut t VTranspiler) visit_compare(node Compare) string {
 	left := t.visit_expr(node.left)
 
@@ -1986,7 +1986,7 @@ pub fn (mut t VTranspiler) visit_compare(node Compare) string {
 	return '${left} ${op} ${right}'
 }
 
-// Visit Call
+// visit_call emits V code for function calls (Call).
 pub fn (mut t VTranspiler) visit_call(node Call) string {
 	fname := t.visit_expr(node.func)
 
@@ -2316,7 +2316,7 @@ fn (t &VTranspiler) build_inline_class_init(class_name string, field_vals map[st
 	base_names := t.class_base_names[class_name] or { []string{} }
 	for base_name in base_names {
 		base_init := t.build_inline_class_init(base_name, field_vals)
-		if base_init.len > 0 {
+		if base_init != '' {
 			parts << '${base_name}: ${base_init}'
 		}
 	}
@@ -2327,7 +2327,7 @@ fn (t &VTranspiler) build_inline_class_init(class_name string, field_vals map[st
 }
 
 fn (t &VTranspiler) resolve_super_base() string {
-	if t.current_class_name.len == 0 {
+	if t.current_class_name == '' {
 		return ''
 	}
 	bases := t.class_base_names[t.current_class_name] or { []string{} }
@@ -2343,7 +2343,7 @@ fn (t &VTranspiler) resolve_super_base() string {
 }
 
 fn should_emit_ref_field_type(typ string) bool {
-	if typ.len == 0 || typ[0] == `&` {
+	if typ == '' || typ[0] == `&` {
 		return false
 	}
 	if typ.starts_with('[]') || typ.starts_with('map[') || typ.starts_with('?') {
@@ -2353,7 +2353,7 @@ fn should_emit_ref_field_type(typ string) bool {
 }
 
 fn to_symbol_ident(name string) string {
-	if name.len == 0 {
+	if name == '' {
 		return 'v'
 	}
 	mut out := []u8{}
@@ -2383,7 +2383,7 @@ fn to_symbol_ident(name string) string {
 		}
 	}
 	mut cleaned := out.bytestr().trim('_')
-	if cleaned.len == 0 {
+	if cleaned == '' {
 		return 'v'
 	}
 	if cleaned[0] >= `0` && cleaned[0] <= `9` {
@@ -2397,7 +2397,7 @@ fn class_attr_symbol_name(class_name string, attr_name string) string {
 }
 
 fn is_v_field_ident(name string) bool {
-	if name.len == 0 {
+	if name == '' {
 		return false
 	}
 	first := name[0]
@@ -2415,7 +2415,7 @@ fn is_v_field_ident(name string) bool {
 }
 
 fn should_lowercase_call_name(name string, known map[string][]string) bool {
-	if name.len == 0 {
+	if name == '' {
 		return false
 	}
 	if name in known {
@@ -2429,7 +2429,7 @@ fn should_lowercase_call_name(name string, known map[string][]string) bool {
 }
 
 fn lower_first_ascii(name string) string {
-	if name.len == 0 {
+	if name == '' {
 		return name
 	}
 	first := name[0]
@@ -2439,7 +2439,7 @@ fn lower_first_ascii(name string) string {
 	return name
 }
 
-// Visit Attribute
+// visit_attribute emits V code for attribute access (Attribute).
 pub fn (mut t VTranspiler) visit_attribute(node Attribute) string {
 	if node.value is Name {
 		class_name := (node.value as Name).id
@@ -2468,7 +2468,7 @@ pub fn (mut t VTranspiler) visit_attribute(node Attribute) string {
 	return '${value}.${attr}'
 }
 
-// Visit Subscript
+// visit_subscript emits V code for subscript access (Subscript).
 pub fn (mut t VTranspiler) visit_subscript(node Subscript) string {
 	value := t.visit_expr(node.value)
 
@@ -2557,14 +2557,14 @@ pub fn (mut t VTranspiler) visit_subscript(node Subscript) string {
 	return '${value}[${index}]'
 }
 
-// Visit Slice
+// visit_slice emits V code for slices (Slice).
 pub fn (mut t VTranspiler) visit_slice(node Slice) string {
 	lower := if l := node.lower { t.visit_expr(l) } else { '' }
 	upper := if u := node.upper { t.visit_expr(u) } else { '' }
 	return '${lower}..${upper}'
 }
 
-// Visit List
+// visit_list emits V code for list literals (List).
 pub fn (mut t VTranspiler) visit_list(node List) string {
 	// Check for starred elements
 	has_starred := node.elts.any(fn (e Expr) bool {
@@ -2622,7 +2622,7 @@ pub fn (mut t VTranspiler) visit_list(node List) string {
 	return lines.join('\n')
 }
 
-// Visit Tuple (same as List in V)
+// visit_tuple (same as List in V)
 pub fn (mut t VTranspiler) visit_tuple(node Tuple) string {
 	// Check for starred elements
 	has_starred := node.elts.any(fn (e Expr) bool {
@@ -2671,7 +2671,7 @@ pub fn (mut t VTranspiler) visit_tuple(node Tuple) string {
 	return '[${elts.join(', ')}]'
 }
 
-// Visit Dict
+// visit_dict emits V code for dict literals (Dict).
 pub fn (mut t VTranspiler) visit_dict(node Dict) string {
 	mut pairs := []string{}
 	for i, key_opt in node.keys {
@@ -2687,7 +2687,7 @@ pub fn (mut t VTranspiler) visit_dict(node Dict) string {
 	return '{\n${pairs.join('\n')}\n}'
 }
 
-// Visit Set (same as List in V)
+// visit_set (same as List in V)
 pub fn (mut t VTranspiler) visit_set(node Set) string {
 	mut elts := []string{}
 	for e in node.elts {
@@ -2696,7 +2696,7 @@ pub fn (mut t VTranspiler) visit_set(node Set) string {
 	return '[${elts.join(', ')}]'
 }
 
-// Visit IfExp
+// visit_ifexp emits V code for inline if-expressions (IfExp).
 pub fn (mut t VTranspiler) visit_ifexp(node IfExp) string {
 	test := t.visit_expr(node.test)
 	body := t.visit_expr(node.body)
@@ -2704,7 +2704,7 @@ pub fn (mut t VTranspiler) visit_ifexp(node IfExp) string {
 	return 'if ${test} { ${body} } else { ${orelse} }'
 }
 
-// Visit Lambda
+// visit_lambda emits V code for lambda expressions (Lambda).
 pub fn (mut t VTranspiler) visit_lambda(node Lambda) string {
 	mut args := []string{}
 
@@ -2743,19 +2743,19 @@ pub fn (mut t VTranspiler) visit_lambda(node Lambda) string {
 	return 'fn (${args.join(', ')}) ${lambda_type} {\n\treturn ${stripped_body}\n}'
 }
 
-// Visit ListComp
+// visit_list_comp emits V code for list comprehensions (ListComp).
 pub fn (mut t VTranspiler) visit_list_comp(node ListComp) string {
 	// Should be transformed by VComprehensionRewriter
 	// Fallback implementation
 	return t.visit_generator_exp_impl(node.elt, node.generators)
 }
 
-// Visit SetComp
+// visit_set_comp emits V code for set comprehensions (SetComp).
 pub fn (mut t VTranspiler) visit_set_comp(node SetComp) string {
 	return t.visit_generator_exp_impl(node.elt, node.generators)
 }
 
-// Visit DictComp
+// visit_dict_comp emits V code for dict comprehensions (DictComp).
 pub fn (mut t VTranspiler) visit_dict_comp(node DictComp) string {
 	mut buf := []string{}
 	buf << '(fn () map[string]Any {'
@@ -2787,7 +2787,7 @@ pub fn (mut t VTranspiler) visit_dict_comp(node DictComp) string {
 	return buf.join('\n')
 }
 
-// Visit GeneratorExp
+// visit_generator_exp emits V code for generator expressions (GeneratorExp).
 pub fn (mut t VTranspiler) visit_generator_exp(node GeneratorExp) string {
 	return t.visit_generator_exp_impl(node.elt, node.generators)
 }
@@ -2851,13 +2851,13 @@ fn (mut t VTranspiler) visit_generator_exp_impl(elt Expr, generators []Comprehen
 	return result
 }
 
-// Visit Await
+// visit_await emits V code for await expressions (Await).
 pub fn (mut t VTranspiler) visit_await(node Await) string {
 	// V doesn't have await, just return the value
 	return t.visit_expr(node.value)
 }
 
-// Visit Yield
+// visit_yield emits V code for yield expressions (Yield).
 pub fn (mut t VTranspiler) visit_yield(node Yield) string {
 	if val := node.value {
 		return 'ch <- ${t.visit_expr(val)}'
@@ -2865,7 +2865,7 @@ pub fn (mut t VTranspiler) visit_yield(node Yield) string {
 	return 'ch <- 0'
 }
 
-// Visit YieldFrom
+// visit_yield_from emits V code for yield-from expressions (YieldFrom).
 pub fn (mut t VTranspiler) visit_yield_from(node YieldFrom) string {
 	gen_expr := t.visit_expr(node.value)
 	gen_var := t.new_tmp('gen')
@@ -2881,13 +2881,13 @@ pub fn (mut t VTranspiler) visit_yield_from(node YieldFrom) string {
 	return buf.join('\n')
 }
 
-// Visit FormattedValue
+// visit_formatted_value emits V code for formatted value parts (FormattedValue).
 pub fn (mut t VTranspiler) visit_formatted_value(node FormattedValue) string {
 	expr := t.visit_expr(node.value)
 	return '(${expr}).str()'
 }
 
-// Visit JoinedStr (f-string)
+// visit_joined_str emits V code for joined string (f-string / JoinedStr).
 pub fn (mut t VTranspiler) visit_joined_str(node JoinedStr) string {
 	mut parts := []string{}
 	for val in node.values {
@@ -2921,15 +2921,15 @@ pub fn (mut t VTranspiler) visit_joined_str(node JoinedStr) string {
 	return lines.join('\n')
 }
 
-// Visit NamedExpr (walrus operator - should be transformed)
-// When used standalone, just emit as assignment expression
+// visit_named_expr handles NamedExpr (walrus operator) usage.
+// When used standalone, just emit as assignment expression.
 pub fn (mut t VTranspiler) visit_named_expr(node NamedExpr) string {
 	target := t.visit_expr(node.target)
 	value := t.visit_expr(node.value)
 	return '(${target} := ${value})'
 }
 
-// Check if a Compare expression has a NamedExpr (walrus) as its left operand
+// has_walrus_in_compare checks if a Compare expression has a NamedExpr (walrus) as its left operand
 fn has_walrus_in_compare(test Expr) bool {
 	if test is Compare {
 		cmp := test as Compare
@@ -2940,7 +2940,7 @@ fn has_walrus_in_compare(test Expr) bool {
 	return false
 }
 
-// Extract walrus assignment and modified test from a Compare with NamedExpr
+// extract_walrus_parts handles assignment and modified test from a Compare with NamedExpr
 // Returns [assign_line, new_test]
 fn (mut t VTranspiler) extract_walrus_parts(test Expr) []string {
 	if test is Compare {
@@ -2960,12 +2960,12 @@ fn (mut t VTranspiler) extract_walrus_parts(test Expr) []string {
 	return []string{}
 }
 
-// Visit Starred
+// visit_starred emits V code for starred expressions (Starred).
 pub fn (mut t VTranspiler) visit_starred(node Starred) string {
 	return '...${t.visit_expr(node.value)}'
 }
 
-// Helper: get typename from annotation expression
+// typename_from_annotation extracts a typename string from an annotation expression.
 pub fn (mut t VTranspiler) typename_from_annotation(ann Expr) string {
 	match ann {
 		Name {
@@ -3047,7 +3047,7 @@ pub fn (mut t VTranspiler) typename_from_annotation(ann Expr) string {
 	}
 }
 
-// Helper: infer generator yield type
+// infer_generator_yield_type is a placeholder for inferring the yield type of a generator function.
 fn (mut t VTranspiler) infer_generator_yield_type(node FunctionDef) string {
 	// Walk the function body to find yield statements
 	// For simplicity, return "Any" for now
@@ -3055,7 +3055,7 @@ fn (mut t VTranspiler) infer_generator_yield_type(node FunctionDef) string {
 	return 'Any'
 }
 
-// Helper functions
+// get_op_type returns a string representation of the operator type for a given Operator enum value.
 fn get_op_type(op Operator) string {
 	return match op {
 		Add { 'Add' }
@@ -3170,7 +3170,7 @@ fn (t &VTranspiler) infer_expr_type(expr Expr) string {
 		Name {
 			// Propagate known type
 			known := t.var_types[expr.id]
-			if known.len > 0 {
+			if known != '' {
 				return known
 			}
 			// Check if it's a function name - return its return type
@@ -3187,7 +3187,7 @@ fn (t &VTranspiler) infer_expr_type(expr Expr) string {
 				return 'string'
 			}
 			// Numeric type promotion for typed parameters
-			if left_type.len > 0 && right_type.len > 0 {
+			if left_type != '' && right_type != '' {
 				left_rank := v_width_rank[left_type] or { -1 }
 				right_rank := v_width_rank[right_type] or { -1 }
 				if left_rank > 0 && right_rank > 0 {
@@ -3278,10 +3278,10 @@ fn (t &VTranspiler) infer_expr_type(expr Expr) string {
 					}
 				}
 				// Fall back to Any for unknown key/value types
-				if key_type.len == 0 {
+				if key_type == '' {
 					key_type = 'string'
 				}
-				if val_type.len == 0 {
+				if val_type == '' {
 					val_type = 'Any'
 				}
 				return 'map[${key_type}]${val_type}'
@@ -3291,7 +3291,7 @@ fn (t &VTranspiler) infer_expr_type(expr Expr) string {
 		Subscript {
 			// Check v_annotation on the subscript
 			ann := get_expr_annotation(expr)
-			if ann.len > 0 {
+			if ann != '' {
 				return ann
 			}
 			// Infer element type from the collection's type
@@ -3312,7 +3312,7 @@ fn (t &VTranspiler) infer_expr_type(expr Expr) string {
 		else {
 			// Try v_annotation as last resort
 			ann := get_expr_annotation(expr)
-			if ann.len > 0 {
+			if ann != '' {
 				return ann
 			}
 			return ''
@@ -3399,7 +3399,7 @@ fn (mut t VTranspiler) prescan_mut_call_args_in_expr(expr Expr) {
 			if expr.func is Name {
 				fname = (expr.func as Name).id
 			}
-			if fname.len > 0 {
+			if fname != '' {
 				mut_indices := t.mut_param_indices[fname] or { []int{} }
 				for i, arg in expr.args {
 					if i in mut_indices {
@@ -3437,17 +3437,17 @@ fn (t &VTranspiler) infer_return_type(stmts []Stmt) string {
 				if val := stmt.value {
 					mut inferred := t.infer_expr_type(val)
 					// Fallback: check v_annotation from the frontend
-					if inferred.len == 0 {
+					if inferred == '' {
 						inferred = get_expr_annotation(val)
 					}
-					if inferred.len > 0 && inferred != 'none' {
+					if inferred != '' && inferred != 'none' {
 						// Map Python type names to V types
 						inferred = match inferred {
 							'float' { 'f64' }
 							'str' { 'string' }
 							else { inferred }
 						}
-						if ret_type.len == 0 {
+						if ret_type == '' {
 							ret_type = inferred
 						}
 						// If we get conflicting types, keep the first non-empty one
@@ -3456,29 +3456,29 @@ fn (t &VTranspiler) infer_return_type(stmts []Stmt) string {
 			}
 			If {
 				sub := t.infer_return_type(stmt.body)
-				if sub.len > 0 && ret_type.len == 0 {
+				if sub != '' && ret_type == '' {
 					ret_type = sub
 				}
 				sub2 := t.infer_return_type(stmt.orelse)
-				if sub2.len > 0 && ret_type.len == 0 {
+				if sub2 != '' && ret_type == '' {
 					ret_type = sub2
 				}
 			}
 			For {
 				sub := t.infer_return_type(stmt.body)
-				if sub.len > 0 && ret_type.len == 0 {
+				if sub != '' && ret_type == '' {
 					ret_type = sub
 				}
 			}
 			While {
 				sub := t.infer_return_type(stmt.body)
-				if sub.len > 0 && ret_type.len == 0 {
+				if sub != '' && ret_type == '' {
 					ret_type = sub
 				}
 			}
 			Try {
 				sub := t.infer_return_type(stmt.body)
-				if sub.len > 0 && ret_type.len == 0 {
+				if sub != '' && ret_type == '' {
 					ret_type = sub
 				}
 			}
@@ -3498,7 +3498,7 @@ fn (mut t VTranspiler) prescan_body_types(stmts []Stmt) {
 					if target is Name {
 						n := target as Name
 						inferred := t.infer_expr_type(stmt.value)
-						if inferred.len > 0 {
+						if inferred != '' {
 							t.var_types[n.id] = inferred
 						}
 					}
@@ -3509,7 +3509,7 @@ fn (mut t VTranspiler) prescan_body_types(stmts []Stmt) {
 				if stmt.target is Name {
 					n := stmt.target as Name
 					type_str := t.typename_from_annotation(stmt.annotation)
-					if type_str.len > 0 {
+					if type_str != '' {
 						t.var_types[n.id] = type_str
 					}
 				}
@@ -3519,9 +3519,9 @@ fn (mut t VTranspiler) prescan_body_types(stmts []Stmt) {
 				if stmt.target is Name {
 					n := stmt.target as Name
 					existing := t.var_types[n.id]
-					if existing.len == 0 {
+					if existing == '' {
 						inferred := t.infer_expr_type(stmt.value)
-						if inferred.len > 0 {
+						if inferred != '' {
 							t.var_types[n.id] = inferred
 						}
 					}
@@ -3532,7 +3532,7 @@ fn (mut t VTranspiler) prescan_body_types(stmts []Stmt) {
 				if !stmt.is_void {
 					if ret := stmt.returns {
 						ret_type := t.typename_from_annotation(ret)
-						if ret_type.len > 0 {
+						if ret_type != '' {
 							t.func_return_types[stmt.name] = ret_type
 						}
 					}
