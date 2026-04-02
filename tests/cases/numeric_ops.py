@@ -11,6 +11,15 @@ def main():
     print(2 ** 10)
     print(3 ** 4)
 
+    # Negative exponent (Python auto-promotes to float)
+    print(2 ** -1)
+    print(10 ** -2)
+
+    # Power augmented assignment
+    b = 2
+    b **= 3
+    print(b)
+
     # Combined
     a = 100
     print(a // 7)

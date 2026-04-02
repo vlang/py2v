@@ -147,7 +147,7 @@ pub fn op_to_symbol(op_type string) string {
 		'Div' { '/' }
 		'FloorDiv' { '/' } // Not floor division in V, handled in visit_binop/visit_aug_assign
 		'Mod' { '%' }
-		'Pow' { '^' } // Note: V uses ^ for power, not **
+		'Pow' { '**' } // Not a V operator, handled in visit_binop/visit_aug_assign
 		'LShift' { '<<' }
 		'RShift' { '>>' }
 		'BitOr' { '|' }
