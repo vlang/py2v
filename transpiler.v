@@ -2,7 +2,6 @@ module main
 
 const max_generated_line_len = 121
 
-// VTranspiler - transpiles Python AST to V code
 pub struct VTranspiler {
 mut:
 	usings                      []string
@@ -21,7 +20,7 @@ mut:
 	var_types                   map[string]string   // variable name -> inferred type ("bool", "string", etc.)
 	func_return_types           map[string]string   // function name -> return type ("string", "int", etc.)
 	extra_mut_vars              map[string]bool     // variables that need mut because passed to mut params
-	global_vars                 map[string]bool     // module-level variables (declared in __global)
+	global_vars                 map[string]bool     // module-level variables
 	escaped_identifiers         map[string]bool     // identifiers escaped due to V built-in type name conflict
 }
 
@@ -75,16 +74,14 @@ pub fn (t VTranspiler) usings_code() string {
 
 // visit_module transpiles a Module into V source code.
 pub fn (mut t VTranspiler) visit_module(mod Module) string {
-	// Separate module-level assignments from definitions
-	// V requires __global block for module-level variables, and definitions before code
-	mut global_assigns := []string{}
+	mut init_stmts := []string{}
 	mut defined_vars := map[string]bool{} // Track already defined variables
 	mut definitions := []string{}
 	mut other_stmts := []string{}
 	mut imported_exceptions := []string{}
 	mut exported_names := []string{}
 
-	// Pre-pass: identify module-level variable names and infer types (will become __global)
+	// Pre-pass: identify module-level variable names and infer types
 	for stmt in mod.body {
 		match stmt {
 			Assign {
@@ -176,8 +173,6 @@ pub fn (mut t VTranspiler) visit_module(mod Module) string {
 				result := t.visit_assign(stmt)
 				if result.len > 0 {
 					if is_first_def {
-						// First definition goes in __global
-						// Mark variables as defined and as global
 						for target in stmt.targets {
 							if target is Name {
 								n := target as Name
@@ -185,12 +180,9 @@ pub fn (mut t VTranspiler) visit_module(mod Module) string {
 								t.global_vars[n.id] = true
 							}
 						}
-						// Convert := to = and strip mut for __global block
-						mut ga := result.replace(' := ', ' = ')
-						if ga.starts_with('mut ') {
-							ga = ga[4..]
-						}
-						global_assigns << ga
+						// Keep original assignment form for emission inside main
+						// (e.g., 'mut x := 1' or 'x := 1')
+						init_stmts << result
 					} else {
 						// Reassignment goes in other statements
 						other_stmts << result
@@ -212,11 +204,8 @@ pub fn (mut t VTranspiler) visit_module(mod Module) string {
 						if var_name.len > 0 {
 							t.global_vars[var_name] = true
 						}
-						mut ga := result.replace(' := ', ' = ')
-						if ga.starts_with('mut ') {
-							ga = ga[4..]
-						}
-						global_assigns << ga
+						// Keep original annotated assignment for emission inside main
+						init_stmts << result
 					} else {
 						other_stmts << result
 					}
@@ -247,15 +236,6 @@ pub fn (mut t VTranspiler) visit_module(mod Module) string {
 	// Build code with proper ordering
 	mut code_parts := []string{}
 
-	// Add global block if there are module-level assignments
-	if global_assigns.len > 0 {
-		code_parts << '__global ('
-		for ga in global_assigns {
-			code_parts << '\t${ga}'
-		}
-		code_parts << ')'
-	}
-
 	// Add definitions (functions, classes)
 	for i, def in definitions {
 		if i > 0 {
@@ -282,10 +262,16 @@ pub fn (mut t VTranspiler) visit_module(mod Module) string {
 		code_parts << format_union_type_alias('WebDriverExceptions', union_names, max_generated_line_len)
 	}
 
-	// Add other statements - must be wrapped in fn main() if present
+	// Add other statements - must be wrapped in fn main() if present.
+	// Emit any module-level init statements at the start of main so we avoid
+	// module-level mutable globals (per AGENTS.md).
 	if other_stmts.len > 0 {
 		code_parts << ''
 		code_parts << 'fn main() {'
+		// Emit module-level initializers first
+		for init in init_stmts {
+			code_parts << '\t${init}'
+		}
 		for stmt in other_stmts {
 			code_parts << '\t${stmt}'
 		}
@@ -2116,7 +2102,7 @@ pub fn (mut t VTranspiler) visit_call(node Call) string {
 			'format' {
 				// Convert .format() to string interpolation isn't easy
 				// For now, just comment it
-				return '${obj} /* .format(${vargs.join(', ')}) not supported */'
+				return '${obj} // .format(${vargs.join(', ')}) not supported'
 			}
 			'count' {
 				if vargs.len > 0 {
@@ -2212,7 +2198,7 @@ pub fn (mut t VTranspiler) visit_call(node Call) string {
 			}
 			'items' {
 				// V doesn't have items(), iterate directly
-				return '${obj} /* .items() - iterate with for k, v in dict */'
+				return '${obj} // .items() - iterate with for k, v in dict'
 			}
 			'get' {
 				if vargs.len >= 2 {
@@ -2225,7 +2211,7 @@ pub fn (mut t VTranspiler) visit_call(node Call) string {
 			}
 			'update' {
 				if vargs.len > 0 {
-					return '/* ${obj}.update() - manually merge dicts */'
+					return '// ${obj}.update() - manually merge dicts'
 				}
 				return obj
 			}

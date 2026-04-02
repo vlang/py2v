@@ -1,9 +1,6 @@
 @[translated]
 module main
 
-__global (
-	global_var = 10
-)
 fn test_global() {
 	// global global_var  // V doesn't support global keyword
 	global_var = 20

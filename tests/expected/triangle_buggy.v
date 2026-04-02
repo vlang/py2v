@@ -1,11 +1,6 @@
 @[translated]
 module main
 
-__global (
-	a = default_value(int)
-	b = default_value(int)
-	c = default_value(int)
-)
 pub struct TriangleType {
 pub mut:
 	EQUILATERAL int
@@ -76,6 +71,9 @@ fn classify_triangle(a int, b int, c int) TriangleType {
 }
 
 fn main() {
+	a := default_value(int)
+	b := default_value(int)
+	c := default_value(int)
 	assert !(classify_triangle_correct(a, b, c) == classify_triangle(a, b, c))
 	check_sat()
 	get_model()

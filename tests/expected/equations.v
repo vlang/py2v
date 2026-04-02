@@ -1,11 +1,6 @@
 @[translated]
 module main
 
-__global (
-	x = default_value(int)
-	y = default_value(int)
-	z = default_value(float)
-)
 fn equation(x int, y int) bool {
 	if smt_pre {
 		assert x > 2
@@ -25,6 +20,9 @@ fn fequation(z f64) bool {
 }
 
 fn main() {
+	x := default_value(int)
+	y := default_value(int)
+	z := default_value(float)
 	assert equation(x, y)
 	assert fequation(z)
 	check_sat()
