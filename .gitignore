@@ -12,3 +12,8 @@ tmp/
 
 # Test artifacts
 tests/actual_output/
+py2v
+**/__pycache__/
+*.pyc
+*.pyo
+*.pyd

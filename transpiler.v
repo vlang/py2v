@@ -67,7 +67,7 @@ pub fn (t VTranspiler) usings_code() string {
 
 	if t.generated_code_has_any_type {
 		buf << ''
-		buf << 'type Any = bool | int | i64 | f64 | string | []byte'
+		buf << 'type Any = bool | int | i64 | f64 | string | []u8'
 	}
 
 	return buf.join('\n')
