@@ -83,16 +83,12 @@ fn visit_print(mut t VTranspiler, node Call, args []string) (string, bool) {
 			if call.func is Attribute {
 				attr := call.func as Attribute
 				if attr.attr == 'format' {
-					// Use the underlying object for printing and emit a trailing comment
-					arg_node = attr.value
-					arg_str_proc = t.visit_expr(attr.value)
-					// Previously we forced a .str() call on the base value; no longer needed
-					// collect format args for comment
-					mut fmt_args := []string{}
-					for a in call.args {
-						fmt_args << t.visit_expr(a)
-					}
-					trailing_comments << '// .format(${fmt_args.join(', ')}) not supported'
+					// Try to convert .format(...) to V interpolation by letting the
+					// main visitor handle the Call. This returns a V string literal
+					// with ${...} interpolations when possible.
+					arg_node = call
+					arg_str_proc = t.visit_expr(call)
+					// Do not emit a trailing comment when conversion succeeded.
 				}
 			}
 		}

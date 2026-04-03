@@ -2102,8 +2102,370 @@ pub fn (mut t VTranspiler) visit_call(node Call) string {
 				return 'false'
 			}
 			'format' {
-				// Convert .format() to string interpolation isn't easy
-				// For now, return the base object (caller may attach a comment)
+				// Convert simple "...{...}...".format(...) to V interpolation
+				// Support automatic {} (sequential), numeric {0}, and named {name} fields.
+				if attr_node.value is Constant {
+					c := attr_node.value as Constant
+					if c.value is string {
+						fmt_str := c.value as string
+
+						// Precompute argument expressions
+						mut arg_exprs := []string{}
+						for a in node.args {
+							arg_exprs << t.visit_expr(a)
+						}
+						mut kw_exprs := map[string]string{}
+						for kw in node.keywords {
+							if arg := kw.arg {
+								kw_exprs[arg] = t.visit_expr(kw.value)
+							}
+						}
+
+						mut sb := new_string_builder()
+						mut buf := ''
+						mut i := 0
+						mut next_arg := 0
+						for i < fmt_str.len {
+							ch := fmt_str[i]
+							if ch == `{` {
+								// Escaped '{{'
+								if i + 1 < fmt_str.len && fmt_str[i + 1] == `{` {
+									buf += '{'
+									i += 2
+									continue
+								}
+								// Find closing brace
+								mut j := i + 1
+								for j < fmt_str.len && fmt_str[j] != `}` {
+									j++
+								}
+								if j >= fmt_str.len {
+									// unmatched, treat as literal
+									buf += '{'
+									i++
+									continue
+								}
+								token := fmt_str[i + 1..j]
+								// flush buffer
+								if buf != '' {
+									sb.write(escape_string(buf))
+									buf = ''
+								}
+								// parse key and optional format spec after ':'
+								colon := token.index(':') or { -1 }
+								key := if colon >= 0 { token[0..colon] } else { token }
+								fmt_spec := if colon >= 0 { token[colon + 1..] } else { '' }
+								mut expr := ''
+
+								// Support complex field lookups like 'person.name' or "data[0].name"
+								if key.len > 0 && (key.contains('.') || key.contains('[')) {
+									mut base := ''
+									mut ops := []string{}
+									mut operands := []string{}
+									mut pos2 := 0
+									// find base (up to first '.' or '[')
+									for pos2 < key.len {
+										ch2 := key[pos2]
+										if (ch2 >= `a` && ch2 <= `z`)
+											|| (ch2 >= `A` && ch2 <= `Z`)
+											|| (ch2 >= `0` && ch2 <= `9`)
+											|| ch2 == `_` {
+											pos2++
+											continue
+										}
+										break
+									}
+									base = key[0..pos2]
+
+									// Parse the rest
+									for pos2 < key.len {
+										if key[pos2] == `.` {
+											// attribute access
+											pos2++
+											start := pos2
+											for pos2 < key.len {
+												ch2 := key[pos2]
+												if (ch2 >= `a` && ch2 <= `z`)
+													|| (ch2 >= `A` && ch2 <= `Z`)
+													|| (ch2 >= `0` && ch2 <= `9`)
+													|| ch2 == `_` {
+													pos2++
+													continue
+												}
+												break
+											}
+											if pos2 > start {
+												attr := key[start..pos2]
+												ops << 'attr'
+												operands << attr
+											}
+										} else if key[pos2] == `[` {
+											// indexing - find matching ]
+											pos2++
+											start := pos2
+											mut depth := 1
+											for pos2 < key.len && depth > 0 {
+												if key[pos2] == `[` {
+													depth++
+												} else if key[pos2] == `]` {
+													depth--
+													if depth == 0 {
+														break
+													}
+												}
+												pos2++
+											}
+											if pos2 <= key.len {
+												idx_expr := key[start..pos2]
+												ops << 'index'
+												operands << idx_expr
+												if pos2 < key.len && key[pos2] == `]` {
+													pos2++
+												}
+											} else {
+												break
+											}
+										} else {
+											// unknown - stop
+											break
+										}
+									}
+
+									// Resolve base expression
+									mut base_expr := ''
+									if base.len > 0 {
+										// numeric positional
+										mut parsed := 0
+										mut ok2 := true
+										for bch in base.bytes() {
+											if bch < `0` || bch > `9` {
+												ok2 = false
+												break
+											}
+											parsed = parsed * 10 + int(bch - `0`)
+										}
+										if ok2 && base.len > 0 {
+											if parsed < arg_exprs.len {
+												base_expr = arg_exprs[parsed]
+											} else if parsed < node.args.len {
+												base_expr = t.visit_expr(node.args[parsed])
+											}
+										} else {
+											// keyword arg
+											for kw in node.keywords {
+												if arg := kw.arg {
+													if arg == base {
+														base_expr = t.visit_expr(kw.value)
+														break
+													}
+												}
+											}
+											if base_expr == '' {
+												base_expr = escape_keyword(base)
+											}
+										}
+									}
+
+									// Apply operations
+									if base_expr.len > 0 {
+										for idx2, opn in ops {
+											if opn == 'attr' {
+												p := operands[idx2]
+												base_expr = '${base_expr}.${escape_identifier(p)}'
+											} else if opn == 'index' {
+												idxs := operands[idx2].trim_space()
+												// quoted string index
+												if idxs.len > 0
+													&& (idxs[0] == `'` || idxs[0] == `"`) {
+													q := idxs[0]
+													mut inner := idxs[1..idxs.len]
+													if inner.len > 0 && inner[inner.len - 1] == q {
+														inner = inner[0..inner.len - 1]
+													}
+													lit := "'${escape_string(inner)}'"
+													base_expr = '${base_expr}[${lit}]'
+												} else if idxs.len > 0 {
+													mut all_digits := true
+													for cch in idxs.bytes() {
+														if cch < `0` || cch > `9` {
+															all_digits = false
+															break
+														}
+													}
+													if all_digits {
+														base_expr = '${base_expr}[${idxs}]'
+													} else {
+														base_expr = '${base_expr}[${escape_keyword(idxs)}]'
+													}
+												}
+											}
+										}
+										expr = base_expr
+									}
+								}
+
+								// If expr still empty, fall back to previous logic
+								if expr.len == 0 {
+									if key.len == 0 {
+										// automatic field
+										if next_arg < arg_exprs.len {
+											expr = arg_exprs[next_arg]
+										}
+										next_arg++
+									} else {
+										// numeric?
+										mut parsed := 0
+										mut ok := true
+										for b in key.bytes() {
+											if b < `0` || b > `9` {
+												ok = false
+												break
+											}
+											parsed = parsed * 10 + int(b - `0`)
+										}
+										if ok && key.len > 0 {
+											if parsed < arg_exprs.len {
+												expr = arg_exprs[parsed]
+											}
+										} else {
+											// named field - try keyword args
+											if val := kw_exprs[key] {
+												expr = val
+											} else {
+												// fallback: use identifier as-is (escape if needed)
+												expr = escape_keyword(key)
+											}
+										}
+									}
+								}
+								if expr.len > 0 {
+									sb.write('$')
+									sb.write('{')
+									sb.write(expr)
+									// Append mapped format specifier if present
+									if fmt_spec.len > 0 {
+										mapped := map_python_format_spec(fmt_spec)
+										if mapped.len > 0 {
+											if mapped.starts_with('CALL:') {
+												parts := mapped.split(':')
+												// parts[0] == 'CALL', parts[1] == fn name
+												if parts.len > 1 {
+													fn_name := parts[1]
+													if fn_name == 'fmt_group_int' {
+														// CALL:fmt_group_int:width:zero_flag:type:sign
+														width_s := if parts.len > 2 {
+															parts[2]
+														} else {
+															''
+														}
+														zero_s := if parts.len > 3 {
+															parts[3]
+														} else {
+															'0'
+														}
+														width_arg := if width_s != '' {
+															width_s
+														} else {
+															'0'
+														}
+														zero_arg := if zero_s == '1' {
+															'true'
+														} else {
+															'false'
+														}
+														sb.write('fmt_group_int(${expr}, ${width_arg}, ${zero_arg})')
+													} else if fn_name == 'fmt_center' {
+														// CALL:fmt_center:width
+														width_s := if parts.len > 2 {
+															parts[2]
+														} else {
+															'0'
+														}
+														sb.write('fmt_center(${expr}, ${width_s})')
+													} else if fn_name == 'fmt_group_float' {
+														// CALL:fmt_group_float:width:zero_flag:type:precision:sign
+														width_s := if parts.len > 2 {
+															parts[2]
+														} else {
+															''
+														}
+														zero_s := if parts.len > 3 {
+															parts[3]
+														} else {
+															'0'
+														}
+														type_ch := if parts.len > 4 {
+															parts[4]
+														} else {
+															'f'
+														}
+														prec_s := if parts.len > 5 {
+															parts[5]
+														} else {
+															''
+														}
+														sign_ch := if parts.len > 6 {
+															parts[6]
+														} else {
+															''
+														}
+														width_arg := if width_s != '' {
+															width_s
+														} else {
+															'0'
+														}
+														zero_arg := if zero_s == '1' {
+															'true'
+														} else {
+															'false'
+														}
+														prec_arg := if prec_s != '' {
+															prec_s
+														} else {
+															'6'
+														}
+														// Cast expr to f64 for formatting
+														sb.write('fmt_group_float(f64(${expr}), ${width_arg}, ${zero_arg}, ${prec_arg}, "${type_ch}", "${sign_ch}")')
+													} else {
+														// Unknown CALL - fallback to raw spec
+														sb.write(mapped)
+													}
+												}
+											} else {
+												// mapped includes leading ':' when non-empty
+												sb.write(mapped)
+											}
+										}
+									}
+									sb.write('}')
+								}
+								i = j + 1
+								continue
+							}
+							// Escaped '}}'
+							if ch == `}` && i + 1 < fmt_str.len && fmt_str[i + 1] == `}` {
+								buf += '}'
+								i += 2
+								continue
+							}
+							// Normal char
+							if ch == `'` {
+								buf += "\\'"
+							} else {
+								buf += ch.ascii_str()
+							}
+							i++
+						}
+
+						if buf != '' {
+							sb.write(escape_string(buf))
+						}
+
+						final_str := "'" + sb.str() + "'"
+						return final_str
+					}
+				}
+				// Fallback: return the base object unchanged
 				return obj
 			}
 			'count' {
@@ -3102,6 +3464,196 @@ fn get_next_generic(existing []string) string {
 		}
 	}
 	return 'T'
+}
+
+// map_python_format_spec converts a Python format spec (the part after ':')
+// into a V interpolation format fragment (including the leading ':') when possible.
+// This implements a minimal mapping for common cases: width, zero-pad, precision and type
+// characters (f, F, e, E, g, G, d, i, x, X, o, s). If mapping is not possible,
+// returns ':' + spec as a conservative fallback.
+fn map_python_format_spec(spec string) string {
+	if spec == '' {
+		return ''
+	}
+
+	// Parse flags according to Python mini-language roughly:
+	// [[fill]align][sign][#][0][width][,][.precision][type]
+	mut s := spec
+	mut align := u8(0)
+	mut sign := u8(0)
+	mut alt := false
+	mut zero_pad := false
+	mut grouping := false
+	mut width := ''
+	mut precision := ''
+	mut typ := u8(0)
+
+	// Fill and align: if s has at least 2 chars and second is one of <>=^
+	if s.len >= 2 {
+		a := s[1]
+		if a == `<` || a == `>` || a == `^` || a == `=` {
+			align = a
+			s = s[2..]
+		}
+	}
+
+	// Sign
+	if s.len > 0 && (s[0] == `+` || s[0] == `-` || s[0] == ` `) {
+		sign = s[0]
+		s = s[1..]
+	}
+
+	// Alternate form '#'
+	if s.len > 0 && s[0] == `#` {
+		alt = true
+		s = s[1..]
+	}
+
+	// Zero-pad flag
+	if s.len > 0 && s[0] == `0` {
+		zero_pad = true
+		// strip single leading zero; width parsing will remove remaining digits
+		s = s[1..]
+	}
+
+	// Grouping option (thousands separator)
+	if s.contains(',') {
+		grouping = true
+	}
+
+	// Type may be last char if letter
+	if s.len > 0 {
+		last := s[s.len - 1]
+		if (last >= `a` && last <= `z`) || (last >= `A` && last <= `Z`) {
+			typ = last
+			s = s[0..s.len - 1]
+		}
+	}
+
+	// Precision
+	dot_idx := s.index('.') or { -1 }
+	if dot_idx >= 0 {
+		width = s[0..dot_idx]
+		precision = s[dot_idx + 1..]
+	} else {
+		width = s
+	}
+
+	// Handle '=' alignment (sign-aware padding): enable zero_pad behavior
+	if align == `=` {
+		zero_pad = true
+	}
+
+	// If centre alignment for strings, map to a helper that centers the value
+	if align == `^` {
+		// Only implement center for string fields; otherwise fall back
+		if typ == `s` {
+			return 'CALL:fmt_center:' + width
+		}
+		return ':' + spec
+	}
+
+	// If grouping (',') for integer types, map to helper that inserts thousands separators.
+	if grouping {
+		if typ != 0 {
+			t := typ.ascii_str()
+			if t in ['d', 'i', 'x', 'X', 'o'] {
+				// Return call marker with width and zero-pad flag
+				zero_flag := if zero_pad { '1' } else { '0' }
+				sign_char := if sign != 0 { sign.ascii_str() } else { '' }
+				return 'CALL:fmt_group_int:' + width + ':' + zero_flag + ':' + t + ':' + sign_char
+			}
+			// Float-like grouping: return call to fmt_group_float with precision
+			if t in ['f', 'F', 'e', 'E', 'g', 'G'] {
+				zero_flag := if zero_pad { '1' } else { '0' }
+				sign_char := if sign != 0 { sign.ascii_str() } else { '' }
+				// include precision (may be empty)
+				return 'CALL:fmt_group_float:' + width + ':' + zero_flag + ':' + t + ':' +
+					precision + ':' + sign_char
+			}
+		}
+		// For other grouping cases, fall back to raw spec
+		return ':' + spec
+	}
+
+	// Build effective width string (left-align represented as negative width in earlier code)
+	mut eff_width := width
+	if align == `<` && eff_width != '' {
+		eff_width = '-' + eff_width
+	}
+
+	// Build V-style fmt fragment
+	mut vfmt := ''
+	if typ != 0 {
+		t := typ.ascii_str()
+		// Float-like types
+		if t in ['f', 'F', 'e', 'E', 'g', 'G'] {
+			mut p := precision
+			if p == '' {
+				p = '6'
+			}
+			// Compose sign prefix if present
+			mut sign_pref := ''
+			if sign != 0 {
+				sign_pref = sign.ascii_str()
+			}
+			if eff_width != '' {
+				if zero_pad {
+					vfmt = ':' + sign_pref + '0' + eff_width + '.' + p + t
+				} else {
+					vfmt = ':' + sign_pref + eff_width + '.' + p + t
+				}
+			} else {
+				vfmt = ':' + sign_pref + '.' + p + t
+			}
+			return vfmt
+		}
+		// Integer-like
+		if t in ['d', 'i', 'x', 'X', 'o'] {
+			mut alt_pref := ''
+			if alt {
+				alt_pref = '#'
+			}
+			mut sign_pref := ''
+			if sign != 0 {
+				sign_pref = sign.ascii_str()
+			}
+			if eff_width != '' {
+				if zero_pad {
+					vfmt = ':' + sign_pref + '0' + eff_width + alt_pref + t
+				} else {
+					vfmt = ':' + sign_pref + eff_width + alt_pref + t
+				}
+			} else {
+				vfmt = ':' + alt_pref + t
+			}
+			return vfmt
+		}
+		// String
+		if t == 's' {
+			if eff_width != '' {
+				vfmt = ':' + eff_width
+			} else {
+				vfmt = ''
+			}
+			return vfmt
+		}
+		// Unknown type: fallback to raw spec
+		return ':' + spec
+	}
+
+	// No explicit type
+	if precision != '' {
+		// assume float
+		return ':.' + precision + 'f'
+	}
+	if eff_width != '' {
+		if zero_pad {
+			return ':0' + eff_width
+		}
+		return ':' + eff_width
+	}
+	return ':' + spec
 }
 
 fn get_expr_annotation(expr Expr) string {

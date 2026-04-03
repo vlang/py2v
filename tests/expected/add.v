@@ -7,5 +7,5 @@ fn main() {
 	sum = (num1 + num2)
 	num1 = 0
 	num2 = 0
-	println('Sum of {0} and {1} is {2}') // .format(num1, num2, sum) not supported
+	println('Sum of ${num1} and ${num2} is ${sum}')
 }

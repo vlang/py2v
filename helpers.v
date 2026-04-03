@@ -1,6 +1,7 @@
 module main
 
 import strings
+import math
 
 // indent indents each non-empty line of `code` by `level` using `indent_str`.
 pub fn indent(code string, level int, indent_str string) string {
@@ -159,6 +160,290 @@ pub fn maybe_paren(code string, needs_paren bool) string {
 		return '(${code})'
 	}
 	return code
+}
+
+// fmt_group_int formats integer `n` with thousands separators and optional width/zero-pad.
+pub fn fmt_group_int(n i64, width int, zero_pad bool) string {
+	s := n.str()
+	mut neg := false
+	mut digits := s
+	if s.len > 0 && s[0] == `-` {
+		neg = true
+		digits = s[1..]
+	}
+	// Insert commas every 3 digits from the right
+	mut parts := []string{}
+	mut i := digits.len
+	for i > 0 {
+		start := if i - 3 > 0 { i - 3 } else { 0 }
+		parts << digits[start..i]
+		i = start
+	}
+	parts.reverse_in_place()
+	mut out := parts.join(',')
+	if neg {
+		out = '-' + out
+	}
+	if width > out.len {
+		pad_len := width - out.len
+		padch := if zero_pad { '0' } else { ' ' }
+		out = padch.repeat(pad_len) + out
+	}
+	return out
+}
+
+// fmt_center centers `s` in a field of given `width` using space fill.
+pub fn fmt_center(s string, width int) string {
+	if width <= s.len {
+		return s
+	}
+	total := width - s.len
+	left := total / 2
+	right := total - left
+	return ' '.repeat(left) + s + ' '.repeat(right)
+}
+
+// fmt_group_float formats float `f` with thousands separators in integer part,
+// with given precision, width and zero_pad flags. `typ` accepts 'f','F','e','E','g','G'.
+pub fn fmt_group_float(f f64, width int, zero_pad bool, precision int, typ string, sign_char string) string {
+	mut val := f
+	// Handle NaN/Inf conservatively
+	if math.is_nan(val) {
+		return 'nan'
+	}
+	if math.is_inf(val, 0) {
+		if val < 0 {
+			return '-inf'
+		} else {
+			return 'inf'
+		}
+	}
+
+	mut neg := false
+	if val < 0 {
+		neg = true
+		val = -val
+	}
+
+	// Determine formatting behavior based on type
+	mut p := precision
+	if p < 0 {
+		p = 6
+	}
+
+	mut out := ''
+	t := if typ.len > 0 { typ[0] } else { `f` }
+
+	if t == `f` || t == `F` {
+		// Fixed-point formatting with grouping
+		pow10 := math.pow(10, p)
+		mut rounded := math.round(val * pow10)
+		rounded_int := i64(rounded)
+		pow10_i := i64(pow10)
+		mut int_part := rounded_int / pow10_i
+		mut frac_part := rounded_int % pow10_i
+		// If rounding carried over
+		if frac_part == pow10_i {
+			int_part++
+			frac_part = 0
+		}
+		mut int_grouped := fmt_group_int(int_part, 0, false)
+		mut frac_str := ''
+		if p > 0 {
+			frac_str = frac_part.str()
+			if frac_str.len < p {
+				frac_str = '0'.repeat(p - frac_str.len) + frac_str
+			}
+			frac_str = '.' + frac_str
+		}
+		out = int_grouped + frac_str
+		if neg {
+			out = '-' + out
+		}
+	} else if t == `e` || t == `E` {
+		// Scientific notation: one digit before decimal, p digits after decimal
+		if val == 0.0 {
+			mant := '0'
+			frac := if p > 0 { '.' + '0'.repeat(p) } else { '' }
+			exp_str := 'e+00'
+			out = mant + frac + exp_str
+			if neg {
+				out = '-' + out
+			}
+		} else {
+			exp := int(math.floor(math.log10(val)))
+			mantissa := val / math.pow(10, exp)
+			factor := math.pow(10, p)
+			mut mant_rounded := math.round(mantissa * factor) / factor
+			mut adj_exp := exp
+			if mant_rounded >= 10.0 {
+				mant_rounded /= 10.0
+				adj_exp++
+			}
+			// build mantissa string
+			int_part := i64(mant_rounded)
+			mut frac_part_f := mant_rounded - f64(int_part)
+			mut frac_str := ''
+			if p > 0 {
+				mut frac_val := math.round(frac_part_f * factor)
+				frac_s := i64(frac_val).str()
+				frac_str = '.' + ('0'.repeat(p - frac_s.len) + frac_s)
+			}
+			// exponent string
+			mut sign_e := '+'
+			if adj_exp < 0 {
+				sign_e = '-'
+			}
+			mut ee := adj_exp
+			if ee < 0 {
+				ee = -ee
+			}
+			exp_num := if ee < 10 { '0' + ee.str() } else { ee.str() }
+			e_char := if t == `E` { 'E' } else { 'e' }
+			out = int_part.str() + frac_str + e_char + sign_e + exp_num
+			if neg {
+				out = '-' + out
+			}
+		}
+	} else if t == `g` || t == `G` {
+		// General format: significant digits = p
+		if val == 0.0 {
+			mut s := '0'
+			if p > 1 {
+				s += '.' + '0'.repeat(p - 1)
+			}
+			if t == `G` {
+				s = s.to_upper()
+			}
+			out = s
+			if neg {
+				out = '-' + out
+			}
+		} else {
+			exp := int(math.floor(math.log10(val)))
+			// decide between fixed and scientific
+			if exp < -4 || exp >= p {
+				// scientific with p-1 digits after decimal
+				mut pp := if p > 0 { p - 1 } else { 0 }
+				mantissa := val / math.pow(10, exp)
+				factor := math.pow(10, pp)
+				mut mant_rounded := math.round(mantissa * factor) / factor
+				mut adj_exp := exp
+				if mant_rounded >= 10.0 {
+					mant_rounded /= 10.0
+					adj_exp++
+				}
+				int_part := i64(mant_rounded)
+				mut frac_part_f := mant_rounded - f64(int_part)
+				mut frac_s := ''
+				if pp > 0 {
+					mut frac_val := math.round(frac_part_f * factor)
+					frac_s = i64(frac_val).str()
+					frac_s = '.' + ('0'.repeat(pp - frac_s.len) + frac_s)
+				}
+				mut sign_e := '+'
+				if adj_exp < 0 {
+					sign_e = '-'
+				}
+				mut ee := adj_exp
+				if ee < 0 {
+					ee = -ee
+				}
+				exp_num := if ee < 10 { '0' + ee.str() } else { ee.str() }
+				e_char := if t == `G` { 'E' } else { 'e' }
+				out = int_part.str() + frac_s + e_char + sign_e + exp_num
+				if neg {
+					out = '-' + out
+				}
+			} else {
+				// fixed format with p significant digits: digits after decimal = p - (exp+1)
+				mut digits_after := p - (exp + 1)
+				if digits_after < 0 {
+					digits_after = 0
+				}
+				pow10 := math.pow(10, digits_after)
+				mut rounded := math.round(val * pow10)
+				rounded_int := i64(rounded)
+				pow10_i := i64(pow10)
+				mut int_part := rounded_int / pow10_i
+				mut frac_part := rounded_int % pow10_i
+				if frac_part == pow10_i {
+					int_part++
+					frac_part = 0
+				}
+				mut int_grouped := fmt_group_int(int_part, 0, false)
+				mut frac_str := ''
+				if digits_after > 0 {
+					frac_str = frac_part.str()
+					if frac_str.len < digits_after {
+						frac_str = '0'.repeat(digits_after - frac_str.len) + frac_str
+					}
+					// strip trailing zeros
+					mut trimmed := frac_str
+					for trimmed.len > 0 && trimmed[trimmed.len - 1] == `0` {
+						trimmed = trimmed[0..trimmed.len - 1]
+					}
+					if trimmed.len > 0 {
+						frac_str = '.' + trimmed
+					} else {
+						frac_str = ''
+					}
+				}
+				out = int_grouped + frac_str
+				if neg {
+					out = '-' + out
+				}
+			}
+		}
+	} else {
+		// fallback to fixed
+		pow10 := math.pow(10, p)
+		mut rounded := math.round(val * pow10)
+		rounded_int := i64(rounded)
+		pow10_i := i64(pow10)
+		mut int_part := rounded_int / pow10_i
+		mut frac_part := rounded_int % pow10_i
+		if frac_part == pow10_i {
+			int_part++
+			frac_part = 0
+		}
+		mut int_grouped := fmt_group_int(int_part, 0, false)
+		mut frac_str := ''
+		if p > 0 {
+			frac_str = frac_part.str()
+			if frac_str.len < p {
+				frac_str = '0'.repeat(p - frac_str.len) + frac_str
+			}
+			frac_str = '.' + frac_str
+		}
+		out = int_grouped + frac_str
+		if neg {
+			out = '-' + out
+		}
+	}
+
+	// Compose sign prefix if not already present
+	mut sign_pref := ''
+	if neg {
+		sign_pref = '-'
+	} else if sign_char == '+' {
+		sign_pref = '+'
+	} else if sign_char == ' ' {
+		sign_pref = ' '
+	}
+
+	// Apply sign prefix if not already present
+	if sign_pref != '' && out.len > 0 && out[0] != `-` {
+		out = sign_pref + out
+	}
+
+	// Apply width padding
+	if width > out.len {
+		pad_len := width - out.len
+		padch := if zero_pad { '0' } else { ' ' }
+		return padch.repeat(pad_len) + out
+	}
+	return out
 }
 
 // is_bool_expr returns true if `expr` is syntactically a boolean expression.
