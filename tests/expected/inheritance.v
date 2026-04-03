@@ -21,7 +21,7 @@ fn main() {
 			sound: 'Woof'
 		}
 	}
-	println((d.name).str())
-	println((d.sound).str())
-	println((d.breed).str())
+	println(d.name)
+	println(d.sound)
+	println(d.breed)
 }

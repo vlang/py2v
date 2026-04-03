@@ -6,7 +6,7 @@ fn show() {
 	mut first := __unpack1[0]
 	mut middle := __unpack1[1..__unpack1.len - 1]
 	mut last := __unpack1.last()
-	println(first.str() + ' ' + last.str())
+	println(first + ' ' + last)
 }
 
 fn main() {

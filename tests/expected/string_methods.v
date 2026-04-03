@@ -4,15 +4,15 @@ module main
 fn main_func() {
 	s := '  hello world  '
 	stripped := s.trim_space()
-	println(stripped.str())
+	println(stripped)
 	words := 'one,two,three'.split(',')
-	println(words.str())
+	println(words)
 	joined := ['a', 'b', 'c'].join('-')
-	println(joined.str())
-	println(('hello'.to_upper()).str())
-	println(('WORLD'.to_lower()).str())
+	println(joined)
+	println('hello'.to_upper())
+	println('WORLD'.to_lower())
 	replaced := 'hello'.replace('l', 'x')
-	println(replaced.str())
+	println(replaced)
 }
 
 fn main() {

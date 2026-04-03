@@ -25,5 +25,5 @@ fn main() {
 		args.n = 5
 	}
 
-	println((fib(args.n)).str())
+	println(fib(args.n))
 }

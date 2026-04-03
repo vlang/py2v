@@ -9,15 +9,15 @@ fn main_func() {
 		r << b
 		return r
 	}())
-	println(c.str())
+	println(c)
 	d := ([0].repeat(5))
-	println(d.str())
+	println(d)
 	e := ([1, 2].repeat(3))
-	println(e.str())
-	println((a.len).str())
-	println((c.len).str())
-	println((c[0]).str())
-	println((c[c.len - 1]).str())
+	println(e)
+	println(a.len)
+	println(c.len)
+	println(c[0])
+	println(c[c.len - 1])
 }
 
 fn main() {

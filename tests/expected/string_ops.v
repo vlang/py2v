@@ -10,10 +10,10 @@ fn main_func() {
 	println(d)
 	e := ('-'.repeat(10))
 	println(e)
-	println((a.len).str())
-	println((c.len).str())
-	println((c[0]).str())
-	println((c[c.len - 1]).str())
+	println(a.len)
+	println(c.len)
+	println(c[0])
+	println(c[c.len - 1])
 }
 
 fn main() {

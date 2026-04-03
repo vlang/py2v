@@ -18,9 +18,9 @@ pub struct ProxyType {
 
 fn main() {
 	c := Config{}
-	println((c.debug).str())
-	println((c.max_retries).str())
-	println((c.name).str())
-	println((c.ratio).str())
-	println(proxy_type_direct.str())
+	println(c.debug)
+	println(c.max_retries)
+	println(c.name)
+	println(c.ratio)
+	println(proxy_type_direct)
 }

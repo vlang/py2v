@@ -13,7 +13,7 @@ fn async_gen(ch chan Any) {
 fn show_async() {
 	// WARNING: async for converted to sync for
 	for val in async_gen() {
-		println(val.str())
+		println(val)
 	}
 }
 

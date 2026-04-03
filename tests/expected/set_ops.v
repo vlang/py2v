@@ -7,11 +7,11 @@ fn main_func() {
 	println(if 1 in a { 'True' } else { 'False' })
 	println(if 5 in a { 'True' } else { 'False' })
 	@union := (a | b)
-	println(@union.str())
+	println(@union)
 	intersection := (a & b)
-	println(intersection.str())
+	println(intersection)
 	difference := (a - b)
-	println(difference.str())
+	println(difference)
 }
 
 fn main() {

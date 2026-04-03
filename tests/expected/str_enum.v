@@ -20,7 +20,7 @@ fn show() {
 	} else {
 		println('Not green')
 	}
-	println((color_map.len).str())
+	println(color_map.len)
 }
 
 fn main() {

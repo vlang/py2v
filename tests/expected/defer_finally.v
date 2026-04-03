@@ -27,7 +27,7 @@ fn mixed_handlers() {
 	}
 	// try {
 	value := '123'.int()
-	println(value.str())
+	println(value)
 	// } catch {
 	// except ValueError:
 	// NOTE: V uses Result types (!) and or{} blocks instead of exceptions
@@ -46,8 +46,8 @@ fn multi_stmt_finally() {
 }
 
 fn main() {
-	println((pure_finally()).str())
-	println((nested_finally()).str())
+	println(pure_finally())
+	println(nested_finally())
 	mixed_handlers()
 	multi_stmt_finally()
 }

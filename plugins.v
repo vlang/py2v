@@ -20,7 +20,7 @@ fn visit_range(args []string) (string, bool) {
 }
 
 // Handle print() call
-fn visit_print(t &VTranspiler, node Call, args []string) (string, bool) {
+fn visit_print(mut t VTranspiler, node Call, args []string) (string, bool) {
 	if args.len == 0 {
 		return "println('')", true
 	}
@@ -54,23 +54,64 @@ fn visit_print(t &VTranspiler, node Call, args []string) (string, bool) {
 
 	// Fall back to converting each part
 	mut parts := []string{}
+	mut trailing_comments := []string{}
 	for i, arg in node.args {
-		arg_str := args[i]
+		// Special-case: some callers use string_literal.format(...)
+		// We prefer to emit the base string and place a trailing comment
+		// after the println when .format() is not supported, e.g.,
+		// println(('...').str()) //.format(...)
+		mut arg_str := args[i]
+		// If the previously-generated expr string already contains an inline
+		// "+ // .format(...)" comment (created by visit_call for .format),
+		// move that comment to trailing_comments so it becomes an end-of-line
+		// comment after the println instead of inside the expression.
+		pos := arg_str.index('// .format(') or { -1 }
+		if pos >= 0 {
+			// split at the '//' start
+			slash := arg_str.index('//') or { -1 }
+			if slash >= 0 {
+				base := arg_str[0..slash].trim_space()
+				comm := arg_str[slash..].trim_space()
+				arg_str = base
+				trailing_comments << comm
+			}
+		}
+		mut arg_node := arg
+		mut arg_str_proc := arg_str
+		if arg is Call {
+			call := arg as Call
+			if call.func is Attribute {
+				attr := call.func as Attribute
+				if attr.attr == 'format' {
+					// Use the underlying object for printing and emit a trailing comment
+					arg_node = attr.value
+					arg_str_proc = t.visit_expr(attr.value)
+					// Previously we forced a .str() call on the base value; no longer needed
+					// collect format args for comment
+					mut fmt_args := []string{}
+					for a in call.args {
+						fmt_args << t.visit_expr(a)
+					}
+					trailing_comments << '// .format(${fmt_args.join(', ')}) not supported'
+				}
+			}
+		}
 		// Check if the argument is a string constant
-		if arg is Constant {
-			c := arg as Constant
+		if arg_node is Constant {
+			c := arg_node as Constant
 			if c.value is string {
-				// String literal - use as is
-				parts << arg_str
+				// String literal - use as is (use processed arg_str)
+				// Do not append .str() — emit the processed argument expression directly.
+				parts << arg_str_proc
 				continue
 			}
 			// Bool constants need Python-style True/False
 			if c.value is bool {
-				parts << bool_to_python_str(arg_str)
+				parts << bool_to_python_str(arg_str_proc)
 				continue
 			}
-			// Numeric constants need parentheses for .str()
-			parts << '(${arg_str}).str()'
+			// Numeric constants: emit as-is (V prints numerics without needing .str())
+			parts << arg_str_proc
 			continue
 		}
 
@@ -143,22 +184,23 @@ fn visit_print(t &VTranspiler, node Call, args []string) (string, bool) {
 			continue
 		}
 
-		// Non-string - need to convert with .str()
-		// Name nodes don't need parens, but Attribute/Subscript and other expressions do
-		needs_parens := arg !is Name
-		if needs_parens {
-			parts << '(${arg_str}).str()'
-		} else {
-			parts << '${arg_str}.str()'
-		}
+		// Non-string: emit expression as-is so printing relies on V's default
+		// formatting/printing behavior.
+		parts << arg_str
 	}
 
+	// Build final println with any trailing comments collected from .format fallbacks
+	mut println_code := ''
 	if parts.len == 1 {
-		return 'println(${parts[0]})', true
+		println_code = 'println(${parts[0]})'
+	} else {
+		// Join with spaces using string interpolation
+		println_code = 'println(${parts.join(" + ' ' + ")})'
 	}
-
-	// Join with spaces using string interpolation
-	return 'println(${parts.join(" + ' ' + ")})', true
+	if trailing_comments.len > 0 {
+		println_code = '${println_code} ${trailing_comments.join(' ')}'
+	}
+	return println_code, true
 }
 
 // Handle bool() call
@@ -236,11 +278,11 @@ fn visit_str(args []string) (string, bool) {
 		return "''", true
 	}
 	arg := args[0]
-	// Simple identifiers don't need parens
+	// Simple identifiers don't need parens — emit identifier or parenthesised expression
 	if arg.len > 0 && is_simple_identifier(arg) {
-		return '${arg}.str()', true
+		return '${arg}', true
 	}
-	return '(${arg}).str()', true
+	return '(${arg})', true
 }
 
 fn is_simple_identifier(s string) bool {
@@ -452,7 +494,8 @@ fn visit_ord(args []string) (string, bool) {
 
 // Handle chr() call - get character from code point
 fn visit_chr(args []string) (string, bool) {
-	return 'rune(${args[0]}).str()', true
+	// Return the rune expression itself; do not call .str()
+	return 'rune(${args[0]})', true
 }
 
 // Handle reversed() call
@@ -490,21 +533,21 @@ struct DispatchResult {
 
 // dispatch_builtin dispatches builtins to their special-case handlers.
 pub fn dispatch_builtin(mut t VTranspiler, fname string, node Call, args []string) (string, bool) {
-	result := dispatch_builtin_impl(t, fname, node, args)
+	result := dispatch_builtin_impl(mut t, fname, node, args)
 	if result.handled && result.using != '' {
 		t.add_using(result.using)
 	}
 	return result.code, result.handled
 }
 
-fn dispatch_builtin_impl(t &VTranspiler, fname string, node Call, args []string) DispatchResult {
+fn dispatch_builtin_impl(mut t VTranspiler, fname string, node Call, args []string) DispatchResult {
 	match fname {
 		'range' {
 			code, handled := visit_range(args)
 			return DispatchResult{code, handled, ''}
 		}
 		'print' {
-			code, handled := visit_print(t, node, args)
+			code, handled := visit_print(mut t, node, args)
 			return DispatchResult{code, handled, ''}
 		}
 		'bool' {

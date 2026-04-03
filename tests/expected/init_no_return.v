@@ -16,5 +16,5 @@ fn main() {
 	t := Thing{
 		x: 1
 	}
-	println((t.x).str())
+	println(t.x)
 }

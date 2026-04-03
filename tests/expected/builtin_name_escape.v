@@ -16,6 +16,6 @@ fn get_value() int {
 
 fn main() {
 	result := make_pair('hello', 10)
-	println(result.str())
-	println((get_value()).str())
+	println(result)
+	println(get_value())
 }

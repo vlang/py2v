@@ -5,7 +5,7 @@ fn show() {
 	myfunc := fn (x int, y int) int {
 		return x + y
 	}
-	println((myfunc(1, 2)).str())
+	println(myfunc(1, 2))
 }
 
 fn main() {

@@ -5,7 +5,7 @@ fn foo() {
 	a := 10
 	b := a
 	assert b == 10
-	println(b.str())
+	println(b)
 }
 
 fn main() {

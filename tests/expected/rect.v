@@ -25,8 +25,8 @@ fn show() {
 		length: 2
 	}
 	assert !(r.is_square())
-	println((r.height).str())
-	println((r.length).str())
+	println(r.height)
+	println(r.length)
 }
 
 fn main() {

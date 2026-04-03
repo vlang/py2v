@@ -15,12 +15,12 @@ fn (mut self MockFile) __init__(name Any) {
 }
 
 fn (self MockFile) __enter__() Any {
-	println(('Opening ' + (self.name).str()).str())
+	println('Opening ' + (self.name))
 	return self
 }
 
 fn (mut self MockFile) __exit__(exc_type Any, exc_val Any, exc_tb Any) bool {
-	println(('Closing ' + (self.name).str()).str())
+	println('Closing ' + (self.name))
 	self.closed = true
 	return false
 }

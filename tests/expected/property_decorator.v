@@ -24,7 +24,7 @@ fn main() {
 	t := Temperature{
 		_celsius: 25
 	}
-	println((t.celsius).str())
+	println(t.celsius)
 	t.set_celsius(30)
-	println((t.celsius).str())
+	println(t.celsius)
 }

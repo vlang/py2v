@@ -18,11 +18,11 @@ fn make_adder(n int) int {
 }
 
 fn main_func() {
-	println((outer(5)).str())
-	println((outer(10)).str())
+	println(outer(5))
+	println(outer(10))
 	add5 := make_adder(5)
-	println((add5(10)).str())
-	println((add5(20)).str())
+	println(add5(10))
+	println(add5(20))
 }
 
 fn main() {

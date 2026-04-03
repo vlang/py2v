@@ -4,7 +4,7 @@ module main
 fn show() {
 	n := [1, 2, 3].len
 	if n > 2 {
-		println(n.str())
+		println(n)
 	}
 
 	mut i := 0
@@ -14,7 +14,7 @@ fn show() {
 			break
 		}
 
-		println(x.str())
+		println(x)
 		i += 1
 	}
 }

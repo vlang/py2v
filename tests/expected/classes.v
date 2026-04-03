@@ -18,6 +18,6 @@ fn (self Foo) baz() int {
 fn main() {
 	f := Foo{}
 	b := f.bar()
-	println(b.str())
+	println(b)
 	assert b == 10
 }

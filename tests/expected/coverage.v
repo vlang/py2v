@@ -33,29 +33,29 @@ fn show() {
 	b10 := 2
 	assert b9 == b10
 	a2 := 2.1
-	println(a2.str())
+	println(a2)
 	for i in []int{len: 10 - 0, init: index + 0} {
-		println(i.str())
+		println(i)
 	}
 	for i := 0; i < 10; i += 2 {
-		println(i.str())
+		println(i)
 	}
 	a3 := -a1
 	a4 := (a3 + a1)
-	println(a4.str())
+	println(a4)
 	t1 := if a1 > 5 { 10 } else { 5 }
 	assert t1 == 10
 	sum1 := indexing()
-	println(sum1.str())
+	println(sum1)
 	a5 := [1, 2, 3]
-	println((a5.len).str())
+	println(a5.len)
 	a9 := ['a', 'b', 'c', 'd']
-	println((a9.len).str())
+	println(a9.len)
 	a7 := {
 		'a': 1
 		'b': 2
 	}
-	println((a7.len).str())
+	println(a7.len)
 	a8 := true
 	if a8 {
 		println('true')

@@ -4,7 +4,7 @@ module main
 fn main_func() {
 	mut i := 0
 	for i < 5 {
-		println(i.str())
+		println(i)
 		i += 1
 	}
 	mut j := 0
@@ -13,7 +13,7 @@ fn main_func() {
 			break
 		}
 
-		println(j.str())
+		println(j)
 		j += 1
 	}
 	mut k := 0
@@ -23,7 +23,7 @@ fn main_func() {
 			continue
 		}
 
-		println(k.str())
+		println(k)
 	}
 }
 

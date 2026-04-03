@@ -24,7 +24,7 @@ fn show() {
 	// } catch {
 	// except Exception:
 	// NOTE: V uses Result types (!) and or{} blocks instead of exceptions
-	// assert e.str().contains('foo')
+	// assert e.contains('foo')
 	// }
 }
 

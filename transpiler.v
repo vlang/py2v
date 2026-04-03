@@ -1682,13 +1682,14 @@ pub fn (mut t VTranspiler) visit_constant(node Constant) string {
 			return if node.value as bool { 'true' } else { 'false' }
 		}
 		int {
-			return (node.value as int).str()
+			// Emit numeric literal directly (no .str() needed in generated V code)
+			return '${node.value as int}'
 		}
 		i64 {
-			return (node.value as i64).str()
+			return '${node.value as i64}'
 		}
 		f64 {
-			return (node.value as f64).str()
+			return '${node.value as f64}'
 		}
 		string {
 			return "'${escape_string(node.value as string)}'"
@@ -2075,7 +2076,8 @@ pub fn (mut t VTranspiler) visit_call(node Call) string {
 					arg_type := t.infer_expr_type(node.args[0])
 					if arg_type.len == 0 || arg_type == 'Any' {
 						// Fallback when iterable element type is unknown.
-						return '(${vargs[0]}).str()'
+						// Do not add .str() — emit the iterable expression as-is.
+						return '(${vargs[0]})'
 					}
 					return '${vargs[0]}.join(${obj})'
 				}
@@ -2101,8 +2103,8 @@ pub fn (mut t VTranspiler) visit_call(node Call) string {
 			}
 			'format' {
 				// Convert .format() to string interpolation isn't easy
-				// For now, just comment it
-				return '${obj} // .format(${vargs.join(', ')}) not supported'
+				// For now, return the base object (caller may attach a comment)
+				return obj
 			}
 			'count' {
 				if vargs.len > 0 {
@@ -2870,7 +2872,8 @@ pub fn (mut t VTranspiler) visit_yield_from(node YieldFrom) string {
 // visit_formatted_value emits V code for formatted value parts (FormattedValue).
 pub fn (mut t VTranspiler) visit_formatted_value(node FormattedValue) string {
 	expr := t.visit_expr(node.value)
-	return '(${expr}).str()'
+	// Do not append .str() — V string interpolation / concatenation uses values directly
+	return '(${expr})'
 }
 
 // visit_joined_str emits V code for joined string (f-string / JoinedStr).

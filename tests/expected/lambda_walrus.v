@@ -5,12 +5,12 @@ fn show() {
 	f := fn (x int) int {
 		return x + 1
 	}
-	println((f(5)).str())
+	println(f(5))
 	nums := [1, 2, 3]
 	result := nums.map(fn (x int) int {
 		return x * 2
 	})
-	println((result.len).str())
+	println(result.len)
 }
 
 fn main() {

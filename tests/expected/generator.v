@@ -13,7 +13,7 @@ fn simple_generator(ch chan Any) {
 fn show() {
 	gen := simple_generator()
 	for val in gen {
-		println(val.str())
+		println(val)
 	}
 }
 

@@ -10,5 +10,5 @@ fn fib(i int) int {
 }
 
 fn main() {
-	println((fib(5)).str())
+	println(fib(5))
 }

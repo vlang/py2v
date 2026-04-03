@@ -16,9 +16,9 @@ fn default_builtins() {
 
 fn main() {
 	a := arrays.max([1, 2]) or { panic('!') }
-	println(a.str())
+	println(a)
 	b := arrays.min([1, 2]) or { panic('!') }
-	println(b.str())
+	println(b)
 	c := int(arrays.min([1, 2]) or { panic('!') })
-	println(c.str())
+	println(c)
 }

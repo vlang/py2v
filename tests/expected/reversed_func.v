@@ -4,11 +4,11 @@ module main
 fn main_func() {
 	nums := [1, 2, 3, 4, 5]
 	for x in nums.reverse() {
-		println(x.str())
+		println(x)
 	}
 	s := 'hello'
 	for c in s.reverse() {
-		println(c.str())
+		println(c)
 	}
 	unsorted := [3, 1, 4, 1, 5]
 	for x in (fn (a []Any) []Any {
@@ -16,7 +16,7 @@ fn main_func() {
 		b.sort()
 		return b
 	}(unsorted)) {
-		println(x.str())
+		println(x)
 	}
 }
 

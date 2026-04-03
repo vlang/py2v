@@ -8,18 +8,18 @@ fn main_func() {
 		'c': 3
 	}
 	keys := d.keys()
-	println(keys.str())
+	println(keys)
 	values := d.values()
-	println(values.str())
+	println(values)
 	mut val := d['a'] or { 0 }
-	println(val.str())
+	println(val)
 	val = d['z'] or { 99 }
-	println(val.str())
+	println(val)
 	popped := (d['b'] or { 0 })
-	println(popped.str())
-	println(d.str())
+	println(popped)
+	println(d)
 	// d.update() - manually merge dicts
-	println(d.str())
+	println(d)
 }
 
 fn main() {

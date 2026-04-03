@@ -14,7 +14,7 @@ fn main_func() {
 	println(if x == none { 'True' } else { 'False' })
 	println(if x != none { 'True' } else { 'False' })
 	mut result := maybe_value(true)
-	println(result.str())
+	println(result)
 	result = maybe_value(false)
 	println(if result == none { 'True' } else { 'False' })
 }

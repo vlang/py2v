@@ -7,7 +7,7 @@ fn for_with_break() {
 			break
 		}
 
-		println(i.str())
+		println(i)
 	}
 }
 
@@ -17,14 +17,14 @@ fn for_with_continue() {
 			continue
 		}
 
-		println(i.str())
+		println(i)
 	}
 }
 
 fn for_with_else() {
 	has_break := false
 	for i in []int{len: 4, init: index} {
-		println(i.str())
+		println(i)
 	}
 	if has_break != true {
 		println('OK')
@@ -38,7 +38,7 @@ fn while_with_break() {
 			break
 		}
 
-		println(i.str())
+		println(i)
 		i += 1
 	}
 }
@@ -51,7 +51,7 @@ fn while_with_continue() {
 			continue
 		}
 
-		println(i.str())
+		println(i)
 	}
 }
 

@@ -15,7 +15,7 @@ fn write_and_read() {
 		mut f := os.open(path) or { panic(err) }
 		defer { f.close() }
 		data := f.read()
-		println(data.str())
+		println(data)
 	}
 
 	os.delete(os.index(path))

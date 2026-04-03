@@ -11,14 +11,14 @@ fn with_finally(x int) int {
 }
 
 fn main_func() {
-	println((with_finally(5)).str())
-	println((with_finally(10)).str())
+	println(with_finally(5))
+	println(with_finally(10))
 	defer {
 		println('cleanup')
 	}
 	// try {
 	x := 10
-	println(x.str())
+	println(x)
 	// } catch {
 	// except:
 	// NOTE: V uses Result types (!) and or{} blocks instead of exceptions

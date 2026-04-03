@@ -25,7 +25,7 @@ fn generator2(ch chan Any) {
 fn show() {
 	gen := generator2()
 	for val in gen {
-		println(val.str())
+		println(val)
 	}
 }
 

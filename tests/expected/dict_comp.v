@@ -11,7 +11,7 @@ fn show() {
 		}
 		return result
 	}())
-	println((squares.len).str())
+	println(squares.len)
 	evens := (fn () map[string]Any {
 		mut result := map[string]Any{}
 		for x in []int{len: 10, init: index} {
@@ -21,7 +21,7 @@ fn show() {
 		}
 		return result
 	}())
-	println((evens.len).str())
+	println(evens.len)
 }
 
 fn main() {

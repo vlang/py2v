@@ -13,7 +13,7 @@ fn (mut self Base) __init__(value Any) {
 }
 
 fn (self Base) greet() Any {
-	return 'hi ' + (self.value).str()
+	return 'hi ' + (self.value)
 }
 
 pub struct Child {
@@ -40,5 +40,5 @@ fn main() {
 			value: 'x'
 		}
 	}
-	println((c.greet()).str())
+	println(c.greet())
 }
