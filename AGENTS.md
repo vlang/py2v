@@ -40,8 +40,12 @@ Mandatory guardrails (enforced for all agent work)
   out-of-repo location for any artifacts you must write.
 - Avoid module-level mutable globals in repository source code; prefer struct fields
   (e.g., on `VTranspiler`) or explicit parameters.
-- After edits, run `v -check` and `v vet` (target a file or `.`) and fix all `v vet`
-  notices/warnings. Then run `v fmt -w .` on `.v` files.
+- After edits:
+  - Run `v -check` and `v vet` (target a file or `.`) and fix all `v vet`
+    notices/warnings.
+  - Run `v fmt -w .` on `.v` and `.vv` files.
+  - Run `v check-md` on edited `.md` files and fix any issues.
+  - Recompile the entire project with `v .` and fix any errors or warnings.
 
 Guidance highlights
 - Implement builtin translations in `plugins.v::dispatch_builtin()` and call
