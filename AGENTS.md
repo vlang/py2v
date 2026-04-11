@@ -35,6 +35,7 @@ Mandatory guardrails (enforced for all agent work)
 - Add `2>&1` to commands that may emit to stderr so all output is captured.
 - Keep `.md` lines ≤ 100 characters and run `v check-md` on edited markdown.
 - Use `//` for V doc comments — do NOT use `///` or `/**`.
+- Use `[T]` style for generics - do NOT use `<T>` or other styles.
 - Do NOT run any git commands, create branches, PRs, or changelogs.
 - Do NOT create repository-local temporary files; use subdirectories under `/tmp` or another
   out-of-repo location for any artifacts you must write.
