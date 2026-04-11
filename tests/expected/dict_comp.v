@@ -1,8 +1,6 @@
 @[translated]
 module main
 
-type Any = bool | int | i64 | f64 | string | []u8
-
 fn show() {
 	squares := (fn () map[string]Any {
 		mut result := map[string]Any{}

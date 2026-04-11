@@ -1,8 +1,6 @@
 @[translated]
 module main
 
-type Any = bool | int | i64 | f64 | string | []u8
-
 pub struct MockFile {
 pub mut:
 	name   Any
@@ -41,3 +39,5 @@ fn show() {
 fn main() {
 	show()
 }
+
+type Any = bool | int | i64 | f64 | string | []u8

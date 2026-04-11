@@ -12,7 +12,6 @@ fn main_func() {
 			if j == 2 {
 				break
 			}
-
 			println(((i * 10) + j))
 		}
 	}

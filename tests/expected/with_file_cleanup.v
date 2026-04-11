@@ -10,14 +10,12 @@ fn write_and_read() {
 		defer { f.close() }
 		f.write('hello world')
 	}
-
 	if true {
 		mut f := os.open(path) or { panic(err) }
 		defer { f.close() }
 		data := f.read()
 		println(data)
 	}
-
 	os.delete(os.index(path))
 }
 

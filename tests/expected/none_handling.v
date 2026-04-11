@@ -5,7 +5,6 @@ fn maybe_value(flag bool) int {
 	if flag {
 		return 42
 	}
-
 	return none
 }
 

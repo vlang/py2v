@@ -200,7 +200,7 @@ fn visit_print(mut t VTranspiler, node Call, args []string) (string, bool) {
 }
 
 // Handle bool() call
-fn visit_bool(t &VTranspiler, node Call, args []string) (string, bool) {
+fn visit_bool(mut t VTranspiler, node Call, args []string) (string, bool) {
 	if args.len == 0 {
 		return 'false', true
 	}
@@ -371,6 +371,58 @@ fn visit_filter(args []string) (string, bool) {
 	}
 	// filter(func, iterable) -> iterable.filter(func)
 	return '${args[1]}.filter(${args[0]})', true
+}
+
+// build_typed_lambda_closure builds a typed closure string from a Lambda AST node
+// using frontend-provided annotations (v_annotation on lambda return or arg annotations)
+// and fallbacks (infer iterable element type). `iter` is the iterable Expr used to infer
+// parameter types when arg annotations are missing.
+fn build_typed_lambda_closure(mut t VTranspiler, lam Lambda, iter Expr) string {
+	mut params := []string{}
+	// Try to infer element type from iterable as a fallback
+	elem_type := t.infer_iter_elem_type(iter)
+	for a in lam.args.args {
+		// Default to Any
+		mut ptype := 'Any'
+		if ann := a.annotation {
+			// Unwrap optional annotation into `ann` and use it
+			ptype = t.typename_from_annotation(ann)
+		} else if elem_type.len > 0 {
+			ptype = elem_type
+		} else {
+			// keep Any
+			ptype = 'Any'
+		}
+		name := escape_identifier(a.arg)
+		params << '${name} ${ptype}'
+	}
+	// Determine return type: infer from lambda body. To allow the body to be
+	// inferred correctly when parameters are unannotated, temporarily bind
+	// the inferred/annotated parameter types into t.var_types while calling
+	// infer_expr_type, then restore the original map.
+	mut ret_type := 'Any'
+	// Save original var_types so we can restore after inference
+	orig_var_types := t.var_types.clone()
+	// Populate param types for inference
+	for a in lam.args.args {
+		name := escape_identifier(a.arg)
+		if ann := a.annotation {
+			// Unwrap optional annotation into `ann` and use it
+			t.var_types[name] = t.typename_from_annotation(ann)
+		} else if elem_type.len > 0 {
+			t.var_types[name] = elem_type
+		}
+	}
+	inferred := t.infer_expr_type(lam.body)
+	// Restore original var_types (use clone to avoid move/copy errors)
+	t.var_types = orig_var_types.clone()
+	if inferred.len > 0 {
+		ret_type = inferred
+	}
+	// Render body expression
+	body := t.visit_expr(lam.body)
+	stripped := strip_outer_parens(body)
+	return 'fn (${params.join(', ')}) ${ret_type} {\n\treturn ${stripped}\n}'
 }
 
 // Handle all() call
@@ -547,7 +599,7 @@ fn dispatch_builtin_impl(mut t VTranspiler, fname string, node Call, args []stri
 			return DispatchResult{code, handled, ''}
 		}
 		'bool' {
-			code, handled := visit_bool(t, node, args)
+			code, handled := visit_bool(mut t, node, args)
 			return DispatchResult{code, handled, ''}
 		}
 		'int' {
@@ -599,10 +651,35 @@ fn dispatch_builtin_impl(mut t VTranspiler, fname string, node Call, args []stri
 			return DispatchResult{code, handled, ''}
 		}
 		'map' {
+			// Construct typed closure when first arg is a Lambda AST node
+			if node.args.len > 0 {
+				first := node.args[0]
+				if first is Lambda {
+					lam := first as Lambda
+					iter_expr := if node.args.len > 1 { node.args[1] } else { Expr(Constant{
+							value: NoneValue{}
+						}) }
+					closure := build_typed_lambda_closure(mut t, lam, iter_expr)
+					iter_code := args[1]
+					return DispatchResult{'${iter_code}.map(${closure})', true, ''}
+				}
+			}
 			code, handled := visit_map_builtin(args)
 			return DispatchResult{code, handled, ''}
 		}
 		'filter' {
+			if node.args.len > 0 {
+				first := node.args[0]
+				if first is Lambda {
+					lam := first as Lambda
+					iter_expr := if node.args.len > 1 { node.args[1] } else { Expr(Constant{
+							value: NoneValue{}
+						}) }
+					closure := build_typed_lambda_closure(mut t, lam, iter_expr)
+					iter_code := args[1]
+					return DispatchResult{'${iter_code}.filter(${closure})', true, ''}
+				}
+			}
 			code, handled := visit_filter(args)
 			return DispatchResult{code, handled, ''}
 		}

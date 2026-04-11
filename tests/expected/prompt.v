@@ -9,7 +9,6 @@ fn main() {
 		if name == '<quit>' {
 			break
 		}
-
 		println((('Hello ' + name) + '!'))
 	}
 }

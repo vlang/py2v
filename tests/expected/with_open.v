@@ -12,7 +12,6 @@ fn main() {
 			defer { f.close() }
 			f.write('hello')
 		}
-
 		if true {
 			mut f := os.open(file_path) or { panic(err) }
 			defer { f.close() }

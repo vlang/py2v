@@ -232,7 +232,7 @@ pub fn fmt_group_float(f f64, width int, zero_pad bool, precision int, typ strin
 	}
 
 	mut out := ''
-	t := if typ.len > 0 { typ[0] } else { `f` }
+	t := if typ != '' { typ[0] } else { `f` }
 
 	if t == `f` || t == `F` {
 		// Fixed-point formatting with grouping
@@ -433,7 +433,7 @@ pub fn fmt_group_float(f f64, width int, zero_pad bool, precision int, typ strin
 	}
 
 	// Apply sign prefix if not already present
-	if sign_pref != '' && out.len > 0 && out[0] != `-` {
+	if sign_pref != '' && out != '' && out[0] != `-` {
 		out = sign_pref + out
 	}
 

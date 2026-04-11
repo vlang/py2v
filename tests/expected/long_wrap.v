@@ -1,8 +1,6 @@
 @[translated]
 module main
 
-type Any = bool | int | i64 | f64 | string | []u8
-
 fn build(a Any, b Any, c Any, d Any, e Any, f Any, g Any, h Any, i Any, j Any, k Any, l Any) Any {
 	items := [
 		'aaaaaaaaaa',
@@ -30,3 +28,5 @@ fn main() {
 	println(out[0][0])
 	println(out[1])
 }
+
+type Any = bool | int | i64 | f64 | string | []u8

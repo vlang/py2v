@@ -18,7 +18,6 @@ fn test_python(iterations int) {
 	if total == 15150 {
 		println('OK')
 	}
-
 	// del array - V does not support deleting variables
 }
 

@@ -7,7 +7,7 @@ fn show() {
 	}
 	println(f(5))
 	nums := [1, 2, 3]
-	result := nums.map(fn (x int) int {
+	result := nums.map(fn (x int) i64 {
 		return x * 2
 	})
 	println(result.len)

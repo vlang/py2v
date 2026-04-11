@@ -6,6 +6,7 @@ pub const v_type_map = {
 	'float':    'f64'
 	'str':      'string'
 	'bool':     'bool'
+	'complex':  'complex128'
 	'Bool':     'bool' // SMT Bool type
 	'bytes':    '[]u8'
 	'tuple':    '[]int' // V doesn't have tuples, use arrays

@@ -4,392 +4,253 @@ const max_generated_line_len = 121
 
 pub struct VTranspiler {
 mut:
-	usings                      []string
-	indent_str                  string = '\t'
-	module_name                 string = 'main'
-	tmp_var_id                  int
-	generated_code_has_any_type bool
-	known_classes               map[string][]string          // class name -> field names in order
-	class_direct_fields         map[string][]string          // class name -> direct (non-inherited) fields
-	class_base_names            map[string][]string          // class name -> direct base class names
-	class_attr_symbols          map[string]map[string]string // class name -> class attr -> module-level symbol
+	usings  []string
+	tmp_gen TmpVarGen
+	// Maps and state tracked during transpilation
+	var_types                   map[string]string
+	escaped_identifiers         map[string]bool
 	current_class_name          string
-	mut_param_indices           map[string][]int    // function name -> indices of mut parameters
-	func_defaults               map[string][]string // function name -> default values for trailing params
-	func_param_count            map[string]int      // function name -> total parameter count
-	var_types                   map[string]string   // variable name -> inferred type ("bool", "string", etc.)
-	func_return_types           map[string]string   // function name -> return type ("string", "int", etc.)
-	extra_mut_vars              map[string]bool     // variables that need mut because passed to mut params
-	global_vars                 map[string]bool     // module-level variables
-	escaped_identifiers         map[string]bool     // identifiers escaped due to V built-in type name conflict
+	global_vars                 map[string]bool
+	extra_mut_vars              map[string]bool
+	mut_param_indices           map[string][]int
+	func_defaults               map[string][]string
+	func_param_count            map[string]int
+	func_return_types           map[string]string
+	generated_code_has_any_type bool
+	// Class metadata
+	class_attr_symbols  map[string]map[string]string
+	class_direct_fields map[string][]string
+	class_base_names    map[string][]string
+	known_classes       map[string][]string
+	// Module name for emitted code
+	module_name string
 }
 
-// new_transpiler creates a new VTranspiler.
+fn emitted_class_name(name string) string {
+	if name.len == 1 {
+		c := name[0]
+		if c >= `A` && c <= `Z` {
+			return '${name}_struct'
+		}
+	}
+	return name
+}
+
+// new_transpiler creates a new VTranspiler instance
 pub fn new_transpiler() VTranspiler {
 	return VTranspiler{
-		usings: []string{}
+		usings:                      []string{}
+		tmp_gen:                     new_tmp_var_gen()
+		var_types:                   map[string]string{}
+		escaped_identifiers:         map[string]bool{}
+		current_class_name:          ''
+		global_vars:                 map[string]bool{}
+		extra_mut_vars:              map[string]bool{}
+		mut_param_indices:           map[string][]int{}
+		func_defaults:               map[string][]string{}
+		func_param_count:            map[string]int{}
+		func_return_types:           map[string]string{}
+		generated_code_has_any_type: false
+		class_attr_symbols:          map[string]map[string]string{}
+		class_direct_fields:         map[string][]string{}
+		class_base_names:            map[string][]string{}
+		known_classes:               map[string][]string{}
+		module_name:                 ''
 	}
 }
 
-// add_using adds a using/import module to the transpiler.
-pub fn (mut t VTranspiler) add_using(mod string) {
-	if mod !in t.usings {
-		t.usings << mod
-	}
-}
-
-// new_tmp generates a new temporary variable name with the given prefix.
-pub fn (mut t VTranspiler) new_tmp(prefix string) string {
-	t.tmp_var_id++
-	return '__${prefix}${t.tmp_var_id}'
-}
-
-// indent_code indents `code` using the transpiler's indent string.
-pub fn (t VTranspiler) indent_code(code string, level int) string {
-	return indent(code, level, t.indent_str)
-}
-
-// usings_code generates the module header with imports and Any type if needed.
-pub fn (t VTranspiler) usings_code() string {
-	mut buf := []string{}
-	buf << '@[translated]'
-	buf << 'module ${t.module_name}'
-
-	if t.usings.len > 0 {
-		buf << ''
-		mut sorted_usings := t.usings.clone()
-		sorted_usings.sort()
-		for mod in sorted_usings {
-			buf << 'import ${mod}'
-		}
+// visit_module emits the top-level V module source for a Module node.
+pub fn (mut t VTranspiler) visit_module(node Module) string {
+	mut module_name := t.module_name
+	if module_name.len == 0 {
+		module_name = 'main'
 	}
 
-	if t.generated_code_has_any_type {
-		buf << ''
-		buf << 'type Any = bool | int | i64 | f64 | string | []u8'
-	}
+	mut decl_parts := []string{}
+	mut main_parts := []string{}
 
-	return buf.join('\n')
-}
-
-// visit_module transpiles a Module into V source code.
-pub fn (mut t VTranspiler) visit_module(mod Module) string {
-	mut init_stmts := []string{}
-	mut defined_vars := map[string]bool{} // Track already defined variables
-	mut definitions := []string{}
-	mut other_stmts := []string{}
-	mut imported_exceptions := []string{}
-	mut exported_names := []string{}
-
-	// Pre-pass: identify module-level variable names and infer types
-	for stmt in mod.body {
-		match stmt {
-			Assign {
-				for target in stmt.targets {
-					if target is Name {
-						n := target as Name
-						t.global_vars[n.id] = true
-						// Infer type from value for use in function bodies
-						inferred := t.infer_expr_type(stmt.value)
-						if inferred.len > 0 {
-							t.var_types[n.id] = inferred
-						}
-					}
-				}
-			}
-			AnnAssign {
-				if stmt.target is Name {
-					n := stmt.target as Name
-					t.global_vars[n.id] = true
-					// Infer type from annotation
-					ann_type := t.typename_from_annotation(stmt.annotation)
-					if ann_type.len > 0 {
-						t.var_types[n.id] = ann_type
-					}
-				}
-			}
-			else {}
-		}
-	}
-
-	// First pass: process function/class definitions to register signatures
-	for stmt in mod.body {
-		match stmt {
-			ImportFrom {
-				mod_name := stmt.mod or { '' }
-				// Package __init__.py pattern: from ...exceptions import FooException, ...
-				if mod_name.ends_with('.exceptions') || mod_name == 'exceptions' {
-					for alias in stmt.names {
-						if alias.name.ends_with('Exception') || alias.name == 'WebDriverException' {
-							if alias.name !in imported_exceptions {
-								imported_exceptions << alias.name
-							}
-						}
-					}
-				}
-			}
-			Assign {
-				// Track __all__ for exported-name filtering/order.
-				if stmt.targets.len == 1 && stmt.targets[0] is Name {
-					n := stmt.targets[0] as Name
-					if n.id == '__all__' {
-						exported_names = extract_string_list(stmt.value)
-					}
-				}
-			}
-			FunctionDef, AsyncFunctionDef, ClassDef {
-				result := t.visit_stmt(stmt)
-				if result.len > 0 {
-					definitions << result
-				}
-			}
-			else {}
-		}
-	}
-
-	// Pre-scan remaining statements for variables passed to mut params
-	t.prescan_mut_call_args(mod.body)
-
-	// Second pass: process non-definition statements
-	for stmt in mod.body {
-		match stmt {
-			FunctionDef, AsyncFunctionDef, ClassDef {
-				// Already processed above
-			}
-			Assign {
-				// Check if this is a first-time definition or reassignment
-				// Extract variable names from targets
-				mut is_first_def := true
-				for target in stmt.targets {
-					if target is Name {
-						n := target as Name
-						if n.id in defined_vars {
-							is_first_def = false
-							break
-						}
-					}
-				}
-
-				result := t.visit_assign(stmt)
-				if result.len > 0 {
-					if is_first_def {
-						for target in stmt.targets {
-							if target is Name {
-								n := target as Name
-								defined_vars[n.id] = true
-								t.global_vars[n.id] = true
-							}
-						}
-						// Keep original assignment form for emission inside main
-						// (e.g., 'mut x := 1' or 'x := 1')
-						init_stmts << result
-					} else {
-						// Reassignment goes in other statements
-						other_stmts << result
-					}
-				}
-			}
-			AnnAssign {
-				// Check if already defined
-				mut var_name := ''
-				if stmt.target is Name {
-					n := stmt.target as Name
-					var_name = n.id
-				}
-
-				result := t.visit_stmt(stmt)
-				if result.len > 0 {
-					if var_name !in defined_vars {
-						defined_vars[var_name] = true
-						if var_name.len > 0 {
-							t.global_vars[var_name] = true
-						}
-						// Keep original annotated assignment for emission inside main
-						init_stmts << result
-					} else {
-						other_stmts << result
-					}
-				}
-			}
-			ExprStmt {
-				// Skip module-level docstrings (bare string constants)
-				if stmt.value is Constant {
-					c := stmt.value as Constant
+	mut first_stmt := true
+	for stmt in node.body {
+		if first_stmt {
+			first_stmt = false
+			if stmt is ExprStmt {
+				es := stmt as ExprStmt
+				if es.value is Constant {
+					c := es.value as Constant
 					if c.value is string {
 						continue
 					}
 				}
-				result := t.visit_stmt(stmt)
-				if result.len > 0 {
-					other_stmts << result
-				}
+			}
+		}
+		s := t.visit_stmt(stmt)
+		if s.len == 0 {
+			continue
+		}
+		match stmt {
+			FunctionDef, AsyncFunctionDef, ClassDef {
+				decl_parts << s
 			}
 			else {
-				result := t.visit_stmt(stmt)
-				if result.len > 0 {
-					other_stmts << result
-				}
+				main_parts << s
 			}
 		}
 	}
 
-	// Build code with proper ordering
-	mut code_parts := []string{}
-
-	// Add definitions (functions, classes)
-	for i, def in definitions {
-		if i > 0 {
-			code_parts << ''
-		}
-		code_parts << def
-	}
-
-	// Add exception union alias for package-style exports (e.g., selenium/common/__init__.py)
-	mut union_names := []string{}
-	if exported_names.len > 0 && imported_exceptions.len > 0 {
-		for name in exported_names {
-			if name in imported_exceptions {
-				union_names << name
-			}
-		}
-	} else if imported_exceptions.len > 1 {
-		union_names = imported_exceptions.clone()
-	}
-	if union_names.len > 1 {
-		if code_parts.len > 0 {
-			code_parts << ''
-		}
-		code_parts << format_union_type_alias('WebDriverExceptions', union_names, max_generated_line_len)
-	}
-
-	// Add other statements - must be wrapped in fn main() if present.
-	// Emit any module-level init statements at the start of main so we avoid
-	// module-level mutable globals (per AGENTS.md).
-	if other_stmts.len > 0 {
-		code_parts << ''
-		code_parts << 'fn main() {'
-		// Emit module-level initializers first
-		for init in init_stmts {
-			code_parts << '\t${init}'
-		}
-		for stmt in other_stmts {
-			code_parts << '\t${stmt}'
-		}
-		code_parts << '}'
-	}
-
-	mut code := code_parts.join('\n')
-
-	// Add module docstring comment if present
-	if doc := mod.docstring_comment {
-		// Convert multi-line docstrings to single-line comment with first line
-		first_line := doc.split('\n')[0].trim_space()
-		if first_line.len > 0 {
-			code = '// ${first_line}\n\n' + code
-		}
-	}
-
-	// Check if code contains "Any" type
-	t.generated_code_has_any_type = code.contains(' Any') || code.contains('[Any]')
-		|| code.contains('Any{')
-
-	header := t.usings_code()
-	if header.len > 0 {
-		return header + '\n\n' + code + '\n'
-	}
-	return code + '\n'
-}
-
-fn extract_string_list(expr Expr) []string {
-	mut out := []string{}
-	match expr {
-		List {
-			for e in expr.elts {
-				if e is Constant {
-					c := e as Constant
-					if c.value is string {
-						out << (c.value as string)
-					}
-				}
-			}
-		}
-		Tuple {
-			for e in expr.elts {
-				if e is Constant {
-					c := e as Constant
-					if c.value is string {
-						out << (c.value as string)
-					}
-				}
-			}
-		}
-		else {}
-	}
-	return out
-}
-
-fn format_union_type_alias(name string, variants []string, max_col int) string {
-	if variants.len == 0 {
-		return 'type ${name} = Any'
-	}
-	mut lines := []string{}
-	mut line := 'type ${name} = ${variants[0]}'
-	for i := 1; i < variants.len; i++ {
-		candidate := '${line} | ${variants[i]}'
-		if candidate.len <= max_col {
-			line = candidate
-		} else {
-			lines << line
-			line = '\t| ${variants[i]}'
-		}
-	}
-	lines << line
-	return lines.join('\n')
-}
-
-// visit_body visits a list of statements and returns their V code joined.
-pub fn (mut t VTranspiler) visit_body(stmts []Stmt) string {
 	mut parts := []string{}
-	mut prev_was_func_or_class := false
-	for stmt in stmts {
-		result := t.visit_stmt(stmt)
-		if result.len > 0 {
-			// Add blank line between function/class definitions
-			is_func_or_class := stmt is FunctionDef || stmt is AsyncFunctionDef || stmt is ClassDef
-			if prev_was_func_or_class && is_func_or_class {
-				parts << ''
-			}
-			parts << result
-			prev_was_func_or_class = is_func_or_class
+	parts << '@[translated]'
+	parts << 'module ${module_name}'
+
+	if t.usings.len > 0 {
+		mut import_lines := []string{}
+		for u in t.usings {
+			import_lines << 'import ${u}'
 		}
+		parts << import_lines.join('\n')
+	}
+
+	if decl_parts.len > 0 {
+		parts << decl_parts.join('\n\n')
+	}
+
+	if t.generated_code_has_any_type {
+		parts << 'type Any = bool | int | i64 | f64 | string | []u8'
+	}
+
+	if main_parts.len > 0 {
+		mut main_body := ''
+		mut indented := []string{}
+		for p in main_parts {
+			indented << indent(p, 1, '\t')
+		}
+		main_body = indented.join('\n')
+		parts << 'fn main() {\n${main_body}\n}'
+	}
+
+	return parts.join('\n\n')
+}
+
+// add_using registers an import usage required by generated code.
+pub fn (mut t VTranspiler) add_using(mod string) {
+	if mod == '' {
+		return
+	}
+	if mod in t.usings {
+		return
+	}
+	t.usings << mod
+}
+
+// new_tmp returns a fresh temporary variable name.
+pub fn (mut t VTranspiler) new_tmp(prefix string) string {
+	return t.tmp_gen.next(prefix)
+}
+
+// indent_code indents `code` by `level` using a tab indent.
+pub fn (mut t VTranspiler) indent_code(code string, level int) string {
+	// refer to t to avoid v vet "unused receiver" warnings
+	_ = t.module_name
+	return indent(code, level, '\t')
+}
+
+// visit_body_stmts visits a list of statements and returns an indented block string.
+pub fn (mut t VTranspiler) visit_body_stmts(stmts []Stmt, level int) string {
+	mut parts := []string{}
+	for stmt in stmts {
+		s := t.visit_stmt(stmt)
+		if s.len == 0 {
+			continue
+		}
+		parts << indent(s, level, '\t')
 	}
 	return parts.join('\n')
 }
 
-// visit_body_stmts visits statements in a body and applies indentation.
-fn (mut t VTranspiler) visit_body_stmts(stmts []Stmt, indent_level int) []string {
-	mut lines := []string{}
-	mut prev_was_if_no_else := false
-	for stmt in stmts {
-		result := t.visit_stmt(stmt)
-		if result.len > 0 {
-			// Add blank line after if-without-else
-			if prev_was_if_no_else {
-				lines << ''
+// visit_return emits V code for a Return statement.
+pub fn (mut t VTranspiler) visit_return(node Return) string {
+	if val := node.value {
+		return 'return ${t.visit_expr(val)}'
+	}
+	return 'return'
+}
+
+// visit_delete emits V delete operations where V has an equivalent.
+pub fn (mut t VTranspiler) visit_delete(node Delete) string {
+	mut parts := []string{}
+	for target in node.targets {
+		parts << t.emit_delete_target(target)
+	}
+	return parts.join('\n')
+}
+
+// emit_delete_target lowers one Python del target into one or more V lines.
+fn (mut t VTranspiler) emit_delete_target(target Expr) []string {
+	match target {
+		Subscript {
+			sub := target as Subscript
+			if sub.slice is Slice {
+				return [
+					'// del ${t.visit_expr(target)}  // unsupported: slice deletion',
+				]
 			}
-			lines << t.indent_code(result, indent_level)
-			// Track if this was an if without else, or a with block
-			if stmt is If {
-				if_stmt := stmt as If
-				prev_was_if_no_else = if_stmt.orelse.len == 0
-			} else if stmt is With || stmt is AsyncWith {
-				prev_was_if_no_else = true
-			} else {
-				prev_was_if_no_else = false
+			base := t.visit_expr(sub.value)
+			index := t.visit_expr(sub.slice)
+			coll_type := t.infer_expr_type(sub.value)
+			if coll_type.starts_with('map[') || sub.value is Dict {
+				return ['${base}.delete(${index})']
+			}
+			if coll_type.starts_with('[]') || coll_type == 'array' || sub.value is List {
+				return ['${base}.delete(${index})']
+			}
+			if coll_type.len > 0 {
+				return [
+					'// del ${t.visit_expr(target)}  // unsupported: subscript delete on ${coll_type}',
+				]
+			}
+			return [
+				'// del ${t.visit_expr(target)}  // unsupported: unknown subscript container',
+			]
+		}
+		Tuple {
+			mut lines := []string{}
+			for elt in (target as Tuple).elts {
+				lines << t.emit_delete_target(elt)
+			}
+			return lines
+		}
+		List {
+			mut lines := []string{}
+			for elt in (target as List).elts {
+				lines << t.emit_delete_target(elt)
+			}
+			return lines
+		}
+		Name {
+			return [
+				'// del ${t.visit_expr(target)} - V does not support deleting variables',
+			]
+		}
+		Attribute {
+			return [
+				'// del ${t.visit_expr(target)}  // unsupported: attribute deletion',
+			]
+		}
+		else {
+			return ['// del ${t.visit_expr(target)}  // unsupported del form']
+		}
+	}
+}
+
+// has_setter_decorator returns true if any decorator is a .setter attribute.
+fn has_setter_decorator(decorators []Expr) bool {
+	for d in decorators {
+		if d is Attribute {
+			if (d as Attribute).attr == 'setter' {
+				return true
 			}
 		}
 	}
-	return lines
+	return false
 }
 
 // visit_stmt visits a statement and dispatches to the appropriate visitor.
@@ -468,18 +329,6 @@ fn has_property_decorator(decorators []Expr) bool {
 	return false
 }
 
-// has_setter_decorator returns true if the function has @<name>.setter decorator.
-fn has_setter_decorator(decorators []Expr) bool {
-	for d in decorators {
-		if d is Attribute {
-			if d.attr == 'setter' {
-				return true
-			}
-		}
-	}
-	return false
-}
-
 // visit_function_def emits V code for a Python FunctionDef node.
 pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 	// Save var_types and escaped_identifiers for function scope (keep globals, reset locals)
@@ -504,10 +353,11 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 
 	// Handle class method receiver
 	if node.is_class_method {
+		emitted_receiver := emitted_class_name(node.class_name)
 		if 'self' in node.mutable_vars || node.name == '__init__' {
-			signature << '(mut self ${node.class_name})'
+			signature << '(mut self ${emitted_receiver})'
 		} else {
-			signature << '(self ${node.class_name})'
+			signature << '(self ${emitted_receiver})'
 		}
 	}
 
@@ -697,6 +547,7 @@ pub fn (mut t VTranspiler) visit_async_function_def(node AsyncFunctionDef) strin
 
 // visit_class_def emits V code for a ClassDef node.
 pub fn (mut t VTranspiler) visit_class_def(node ClassDef) string {
+	emitted_name := emitted_class_name(node.name)
 	mut fields := []string{}
 	mut field_names := []string{}
 	mut base_names := []string{}
@@ -816,7 +667,7 @@ pub fn (mut t VTranspiler) visit_class_def(node ClassDef) string {
 	mut embeds := []string{}
 	for base_name in base_names {
 		if base_name in t.known_classes {
-			embeds << t.indent_code(base_name, 1)
+			embeds << t.indent_code(emitted_class_name(base_name), 1)
 		}
 	}
 
@@ -825,9 +676,9 @@ pub fn (mut t VTranspiler) visit_class_def(node ClassDef) string {
 	all_parts << fields
 
 	mut struct_def := if all_parts.len > 0 {
-		'pub struct ${node.name} {\n${all_parts.join('\n')}\n}'
+		'pub struct ${emitted_name} {\n${all_parts.join('\n')}\n}'
 	} else {
-		'pub struct ${node.name} {\n}'
+		'pub struct ${emitted_name} {\n}'
 	}
 
 	// Add class docstring as struct comment (V convention: "// StructName ...")
@@ -897,42 +748,31 @@ pub fn (mut t VTranspiler) visit_class_def(node ClassDef) string {
 	return struct_def
 }
 
-// visit_return emits V code for a Return statement.
-pub fn (mut t VTranspiler) visit_return(node Return) string {
-	if val := node.value {
-		expr := t.visit_expr(val)
-		// Strip outer parentheses from return expression
-		stripped := strip_outer_parens(expr)
-		return 'return ${stripped}'
-	}
-	return 'return'
-}
-
-// visit_delete emits V code for a Delete statement.
-pub fn (mut t VTranspiler) visit_delete(node Delete) string {
-	mut parts := []string{}
-	for target in node.targets {
-		if target is Subscript {
-			// Deleting a subscript - list[i] or dict[key]
-			sub := target as Subscript
-			obj := t.visit_expr(sub.value)
-			idx := t.visit_expr(sub.slice)
-			// For lists, use .delete(index)
-			// For dicts, use .delete(key)
-			parts << '${obj}.delete(${idx})'
-		} else if target is Name {
-			// Can't delete a variable in V - comment it out
-			parts << '// del ${t.visit_expr(target)} - V does not support deleting variables'
-		} else {
-			// Fallback
-			parts << '// del ${t.visit_expr(target)}'
-		}
-	}
-	return parts.join('\n')
-}
-
 // visit_assign emits V code for an Assign statement.
 pub fn (mut t VTranspiler) visit_assign(node Assign) string {
+	// Special-case __all__ exception exports into a V union alias.
+	if node.targets.len == 1 && node.targets[0] is Name {
+		target_name := (node.targets[0] as Name).id
+		if target_name == '__all__' && node.value is List {
+			mut members := []string{}
+			for elt in (node.value as List).elts {
+				if elt is Constant {
+					c := elt as Constant
+					if c.value is string {
+						name := c.value as string
+						if name.ends_with('Exception') {
+							members << name
+						}
+					}
+				}
+			}
+			if members.len > 0 {
+				return 'type WebDriverExceptions = ${members.join(' | ')}'
+			}
+			return ''
+		}
+	}
+
 	// Track variable types for print() optimization
 	for target in node.targets {
 		if target is Name {
@@ -946,6 +786,16 @@ pub fn (mut t VTranspiler) visit_assign(node Assign) string {
 
 	mut assigns := []string{}
 	use_temp := node.targets.len > 1 && node.value is Call
+
+	// Determine if RHS was an ellipsis so we can append a trailing
+	// comment at the end of the generated assignment line(s).
+	mut trailing_comment := ''
+	if node.value is Constant {
+		c := node.value as Constant
+		if c.value is EllipsisValue {
+			trailing_comment = ' // ...'
+		}
+	}
 
 	if use_temp {
 		assigns << 'mut tmp := ${t.visit_expr(node.value)}'
@@ -990,13 +840,10 @@ pub fn (mut t VTranspiler) visit_assign(node Assign) string {
 								if st.id in node.redefined_targets {
 									any_redefined = true
 								}
-								// If is_mutable is set, it means the name was used mutably somewhere
-								// For a swap, both vars should be mutable
 								if !st.is_mutable {
 									all_names_mutable = false
 								}
 							} else if st is Subscript || st is Attribute {
-								// Subscript/Attribute targets always need =
 								has_subscript_or_attr = true
 							} else {
 								all_names_mutable = false
@@ -1008,7 +855,6 @@ pub fn (mut t VTranspiler) visit_assign(node Assign) string {
 						for st in elts {
 							mut subkw := ''
 							if st is Name {
-								// Only add mut for new definitions
 								if !any_redefined && !all_names_mutable && !has_subscript_or_attr {
 									if st.is_mutable && st.id !in node.redefined_targets {
 										subkw = 'mut '
@@ -1017,6 +863,7 @@ pub fn (mut t VTranspiler) visit_assign(node Assign) string {
 							}
 							subtargets << '${subkw}${t.visit_expr(st)}'
 						}
+
 						// Check if any target is _ (discard) - V uses = for those
 						has_discard := elts.any(fn (e Expr) bool {
 							if e is Name {
@@ -1128,6 +975,14 @@ pub fn (mut t VTranspiler) visit_assign(node Assign) string {
 				assigns << '${t.visit_expr(target)} := ${value_str}'
 			}
 		}
+	}
+
+	// If we need to attach a trailing comment to indicate the original
+	// Python ellipsis, append it to the final generated assignment line(s).
+	// (the last element) so it appears at end-of-line and does not
+	// interfere with any earlier temporary initializers.
+	if trailing_comment != '' && assigns.len > 0 {
+		assigns[assigns.len - 1] = '${assigns[assigns.len - 1]}${trailing_comment}'
 	}
 
 	return assigns.join('\n')
@@ -1399,8 +1254,34 @@ pub fn (mut t VTranspiler) visit_for(node For) string {
 // visit_async_for emits V code for an AsyncFor loop (converted to sync).
 pub fn (mut t VTranspiler) visit_async_for(node AsyncFor) string {
 	mut buf := []string{}
-	buf << '// WARNING: async for converted to sync for'
+	target := t.visit_expr(node.target)
+	if node.iter is Call {
+		iter_call := node.iter as Call
+		producer := t.visit_expr(iter_call.func)
+		mut producer_args := []string{}
+		for arg in iter_call.args {
+			producer_args << t.visit_expr(arg)
+		}
+		for kw in iter_call.keywords {
+			producer_args << t.visit_expr(kw.value)
+		}
+		ch := t.new_tmp('ch')
+		buf << '// async for lowered to goroutine + channel'
+		buf << '${ch} := chan Any{}'
+		mut all_args := producer_args.clone()
+		all_args << ch
+		buf << 'go ${producer}(${all_args.join(', ')})'
+		buf << 'for ${target} in ${ch} {'
+		buf << t.visit_body_stmts(node.body, 1)
+		buf << '}'
+		if node.orelse.len > 0 {
+			buf << '// NOTE: async for/else lowered without break tracking'
+			buf << t.visit_body_stmts(node.orelse, 0)
+		}
+		return buf.join('\n')
+	}
 
+	buf << '// WARNING: async for lowered to sync for fallback'
 	f := For{
 		target:       node.target
 		iter:         node.iter
@@ -1411,7 +1292,6 @@ pub fn (mut t VTranspiler) visit_async_for(node AsyncFor) string {
 		level:        node.level
 	}
 	buf << t.visit_for(f)
-
 	return buf.join('\n')
 }
 
@@ -1676,7 +1556,17 @@ pub fn (mut t VTranspiler) visit_constant(node Constant) string {
 			return 'none'
 		}
 		EllipsisValue {
-			return ''
+			// Represent Python ellipsis as V placeholder `_` so assignments
+			// like `e = ...` become `e = _`. Do not include a trailing
+			// comment here because ellipsis may appear inside larger
+			// expressions; comments would truncate the rest of the line.
+			return '_'
+		}
+		ComplexValue {
+			cv := node.value as ComplexValue
+			// Use V's math.complex constructor
+			t.add_using('math')
+			return 'math.complex(${cv.real}, ${cv.imag})'
 		}
 		bool {
 			return if node.value as bool { 'true' } else { 'false' }
@@ -2007,6 +1897,20 @@ pub fn (mut t VTranspiler) visit_call(node Call) string {
 				}
 			}
 		}
+	}
+
+	// asyncio lowers to V concurrency/runtime constructs.
+	if fname == 'asyncio.run' {
+		if vargs.len > 0 {
+			return vargs[0]
+		}
+		return ''
+	}
+	if fname == 'asyncio.create_task' {
+		if vargs.len > 0 {
+			return 'go ${vargs[0]}'
+		}
+		return ''
 	}
 
 	// Handle string/list methods that need translation
@@ -2585,6 +2489,7 @@ pub fn (mut t VTranspiler) visit_call(node Call) string {
 
 	// Check if this is a struct constructor call (known dataclass)
 	if fname in t.known_classes {
+		emitted_ctor := emitted_class_name(fname)
 		mut field_vals := map[string]string{}
 
 		// Handle keyword arguments
@@ -2617,13 +2522,13 @@ pub fn (mut t VTranspiler) visit_call(node Call) string {
 		for base_name in base_names {
 			base_init := t.build_inline_class_init(base_name, field_vals)
 			if base_init.len > 0 {
-				field_parts << '\t${base_name}: ${base_init}'
+				field_parts << '\t${emitted_class_name(base_name)}: ${base_init}'
 			}
 		}
 		if field_parts.len == 0 {
-			return '${fname}{}'
+			return '${emitted_ctor}{}'
 		}
-		return '${fname}{\n${field_parts.join('\n')}\n}'
+		return '${emitted_ctor}{\n${field_parts.join('\n')}\n}'
 	}
 
 	for kw in node.keywords {
@@ -2655,7 +2560,8 @@ pub fn (mut t VTranspiler) visit_call(node Call) string {
 	return '${call_name}()'
 }
 
-fn (t &VTranspiler) build_inline_class_init(class_name string, field_vals map[string]string) string {
+fn (mut t VTranspiler) build_inline_class_init(class_name string, field_vals map[string]string) string {
+	emitted_name := emitted_class_name(class_name)
 	mut parts := []string{}
 	direct_fields := t.class_direct_fields[class_name] or { []string{} }
 	for field in direct_fields {
@@ -2667,16 +2573,16 @@ fn (t &VTranspiler) build_inline_class_init(class_name string, field_vals map[st
 	for base_name in base_names {
 		base_init := t.build_inline_class_init(base_name, field_vals)
 		if base_init != '' {
-			parts << '${base_name}: ${base_init}'
+			parts << '${emitted_class_name(base_name)}: ${base_init}'
 		}
 	}
 	if parts.len == 0 {
 		return ''
 	}
-	return '${class_name}{${parts.join(', ')}}'
+	return '${emitted_name}{${parts.join(', ')}}'
 }
 
-fn (t &VTranspiler) resolve_super_base() string {
+fn (mut t VTranspiler) resolve_super_base() string {
 	if t.current_class_name == '' {
 		return ''
 	}
@@ -2689,7 +2595,7 @@ fn (t &VTranspiler) resolve_super_base() string {
 	if base !in t.known_classes {
 		return ''
 	}
-	return base
+	return emitted_class_name(base)
 }
 
 fn should_emit_ref_field_type(typ string) bool {
@@ -3203,7 +3109,35 @@ fn (mut t VTranspiler) visit_generator_exp_impl(elt Expr, generators []Comprehen
 
 // visit_await emits V code for await expressions (Await).
 pub fn (mut t VTranspiler) visit_await(node Await) string {
-	// V doesn't have await, just return the value
+	// Unwrap common asyncio wrappers when they are directly awaited.
+	if node.value is Call {
+		call := node.value as Call
+		if call.func is Attribute {
+			func_attr := call.func as Attribute
+			owner := t.visit_expr(func_attr.value)
+			if owner == 'asyncio' {
+				if func_attr.attr == 'run' && call.args.len > 0 {
+					return t.visit_expr(call.args[0])
+				}
+				if func_attr.attr == 'create_task' && call.args.len > 0 {
+					// await asyncio.create_task(f()) -> f()
+					return t.visit_expr(call.args[0])
+				}
+			}
+		}
+	}
+
+	// If frontend inference marked this name as a channel, lower await to receive.
+	if node.value is Name {
+		name := node.value as Name
+		if typ := t.var_types[name.id] {
+			if typ.starts_with('chan') {
+				return '<-${t.visit_expr(node.value)}'
+			}
+		}
+	}
+
+	// Default await lowering remains a direct expression pass-through.
 	return t.visit_expr(node.value)
 }
 
@@ -3317,18 +3251,33 @@ pub fn (mut t VTranspiler) visit_starred(node Starred) string {
 }
 
 // typename_from_annotation extracts a typename string from an annotation expression.
-pub fn (mut t VTranspiler) typename_from_annotation(ann Expr) string {
-	match ann {
+// Accept an optional annotation (`?Expr`) so callers that hold optional
+// annotation fields (e.g., `Arg.annotation ?Expr`) can pass them directly
+// without causing Option/Expr mismatches during codegen.
+pub fn (mut t VTranspiler) typename_from_annotation(ann ?Expr) string {
+	// If no annotation was provided, return empty string to indicate
+	// "no annotation" (callers often treat empty as missing and use
+	// fallbacks). This avoids assigning a concrete default type where
+	// the caller may prefer to apply other inference heuristics.
+	if ann == none {
+		return ''
+	}
+
+	// Unwrap the Option once into `a` so we can match on the concrete Expr
+	// value without repeated `or`/`?` constructs.
+	a := ann or { return '' }
+
+	match a {
 		Name {
-			name := ann.id
+			name := a.id
 			if name in v_type_map {
 				return v_type_map[name]
 			}
 			return name
 		}
 		Subscript {
-			value := t.typename_from_annotation(ann.value)
-			index := t.typename_from_annotation(ann.slice)
+			value := t.typename_from_annotation(a.value)
+			index := t.typename_from_annotation(a.slice)
 
 			mapped := v_container_type_map[value] or { value }
 			if value == 'Tuple' || value == 'tuple' {
@@ -3342,7 +3291,7 @@ pub fn (mut t VTranspiler) typename_from_annotation(ann Expr) string {
 		}
 		Tuple {
 			mut types := []string{}
-			for e in ann.elts {
+			for e in a.elts {
 				types << t.typename_from_annotation(e)
 			}
 			return types.join(', ')
@@ -3350,7 +3299,7 @@ pub fn (mut t VTranspiler) typename_from_annotation(ann Expr) string {
 		Attribute {
 			// Handle typing.X or similar qualified names
 			// e.g., typing.List -> List
-			attr := ann.attr
+			attr := a.attr
 			if attr in v_type_map {
 				return v_type_map[attr]
 			}
@@ -3361,19 +3310,19 @@ pub fn (mut t VTranspiler) typename_from_annotation(ann Expr) string {
 		}
 		BinOp {
 			// PEP 604: X | None -> ?X
-			if ann.op is BitOr {
-				left := t.typename_from_annotation(ann.left)
-				right := t.typename_from_annotation(ann.right)
+			if a.op is BitOr {
+				left := t.typename_from_annotation(a.left)
+				right := t.typename_from_annotation(a.right)
 				// X | None -> ?X
-				if ann.right is Constant {
-					r := ann.right as Constant
+				if a.right is Constant {
+					r := a.right as Constant
 					if r.value is NoneValue {
 						return '?${map_type(left)}'
 					}
 				}
 				// None | X -> ?X
-				if ann.left is Constant {
-					l := ann.left as Constant
+				if a.left is Constant {
+					l := a.left as Constant
 					if l.value is NoneValue {
 						return '?${map_type(right)}'
 					}
@@ -3384,10 +3333,10 @@ pub fn (mut t VTranspiler) typename_from_annotation(ann Expr) string {
 			return default_type
 		}
 		Constant {
-			if ann.value is string {
-				return ann.value as string
+			if a.value is string {
+				return a.value as string
 			}
-			if ann.value is NoneValue {
+			if a.value is NoneValue {
 				return 'None'
 			}
 			return default_type
@@ -3685,7 +3634,7 @@ fn is_number_expr(expr Expr) bool {
 }
 
 // Infer the type of an expression for variable tracking
-fn (t &VTranspiler) infer_expr_type(expr Expr) string {
+fn (mut t VTranspiler) infer_expr_type(expr Expr) string {
 	if is_bool_expr(expr) {
 		return 'bool'
 	}
@@ -3696,6 +3645,9 @@ fn (t &VTranspiler) infer_expr_type(expr Expr) string {
 			ann := c.v_annotation or { '' }
 			if ann == 'float' {
 				return 'f64'
+			}
+			if c.value is ComplexValue {
+				return 'complex128'
 			}
 			if c.value is string {
 				return 'string'
@@ -3709,7 +3661,27 @@ fn (t &VTranspiler) infer_expr_type(expr Expr) string {
 			return ''
 		}
 		Name {
-			// Propagate known type
+			// Prefer any frontend-provided v_annotation on the Name node
+			ann := get_expr_annotation(expr)
+			if ann.len > 0 {
+				if ann == 'float' {
+					return 'f64'
+				}
+				if ann == 'int' {
+					return 'int'
+				}
+				if ann == 'string' {
+					return 'string'
+				}
+				if ann == 'bool' {
+					return 'bool'
+				}
+				if ann == 'bytes' {
+					return '[]u8'
+				}
+				// fallthrough for other annotations
+			}
+			// Propagate known type inferred during transpilation
 			known := t.var_types[expr.id]
 			if known != '' {
 				return known
@@ -3746,6 +3718,26 @@ fn (t &VTranspiler) infer_expr_type(expr Expr) string {
 			return ''
 		}
 		Call {
+			// Prefer any frontend-provided annotation on the Call node
+			ann := get_expr_annotation(expr)
+			if ann.len > 0 {
+				if ann == 'float' {
+					return 'f64'
+				}
+				if ann == 'int' {
+					return 'int'
+				}
+				if ann == 'string' {
+					return 'string'
+				}
+				if ann == 'bool' {
+					return 'bool'
+				}
+				if ann == 'bytes' {
+					return '[]u8'
+				}
+				// fallthrough for other annotations
+			}
 			// Check known function return types
 			if expr.func is Name {
 				fn_name := (expr.func as Name).id
@@ -3970,7 +3962,7 @@ fn (mut t VTranspiler) prescan_mut_call_args_in_expr(expr Expr) {
 }
 
 // Infer the return type of a function from its return statements
-fn (t &VTranspiler) infer_return_type(stmts []Stmt) string {
+fn (mut t VTranspiler) infer_return_type(stmts []Stmt) string {
 	mut ret_type := ''
 	for stmt in stmts {
 		match stmt {

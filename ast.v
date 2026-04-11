@@ -169,7 +169,15 @@ pub mut:
 	v_annotation ?string
 }
 
-pub type ConstantValue = int | i64 | f64 | string | bool | BytesValue | NoneValue | EllipsisValue
+pub type ConstantValue = int
+	| i64
+	| f64
+	| string
+	| bool
+	| BytesValue
+	| NoneValue
+	| EllipsisValue
+	| ComplexValue
 
 pub struct BytesValue {
 pub:
@@ -179,6 +187,13 @@ pub:
 pub struct NoneValue {}
 
 pub struct EllipsisValue {}
+
+// ComplexValue represents a Python complex literal (real + imag*j).
+pub struct ComplexValue {
+pub:
+	real f64
+	imag f64
+}
 
 pub struct Name {
 pub mut:
@@ -307,9 +322,12 @@ pub mut:
 
 pub struct Lambda {
 pub mut:
-	args Arguments
-	body Expr
-	loc  Location
+	args         Arguments
+	body         Expr
+	loc          Location
+	v_annotation ?string
+	inlinable    bool
+	body_src     ?string
 }
 
 pub struct ListComp {

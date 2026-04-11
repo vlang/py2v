@@ -6,7 +6,6 @@ fn show() {
 	if n > 2 {
 		println(n)
 	}
-
 	mut i := 0
 	for {
 		x := (i * 2)

@@ -48,7 +48,6 @@ fn classify_triangle(a int, b int, c int) TriangleType {
 		assert c > 0
 		assert a < (b + c)
 	}
-
 	if a >= b && b >= c {
 		if a == c || b == c {
 			if a == b && a == c {

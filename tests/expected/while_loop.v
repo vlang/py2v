@@ -12,7 +12,6 @@ fn main_func() {
 		if j >= 3 {
 			break
 		}
-
 		println(j)
 		j += 1
 	}
@@ -22,7 +21,6 @@ fn main_func() {
 		if k == 3 {
 			continue
 		}
-
 		println(k)
 	}
 }

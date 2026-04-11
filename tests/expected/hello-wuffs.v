@@ -1,8 +1,6 @@
 @[translated]
 module main
 
-type Any = bool | int | i64 | f64 | string | []u8
-
 pub struct parser {
 pub mut:
 	val u32
@@ -22,3 +20,5 @@ fn main() {
 	pytest.main([__file__])
 	println('OK')
 }
+
+type Any = bool | int | i64 | f64 | string | []u8

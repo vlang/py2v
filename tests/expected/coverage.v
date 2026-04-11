@@ -70,17 +70,14 @@ fn show() {
 	if 1 != 0 {
 		println('World is sane')
 	}
-
 	println(if true { 'True' } else { 'False' })
 	if true {
 		a1 += 1
 	}
-
 	assert a1 == 11
 	if true {
 		println('true')
 	}
-
 	inline_pass()
 	s := '1    2'
 	println(s)

@@ -864,6 +864,15 @@ fn parse_constant_value(raw json2.Any) ConstantValue {
 					data: data
 				}
 			}
+			if typ_str == 'complex' {
+				// Frontend emits complex literal as {"_type":"complex","real":...,"imag":...}
+				real := (m['real'] or { json2.Any(0.0) }).f64()
+				imag := (m['imag'] or { json2.Any(0.0) }).f64()
+				return ComplexValue{
+					real: real
+					imag: imag
+				}
+			}
 		}
 	}
 	match raw {
@@ -1218,13 +1227,27 @@ fn parse_ifexp(m map[string]json2.Any) IfExp {
 
 // Parse Lambda
 fn parse_lambda(m map[string]json2.Any) Lambda {
-	return Lambda{
+	mut lam := Lambda{
 		args: parse_arguments(m['args'] or { json2.Any(map[string]json2.Any{}) })
 		body: parse_expr(map_field(m, 'body')) or { Expr(Constant{
 			value: NoneValue{}
 		}) }
 		loc:  parse_location(m)
 	}
+	if ann := parse_type_annotation(m) {
+		lam.v_annotation = ann
+	}
+	// Optional inlinable/body_src hints
+	if raw_inl := m['inlinable'] {
+		lam.inlinable = raw_inl.bool()
+	}
+	if raw_src := m['body_src'] {
+		s := raw_src.str()
+		if s.len > 0 {
+			lam.body_src = s
+		}
+	}
+	return lam
 }
 
 // Parse ListComp

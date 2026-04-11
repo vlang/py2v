@@ -1,8 +1,6 @@
 @[translated]
 module main
 
-type Any = bool | int | i64 | f64 | string | []u8
-
 pub struct Temperature {
 pub mut:
 	_celsius Any
@@ -28,3 +26,5 @@ fn main() {
 	t.set_celsius(30)
 	println(t.celsius)
 }
+
+type Any = bool | int | i64 | f64 | string | []u8

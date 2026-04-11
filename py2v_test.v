@@ -66,6 +66,9 @@ fn test_transpiler() {
 		assert false, err.msg()
 		return
 	}
+	defer {
+		os.rm(py2v_path) or {}
+	}
 
 	cases := os.glob('${cases_dir}/*.py') or {
 		assert false, 'Could not find test cases'
@@ -128,6 +131,10 @@ fn test_module_name_from_output_path() {
 		assert false, err.msg()
 		return
 	}
+	defer {
+		os.rm(py2v_path) or {}
+	}
+
 	case_file := os.join_path(repo_dir, 'tests', 'cases', 'hello_world.py')
 
 	tmp_root := os.join_path(os.temp_dir(), 'py2v_mod_test_${os.getpid()}')
@@ -177,6 +184,10 @@ fn test_generated_line_length_limit() {
 		assert false, err.msg()
 		return
 	}
+	defer {
+		os.rm(py2v_path) or {}
+	}
+
 	case_file := os.join_path(repo_dir, 'tests', 'cases', 'long_wrap.py')
 
 	res := os.execute('${py2v_path} "${case_file}"')
@@ -196,6 +207,10 @@ fn test_init_has_no_return_type() {
 		assert false, err.msg()
 		return
 	}
+	defer {
+		os.rm(py2v_path) or {}
+	}
+
 	case_file := os.join_path(repo_dir, 'tests', 'cases', 'init_no_return.py')
 
 	res := os.execute('${py2v_path} "${case_file}"')
@@ -214,6 +229,10 @@ fn test_super_call_translation() {
 		assert false, err.msg()
 		return
 	}
+	defer {
+		os.rm(py2v_path) or {}
+	}
+
 	case_file := os.join_path(repo_dir, 'tests', 'cases', 'super_calls.py')
 
 	res := os.execute('${py2v_path} "${case_file}"')
@@ -233,6 +252,10 @@ fn test_exception_union_alias_generation() {
 		assert false, err.msg()
 		return
 	}
+	defer {
+		os.rm(py2v_path) or {}
+	}
+
 	case_file := os.join_path(repo_dir, 'tests', 'cases', 'exception_union_init.py')
 
 	res := os.execute('${py2v_path} "${case_file}"')

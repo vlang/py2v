@@ -1,8 +1,6 @@
 @[translated]
 module main
 
-type Any = bool | int | i64 | f64 | string | []u8
-
 fn simple_generator(ch chan Any) {
 	defer { ch.close() }
 	ch <- 1

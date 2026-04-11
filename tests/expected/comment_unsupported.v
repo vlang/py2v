@@ -1,8 +1,6 @@
 @[translated]
 module main
 
-type Any = bool | int | i64 | f64 | string | []u8
-
 fn do_unsupported() {
 	a := 1
 	(fn () map[string]Any {

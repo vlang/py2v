@@ -25,6 +25,12 @@ import sys
 import os
 from typing import Any, Dict, List, Optional, Set
 
+# Global map for simple variable annotations discovered during pre-scan.
+# This is populated in process_file() and used as a fallback when callers
+# of _node_to_dict do not pass an explicit var_annotations dict.
+_GLOBAL_VAR_ANNOTATIONS: Dict[str, str] = {}
+_GLOBAL_FUNC_RET_ANNOTATIONS: Dict[str, str] = {}
+
 
 # ---------------------------------------------------------------------------
 # Analysis passes
@@ -450,8 +456,12 @@ def _annotation_to_str(node: Optional[ast.AST]) -> str:
 # ---------------------------------------------------------------------------
 
 def _node_to_dict(node: ast.AST, mutable_vars: Set[str],
-                  redefined: Dict[int, List[str]]) -> Dict[str, Any]:
+                  redefined: Dict[int, List[str]], var_annotations: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
     """Convert an AST node to a JSON-serializable dict."""
+    # Use the module-global annotations map as a fallback so existing callers
+    # don't need to thread the map through every recursive call.
+    if var_annotations is None:
+        var_annotations = _GLOBAL_VAR_ANNOTATIONS
     result: Dict[str, Any] = {}
     result["_type"] = type(node).__name__
 
@@ -479,9 +489,59 @@ def _node_to_dict(node: ast.AST, mutable_vars: Set[str],
         result["mutable_vars"] = sorted(func_mutable)
 
         result["args"] = _arguments_to_dict(node.args, func_mutable)
-        result["body"] = [_node_to_dict(n, func_mutable, redefined) for n in node.body]
-        result["decorator_list"] = [_node_to_dict(d, mutable_vars, redefined) for d in node.decorator_list]
-        result["returns"] = _node_to_dict(node.returns, mutable_vars, redefined) if node.returns else None
+        # Build a local var_annotation map including parameter annotations so
+        # Name nodes inside the function body can get v_annotation hints.
+        local_ann = dict(var_annotations)
+        # Positional and keyword args
+        for a in list(node.args.posonlyargs) + list(node.args.args) + list(node.args.kwonlyargs):
+            if a.annotation is not None and isinstance(a, ast.arg):
+                name = a.arg
+                ann_str = _annotation_to_str(a.annotation)
+                if ann_str == 'str':
+                    ann_str = 'string'
+                local_ann[name] = ann_str
+        # vararg/kwarg
+        if node.args.vararg is not None:
+            va = node.args.vararg
+            if va.annotation is not None:
+                ann_str = _annotation_to_str(va.annotation)
+                if ann_str == 'str':
+                    ann_str = 'string'
+                local_ann[va.arg] = ann_str
+        if node.args.kwarg is not None:
+            ka = node.args.kwarg
+            if ka.annotation is not None:
+                ann_str = _annotation_to_str(ka.annotation)
+                if ann_str == 'str':
+                    ann_str = 'string'
+                local_ann[ka.arg] = ann_str
+
+        # Collect simple annotated assignments and simple constant assignments
+        # at the top-level of the function body (conservative). This lets
+        # local variables with obvious types provide v_annotation hints to
+        # Name nodes inside the function body.
+        for stmt in node.body:
+            if isinstance(stmt, ast.AnnAssign):
+                if isinstance(stmt.target, ast.Name) and stmt.annotation is not None:
+                    tgt = stmt.target.id
+                    tstr = _annotation_to_str(stmt.annotation)
+                    if tstr == 'str':
+                        tstr = 'string'
+                    if tstr:
+                        local_ann[tgt] = tstr
+            elif isinstance(stmt, ast.Assign):
+                # Simple assignment of constant literal: x = 1
+                if len(stmt.targets) == 1 and isinstance(stmt.targets[0], ast.Name):
+                    tgt = stmt.targets[0].id
+                    typ = _infer_type_from_value(stmt.value)
+                    if typ == 'str':
+                        local_ann[tgt] = 'string'
+                    elif typ != '':
+                        local_ann[tgt] = typ
+
+        result["body"] = [_node_to_dict(n, func_mutable, redefined, local_ann) for n in node.body]
+        result["decorator_list"] = [_node_to_dict(d, mutable_vars, redefined, var_annotations) for d in node.decorator_list]
+        result["returns"] = _node_to_dict(node.returns, mutable_vars, redefined, var_annotations) if node.returns else None
         result["type_comment"] = getattr(node, "type_comment", None)
         result["is_void"] = _is_void_function(node)
         result["is_generator"] = _is_generator(node)
@@ -605,6 +665,26 @@ def _node_to_dict(node: ast.AST, mutable_vars: Set[str],
     elif isinstance(node, ast.Lambda):
         result["args"] = _arguments_to_dict(node.args, mutable_vars)
         result["body"] = _node_to_dict(node.body, mutable_vars, redefined)
+        # Attempt to infer simple return type for lambda bodies (constants/straightforward
+        # expressions) and mark lambdas as inlinable when the body is a single simple
+        # expression. This helps the backend emit typed closures and inline bodies.
+        try:
+            ret_type = _infer_type_from_value(node.body)
+        except Exception:
+            ret_type = ""
+        if ret_type:
+            result["v_annotation"] = ret_type
+        # Mark simple lambda bodies as inlinable so backends can prefer AST-level
+        # inlining instead of fragile textual substitution.
+        if isinstance(node.body, (ast.Constant, ast.Name, ast.Attribute,
+                                  ast.Call, ast.BinOp, ast.Subscript)):
+            result["inlinable"] = True
+            # Provide a source fallback when available (Python 3.9+ ast.unparse)
+            if hasattr(ast, "unparse"):
+                try:
+                    result["body_src"] = ast.unparse(node.body)
+                except Exception:
+                    pass
 
     elif isinstance(node, ast.IfExp):
         result["test"] = _node_to_dict(node.test, mutable_vars, redefined)
@@ -645,6 +725,12 @@ def _node_to_dict(node: ast.AST, mutable_vars: Set[str],
         result["func"] = _node_to_dict(node.func, mutable_vars, redefined)
         result["args"] = [_node_to_dict(a, mutable_vars, redefined) for a in node.args]
         result["keywords"] = [_keyword_to_dict(kw, mutable_vars, redefined) for kw in node.keywords]
+        # Attach v_annotation for calls when the callee is a top-level function
+        # with an explicit return annotation discovered during pre-scan.
+        if isinstance(node.func, ast.Name):
+            fname = node.func.id
+            if fname in _GLOBAL_FUNC_RET_ANNOTATIONS:
+                result["v_annotation"] = _GLOBAL_FUNC_RET_ANNOTATIONS[fname]
 
     elif isinstance(node, ast.FormattedValue):
         result["value"] = _node_to_dict(node.value, mutable_vars, redefined)
@@ -658,8 +744,20 @@ def _node_to_dict(node: ast.AST, mutable_vars: Set[str],
         result["value"] = _constant_value(node.value)
         result["kind"] = node.kind
         # Mark float constants with v_annotation for type-aware transpilation
-        if isinstance(node.value, float):
+        # Provide v_annotation for primitive literal types to help downstream
+        # type-aware transpilation in the backend.
+        if isinstance(node.value, bool):
+            result["v_annotation"] = "bool"
+        elif isinstance(node.value, int):
+            result["v_annotation"] = "int"
+        elif isinstance(node.value, float):
             result["v_annotation"] = "float"
+        elif isinstance(node.value, str):
+            result["v_annotation"] = "string"
+        elif isinstance(node.value, bytes):
+            # Represent raw bytes literals as a bytes annotation; backend may map
+            # this to a V `[]u8` literal.
+            result["v_annotation"] = "bytes"
 
     elif isinstance(node, ast.Attribute):
         result["value"] = _node_to_dict(node.value, mutable_vars, redefined)
@@ -679,6 +777,9 @@ def _node_to_dict(node: ast.AST, mutable_vars: Set[str],
         result["id"] = node.id
         result["ctx"] = {"_type": type(node.ctx).__name__}
         result["is_mutable"] = node.id in mutable_vars
+        # Attach simple v_annotation if we discovered one during pre-scan
+        if node.id in var_annotations:
+            result["v_annotation"] = var_annotations[node.id]
 
     elif isinstance(node, (ast.List, ast.Tuple)):
         result["elts"] = [_node_to_dict(e, mutable_vars, redefined) for e in node.elts]
@@ -709,6 +810,52 @@ def _constant_value(value: Any) -> Any:
     if isinstance(value, complex):
         return {"_type": "complex", "real": value.real, "imag": value.imag}
     return str(value)
+
+
+def _gather_var_annotations(tree: ast.Module) -> Dict[str, str]:
+    """Collect simple variable annotations from module-level AnnAssign and
+    simple Assign-to-constant statements. Returns a mapping name -> v_annotation
+    (e.g., 'x' -> 'int' or 'string'). This is intentionally conservative.
+    """
+    ann: Dict[str, str] = {}
+    for node in tree.body:
+        if isinstance(node, ast.AnnAssign):
+            # Only consider simple name targets
+            if isinstance(node.target, ast.Name) and node.annotation is not None:
+                ann_name = node.target.id
+                type_str = _annotation_to_str(node.annotation)
+                if type_str:
+                    # Normalize basic Python types to the frontend v_annotation
+                    if type_str == 'str':
+                        ann[ann_name] = 'string'
+                    else:
+                        ann[ann_name] = type_str
+        elif isinstance(node, ast.Assign):
+            # Simple assignment of constant literal: x = 1
+            if len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+                tgt = node.targets[0].id
+                typ = _infer_type_from_value(node.value)
+                if typ == 'str':
+                    ann[tgt] = 'string'
+                elif typ != '':
+                    ann[tgt] = typ
+    return ann
+
+
+def _gather_func_return_annotations(tree: ast.Module) -> Dict[str, str]:
+    """Collect explicit return annotations from top-level FunctionDef nodes.
+    Returns mapping function_name -> v_annotation (string)
+    """
+    ret: Dict[str, str] = {}
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if node.returns is not None:
+                rt = _annotation_to_str(node.returns)
+                if rt == 'str':
+                    rt = 'string'
+                if rt:
+                    ret[node.name] = rt
+    return ret
 
 
 def _arguments_to_dict(args: ast.arguments, mutable_vars: Set[str]) -> Dict[str, Any]:
@@ -833,8 +980,13 @@ def process_file(file_path: str) -> str:
     # Find redefined targets
     redefined = _find_redefined_targets(tree)
 
-    # Serialize
-    result = _node_to_dict(tree, mutable_vars, redefined)
+    # Gather module-level variable annotations and function return annotations
+    # so the backend can use conservative hints during transpilation.
+    global _GLOBAL_VAR_ANNOTATIONS, _GLOBAL_FUNC_RET_ANNOTATIONS
+    _GLOBAL_VAR_ANNOTATIONS = _gather_var_annotations(tree)
+    _GLOBAL_FUNC_RET_ANNOTATIONS = _gather_func_return_annotations(tree)
+
+    result = _node_to_dict(tree, mutable_vars, redefined, _GLOBAL_VAR_ANNOTATIONS)
     return json.dumps(result)
 
 

@@ -1,8 +1,6 @@
 @[translated]
 module main
 
-// This file implements a rectangle class
-
 // Rectangle as a dataclass
 pub struct Rectangle {
 pub mut:

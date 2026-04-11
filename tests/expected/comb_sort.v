@@ -1,8 +1,8 @@
 @[translated]
 module main
 
-import arrays
 import math
+import arrays
 
 fn comb_sort(mut seq []int) []int {
 	mut gap := seq.len

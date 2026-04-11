@@ -11,5 +11,5 @@ fn async_main() {
 }
 
 fn main() {
-	asyncio.run(async_main())
+	async_main()
 }
