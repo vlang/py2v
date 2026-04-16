@@ -1,19 +1,20 @@
 @[translated]
+
 module main
 
 fn foo() {
 	a := 10
 	b := 20
-	_c1 := (a + b)
-	_c2 := (a - b)
-	_c3 := (a * b)
-	_c4 := (a / b)
+	_c1 := a + b
+	_c2 := a - b
+	_c3 := a * b
+	_c4 := a / b
 	_c5 := -a
 	d := 2
-	_e1 := (a + d)
-	_e2 := (a - d)
-	_e3 := (a * d)
-	_e4 := (f64(a) / d)
+	_e1 := a + d
+	_e2 := a - d
+	_e3 := a * d
+	_e4 := f64(a) / d
 	_f := -3
 	_g := -a
 }
@@ -51,7 +52,7 @@ fn add8(x u64, y u64) u64 {
 }
 
 fn add9(x i8, y u16) u32 {
-	return u16(x) + u16(y)
+	return x + y
 }
 
 fn sub(x i8, y i8) i8 {

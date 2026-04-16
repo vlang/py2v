@@ -1,15 +1,16 @@
 @[translated]
+
 module main
 
 fn bisect_right(data []int, item int) int {
 	mut low := 0
 	mut high := int(data.len)
 	for low < high {
-		middle := int(((low + high) / 2))
+		middle := int(low + high / 2)
 		if item < data[middle] {
 			high = middle
 		} else {
-			low = (middle + 1)
+			low = middle + 1
 		}
 	}
 	return low

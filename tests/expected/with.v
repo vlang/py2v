@@ -1,9 +1,10 @@
 @[translated]
+
 module main
 
 pub struct MockFile {
 pub mut:
-	name   Any
+	name Any
 	closed Any
 }
 
@@ -30,8 +31,8 @@ fn (self MockFile) read() string {
 fn show() {
 	if true {
 		f := MockFile{
-			name: 'test.txt'
-		}
+		name: 'test.txt'
+	}
 		println(f.read())
 	}
 }

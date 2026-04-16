@@ -317,18 +317,6 @@ pub fn (mut t VTranspiler) visit_expr(expr Expr) string {
 	}
 }
 
-// has_property_decorator returns true if the function has @property decorator.
-fn has_property_decorator(decorators []Expr) bool {
-	for d in decorators {
-		if d is Name {
-			if d.id == 'property' {
-				return true
-			}
-		}
-	}
-	return false
-}
-
 // visit_function_def emits V code for a Python FunctionDef node.
 pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 	// Save var_types and escaped_identifiers for function scope (keep globals, reset locals)
@@ -441,7 +429,7 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 
 	// For generator functions, add channel parameter
 	if node.is_generator {
-		yield_type := t.infer_generator_yield_type(node)
+		yield_type := t.infer_generator_yield_type()
 		args_strs << 'ch chan ${yield_type}'
 	}
 
@@ -821,7 +809,7 @@ pub fn (mut t VTranspiler) visit_assign(node Assign) string {
 				})
 
 				if has_starred {
-					assigns << t.handle_starred_unpack(elts, value_str, node)
+					assigns << t.handle_starred_unpack(elts, value_str)
 				} else {
 					// Check if value is a tuple/list literal with same length - can unpack directly
 					is_tuple_swap := node.value is Tuple
@@ -913,7 +901,7 @@ pub fn (mut t VTranspiler) visit_assign(node Assign) string {
 				})
 
 				if has_starred {
-					assigns << t.handle_starred_unpack(elts, value_str, node)
+					assigns << t.handle_starred_unpack(elts, value_str)
 				} else {
 					// Check if value is a list/tuple literal with same length
 					is_list_literal :=
@@ -989,7 +977,7 @@ pub fn (mut t VTranspiler) visit_assign(node Assign) string {
 }
 
 // handle_starred_unpack handles starred unpacking in assignments
-fn (mut t VTranspiler) handle_starred_unpack(elts []Expr, value_str string, node Assign) string {
+fn (mut t VTranspiler) handle_starred_unpack(elts []Expr, value_str string) string {
 	mut starred_idx := -1
 	for i, e in elts {
 		if e is Starred {
@@ -1670,16 +1658,16 @@ pub fn (mut t VTranspiler) visit_binop(node BinOp) string {
 		left_ann := get_expr_annotation(node.left)
 		right_ann := get_expr_annotation(node.right)
 		if right_ann == 'int' && (left_ann == 'string' || left_ann.starts_with('[]')) {
-			return '(${left}.repeat(${right}))'
+			return '${left}.repeat(${right})'
 		}
 		// Also check by inferring types when v_annotation is not set
 		left_type := t.infer_expr_type(node.left)
 		if left_type == 'string' {
-			return '(${left}.repeat(${right}))'
+			return '${left}.repeat(${right})'
 		}
 		// Check if left is a List literal - list repetition
 		if node.left is List {
-			return '(${left}.repeat(${right}))'
+			return '${left}.repeat(${right})'
 		}
 	}
 
@@ -1713,17 +1701,17 @@ pub fn (mut t VTranspiler) visit_binop(node BinOp) string {
 		}
 		// If either operand is float, ensure both are float
 		if left_ann == 'int' && (right_ann == 'f64' || right_ann == 'float') {
-			return '(f64(${left}) ${op} ${right})'
+			return 'f64(${left}) ${op} ${right}'
 		}
 		if (left_ann == 'f64' || left_ann == 'float') && right_ann == 'int' {
-			return '(${left} ${op} f64(${right}))'
+			return '${left} ${op} f64(${right})'
 		}
 		// If right is float but left annotation is unknown/empty, wrap left in f64 to be safe
 		if (right_ann == 'f64' || right_ann == 'float') && left_ann == '' {
-			return '(f64(${left}) ${op} ${right})'
+			return 'f64(${left}) ${op} ${right}'
 		}
 		if (left_ann == 'f64' || left_ann == 'float') && right_ann == '' {
-			return '(${left} ${op} f64(${right}))'
+			return '${left} ${op} f64(${right})'
 		}
 	}
 
@@ -1759,14 +1747,14 @@ pub fn (mut t VTranspiler) visit_binop(node BinOp) string {
 		// Use the result type annotation if available
 		result_type := node.v_annotation or { '' }
 		if result_type != '' {
-			return '(${result_type}(${left}) ${op} ${result_type}(${right}))'
+			return '${result_type}(${left}) ${op} ${result_type}(${right})'
 		}
 		// Cast both to the wider of the two types
 		wider := get_wider_type(lann, rann)
-		return '(${wider}(${left}) ${op} ${wider}(${right}))'
+		return '${wider}(${left}) ${op} ${wider}(${right})'
 	}
 
-	return '(${left} ${op} ${right})'
+	return '${left} ${op} ${right}'
 }
 
 // visit_unaryop emits V code for a unary operation (UnaryOp).
@@ -1775,14 +1763,14 @@ pub fn (mut t VTranspiler) visit_unaryop(node UnaryOp) string {
 	operand := t.visit_expr(node.operand)
 
 	if node.op is USub {
-		// Check if operand is simple
-		if node.operand is Call || is_number_expr(node.operand) {
-			return '-${operand}'
+		// Wrap only compound expressions (BinOp) to preserve precedence
+		if node.operand is BinOp {
+			return '-(${operand})'
 		}
-		return '-(${operand})'
+		return '-${operand}'
 	}
 
-	return '${op}(${operand})'
+	return '${op}${operand}'
 }
 
 // visit_boolop emits V code for a boolean operation (BoolOp).
@@ -3259,15 +3247,9 @@ pub fn (mut t VTranspiler) typename_from_annotation(ann ?Expr) string {
 	// "no annotation" (callers often treat empty as missing and use
 	// fallbacks). This avoids assigning a concrete default type where
 	// the caller may prefer to apply other inference heuristics.
-	if ann == none {
-		return ''
-	}
+        a := ann or { return '' }
 
-	// Unwrap the Option once into `a` so we can match on the concrete Expr
-	// value without repeated `or`/`?` constructs.
-	a := ann or { return '' }
-
-	match a {
+        match a {
 		Name {
 			name := a.id
 			if name in v_type_map {
@@ -3348,7 +3330,7 @@ pub fn (mut t VTranspiler) typename_from_annotation(ann ?Expr) string {
 }
 
 // infer_generator_yield_type is a placeholder for inferring the yield type of a generator function.
-fn (mut t VTranspiler) infer_generator_yield_type(node FunctionDef) string {
+fn (mut t VTranspiler) infer_generator_yield_type() string {
 	// Walk the function body to find yield statements
 	// For simplicity, return "Any" for now
 	// A proper implementation would analyze yield expressions
@@ -3405,15 +3387,6 @@ fn get_cmp_op_type(op CmpOp) string {
 	}
 }
 
-fn get_next_generic(existing []string) string {
-	for c in 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.bytes() {
-		s := c.ascii_str()
-		if s !in existing {
-			return s
-		}
-	}
-	return 'T'
-}
 
 // map_python_format_spec converts a Python format spec (the part after ':')
 // into a V interpolation format fragment (including the leading ':') when possible.
@@ -3625,13 +3598,6 @@ fn get_expr_annotation(expr Expr) string {
 	return ann or { '' }
 }
 
-fn is_number_expr(expr Expr) bool {
-	if expr is Constant {
-		c := expr as Constant
-		return c.value is int || c.value is i64 || c.value is f64
-	}
-	return false
-}
 
 // Infer the type of an expression for variable tracking
 fn (mut t VTranspiler) infer_expr_type(expr Expr) string {

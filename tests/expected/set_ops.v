@@ -1,4 +1,5 @@
 @[translated]
+
 module main
 
 fn main_func() {
@@ -6,11 +7,11 @@ fn main_func() {
 	b := [2, 3, 4]
 	println(if 1 in a { 'True' } else { 'False' })
 	println(if 5 in a { 'True' } else { 'False' })
-	@union := (a | b)
+	@union := a | b
 	println(@union)
-	intersection := (a & b)
+	intersection := a & b
 	println(intersection)
-	difference := (a - b)
+	difference := a - b
 	println(difference)
 }
 

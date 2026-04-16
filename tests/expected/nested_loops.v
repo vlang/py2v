@@ -1,10 +1,11 @@
 @[translated]
+
 module main
 
 fn main_func() {
 	for i in []int{len: 3, init: index} {
 		for j in []int{len: 3, init: index} {
-			println(((i * 3) + j))
+			println(i * 3 + j)
 		}
 	}
 	for i in []int{len: 5, init: index} {
@@ -12,7 +13,7 @@ fn main_func() {
 			if j == 2 {
 				break
 			}
-			println(((i * 10) + j))
+			println(i * 10 + j)
 		}
 	}
 }

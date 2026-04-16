@@ -1,4 +1,5 @@
 @[translated]
+
 module main
 
 import math
@@ -8,11 +9,11 @@ fn comb_sort(mut seq []int) []int {
 	mut gap := seq.len
 	mut swap := true
 	for gap > 1 || swap {
-		gap = arrays.max([1, int(math.floor((f64(gap) / 1.25)))]) or { panic('!') }
+		gap = arrays.max([1, int(math.floor(f64(gap) / 1.25))]) or { panic('!') }
 		swap = false
-		for i in []int{len: (seq.len - gap), init: index} {
-			if seq[i] > seq[(i + gap)] {
-				seq[i], seq[(i + gap)] = seq[(i + gap)], seq[i]
+		for i in []int{len: seq.len - gap, init: index} {
+			if seq[i] > seq[i + gap] {
+				seq[i], seq[i + gap] = seq[i + gap], seq[i]
 				swap = true
 			}
 		}

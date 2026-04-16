@@ -23,13 +23,24 @@ import ast
 import json
 import sys
 import os
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set
 
-# Global map for simple variable annotations discovered during pre-scan.
-# This is populated in process_file() and used as a fallback when callers
-# of _node_to_dict do not pass an explicit var_annotations dict.
-_GLOBAL_VAR_ANNOTATIONS: Dict[str, str] = {}
-_GLOBAL_FUNC_RET_ANNOTATIONS: Dict[str, str] = {}
+
+@dataclass
+class AnalysisContext:
+    """Per-file analysis results threaded through _node_to_dict.
+
+    Replaces module-level mutable globals to prevent inter-file state
+    pollution when processing multiple files in the same interpreter session.
+    """
+    var_annotations: Dict[str, str] = field(default_factory=dict)
+    func_ret_annotations: Dict[str, str] = field(default_factory=dict)
+
+    @staticmethod
+    def empty() -> "AnalysisContext":
+        """Return a fresh context with no annotations."""
+        return AnalysisContext()
 
 
 # ---------------------------------------------------------------------------
@@ -409,17 +420,20 @@ def _extract_class_declarations(node: ast.ClassDef) -> Dict[str, str]:
     return decls
 
 
-def _extract_class_defaults(node: ast.ClassDef, mutable_vars, redefined) -> Dict[str, Any]:
+def _extract_class_defaults(node: ast.ClassDef, mutable_vars, redefined,
+                            ctx: Optional["AnalysisContext"] = None) -> Dict[str, Any]:
     """Extract default values for class-level fields."""
+    if ctx is None:
+        ctx = AnalysisContext.empty()
     defaults = {}
     for item in node.body:
         if isinstance(item, ast.AnnAssign) and isinstance(item.target, ast.Name):
             if item.value is not None:
-                defaults[item.target.id] = _node_to_dict(item.value, mutable_vars, redefined)
+                defaults[item.target.id] = _node_to_dict(item.value, mutable_vars, redefined, ctx)
         elif isinstance(item, ast.Assign):
             if (len(item.targets) == 1
                     and isinstance(item.targets[0], ast.Name)):
-                defaults[item.targets[0].id] = _node_to_dict(item.value, mutable_vars, redefined)
+                defaults[item.targets[0].id] = _node_to_dict(item.value, mutable_vars, redefined, ctx)
     return defaults
 
 
@@ -456,12 +470,18 @@ def _annotation_to_str(node: Optional[ast.AST]) -> str:
 # ---------------------------------------------------------------------------
 
 def _node_to_dict(node: ast.AST, mutable_vars: Set[str],
-                  redefined: Dict[int, List[str]], var_annotations: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
-    """Convert an AST node to a JSON-serializable dict."""
-    # Use the module-global annotations map as a fallback so existing callers
-    # don't need to thread the map through every recursive call.
-    if var_annotations is None:
-        var_annotations = _GLOBAL_VAR_ANNOTATIONS
+                  redefined: Dict[int, List[str]],
+                  ctx: Optional[AnalysisContext] = None) -> Dict[str, Any]:
+    """Convert an AST node to a JSON-serializable dict.
+
+    ``ctx`` carries per-file annotation maps (var_annotations and
+    func_ret_annotations).  It is never None inside a call – callers that
+    do not have a context yet should pass ``AnalysisContext.empty()``.
+    """
+    if ctx is None:
+        ctx = AnalysisContext.empty()
+    # Convenience aliases used throughout this function
+    var_annotations = ctx.var_annotations
     result: Dict[str, Any] = {}
     result["_type"] = type(node).__name__
 
@@ -474,7 +494,7 @@ def _node_to_dict(node: ast.AST, mutable_vars: Set[str],
 
     # Handle specific node types
     if isinstance(node, ast.Module):
-        result["body"] = [_node_to_dict(n, mutable_vars, redefined) for n in node.body]
+        result["body"] = [_node_to_dict(n, mutable_vars, redefined, ctx) for n in node.body]
         docstring = _extract_docstring(node)
         if docstring:
             result["docstring_comment"] = docstring
@@ -539,9 +559,9 @@ def _node_to_dict(node: ast.AST, mutable_vars: Set[str],
                     elif typ != '':
                         local_ann[tgt] = typ
 
-        result["body"] = [_node_to_dict(n, func_mutable, redefined, local_ann) for n in node.body]
-        result["decorator_list"] = [_node_to_dict(d, mutable_vars, redefined, var_annotations) for d in node.decorator_list]
-        result["returns"] = _node_to_dict(node.returns, mutable_vars, redefined, var_annotations) if node.returns else None
+        result["body"] = [_node_to_dict(n, func_mutable, redefined, AnalysisContext(local_ann, ctx.func_ret_annotations)) for n in node.body]
+        result["decorator_list"] = [_node_to_dict(d, mutable_vars, redefined, ctx) for d in node.decorator_list]
+        result["returns"] = _node_to_dict(node.returns, mutable_vars, redefined, ctx) if node.returns else None
         result["type_comment"] = getattr(node, "type_comment", None)
         result["is_void"] = _is_void_function(node)
         result["is_generator"] = _is_generator(node)
@@ -550,12 +570,12 @@ def _node_to_dict(node: ast.AST, mutable_vars: Set[str],
 
     elif isinstance(node, ast.ClassDef):
         result["name"] = node.name
-        result["bases"] = [_node_to_dict(b, mutable_vars, redefined) for b in node.bases]
-        result["keywords"] = [_keyword_to_dict(kw, mutable_vars, redefined) for kw in node.keywords]
-        result["body"] = [_node_to_dict(n, mutable_vars, redefined) for n in node.body]
-        result["decorator_list"] = [_node_to_dict(d, mutable_vars, redefined) for d in node.decorator_list]
+        result["bases"] = [_node_to_dict(b, mutable_vars, redefined, ctx) for b in node.bases]
+        result["keywords"] = [_keyword_to_dict(kw, mutable_vars, redefined, ctx) for kw in node.keywords]
+        result["body"] = [_node_to_dict(n, mutable_vars, redefined, ctx) for n in node.body]
+        result["decorator_list"] = [_node_to_dict(d, mutable_vars, redefined, ctx) for d in node.decorator_list]
         result["declarations"] = _extract_class_declarations(node)
-        result["class_defaults"] = _extract_class_defaults(node, mutable_vars, redefined)
+        result["class_defaults"] = _extract_class_defaults(node, mutable_vars, redefined, ctx)
         # Extract class-level docstring
         if (node.body
                 and isinstance(node.body[0], ast.Expr)
@@ -564,68 +584,68 @@ def _node_to_dict(node: ast.AST, mutable_vars: Set[str],
             result["docstring_comment"] = node.body[0].value.value
 
     elif isinstance(node, ast.Return):
-        result["value"] = _node_to_dict(node.value, mutable_vars, redefined) if node.value else None
+        result["value"] = _node_to_dict(node.value, mutable_vars, redefined, ctx) if node.value else None
 
     elif isinstance(node, ast.Delete):
-        result["targets"] = [_node_to_dict(t, mutable_vars, redefined) for t in node.targets]
+        result["targets"] = [_node_to_dict(t, mutable_vars, redefined, ctx) for t in node.targets]
 
     elif isinstance(node, ast.Assign):
-        result["targets"] = [_node_to_dict(t, mutable_vars, redefined) for t in node.targets]
-        result["value"] = _node_to_dict(node.value, mutable_vars, redefined)
+        result["targets"] = [_node_to_dict(t, mutable_vars, redefined, ctx) for t in node.targets]
+        result["value"] = _node_to_dict(node.value, mutable_vars, redefined, ctx)
         result["type_comment"] = getattr(node, "type_comment", None)
         redef = redefined.get(id(node), [])
         if redef:
             result["redefined_targets"] = redef
 
     elif isinstance(node, ast.AugAssign):
-        result["target"] = _node_to_dict(node.target, mutable_vars, redefined)
+        result["target"] = _node_to_dict(node.target, mutable_vars, redefined, ctx)
         result["op"] = {"_type": type(node.op).__name__}
-        result["value"] = _node_to_dict(node.value, mutable_vars, redefined)
+        result["value"] = _node_to_dict(node.value, mutable_vars, redefined, ctx)
 
     elif isinstance(node, ast.AnnAssign):
-        result["target"] = _node_to_dict(node.target, mutable_vars, redefined)
-        result["annotation"] = _node_to_dict(node.annotation, mutable_vars, redefined)
-        result["value"] = _node_to_dict(node.value, mutable_vars, redefined) if node.value else None
+        result["target"] = _node_to_dict(node.target, mutable_vars, redefined, ctx)
+        result["annotation"] = _node_to_dict(node.annotation, mutable_vars, redefined, ctx)
+        result["value"] = _node_to_dict(node.value, mutable_vars, redefined, ctx) if node.value else None
         result["simple"] = node.simple
 
     elif isinstance(node, (ast.For, ast.AsyncFor)):
-        result["target"] = _node_to_dict(node.target, mutable_vars, redefined)
-        result["iter"] = _node_to_dict(node.iter, mutable_vars, redefined)
-        result["body"] = [_node_to_dict(n, mutable_vars, redefined) for n in node.body]
-        result["orelse"] = [_node_to_dict(n, mutable_vars, redefined) for n in node.orelse]
+        result["target"] = _node_to_dict(node.target, mutable_vars, redefined, ctx)
+        result["iter"] = _node_to_dict(node.iter, mutable_vars, redefined, ctx)
+        result["body"] = [_node_to_dict(n, mutable_vars, redefined, ctx) for n in node.body]
+        result["orelse"] = [_node_to_dict(n, mutable_vars, redefined, ctx) for n in node.orelse]
         result["type_comment"] = getattr(node, "type_comment", None)
         result["level"] = getattr(node, "_level", 0)
 
     elif isinstance(node, ast.While):
-        result["test"] = _node_to_dict(node.test, mutable_vars, redefined)
-        result["body"] = [_node_to_dict(n, mutable_vars, redefined) for n in node.body]
-        result["orelse"] = [_node_to_dict(n, mutable_vars, redefined) for n in node.orelse]
+        result["test"] = _node_to_dict(node.test, mutable_vars, redefined, ctx)
+        result["body"] = [_node_to_dict(n, mutable_vars, redefined, ctx) for n in node.body]
+        result["orelse"] = [_node_to_dict(n, mutable_vars, redefined, ctx) for n in node.orelse]
         result["level"] = getattr(node, "_level", 0)
 
     elif isinstance(node, ast.If):
-        result["test"] = _node_to_dict(node.test, mutable_vars, redefined)
-        result["body"] = [_node_to_dict(n, mutable_vars, redefined) for n in node.body]
-        result["orelse"] = [_node_to_dict(n, mutable_vars, redefined) for n in node.orelse]
+        result["test"] = _node_to_dict(node.test, mutable_vars, redefined, ctx)
+        result["body"] = [_node_to_dict(n, mutable_vars, redefined, ctx) for n in node.body]
+        result["orelse"] = [_node_to_dict(n, mutable_vars, redefined, ctx) for n in node.orelse]
         result["level"] = getattr(node, "_level", 0)
 
     elif isinstance(node, (ast.With, ast.AsyncWith)):
-        result["items"] = [_withitem_to_dict(item, mutable_vars, redefined) for item in node.items]
-        result["body"] = [_node_to_dict(n, mutable_vars, redefined) for n in node.body]
+        result["items"] = [_withitem_to_dict(item, mutable_vars, redefined, ctx) for item in node.items]
+        result["body"] = [_node_to_dict(n, mutable_vars, redefined, ctx) for n in node.body]
         result["type_comment"] = getattr(node, "type_comment", None)
 
     elif isinstance(node, ast.Raise):
-        result["exc"] = _node_to_dict(node.exc, mutable_vars, redefined) if node.exc else None
-        result["cause"] = _node_to_dict(node.cause, mutable_vars, redefined) if node.cause else None
+        result["exc"] = _node_to_dict(node.exc, mutable_vars, redefined, ctx) if node.exc else None
+        result["cause"] = _node_to_dict(node.cause, mutable_vars, redefined, ctx) if node.cause else None
 
     elif isinstance(node, ast.Try):
-        result["body"] = [_node_to_dict(n, mutable_vars, redefined) for n in node.body]
-        result["handlers"] = [_handler_to_dict(h, mutable_vars, redefined) for h in node.handlers]
-        result["orelse"] = [_node_to_dict(n, mutable_vars, redefined) for n in node.orelse]
-        result["finalbody"] = [_node_to_dict(n, mutable_vars, redefined) for n in node.finalbody]
+        result["body"] = [_node_to_dict(n, mutable_vars, redefined, ctx) for n in node.body]
+        result["handlers"] = [_handler_to_dict(h, mutable_vars, redefined, ctx) for h in node.handlers]
+        result["orelse"] = [_node_to_dict(n, mutable_vars, redefined, ctx) for n in node.orelse]
+        result["finalbody"] = [_node_to_dict(n, mutable_vars, redefined, ctx) for n in node.finalbody]
 
     elif isinstance(node, ast.Assert):
-        result["test"] = _node_to_dict(node.test, mutable_vars, redefined)
-        result["msg"] = _node_to_dict(node.msg, mutable_vars, redefined) if node.msg else None
+        result["test"] = _node_to_dict(node.test, mutable_vars, redefined, ctx)
+        result["msg"] = _node_to_dict(node.msg, mutable_vars, redefined, ctx) if node.msg else None
 
     elif isinstance(node, ast.Import):
         result["names"] = [_alias_to_dict(a) for a in node.names]
@@ -642,29 +662,29 @@ def _node_to_dict(node: ast.AST, mutable_vars: Set[str],
         result["names"] = node.names
 
     elif isinstance(node, ast.Expr):
-        result["value"] = _node_to_dict(node.value, mutable_vars, redefined)
+        result["value"] = _node_to_dict(node.value, mutable_vars, redefined, ctx)
 
     # Expressions
     elif isinstance(node, ast.BoolOp):
         result["op"] = {"_type": type(node.op).__name__}
-        result["values"] = [_node_to_dict(v, mutable_vars, redefined) for v in node.values]
+        result["values"] = [_node_to_dict(v, mutable_vars, redefined, ctx) for v in node.values]
 
     elif isinstance(node, ast.NamedExpr):
-        result["target"] = _node_to_dict(node.target, mutable_vars, redefined)
-        result["value"] = _node_to_dict(node.value, mutable_vars, redefined)
+        result["target"] = _node_to_dict(node.target, mutable_vars, redefined, ctx)
+        result["value"] = _node_to_dict(node.value, mutable_vars, redefined, ctx)
 
     elif isinstance(node, ast.BinOp):
-        result["left"] = _node_to_dict(node.left, mutable_vars, redefined)
+        result["left"] = _node_to_dict(node.left, mutable_vars, redefined, ctx)
         result["op"] = {"_type": type(node.op).__name__}
-        result["right"] = _node_to_dict(node.right, mutable_vars, redefined)
+        result["right"] = _node_to_dict(node.right, mutable_vars, redefined, ctx)
 
     elif isinstance(node, ast.UnaryOp):
         result["op"] = {"_type": type(node.op).__name__}
-        result["operand"] = _node_to_dict(node.operand, mutable_vars, redefined)
+        result["operand"] = _node_to_dict(node.operand, mutable_vars, redefined, ctx)
 
     elif isinstance(node, ast.Lambda):
         result["args"] = _arguments_to_dict(node.args, mutable_vars)
-        result["body"] = _node_to_dict(node.body, mutable_vars, redefined)
+        result["body"] = _node_to_dict(node.body, mutable_vars, redefined, ctx)
         # Attempt to infer simple return type for lambda bodies (constants/straightforward
         # expressions) and mark lambdas as inlinable when the body is a single simple
         # expression. This helps the backend emit typed closures and inline bodies.
@@ -687,63 +707,62 @@ def _node_to_dict(node: ast.AST, mutable_vars: Set[str],
                     pass
 
     elif isinstance(node, ast.IfExp):
-        result["test"] = _node_to_dict(node.test, mutable_vars, redefined)
-        result["body"] = _node_to_dict(node.body, mutable_vars, redefined)
-        result["orelse"] = _node_to_dict(node.orelse, mutable_vars, redefined)
+        result["test"] = _node_to_dict(node.test, mutable_vars, redefined, ctx)
+        result["body"] = _node_to_dict(node.body, mutable_vars, redefined, ctx)
+        result["orelse"] = _node_to_dict(node.orelse, mutable_vars, redefined, ctx)
 
     elif isinstance(node, ast.Dict):
-        result["keys"] = [_node_to_dict(k, mutable_vars, redefined) if k else None for k in node.keys]
-        result["values"] = [_node_to_dict(v, mutable_vars, redefined) for v in node.values]
+        result["keys"] = [_node_to_dict(k, mutable_vars, redefined, ctx) if k else None for k in node.keys]
+        result["values"] = [_node_to_dict(v, mutable_vars, redefined, ctx) for v in node.values]
 
     elif isinstance(node, ast.Set):
-        result["elts"] = [_node_to_dict(e, mutable_vars, redefined) for e in node.elts]
+        result["elts"] = [_node_to_dict(e, mutable_vars, redefined, ctx) for e in node.elts]
 
     elif isinstance(node, (ast.ListComp, ast.SetComp, ast.GeneratorExp)):
-        result["elt"] = _node_to_dict(node.elt, mutable_vars, redefined)
-        result["generators"] = [_comprehension_to_dict(g, mutable_vars, redefined) for g in node.generators]
+        result["elt"] = _node_to_dict(node.elt, mutable_vars, redefined, ctx)
+        result["generators"] = [_comprehension_to_dict(g, mutable_vars, redefined, ctx) for g in node.generators]
 
     elif isinstance(node, ast.DictComp):
-        result["key"] = _node_to_dict(node.key, mutable_vars, redefined)
-        result["value"] = _node_to_dict(node.value, mutable_vars, redefined)
-        result["generators"] = [_comprehension_to_dict(g, mutable_vars, redefined) for g in node.generators]
+        result["key"] = _node_to_dict(node.key, mutable_vars, redefined, ctx)
+        result["value"] = _node_to_dict(node.value, mutable_vars, redefined, ctx)
+        result["generators"] = [_comprehension_to_dict(g, mutable_vars, redefined, ctx) for g in node.generators]
 
     elif isinstance(node, ast.Await):
-        result["value"] = _node_to_dict(node.value, mutable_vars, redefined)
+        result["value"] = _node_to_dict(node.value, mutable_vars, redefined, ctx)
 
     elif isinstance(node, ast.Yield):
-        result["value"] = _node_to_dict(node.value, mutable_vars, redefined) if node.value else None
+        result["value"] = _node_to_dict(node.value, mutable_vars, redefined, ctx) if node.value else None
 
     elif isinstance(node, ast.YieldFrom):
-        result["value"] = _node_to_dict(node.value, mutable_vars, redefined)
+        result["value"] = _node_to_dict(node.value, mutable_vars, redefined, ctx)
 
     elif isinstance(node, ast.Compare):
-        result["left"] = _node_to_dict(node.left, mutable_vars, redefined)
+        result["left"] = _node_to_dict(node.left, mutable_vars, redefined, ctx)
         result["ops"] = [{"_type": type(op).__name__} for op in node.ops]
-        result["comparators"] = [_node_to_dict(c, mutable_vars, redefined) for c in node.comparators]
+        result["comparators"] = [_node_to_dict(c, mutable_vars, redefined, ctx) for c in node.comparators]
 
     elif isinstance(node, ast.Call):
-        result["func"] = _node_to_dict(node.func, mutable_vars, redefined)
-        result["args"] = [_node_to_dict(a, mutable_vars, redefined) for a in node.args]
-        result["keywords"] = [_keyword_to_dict(kw, mutable_vars, redefined) for kw in node.keywords]
+        result["func"] = _node_to_dict(node.func, mutable_vars, redefined, ctx)
+        result["args"] = [_node_to_dict(a, mutable_vars, redefined, ctx) for a in node.args]
+        result["keywords"] = [_keyword_to_dict(kw, mutable_vars, redefined, ctx) for kw in node.keywords]
         # Attach v_annotation for calls when the callee is a top-level function
         # with an explicit return annotation discovered during pre-scan.
         if isinstance(node.func, ast.Name):
             fname = node.func.id
-            if fname in _GLOBAL_FUNC_RET_ANNOTATIONS:
-                result["v_annotation"] = _GLOBAL_FUNC_RET_ANNOTATIONS[fname]
+            if fname in ctx.func_ret_annotations:
+                result["v_annotation"] = ctx.func_ret_annotations[fname]
 
     elif isinstance(node, ast.FormattedValue):
-        result["value"] = _node_to_dict(node.value, mutable_vars, redefined)
+        result["value"] = _node_to_dict(node.value, mutable_vars, redefined, ctx)
         result["conversion"] = node.conversion
-        result["format_spec"] = _node_to_dict(node.format_spec, mutable_vars, redefined) if node.format_spec else None
+        result["format_spec"] = _node_to_dict(node.format_spec, mutable_vars, redefined, ctx) if node.format_spec else None
 
     elif isinstance(node, ast.JoinedStr):
-        result["values"] = [_node_to_dict(v, mutable_vars, redefined) for v in node.values]
+        result["values"] = [_node_to_dict(v, mutable_vars, redefined, ctx) for v in node.values]
 
     elif isinstance(node, ast.Constant):
         result["value"] = _constant_value(node.value)
         result["kind"] = node.kind
-        # Mark float constants with v_annotation for type-aware transpilation
         # Provide v_annotation for primitive literal types to help downstream
         # type-aware transpilation in the backend.
         if isinstance(node.value, bool):
@@ -760,17 +779,17 @@ def _node_to_dict(node: ast.AST, mutable_vars: Set[str],
             result["v_annotation"] = "bytes"
 
     elif isinstance(node, ast.Attribute):
-        result["value"] = _node_to_dict(node.value, mutable_vars, redefined)
+        result["value"] = _node_to_dict(node.value, mutable_vars, redefined, ctx)
         result["attr"] = node.attr
         result["ctx"] = {"_type": type(node.ctx).__name__}
 
     elif isinstance(node, ast.Subscript):
-        result["value"] = _node_to_dict(node.value, mutable_vars, redefined)
-        result["slice"] = _node_to_dict(node.slice, mutable_vars, redefined)
+        result["value"] = _node_to_dict(node.value, mutable_vars, redefined, ctx)
+        result["slice"] = _node_to_dict(node.slice, mutable_vars, redefined, ctx)
         result["ctx"] = {"_type": type(node.ctx).__name__}
 
     elif isinstance(node, ast.Starred):
-        result["value"] = _node_to_dict(node.value, mutable_vars, redefined)
+        result["value"] = _node_to_dict(node.value, mutable_vars, redefined, ctx)
         result["ctx"] = {"_type": type(node.ctx).__name__}
 
     elif isinstance(node, ast.Name):
@@ -782,13 +801,13 @@ def _node_to_dict(node: ast.AST, mutable_vars: Set[str],
             result["v_annotation"] = var_annotations[node.id]
 
     elif isinstance(node, (ast.List, ast.Tuple)):
-        result["elts"] = [_node_to_dict(e, mutable_vars, redefined) for e in node.elts]
+        result["elts"] = [_node_to_dict(e, mutable_vars, redefined, ctx) for e in node.elts]
         result["ctx"] = {"_type": type(node.ctx).__name__}
 
     elif isinstance(node, ast.Slice):
-        result["lower"] = _node_to_dict(node.lower, mutable_vars, redefined) if node.lower else None
-        result["upper"] = _node_to_dict(node.upper, mutable_vars, redefined) if node.upper else None
-        result["step"] = _node_to_dict(node.step, mutable_vars, redefined) if node.step else None
+        result["lower"] = _node_to_dict(node.lower, mutable_vars, redefined, ctx) if node.lower else None
+        result["upper"] = _node_to_dict(node.upper, mutable_vars, redefined, ctx) if node.upper else None
+        result["step"] = _node_to_dict(node.step, mutable_vars, redefined, ctx) if node.step else None
 
     return result
 
@@ -865,9 +884,9 @@ def _arguments_to_dict(args: ast.arguments, mutable_vars: Set[str]) -> Dict[str,
         "args": [_arg_to_dict(a, mutable_vars) for a in args.args],
         "vararg": _arg_to_dict(args.vararg, mutable_vars) if args.vararg else None,
         "kwonlyargs": [_arg_to_dict(a, mutable_vars) for a in args.kwonlyargs],
-        "kw_defaults": [_node_to_dict(d, mutable_vars, {}) if d else None for d in args.kw_defaults],
+        "kw_defaults": [_node_to_dict(d, mutable_vars, {}, AnalysisContext.empty()) if d else None for d in args.kw_defaults],
         "kwarg": _arg_to_dict(args.kwarg, mutable_vars) if args.kwarg else None,
-        "defaults": [_node_to_dict(d, mutable_vars, {}) for d in args.defaults],
+        "defaults": [_node_to_dict(d, mutable_vars, {}, AnalysisContext.empty()) for d in args.defaults],
     }
 
 
@@ -875,7 +894,7 @@ def _arg_to_dict(arg: ast.arg, mutable_vars: Set[str]) -> Dict[str, Any]:
     result = {
         "_type": "arg",
         "arg": arg.arg,
-        "annotation": _node_to_dict(arg.annotation, mutable_vars, {}) if arg.annotation else None,
+        "annotation": _node_to_dict(arg.annotation, mutable_vars, {}, AnalysisContext.empty()) if arg.annotation else None,
         "type_comment": getattr(arg, "type_comment", None),
         "is_mutable": arg.arg in mutable_vars,
     }
@@ -888,11 +907,14 @@ def _arg_to_dict(arg: ast.arg, mutable_vars: Set[str]) -> Dict[str, Any]:
 
 
 def _keyword_to_dict(kw: ast.keyword, mutable_vars: Set[str],
-                     redefined: Dict[int, List[str]]) -> Dict[str, Any]:
+                     redefined: Dict[int, List[str]],
+                     ctx: Optional[AnalysisContext] = None) -> Dict[str, Any]:
+    if ctx is None:
+        ctx = AnalysisContext.empty()
     result = {
         "_type": "keyword",
         "arg": kw.arg,
-        "value": _node_to_dict(kw.value, mutable_vars, redefined),
+        "value": _node_to_dict(kw.value, mutable_vars, redefined, ctx),
     }
     for attr in ("lineno", "col_offset", "end_lineno", "end_col_offset"):
         if hasattr(kw, attr):
@@ -917,12 +939,15 @@ def _alias_to_dict(alias: ast.alias) -> Dict[str, Any]:
 
 
 def _handler_to_dict(handler: ast.ExceptHandler, mutable_vars: Set[str],
-                     redefined: Dict[int, List[str]]) -> Dict[str, Any]:
+                     redefined: Dict[int, List[str]],
+                     ctx: Optional[AnalysisContext] = None) -> Dict[str, Any]:
+    if ctx is None:
+        ctx = AnalysisContext.empty()
     result = {
         "_type": "ExceptHandler",
-        "type": _node_to_dict(handler.type, mutable_vars, redefined) if handler.type else None,
+        "type": _node_to_dict(handler.type, mutable_vars, redefined, ctx) if handler.type else None,
         "name": handler.name,
-        "body": [_node_to_dict(n, mutable_vars, redefined) for n in handler.body],
+        "body": [_node_to_dict(n, mutable_vars, redefined, ctx) for n in handler.body],
     }
     for attr in ("lineno", "col_offset", "end_lineno", "end_col_offset"):
         if hasattr(handler, attr):
@@ -933,21 +958,27 @@ def _handler_to_dict(handler: ast.ExceptHandler, mutable_vars: Set[str],
 
 
 def _withitem_to_dict(item: ast.withitem, mutable_vars: Set[str],
-                      redefined: Dict[int, List[str]]) -> Dict[str, Any]:
+                      redefined: Dict[int, List[str]],
+                      ctx: Optional[AnalysisContext] = None) -> Dict[str, Any]:
+    if ctx is None:
+        ctx = AnalysisContext.empty()
     return {
         "_type": "withitem",
-        "context_expr": _node_to_dict(item.context_expr, mutable_vars, redefined),
-        "optional_vars": _node_to_dict(item.optional_vars, mutable_vars, redefined) if item.optional_vars else None,
+        "context_expr": _node_to_dict(item.context_expr, mutable_vars, redefined, ctx),
+        "optional_vars": _node_to_dict(item.optional_vars, mutable_vars, redefined, ctx) if item.optional_vars else None,
     }
 
 
 def _comprehension_to_dict(comp: ast.comprehension, mutable_vars: Set[str],
-                           redefined: Dict[int, List[str]]) -> Dict[str, Any]:
+                           redefined: Dict[int, List[str]],
+                           ctx: Optional[AnalysisContext] = None) -> Dict[str, Any]:
+    if ctx is None:
+        ctx = AnalysisContext.empty()
     return {
         "_type": "comprehension",
-        "target": _node_to_dict(comp.target, mutable_vars, redefined),
-        "iter": _node_to_dict(comp.iter, mutable_vars, redefined),
-        "ifs": [_node_to_dict(i, mutable_vars, redefined) for i in comp.ifs],
+        "target": _node_to_dict(comp.target, mutable_vars, redefined, ctx),
+        "iter": _node_to_dict(comp.iter, mutable_vars, redefined, ctx),
+        "ifs": [_node_to_dict(i, mutable_vars, redefined, ctx) for i in comp.ifs],
         "is_async": bool(comp.is_async),
     }
 
@@ -981,12 +1012,13 @@ def process_file(file_path: str) -> str:
     redefined = _find_redefined_targets(tree)
 
     # Gather module-level variable annotations and function return annotations
-    # so the backend can use conservative hints during transpilation.
-    global _GLOBAL_VAR_ANNOTATIONS, _GLOBAL_FUNC_RET_ANNOTATIONS
-    _GLOBAL_VAR_ANNOTATIONS = _gather_var_annotations(tree)
-    _GLOBAL_FUNC_RET_ANNOTATIONS = _gather_func_return_annotations(tree)
+    # into a per-file context so there is no cross-file state pollution.
+    ctx = AnalysisContext(
+        var_annotations=_gather_var_annotations(tree),
+        func_ret_annotations=_gather_func_return_annotations(tree),
+    )
 
-    result = _node_to_dict(tree, mutable_vars, redefined, _GLOBAL_VAR_ANNOTATIONS)
+    result = _node_to_dict(tree, mutable_vars, redefined, ctx)
     return json.dumps(result)
 
 

@@ -1,4 +1,5 @@
 @[translated]
+
 module main
 
 pub struct P_struct {
@@ -12,8 +13,8 @@ fn main() {
 	}
 	data := {
 		'a': {
-			'b': 'B'
-		}
+		'b': 'B'
+	}
 	}
 	lst := [10, 20]
 	println('Hi ${p.name}')

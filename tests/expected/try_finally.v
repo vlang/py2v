@@ -1,4 +1,5 @@
 @[translated]
+
 module main
 
 fn with_finally(x int) int {
@@ -6,7 +7,7 @@ fn with_finally(x int) int {
 	defer {
 		println('finally executed')
 	}
-	result = (x * 2)
+	result = x * 2
 	return result
 }
 

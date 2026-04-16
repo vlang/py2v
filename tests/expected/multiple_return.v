@@ -1,4 +1,5 @@
 @[translated]
+
 module main
 
 import math
@@ -12,7 +13,7 @@ fn get_triple() []int {
 }
 
 fn divmod_custom(a int, b int) []int {
-	return [math.divide_floored(a, b).quot, (a % b)]
+	return [math.divide_floored(a, b).quot, a % b]
 }
 
 fn main_func() {

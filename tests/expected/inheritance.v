@@ -1,9 +1,10 @@
 @[translated]
+
 module main
 
 pub struct Animal {
 pub mut:
-	name  string
+	name string
 	sound string
 }
 
@@ -15,11 +16,8 @@ pub mut:
 
 fn main() {
 	d := Dog{
-		breed:  'Labrador'
-		Animal: Animal{
-			name:  'Buddy'
-			sound: 'Woof'
-		}
+		breed: 'Labrador'
+		Animal: Animal{name: 'Buddy', sound: 'Woof'}
 	}
 	println(d.name)
 	println(d.sound)

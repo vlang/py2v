@@ -1,4 +1,5 @@
 @[translated]
+
 module main
 
 fn inline_pass() {
@@ -41,7 +42,7 @@ fn show() {
 		println(i)
 	}
 	a3 := -a1
-	a4 := (a3 + a1)
+	a4 := a3 + a1
 	println(a4)
 	t1 := if a1 > 5 { 10 } else { 5 }
 	assert t1 == 10
@@ -82,9 +83,9 @@ fn show() {
 	s := '1    2'
 	println(s)
 	assert infer_bool(1)
-	_escape_quotes := ' foo "bar" baz '
+	_escape_quotes := ' foo \"bar\" baz '
 	assert 'aaabbccc'.contains('bbc')
-	assert 1 != 0
+	assert (1 != 0)
 	_c1, _, _c2 = 1, 2, 3
 }
 

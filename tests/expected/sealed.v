@@ -1,4 +1,5 @@
 @[translated]
+
 module main
 
 pub struct Packet {
@@ -9,7 +10,7 @@ pub mut:
 pub struct Register {
 pub mut:
 	PACKET &Packet
-	VALUE  int
+	VALUE int
 }
 
 fn main() {

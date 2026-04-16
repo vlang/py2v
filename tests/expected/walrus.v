@@ -1,4 +1,5 @@
 @[translated]
+
 module main
 
 fn show() {
@@ -8,7 +9,7 @@ fn show() {
 	}
 	mut i := 0
 	for {
-		x := (i * 2)
+		x := i * 2
 		if !(x < 10) {
 			break
 		}

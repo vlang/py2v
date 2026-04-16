@@ -444,7 +444,7 @@ fn visit_enumerate(args []string) (string, bool) {
 }
 
 // Handle zip() call
-fn visit_zip(args []string) (string, bool) {
+fn visit_zip() (string, bool) {
 	return '[]Any{}', true
 }
 
@@ -696,7 +696,7 @@ fn dispatch_builtin_impl(mut t VTranspiler, fname string, node Call, args []stri
 			return DispatchResult{code, handled, ''}
 		}
 		'zip' {
-			code, handled := visit_zip(args)
+			code, handled := visit_zip()
 			return DispatchResult{code, handled, ''}
 		}
 		'open' {

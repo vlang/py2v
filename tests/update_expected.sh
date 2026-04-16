@@ -28,7 +28,7 @@ for case_file in "$CASES_DIR"/*.py; do
     if output=$("$PY2V" "$case_file" 2>&1); then
         echo "$output" > "$expected_file"
         echo "Updated: $test_name"
-        ((count++))
+        ((count++)) || true
     else
         echo "Skipped: $test_name (transpilation error)"
     fi

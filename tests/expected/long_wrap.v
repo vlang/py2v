@@ -1,4 +1,5 @@
 @[translated]
+
 module main
 
 fn build(a Any, b Any, c Any, d Any, e Any, f Any, g Any, h Any, i Any, j Any, k Any, l Any) Any {
@@ -18,8 +19,33 @@ fn build(a Any, b Any, c Any, d Any, e Any, f Any, g Any, h Any, i Any, j Any, k
 		'mmmmmmmmmm',
 		'nnnnnnnnnn',
 	]
-	text := ('prefix-' + a + '-' + b + '-' + c + '-' + d + '-' + e + '-' + f + '-' + g + '-' + h +
-		'-' + i + '-' + j + '-' + k + '-' + l + '-suffix')
+	text := (
+		'prefix-'
+		+ (a)
+		+ '-'
+		+ (b)
+		+ '-'
+		+ (c)
+		+ '-'
+		+ (d)
+		+ '-'
+		+ (e)
+		+ '-'
+		+ (f)
+		+ '-'
+		+ (g)
+		+ '-'
+		+ (h)
+		+ '-'
+		+ (i)
+		+ '-'
+		+ (j)
+		+ '-'
+		+ (k)
+		+ '-'
+		+ (l)
+		+ '-suffix'
+	)
 	return [items, text]
 }
 

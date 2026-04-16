@@ -1,4 +1,5 @@
 @[translated]
+
 module main
 
 fn test_python(iterations int) {
@@ -10,7 +11,7 @@ fn test_python(iterations int) {
 	for iteration < iterations {
 		mut innerloop := 0
 		for innerloop < 100 {
-			total += array[((iteration + innerloop) % array_length)]
+			total += array[iteration + innerloop % array_length]
 			innerloop += 1
 		}
 		iteration += 1

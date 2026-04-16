@@ -1,4 +1,5 @@
 @[translated]
+
 module main
 
 // Rectangle as a dataclass
@@ -22,7 +23,7 @@ fn show() {
 		height: 1
 		length: 2
 	}
-	assert !(r.is_square())
+	assert !r.is_square()
 	println(r.height)
 	println(r.length)
 }

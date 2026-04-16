@@ -1,4 +1,5 @@
 @[translated]
+
 module main
 
 fn generator1(ch chan Any) {
@@ -14,8 +15,8 @@ fn generator2(ch chan Any) {
 	__gen1 := generator1()
 	// yield from __gen1
 	for {
-		val := <-__gen1 or { break }
-		ch <- val
+	    val := <-__gen1 or { break }
+	    ch <- val
 	}
 	ch <- 4
 }

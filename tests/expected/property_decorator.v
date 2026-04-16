@@ -1,4 +1,5 @@
 @[translated]
+
 module main
 
 pub struct Temperature {

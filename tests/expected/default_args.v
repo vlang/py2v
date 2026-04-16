@@ -1,8 +1,9 @@
 @[translated]
+
 module main
 
 fn greet(name string, greeting string) string {
-	return ((greeting + ', ') + name) + '!'
+	return greeting + ', ' + name + '!'
 }
 
 fn add(a int, b int) int {

@@ -1,14 +1,15 @@
 @[translated]
+
 module main
 
 fn main_func() {
 	a := 'Hello'
 	b := 'World'
-	c := ((a + ' ') + b)
+	c := a + ' ' + b
 	println(c)
-	d := ('ab'.repeat(4))
+	d := 'ab'.repeat(4)
 	println(d)
-	e := ('-'.repeat(10))
+	e := '-'.repeat(10)
 	println(e)
 	println(a.len)
 	println(c.len)

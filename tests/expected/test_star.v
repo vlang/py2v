@@ -1,4 +1,5 @@
 @[translated]
+
 module main
 
 fn sum_all(nums ...Any) int {
@@ -10,8 +11,8 @@ fn sum_all(nums ...Any) int {
 }
 
 fn main_func() {
-	println(('a'.repeat(5)))
-	println(([0].repeat(3)))
+	println('a'.repeat(5))
+	println([0].repeat(3))
 	numbers := [1, 2, 3]
 	println(sum_all(...numbers))
 	others := [4, 5]

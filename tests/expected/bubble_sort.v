@@ -1,12 +1,13 @@
 @[translated]
+
 module main
 
 fn bubble_sort(mut seq []int) []int {
 	L := seq.len
 	for _ in []int{len: L, init: index} {
 		for n in []int{len: L - 1, init: index + 1} {
-			if seq[n] < seq[(n - 1)] {
-				seq[(n - 1)], seq[n] = seq[n], seq[(n - 1)]
+			if seq[n] < seq[n - 1] {
+				seq[n - 1], seq[n] = seq[n], seq[n - 1]
 			}
 		}
 	}
