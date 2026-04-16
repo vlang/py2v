@@ -4,6 +4,7 @@ module main
 import os
 
 fn main() {
+	// import tempfile: no known V equivalent
 	if true {
 		temp_file := namedTemporaryFile('a+', false)
 		file_path := temp_file.name

@@ -1,6 +1,8 @@
 @[translated]
 module main
 
+type Any = bool | int | i64 | f64 | string | []u8
+
 fn make_pair(string_ Any, int_ Any) map[string]Any {
 	return {
 		'name':  string_
@@ -17,5 +19,3 @@ fn main() {
 	println(result)
 	println(get_value())
 }
-
-type Any = bool | int | i64 | f64 | string | []u8

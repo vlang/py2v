@@ -161,14 +161,14 @@ fn sanitize_module_name(raw string) string {
 }
 
 fn format_v_code(code string) string {
-	// Write to temp file, format with vfmt, read back
+	// Write to temp file, format in-place with vfmt -w, then read back
 	tmp_file := os.temp_dir() + '/py2v_tmp_${os.getpid()}.v'
 	os.write_file(tmp_file, code) or { return code }
 	defer {
 		os.rm(tmp_file) or {}
 	}
 
-	result := os.execute('v fmt "${tmp_file}"')
+	result := os.execute('v fmt -w "${tmp_file}"')
 	if result.exit_code == 0 {
 		formatted := os.read_file(tmp_file) or { return code }
 		return formatted

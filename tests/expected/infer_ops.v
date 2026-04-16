@@ -72,6 +72,7 @@ fn show() {
 }
 
 fn main() {
+	// import ctypes: no known V equivalent
 	foo()
 	show()
 }

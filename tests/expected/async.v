@@ -1,6 +1,8 @@
 @[translated]
 module main
 
+type Any = bool | int | i64 | f64 | string | []u8
+
 fn async_gen(ch chan Any) {
 	defer { ch.close() }
 	for i in []int{len: 3, init: index} {
@@ -22,7 +24,6 @@ fn show() {
 }
 
 fn main() {
+	// import asyncio: use V goroutines and channels
 	show()
 }
-
-type Any = bool | int | i64 | f64 | string | []u8

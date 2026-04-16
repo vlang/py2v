@@ -1,6 +1,8 @@
 @[translated]
 module main
 
+type Any = bool | int | i64 | f64 | string | []u8
+
 pub struct Animal {
 }
 
@@ -48,5 +50,3 @@ fn main() {
 	check_in_if(d)
 	println(if check_negated(d) { 'True' } else { 'False' })
 }
-
-type Any = bool | int | i64 | f64 | string | []u8

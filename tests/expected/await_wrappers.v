@@ -13,5 +13,6 @@ fn show() {
 }
 
 fn main() {
+	// import asyncio: use V goroutines and channels
 	show()
 }

@@ -11,5 +11,6 @@ fn async_main() {
 }
 
 fn main() {
+	// import asyncio: use V goroutines and channels
 	async_main()
 }

@@ -284,3 +284,51 @@ pub fn promote_numeric_type(left_type string, right_type string, op string) stri
 
 // Default type for unresolved types
 pub const default_type = 'Any'
+
+// python_to_v_import maps well-known Python module names to their V equivalents.
+// An empty string means "suppress silently" (typing, abc, etc.).
+// A '!' prefix means "emit comment only" (no direct V equivalent).
+pub const python_to_v_import = {
+	// stdlib with direct V counterparts
+	'math':        'math'
+	'os':          'os'
+	'os.path':     'os'
+	'sys':         'os'
+	're':          'regex'
+	'json':        'json'
+	'time':        'time'
+	'random':      'rand'
+	'collections': 'datatypes'
+	'io':          'os'
+	'pathlib':     'os'
+	'subprocess':  'os'
+	'shutil':      'os'
+	'functools':   'arrays'
+	'itertools':   'arrays'
+	// suppress — no V equivalent needed
+	'typing':      ''
+	'abc':         ''
+	'dataclasses': ''
+	'__future__':  ''
+	'contextlib':  ''
+	'enum':        ''
+	'copy':        ''
+	'types':       ''
+	'builtins':    ''
+	// no direct V equivalent → emit comment
+	'threading':   '!// import threading: use V goroutines (go fn(){})'
+	'asyncio':     '!// import asyncio: use V goroutines and channels'
+	'socket':      '!// import socket: use V net module'
+	'http':        '!// import http: use V net.http'
+	'urllib':      '!// import urllib: use V net.http'
+	'requests':    '!// import requests: use V net.http'
+	'logging':     'log'
+	'argparse':    'flag'
+	'struct':      'encoding.binary'
+	'hashlib':     'crypto'
+	'base64':      'encoding.base64'
+	'csv':         '!// import csv: use V csv or manual parsing'
+	'sqlite3':     'db.sqlite'
+	'unittest':    '!// import unittest: use V built-in `assert` and `v test`'
+	'pytest':      '!// import pytest: use V built-in `assert` and `v test`'
+}

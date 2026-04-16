@@ -1,6 +1,8 @@
 @[translated]
 module main
 
+type Any = bool | int | i64 | f64 | string | []u8
+
 fn sum_all(nums ...Any) int {
 	mut total := 0
 	for n in nums {

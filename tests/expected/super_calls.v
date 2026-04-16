@@ -1,6 +1,8 @@
 @[translated]
 module main
 
+type Any = bool | int | i64 | f64 | string | []u8
+
 pub struct Base {
 pub mut:
 	value Any
@@ -40,5 +42,3 @@ fn main() {
 	}
 	println(c.greet())
 }
-
-type Any = bool | int | i64 | f64 | string | []u8

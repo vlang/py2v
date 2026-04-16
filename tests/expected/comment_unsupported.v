@@ -1,6 +1,8 @@
 @[translated]
 module main
 
+type Any = bool | int | i64 | f64 | string | []u8
+
 fn do_unsupported() {
 	a := 1
 	(fn () map[string]main.Any {
@@ -17,5 +19,3 @@ fn do_unsupported() {
 fn main() {
 	do_unsupported()
 }
-
-type Any = bool | int | i64 | f64 | string | []u8

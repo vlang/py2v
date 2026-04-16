@@ -15,6 +15,7 @@ fn fib(i int) int {
 }
 
 fn main() {
+	// import argparse_dataclass: no known V equivalent
 	mut args := Options.parse_args()
 	if args.v {
 		println('args.v is true')

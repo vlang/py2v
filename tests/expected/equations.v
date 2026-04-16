@@ -18,6 +18,8 @@ fn fequation(z f64) bool {
 }
 
 fn main() {
+	// import py2many.smt: no known V equivalent
+	// import py2many.smt: no known V equivalent
 	x := default_value(int)
 	y := default_value(int)
 	z := default_value(float)

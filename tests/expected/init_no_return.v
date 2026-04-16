@@ -1,6 +1,8 @@
 @[translated]
 module main
 
+type Any = bool | int | i64 | f64 | string | []u8
+
 pub struct Thing {
 pub mut:
 	x Any
@@ -16,5 +18,3 @@ fn main() {
 	}
 	println(t.x)
 }
-
-type Any = bool | int | i64 | f64 | string | []u8

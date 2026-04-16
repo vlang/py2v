@@ -13,6 +13,7 @@ pub mut:
 }
 
 fn main() {
+	// import adt: no known V equivalent
 	a := Register.VALUE(10)
 	assert a.is_value()
 	a.value()

@@ -12,3 +12,7 @@ pub mut:
 	NONE Any
 	REST &IntListNonEmpty
 }
+
+fn main() {
+	// import adt: no known V equivalent
+}

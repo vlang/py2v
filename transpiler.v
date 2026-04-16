@@ -66,11 +66,17 @@ pub fn (mut t VTranspiler) visit_module(node Module) string {
 		module_name = 'main'
 	}
 
-	mut decl_parts := []string{}
-	mut main_parts := []string{}
+	// Buckets — emitted in order: type_decls, struct_decls, func_decls, main_fn
+	mut type_decls := []string{} // `type X = ...`, `const ...`
+	mut struct_decls := []string{} // `pub struct ...` (from ClassDef)
+	mut func_decls := []string{} // `fn ...` (non-main functions)
+	mut main_fn_body := []string{} // body lines for fn main()
+	mut main_fn_override := '' // full `fn main() {...}` from guard rewrite
+	mut comment_lines := []string{} // top-level import comments etc.
 
 	mut first_stmt := true
 	for stmt in node.body {
+		// Skip module-level docstrings (first bare string constant)
 		if first_stmt {
 			first_stmt = false
 			if stmt is ExprStmt {
@@ -88,21 +94,75 @@ pub fn (mut t VTranspiler) visit_module(node Module) string {
 			continue
 		}
 		match stmt {
-			FunctionDef, AsyncFunctionDef, ClassDef {
-				decl_parts << s
+			ClassDef {
+				// Class emits struct def + methods; split on first fn boundary
+				struct_decls << s
+			}
+			FunctionDef {
+				if stmt.name == 'main' {
+					main_fn_override = s
+				} else {
+					func_decls << s
+				}
+			}
+			AsyncFunctionDef {
+				if stmt.name == 'main' {
+					main_fn_override = s
+				} else {
+					func_decls << s
+				}
 			}
 			else {
-				// Type alias declarations (e.g. `type Foo = A | B`) must live at
-				// module scope, not inside fn main().
-				if s.starts_with('type ') {
-					decl_parts << s
+				trimmed := s.trim_space()
+				if trimmed.starts_with('type ') || trimmed.starts_with('const ') {
+					type_decls << s
+				} else if trimmed.starts_with('//') {
+					// Import comments and similar go before fn main()
+					comment_lines << s
 				} else {
-					main_parts << s
+					main_fn_body << s
 				}
 			}
 		}
 	}
 
+	// Any type alias must be first among type_decls
+	if t.generated_code_has_any_type {
+		type_decls.prepend('type Any = bool | int | i64 | f64 | string | []u8')
+	}
+
+	// Build final fn main(): merge guard-rewritten body with module-level inits
+	mut main_str := ''
+	mut all_main_lines := []string{}
+	all_main_lines << comment_lines
+	all_main_lines << main_fn_body
+	if main_fn_override.len > 0 {
+		if all_main_lines.len > 0 {
+			// Inject init lines at start of the guard-rewritten fn main() body
+			open_brace := main_fn_override.index('{') or { -1 }
+			if open_brace >= 0 {
+				head := main_fn_override[0..open_brace + 1]
+				tail := main_fn_override[open_brace + 1..]
+				mut indented := []string{}
+				for line in all_main_lines {
+					indented << indent(line, 1, '\t')
+				}
+				main_str = '${head}\n${indented.join('\n')}${tail}'
+			} else {
+				main_str = main_fn_override
+			}
+		} else {
+			main_str = main_fn_override
+		}
+	} else if all_main_lines.len > 0 {
+		mut indented := []string{}
+		for line in all_main_lines {
+			indented << indent(line, 1, '\t')
+		}
+		main_str = 'fn main() {\n${indented.join('\n')}\n}'
+	}
+
+	// Assemble output sections in order
 	mut parts := []string{}
 	parts << '@[translated]'
 	parts << 'module ${module_name}'
@@ -115,49 +175,17 @@ pub fn (mut t VTranspiler) visit_module(node Module) string {
 		parts << import_lines.join('\n')
 	}
 
-	if decl_parts.len > 0 {
-		parts << decl_parts.join('\n\n')
+	if type_decls.len > 0 {
+		parts << type_decls.join('\n\n')
 	}
-
-	if t.generated_code_has_any_type {
-		parts << 'type Any = bool | int | i64 | f64 | string | []u8'
+	if struct_decls.len > 0 {
+		parts << struct_decls.join('\n\n')
 	}
-
-	if main_parts.len > 0 {
-		// If decl_parts already contains a `fn main()` (from the __name__
-		// guard rewrite), inject the module-level init stmts at the start of
-		// that function's body instead of emitting a second fn main().
-		mut merged := false
-		for i, dp in decl_parts {
-			if dp.starts_with('fn main()') {
-				mut indented := []string{}
-				for p in main_parts {
-					indented << indent(p, 1, '\t')
-				}
-				// Insert init lines after the opening `fn main() {` line
-				open_brace := dp.index('{') or { -1 }
-				if open_brace >= 0 {
-					head := dp[0..open_brace + 1]
-					tail := dp[open_brace + 1..]
-					injected := indented.join('\n')
-					decl_parts[i] = '${head}\n${injected}${tail}'
-					// Rebuild the decl_parts section in parts
-					// (it was already appended above; replace the last block)
-					parts[parts.len - 1] = decl_parts.join('\n\n')
-					merged = true
-					break
-				}
-			}
-		}
-		if !merged {
-			mut main_body := ''
-			mut indented := []string{}
-			for p in main_parts {
-				indented << indent(p, 1, '\t')
-			}
-			main_body = indented.join('\n')
-			parts << 'fn main() {\n${main_body}\n}'
-		}
+	if func_decls.len > 0 {
+		parts << func_decls.join('\n\n')
+	}
+	if main_str != '' {
+		parts << main_str
 	}
 
 	return parts.join('\n\n') + '\n'
@@ -444,7 +472,7 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 		t.func_param_count[node.name] = param_idx
 	}
 
-	// Handle vararg
+	// Handle vararg (*args)
 	if vararg := node.args.vararg {
 		mut typename := ''
 		if ann := vararg.annotation {
@@ -454,10 +482,28 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 			typename = '...' + typename[2..]
 		} else if typename == '' {
 			typename = '...Any'
+			t.generated_code_has_any_type = true
 		} else {
 			typename = '...' + typename
 		}
 		args_strs << '${escape_identifier(vararg.arg)} ${typename}'
+	}
+
+	// Handle **kwargs — emit as map[string]Any with a comment
+	if kwarg := node.args.kwarg {
+		t.generated_code_has_any_type = true
+		args_strs << '${escape_identifier(kwarg.arg)} map[string]Any // **kwargs'
+	}
+
+	// Handle keyword-only args (after *)
+	for kwonly in node.args.kwonlyargs {
+		kwname := escape_identifier(kwonly.arg)
+		mut kwtype := 'Any'
+		t.generated_code_has_any_type = true
+		if ann := kwonly.annotation {
+			kwtype = t.typename_from_annotation(ann)
+		}
+		args_strs << '${kwname} ${kwtype}'
 	}
 
 	// For generator functions, add channel parameter
@@ -569,6 +615,27 @@ pub fn (mut t VTranspiler) visit_async_function_def(node AsyncFunctionDef) strin
 // visit_class_def emits V code for a ClassDef node.
 pub fn (mut t VTranspiler) visit_class_def(node ClassDef) string {
 	emitted_name := emitted_class_name(node.name)
+
+	// Detect @dataclass decorator — changes field emission strategy
+	mut is_dataclass := false
+	for d in node.decorator_list {
+		if d is Name && (d as Name).id == 'dataclass' {
+			is_dataclass = true
+			break
+		}
+		if d is Attribute && (d as Attribute).attr == 'dataclass' {
+			is_dataclass = true
+			break
+		}
+		if d is Call {
+			fn_part := (d as Call).func
+			if fn_part is Name && (fn_part as Name).id == 'dataclass' {
+				is_dataclass = true
+				break
+			}
+		}
+	}
+	_ = is_dataclass // used below for field-default emission
 	mut fields := []string{}
 	mut field_names := []string{}
 	mut base_names := []string{}
@@ -1466,17 +1533,24 @@ pub fn (mut t VTranspiler) visit_async_with(node AsyncWith) string {
 // visit_raise emits V code for a Raise statement.
 pub fn (mut t VTranspiler) visit_raise(node Raise) string {
 	if exc := node.exc {
+		mut msg := ''
 		if exc is Call {
 			call := exc as Call
 			fname := t.visit_expr(call.func)
-			msg := if call.args.len > 0 { t.visit_expr(call.args[0]) } else { "''" }
-			return "panic('${fname}: ' + ${msg})"
+			arg := if call.args.len > 0 { t.visit_expr(call.args[0]) } else { "''" }
+			msg = "'${fname}: ' + ${arg}"
+		} else {
+			msg = "'${t.visit_expr(exc)}'"
 		}
-		name := t.visit_expr(exc)
-		return "panic('${name}')"
+		// raise X from Y — append cause to message
+		if cause := node.cause {
+			cause_str := t.visit_expr(cause)
+			return "panic(${msg} + ' (caused by: ' + ${cause_str}.str() + ')')"
+		}
+		return 'panic(${msg})'
 	}
-
-	return "panic('Exception')"
+	// bare `raise` — re-raise inside except handler; use generic panic
+	return "panic('re-raise')"
 }
 
 // visit_try emits V code for a Try statement.
@@ -1548,28 +1622,57 @@ pub fn (mut t VTranspiler) visit_assert(node Assert) string {
 	return 'assert ${test}'
 }
 
-// visit_import handles Python import statements (suppressed for V).
+// visit_import handles Python import statements, mapping known modules to V imports.
 pub fn (mut t VTranspiler) visit_import(node Import) string {
-	// Suppress imports - they're handled differently in V
-	return ''
+	mut lines := []string{}
+	for alias in node.names {
+		lines << t.map_python_import(alias.name)
+	}
+	return lines.filter(it.len > 0).join('\n')
 }
 
-// visit_import_from handles Python 'from X import Y' (suppressed for V).
+// visit_import_from handles Python 'from X import Y', mapping the module.
 pub fn (mut t VTranspiler) visit_import_from(node ImportFrom) string {
-	// Suppress imports
+	module_name := node.mod or { '' }
+	return t.map_python_import(module_name)
+}
+
+// map_python_import converts a Python module name to a V import line or comment.
+fn (mut t VTranspiler) map_python_import(py_module string) string {
+	// Strip sub-module suffix for top-level lookup first
+	top := py_module.split('.')[0]
+	// Check exact match first, then top-level
+	v_mod := if py_module in python_to_v_import {
+		python_to_v_import[py_module]
+	} else if top in python_to_v_import {
+		python_to_v_import[top]
+	} else {
+		'!// import ${py_module}: no known V equivalent'
+	}
+	if v_mod == '' {
+		return '' // silently suppressed
+	}
+	if v_mod.starts_with('!') {
+		return v_mod[1..] // emit raw comment
+	}
+	// Register the V module so the header import block is emitted
+	t.add_using(v_mod)
 	return ''
 }
 
-// visit_global emits a comment for Python global declarations (V lacks global).
+// visit_global emits a comment for Python global declarations.
+// V does not have a global keyword; module-level mutable state requires
+// explicit passing or a shared mutable struct.
 pub fn (mut t VTranspiler) visit_global(node Global) string {
 	names := node.names.join(', ')
-	return "// global ${names}  // V doesn't support global keyword"
+	return '// global ${names}: V has no global keyword — pass as mut parameter or use a shared struct'
 }
 
-// visit_nonlocal emits a comment for Python nonlocal declarations (V lacks nonlocal).
+// visit_nonlocal emits a comment for Python nonlocal declarations.
+// V closures capture variables by reference automatically when declared mut.
 pub fn (mut t VTranspiler) visit_nonlocal(node Nonlocal) string {
 	names := node.names.join(', ')
-	return "// nonlocal ${names}  // V doesn't support nonlocal keyword"
+	return '// nonlocal ${names}: V closures capture mut variables by reference automatically'
 }
 
 // visit_expr_stmt emits V code for an expression statement (ExprStmt).

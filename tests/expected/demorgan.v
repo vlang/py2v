@@ -6,6 +6,7 @@ fn demorgan(a bool, b bool) bool {
 }
 
 fn main() {
+	// import py2many.smt: no known V equivalent
 	a := bool{}
 	b := bool{}
 	assert !demorgan(a, b)

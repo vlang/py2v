@@ -502,6 +502,8 @@ fn visit_isinstance(args []string) (string, bool) {
 		// Single-element tuple: isinstance(x, (A,)) → x is A
 		return '${args[0]} is ${types[0]}', true
 	}
+	// V `is` checks the static (sum-type) variant; inherited types need
+	// manual adaptation if the hierarchy is not a V sum type.
 	return '${args[0]} is ${args[1]}', true
 }
 

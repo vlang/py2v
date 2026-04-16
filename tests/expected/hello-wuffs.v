@@ -1,6 +1,10 @@
 @[translated]
 module main
 
+import os
+
+type Any = bool | int | i64 | f64 | string | []u8
+
 pub struct parser {
 pub mut:
 	val u32
@@ -17,8 +21,10 @@ fn test_parser(input Any, expected Any) {
 }
 
 fn main() {
+	// import ctypes: no known V equivalent
+	// import ctypes: no known V equivalent
+	// import pytest: use V built-in `assert` and `v test`
+	// import py2many.result: no known V equivalent
 	pytest.main([__file__])
 	println('OK')
 }
-
-type Any = bool | int | i64 | f64 | string | []u8

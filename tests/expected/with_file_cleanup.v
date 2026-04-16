@@ -35,6 +35,7 @@ fn nested_files() {
 }
 
 fn main() {
+	// import tempfile: no known V equivalent
 	write_and_read()
 	nested_files()
 }
