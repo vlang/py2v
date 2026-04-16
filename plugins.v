@@ -484,6 +484,38 @@ fn visit_id(args []string) (string, bool) {
 	return 'ptr_str(${args[0]})', true
 }
 
+// Handle getattr(obj, name) / getattr(obj, name, default)
+fn visit_getattr(args []string) (string, bool) {
+	if args.len >= 2 {
+		// Strip quotes from attribute name if it's a string literal
+		attr := args[1].trim('\'"')
+		if args.len >= 3 {
+			return '${args[0]}.${attr} or { ${args[2]} }', true
+		}
+		return '${args[0]}.${attr}', true
+	}
+	return '', false
+}
+
+// Handle setattr(obj, name, value)
+fn visit_setattr(args []string) (string, bool) {
+	if args.len >= 3 {
+		attr := args[1].trim('\'"')
+		return '${args[0]}.${attr} = ${args[2]}', true
+	}
+	return '', false
+}
+
+// Handle hasattr(obj, name)
+fn visit_hasattr(args []string) (string, bool) {
+	if args.len >= 2 {
+		attr := args[1].trim('\'"')
+		// V structs always have their fields; use compile-time check approximation
+		return '(typeof(${args[0]}.${attr}).name != "")', true
+	}
+	return '', false
+}
+
 // Handle isinstance() call
 fn visit_isinstance(args []string) (string, bool) {
 	types_arg := args[1]
@@ -722,6 +754,18 @@ fn dispatch_builtin_impl(mut t VTranspiler, fname string, node Call, args []stri
 		}
 		'id' {
 			code, handled := visit_id(args)
+			return DispatchResult{code, handled, ''}
+		}
+		'getattr' {
+			code, handled := visit_getattr(args)
+			return DispatchResult{code, handled, ''}
+		}
+		'setattr' {
+			code, handled := visit_setattr(args)
+			return DispatchResult{code, handled, ''}
+		}
+		'hasattr' {
+			code, handled := visit_hasattr(args)
 			return DispatchResult{code, handled, ''}
 		}
 		'isinstance' {

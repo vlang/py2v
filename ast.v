@@ -151,6 +151,7 @@ pub type Stmt = FunctionDef
 	| Pass
 	| Break
 	| Continue
+	| TypeAlias
 
 // Module is the root node
 pub struct Module {
@@ -661,6 +662,14 @@ pub mut:
 pub struct Continue {
 pub mut:
 	loc Location
+}
+
+// TypeAlias represents Python 3.12+ `type X = Y` statements.
+pub struct TypeAlias {
+pub mut:
+	name  Expr
+	value Expr
+	loc   Location
 }
 
 // make_loc creates a Location with the given line/column offsets.

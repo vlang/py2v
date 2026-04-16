@@ -2,7 +2,7 @@
 module main
 
 fn test_global() {
-	// global global_var: V has no global keyword — pass as mut parameter or use a shared struct
+	// global global_var: prefer mut parameter or struct field over __global
 	global_var := 20
 	println(global_var)
 }

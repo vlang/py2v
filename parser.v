@@ -189,6 +189,17 @@ fn parse_stmt(m map[string]json2.Any) ?Stmt {
 				loc: parse_location(m)
 			})
 		}
+		'TypeAlias' {
+			name_raw := m['name'] or { return none }
+			value_raw := m['value'] or { return none }
+			name_expr := parse_expr(name_raw.as_map()) or { return none }
+			value_expr := parse_expr(value_raw.as_map()) or { return none }
+			return Stmt(TypeAlias{
+				name:  name_expr
+				value: value_expr
+				loc:   parse_location(m)
+			})
+		}
 		else {
 			return none
 		}

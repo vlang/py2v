@@ -116,6 +116,8 @@ pub fn (mut t VTranspiler) visit_module(node Module) string {
 				trimmed := s.trim_space()
 				if trimmed.starts_with('type ') || trimmed.starts_with('const ') {
 					type_decls << s
+				} else if stmt is TypeAlias {
+					type_decls << s
 				} else if trimmed.starts_with('//') {
 					// Import comments and similar go before fn main()
 					comment_lines << s
@@ -342,6 +344,7 @@ pub fn (mut t VTranspiler) visit_stmt(stmt Stmt) string {
 		Pass { return '// pass' }
 		Break { return 'break' }
 		Continue { return 'continue' }
+		TypeAlias { return t.visit_type_alias(stmt) }
 	}
 }
 
@@ -1622,6 +1625,16 @@ pub fn (mut t VTranspiler) visit_assert(node Assert) string {
 	return 'assert ${test}'
 }
 
+// visit_type_alias emits V code for Python 3.12+ `type X = Y` statements.
+pub fn (mut t VTranspiler) visit_type_alias(node TypeAlias) string {
+	name := t.visit_expr(node.name)
+	value := t.typename_from_annotation(node.value)
+	if value.len > 0 {
+		return 'type ${name} = ${value}'
+	}
+	return 'type ${name} = ${t.visit_expr(node.value)}'
+}
+
 // visit_import handles Python import statements, mapping known modules to V imports.
 pub fn (mut t VTranspiler) visit_import(node Import) string {
 	mut lines := []string{}
@@ -1661,15 +1674,15 @@ fn (mut t VTranspiler) map_python_import(py_module string) string {
 }
 
 // visit_global emits a comment for Python global declarations.
-// V does not have a global keyword; module-level mutable state requires
-// explicit passing or a shared mutable struct.
+// V supports __global but it is strongly discouraged; prefer passing as a
+// mut parameter or holding state in a struct field.
 pub fn (mut t VTranspiler) visit_global(node Global) string {
 	names := node.names.join(', ')
-	return '// global ${names}: V has no global keyword — pass as mut parameter or use a shared struct'
+	return '// global ${names}: prefer mut parameter or struct field over __global'
 }
 
 // visit_nonlocal emits a comment for Python nonlocal declarations.
-// V closures capture variables by reference automatically when declared mut.
+// V closures capture mut variables by reference automatically.
 pub fn (mut t VTranspiler) visit_nonlocal(node Nonlocal) string {
 	names := node.names.join(', ')
 	return '// nonlocal ${names}: V closures capture mut variables by reference automatically'

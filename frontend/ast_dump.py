@@ -661,6 +661,10 @@ def _node_to_dict(node: ast.AST, mutable_vars: Set[str],
     elif isinstance(node, ast.Nonlocal):
         result["names"] = node.names
 
+    elif hasattr(ast, "TypeAlias") and isinstance(node, ast.TypeAlias):
+        result["name"] = _node_to_dict(node.name, mutable_vars, redefined, ctx)
+        result["value"] = _node_to_dict(node.value, mutable_vars, redefined, ctx)
+
     elif isinstance(node, ast.Expr):
         result["value"] = _node_to_dict(node.value, mutable_vars, redefined, ctx)
 
