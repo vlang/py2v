@@ -1,5 +1,4 @@
 @[translated]
-
 module main
 
 fn main_func() {

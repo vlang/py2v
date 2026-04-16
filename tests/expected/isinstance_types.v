@@ -1,5 +1,4 @@
 @[translated]
-
 module main
 
 pub struct Animal {
@@ -22,11 +21,11 @@ fn check_single(x Any) bool {
 }
 
 fn check_tuple(x Any) bool {
-	return (x is Dog || x is Cat)
+	return x is Dog || x is Cat
 }
 
 fn check_triple(x Any) bool {
-	return (x is Dog || x is Cat || x is Bird)
+	return x is Dog || x is Cat || x is Bird
 }
 
 fn check_in_if(x Any) {

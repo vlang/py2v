@@ -1,5 +1,4 @@
 @[translated]
-
 module main
 
 fn nested() int {

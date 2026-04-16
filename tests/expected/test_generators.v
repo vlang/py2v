@@ -1,5 +1,4 @@
 @[translated]
-
 module main
 
 fn simple_generator(ch chan Any) {
@@ -30,13 +29,14 @@ fn inner(ch chan Any) {
 	ch <- 1
 	ch <- 2
 }
+
 fn generator_with_yield_from(ch chan Any) {
 	defer { ch.close() }
 	__gen1 := inner()
 	// yield from __gen1
 	for {
-	    val := <-__gen1 or { break }
-	    ch <- val
+		val := <-__gen1 or { break }
+		ch <- val
 	}
 	ch <- 3
 }

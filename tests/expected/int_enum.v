@@ -1,5 +1,4 @@
 @[translated]
-
 module main
 
 const colors_red = auto()
@@ -18,9 +17,9 @@ pub struct Permissions {
 
 fn show() {
 	color_map := {
-		colors_red: 'red'
+		colors_red:   'red'
 		colors_green: 'green'
-		colors_blue: 'blue'
+		colors_blue:  'blue'
 	}
 	a := colors_green
 	if a == colors_green {

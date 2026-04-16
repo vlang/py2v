@@ -1,11 +1,10 @@
 @[translated]
-
 module main
 
 pub struct IntListNonEmpty {
 pub mut:
 	first int
-	rest &IntList
+	rest  &IntList
 }
 
 pub struct IntList {

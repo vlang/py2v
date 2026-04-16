@@ -1,7 +1,4 @@
 @[translated]
-
 module main
 
-fn main() {
-	type WebDriverExceptions = BarException | WebDriverException | FooException
-}
+type WebDriverExceptions = BarException | WebDriverException | FooException

@@ -92,7 +92,13 @@ pub fn (mut t VTranspiler) visit_module(node Module) string {
 				decl_parts << s
 			}
 			else {
-				main_parts << s
+				// Type alias declarations (e.g. `type Foo = A | B`) must live at
+				// module scope, not inside fn main().
+				if s.starts_with('type ') {
+					decl_parts << s
+				} else {
+					main_parts << s
+				}
 			}
 		}
 	}
@@ -118,16 +124,43 @@ pub fn (mut t VTranspiler) visit_module(node Module) string {
 	}
 
 	if main_parts.len > 0 {
-		mut main_body := ''
-		mut indented := []string{}
-		for p in main_parts {
-			indented << indent(p, 1, '\t')
+		// If decl_parts already contains a `fn main()` (from the __name__
+		// guard rewrite), inject the module-level init stmts at the start of
+		// that function's body instead of emitting a second fn main().
+		mut merged := false
+		for i, dp in decl_parts {
+			if dp.starts_with('fn main()') {
+				mut indented := []string{}
+				for p in main_parts {
+					indented << indent(p, 1, '\t')
+				}
+				// Insert init lines after the opening `fn main() {` line
+				open_brace := dp.index('{') or { -1 }
+				if open_brace >= 0 {
+					head := dp[0..open_brace + 1]
+					tail := dp[open_brace + 1..]
+					injected := indented.join('\n')
+					decl_parts[i] = '${head}\n${injected}${tail}'
+					// Rebuild the decl_parts section in parts
+					// (it was already appended above; replace the last block)
+					parts[parts.len - 1] = decl_parts.join('\n\n')
+					merged = true
+					break
+				}
+			}
 		}
-		main_body = indented.join('\n')
-		parts << 'fn main() {\n${main_body}\n}'
+		if !merged {
+			mut main_body := ''
+			mut indented := []string{}
+			for p in main_parts {
+				indented << indent(p, 1, '\t')
+			}
+			main_body = indented.join('\n')
+			parts << 'fn main() {\n${main_body}\n}'
+		}
 	}
 
-	return parts.join('\n\n')
+	return parts.join('\n\n') + '\n'
 }
 
 // add_using registers an import usage required by generated code.
@@ -242,7 +275,7 @@ fn (mut t VTranspiler) emit_delete_target(target Expr) []string {
 }
 
 // has_setter_decorator returns true if any decorator is a .setter attribute.
-fn has_setter_decorator(decorators []Expr) bool {
+fn has_setter_decorator(decorators []main.Expr) bool {
 	for d in decorators {
 		if d is Attribute {
 			if (d as Attribute).attr == 'setter' {
@@ -575,8 +608,7 @@ pub fn (mut t VTranspiler) visit_class_def(node ClassDef) string {
 				if stmt.targets.len == 1 && stmt.targets[0] is Name {
 					attr_name := (stmt.targets[0] as Name).id
 					if !is_v_field_ident(attr_name) {
-						class_attr_syms[attr_name] = class_attr_symbol_name(node.name,
-							attr_name)
+						class_attr_syms[attr_name] = class_attr_symbol_name(node.name, attr_name)
 					}
 				}
 			}
@@ -977,7 +1009,7 @@ pub fn (mut t VTranspiler) visit_assign(node Assign) string {
 }
 
 // handle_starred_unpack handles starred unpacking in assignments
-fn (mut t VTranspiler) handle_starred_unpack(elts []Expr, value_str string) string {
+fn (mut t VTranspiler) handle_starred_unpack(elts []main.Expr, value_str string) string {
 	mut starred_idx := -1
 	for i, e in elts {
 		if e is Starred {
@@ -3247,9 +3279,9 @@ pub fn (mut t VTranspiler) typename_from_annotation(ann ?Expr) string {
 	// "no annotation" (callers often treat empty as missing and use
 	// fallbacks). This avoids assigning a concrete default type where
 	// the caller may prefer to apply other inference heuristics.
-        a := ann or { return '' }
+	a := ann or { return '' }
 
-        match a {
+	match a {
 		Name {
 			name := a.id
 			if name in v_type_map {
@@ -3386,7 +3418,6 @@ fn get_cmp_op_type(op CmpOp) string {
 		NotIn { 'NotIn' }
 	}
 }
-
 
 // map_python_format_spec converts a Python format spec (the part after ':')
 // into a V interpolation format fragment (including the leading ':') when possible.
@@ -3597,7 +3628,6 @@ fn get_expr_annotation(expr Expr) string {
 	}
 	return ann or { '' }
 }
-
 
 // Infer the type of an expression for variable tracking
 fn (mut t VTranspiler) infer_expr_type(expr Expr) string {

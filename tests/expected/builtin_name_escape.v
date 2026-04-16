@@ -1,10 +1,9 @@
 @[translated]
-
 module main
 
 fn make_pair(string_ Any, int_ Any) map[string]Any {
 	return {
-		'name': string_
+		'name':  string_
 		'value': int_
 	}
 }

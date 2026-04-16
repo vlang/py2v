@@ -1,5 +1,4 @@
 @[translated]
-
 module main
 
 fn equation(x int, y int) bool {

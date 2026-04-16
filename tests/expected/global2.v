@@ -1,11 +1,5 @@
 @[translated]
-
 module main
-
-fn main() {
-	assert 'a' in l_b
-	println('OK')
-}
 
 fn main() {
 	code_0 := 0
@@ -16,4 +10,6 @@ fn main() {
 	l_c := {
 		code_b: code_0
 	}
+	assert 'a' in l_b
+	println('OK')
 }

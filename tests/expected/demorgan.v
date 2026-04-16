@@ -1,5 +1,4 @@
 @[translated]
-
 module main
 
 fn demorgan(a bool, b bool) bool {

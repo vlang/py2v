@@ -1,5 +1,4 @@
 @[translated]
-
 module main
 
 fn compare_with_integer_variable() {

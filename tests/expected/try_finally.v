@@ -1,5 +1,4 @@
 @[translated]
-
 module main
 
 fn with_finally(x int) int {

@@ -1,12 +1,11 @@
 @[translated]
-
 module main
 
 pub struct BaseOptions {
 pub mut:
 	mobile_options ?map[string]string
-	names ?[]string
-	count ?int
+	names          ?[]string
+	count          ?int
 }
 
 fn (mut self BaseOptions) __init__() {

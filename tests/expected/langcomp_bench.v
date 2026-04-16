@@ -1,5 +1,4 @@
 @[translated]
-
 module main
 
 fn test_python(iterations int) {

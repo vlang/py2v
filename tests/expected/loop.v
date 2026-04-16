@@ -1,5 +1,4 @@
 @[translated]
-
 module main
 
 fn for_with_break() {

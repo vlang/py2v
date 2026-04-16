@@ -1,14 +1,13 @@
 @[translated]
-
 module main
 
 // Config holds application settings.
 pub struct Config {
 pub mut:
-	debug bool = false
-	max_retries int = 3
-	name string = 'default'
-	ratio f64 = 0.5
+	debug       bool   = false
+	max_retries int    = 3
+	name        string = 'default'
+	ratio       f64    = 0.5
 }
 
 const proxy_type_direct = 0

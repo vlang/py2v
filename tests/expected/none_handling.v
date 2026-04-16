@@ -1,5 +1,4 @@
 @[translated]
-
 module main
 
 fn maybe_value(flag bool) int {

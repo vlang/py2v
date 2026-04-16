@@ -1,11 +1,10 @@
 @[translated]
-
 module main
 
 pub struct Options {
 pub mut:
 	v bool = false
-	n int = 0
+	n int  = 0
 }
 
 fn fib(i int) int {

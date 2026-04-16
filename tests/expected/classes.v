@@ -1,5 +1,4 @@
 @[translated]
-
 module main
 
 // Foo is a simple test class.

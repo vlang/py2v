@@ -1,5 +1,4 @@
 @[translated]
-
 module main
 
 fn test_global() {
@@ -13,9 +12,6 @@ fn show() {
 }
 
 fn main() {
-	show()
-}
-
-fn main() {
 	global_var := 10
+	show()
 }

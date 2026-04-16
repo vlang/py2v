@@ -1,5 +1,4 @@
 @[translated]
-
 module main
 
 fn sum_all(nums ...Any) int {

@@ -1,5 +1,4 @@
 @[translated]
-
 module main
 
 pub struct Base {
@@ -31,12 +30,13 @@ pub struct CustomError {
 }
 
 fn (mut self CustomError) __init__(msg Any) {
-
 }
 
 fn main() {
 	c := Child{
-		Base: Base{value: 'x'}
+		Base: Base{
+			value: 'x'
+		}
 	}
 	println(c.greet())
 }

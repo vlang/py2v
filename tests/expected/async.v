@@ -1,5 +1,4 @@
 @[translated]
-
 module main
 
 fn async_gen(ch chan Any) {
