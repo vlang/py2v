@@ -5,27 +5,21 @@ fn show() {
 	defer {
 		println('Finally')
 	}
-	// try {
+	// try: (V: wrap fallible calls below with `or {}`)
 	panic('Exception: ' + 'foo')
-	// } catch {
-	// except Exception:
-	// NOTE: V uses Result types (!) and or{} blocks instead of exceptions
-	// println('caught')
-	// }
-	// try {
+	// except Exception as e:
+	// NOTE: V uses Result types; adapt body to use `or { ... }` blocks
+	println('caught')
+	// try: (V: wrap fallible calls below with `or {}`)
 	panic('Exception: ' + 'foo')
-	// } catch {
 	// except:
-	// NOTE: V uses Result types (!) and or{} blocks instead of exceptions
-	// println('Got it')
-	// }
-	// try {
+	// NOTE: V uses Result types; adapt body to use `or { ... }` blocks
+	println('Got it')
+	// try: (V: wrap fallible calls below with `or {}`)
 	panic('Exception: ' + 'foo')
-	// } catch {
-	// except Exception:
-	// NOTE: V uses Result types (!) and or{} blocks instead of exceptions
-	// assert e.contains('foo')
-	// }
+	// except Exception as e:
+	// NOTE: V uses Result types; adapt body to use `or { ... }` blocks
+	assert e.contains('foo')
 }
 
 fn main() {

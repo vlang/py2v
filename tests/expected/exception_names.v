@@ -2,13 +2,11 @@
 module main
 
 fn show() {
-	// try {
+	// try: (V: wrap fallible calls below with `or {}`)
 	3 / 0
-	// } catch {
 	// except ZeroDivisionError:
-	// NOTE: V uses Result types (!) and or{} blocks instead of exceptions
-	// println('ZeroDivisionError')
-	// }
+	// NOTE: V uses Result types; adapt body to use `or { ... }` blocks
+	println('ZeroDivisionError')
 }
 
 fn main() {

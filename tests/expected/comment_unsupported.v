@@ -17,3 +17,5 @@ fn do_unsupported() {
 fn main() {
 	do_unsupported()
 }
+
+type Any = bool | int | i64 | f64 | string | []u8

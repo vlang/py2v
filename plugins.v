@@ -435,17 +435,24 @@ fn visit_any_builtin(args []string) (string, bool) {
 	return '${args[0]}.any(it)', true
 }
 
-// Handle enumerate() call
+// Handle enumerate() call — in expression context emit indexed array of tuples.
+// The for-loop case (for i, v in enumerate(x)) is handled directly in visit_for.
 fn visit_enumerate(args []string) (string, bool) {
 	if args.len == 0 {
-		return '[]Any{}', true
+		return '[]', true
 	}
-	return args[0], true
+	// Emit IIFE that builds [(0,v0),(1,v1),...] as a [][]Any
+	iter := args[0]
+	return '(fn () [][]Any { mut r := [][]Any{}; for i, v in ${iter} { r << [Any(i), v] }; return r }())', true
 }
 
-// Handle zip() call
-fn visit_zip() (string, bool) {
-	return '[]Any{}', true
+// Handle zip() call — maps to arrays.group() in expression context.
+// The for-loop case (for a, b in zip(x, y)) is handled directly in visit_for.
+fn visit_zip(args []string) (string, bool) {
+	if args.len == 0 {
+		return '[][]Any{}', true
+	}
+	return 'arrays.group(${args.join(', ')})', true
 }
 
 // Handle open() call
@@ -696,8 +703,8 @@ fn dispatch_builtin_impl(mut t VTranspiler, fname string, node Call, args []stri
 			return DispatchResult{code, handled, ''}
 		}
 		'zip' {
-			code, handled := visit_zip()
-			return DispatchResult{code, handled, ''}
+			code, handled := visit_zip(args)
+			return DispatchResult{code, handled, 'arrays'}
 		}
 		'open' {
 			code, handled, using := visit_open(args)

@@ -1,14 +1,14 @@
 @[translated]
 module main
 
-fn simple_generator(ch chan Any) {
+fn simple_generator(ch chan int) {
 	defer { ch.close() }
 	ch <- 1
 	ch <- 2
 	ch <- 3
 }
 
-fn generator_with_type(ch chan Any) {
+fn generator_with_type(ch chan int) {
 	defer { ch.close() }
 	mut x := 0
 	for x < 5 {
@@ -24,13 +24,13 @@ fn generator_with_args(a int, b int, ch chan Any) {
 	}
 }
 
-fn inner(ch chan Any) {
+fn inner(ch chan int) {
 	defer { ch.close() }
 	ch <- 1
 	ch <- 2
 }
 
-fn generator_with_yield_from(ch chan Any) {
+fn generator_with_yield_from(ch chan int) {
 	defer { ch.close() }
 	__gen1 := inner()
 	// yield from __gen1

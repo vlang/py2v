@@ -24,3 +24,5 @@ fn show() {
 fn main() {
 	show()
 }
+
+type Any = bool | int | i64 | f64 | string | []u8

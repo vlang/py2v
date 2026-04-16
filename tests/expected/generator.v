@@ -1,7 +1,7 @@
 @[translated]
 module main
 
-fn simple_generator(ch chan Any) {
+fn simple_generator(ch chan int) {
 	defer { ch.close() }
 	ch <- 1
 	ch <- 2

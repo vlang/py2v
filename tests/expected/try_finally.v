@@ -16,14 +16,12 @@ fn main_func() {
 	defer {
 		println('cleanup')
 	}
-	// try {
+	// try: (V: wrap fallible calls below with `or {}`)
 	x := 10
 	println(x)
-	// } catch {
 	// except:
-	// NOTE: V uses Result types (!) and or{} blocks instead of exceptions
-	// println('error')
-	// }
+	// NOTE: V uses Result types; adapt body to use `or { ... }` blocks
+	println('error')
 }
 
 fn main() {

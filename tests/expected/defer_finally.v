@@ -25,14 +25,12 @@ fn mixed_handlers() {
 	defer {
 		println('done')
 	}
-	// try {
+	// try: (V: wrap fallible calls below with `or {}`)
 	value := '123'.int()
 	println(value)
-	// } catch {
-	// except ValueError:
-	// NOTE: V uses Result types (!) and or{} blocks instead of exceptions
-	// println('bad value')
-	// }
+	// except ValueError as e:
+	// NOTE: V uses Result types; adapt body to use `or { ... }` blocks
+	println('bad value')
 }
 
 fn multi_stmt_finally() {
