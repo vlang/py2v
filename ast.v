@@ -152,6 +152,7 @@ pub type Stmt = FunctionDef
 	| Break
 	| Continue
 	| TypeAlias
+	| Match
 
 // Module is the root node
 pub struct Module {
@@ -668,6 +669,96 @@ pub mut:
 pub struct TypeAlias {
 pub mut:
 	name  Expr
+	value Expr
+	loc   Location
+}
+
+// Match represents a Python 3.10+ structural pattern matching statement.
+pub struct Match {
+pub mut:
+	subject Expr
+	cases   []MatchCase
+	loc     Location
+}
+
+// MatchAs represents a capture pattern (`case x:`) or wildcard (`case _:`).
+pub struct MatchAs {
+pub mut:
+	name    ?string
+	pattern ?MatchPattern
+	loc     Location
+}
+
+// MatchCase is a single arm in a match statement.
+pub struct MatchCase {
+pub mut:
+	pattern MatchPattern
+	guard   ?Expr
+	body    []Stmt
+	loc     Location
+}
+
+// MatchClass represents a class pattern like `case Point(x=0, y=0):`.
+pub struct MatchClass {
+pub mut:
+	cls          Expr
+	patterns     []MatchPattern
+	kwd_attrs    []string
+	kwd_patterns []MatchPattern
+	loc          Location
+}
+
+// MatchMapping represents a mapping pattern like `case {'key': val}:`.
+pub struct MatchMapping {
+pub mut:
+	keys     []Expr
+	patterns []MatchPattern
+	rest     ?string
+	loc      Location
+}
+
+// MatchOr represents an or pattern like `case 1 | 2:`.
+pub struct MatchOr {
+pub mut:
+	patterns []MatchPattern
+	loc      Location
+}
+
+// MatchPattern is the sum type for all match pattern kinds.
+pub type MatchPattern = MatchAs
+	| MatchClass
+	| MatchMapping
+	| MatchOr
+	| MatchSequence
+	| MatchSingleton
+	| MatchStar
+	| MatchValue
+
+// MatchSequence represents a sequence pattern like `case [x, y]:`.
+pub struct MatchSequence {
+pub mut:
+	patterns []MatchPattern
+	loc      Location
+}
+
+// MatchSingleton represents a None / True / False pattern.
+// value is "none", "true", or "false".
+pub struct MatchSingleton {
+pub mut:
+	value string
+	loc   Location
+}
+
+// MatchStar represents a starred element in a sequence pattern like `[first, *rest]`.
+pub struct MatchStar {
+pub mut:
+	name ?string
+	loc  Location
+}
+
+// MatchValue represents a constant-value pattern like `case 42:` or `case Color.RED:`.
+pub struct MatchValue {
+pub mut:
 	value Expr
 	loc   Location
 }

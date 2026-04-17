@@ -665,6 +665,12 @@ def _node_to_dict(node: ast.AST, mutable_vars: Set[str],
         result["name"] = _node_to_dict(node.name, mutable_vars, redefined, ctx)
         result["value"] = _node_to_dict(node.value, mutable_vars, redefined, ctx)
 
+    elif hasattr(ast, "Match") and isinstance(node, ast.Match):
+        result["subject"] = _node_to_dict(node.subject, mutable_vars, redefined, ctx)
+        result["cases"] = [
+            _match_case_to_dict(c, mutable_vars, redefined, ctx) for c in node.cases
+        ]
+
     elif isinstance(node, ast.Expr):
         result["value"] = _node_to_dict(node.value, mutable_vars, redefined, ctx)
 
@@ -1024,6 +1030,62 @@ def process_file(file_path: str) -> str:
 
     result = _node_to_dict(tree, mutable_vars, redefined, ctx)
     return json.dumps(result)
+
+
+def _pattern_to_dict(pattern, mutable_vars, redefined, ctx):
+    """Serialize a Python match pattern node to a dict for JSON output."""
+    if pattern is None:
+        return None
+    t = type(pattern).__name__
+    result = {"_type": t}
+    if t == "MatchValue":
+        result["value"] = _node_to_dict(pattern.value, mutable_vars, redefined, ctx)
+    elif t == "MatchSingleton":
+        result["value"] = pattern.value  # None, True, or False
+    elif t == "MatchOr":
+        result["patterns"] = [
+            _pattern_to_dict(p, mutable_vars, redefined, ctx) for p in pattern.patterns
+        ]
+    elif t == "MatchAs":
+        result["name"] = pattern.name  # may be None (wildcard)
+        if hasattr(pattern, "pattern") and pattern.pattern is not None:
+            result["pattern"] = _pattern_to_dict(pattern.pattern, mutable_vars, redefined, ctx)
+    elif t == "MatchSequence":
+        result["patterns"] = [
+            _pattern_to_dict(p, mutable_vars, redefined, ctx) for p in pattern.patterns
+        ]
+    elif t == "MatchMapping":
+        result["keys"] = [
+            _node_to_dict(k, mutable_vars, redefined, ctx) for k in pattern.keys
+        ]
+        result["patterns"] = [
+            _pattern_to_dict(p, mutable_vars, redefined, ctx) for p in pattern.patterns
+        ]
+        result["rest"] = pattern.rest  # may be None
+    elif t == "MatchClass":
+        result["cls"] = _node_to_dict(pattern.cls, mutable_vars, redefined, ctx)
+        result["patterns"] = [
+            _pattern_to_dict(p, mutable_vars, redefined, ctx) for p in pattern.patterns
+        ]
+        result["kwd_attrs"] = list(pattern.kwd_attrs)
+        result["kwd_patterns"] = [
+            _pattern_to_dict(p, mutable_vars, redefined, ctx) for p in pattern.kwd_patterns
+        ]
+    elif t == "MatchStar":
+        result["name"] = pattern.name  # may be None (discard)
+    return result
+
+
+def _match_case_to_dict(case, mutable_vars, redefined, ctx):
+    """Serialize a match_case node."""
+    result = {
+        "_type": "match_case",
+        "pattern": _pattern_to_dict(case.pattern, mutable_vars, redefined, ctx),
+        "body": [_node_to_dict(s, mutable_vars, redefined, ctx) for s in case.body],
+    }
+    if case.guard is not None:
+        result["guard"] = _node_to_dict(case.guard, mutable_vars, redefined, ctx)
+    return result
 
 
 def main():

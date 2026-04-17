@@ -200,6 +200,9 @@ fn parse_stmt(m map[string]json2.Any) ?Stmt {
 				loc:   parse_location(m)
 			})
 		}
+		'Match' {
+			return Stmt(parse_match(m))
+		}
 		else {
 			return none
 		}
@@ -1460,4 +1463,189 @@ fn parse_optional_string(raw json2.Any) ?string {
 		return none
 	}
 	return s
+}
+
+// parse_match parses a Match statement node.
+fn parse_match(m map[string]json2.Any) Match {
+	subject_raw := m['subject'] or { json2.Any(json2.Null{}) }
+	subject := parse_expr(subject_raw.as_map()) or { Expr(Name{
+		id: '_'
+	}) }
+	mut cases := []MatchCase{}
+	if cases_raw := m['cases'] {
+		for c in cases_raw.as_array() {
+			cases << parse_match_case(c.as_map())
+		}
+	}
+	return Match{
+		subject: subject
+		cases:   cases
+		loc:     parse_location(m)
+	}
+}
+
+// parse_match_case parses one arm of a match statement.
+fn parse_match_case(m map[string]json2.Any) MatchCase {
+	pattern_raw := m['pattern'] or { json2.Any(json2.Null{}) }
+	pattern := parse_match_pattern(pattern_raw.as_map()) or { MatchPattern(MatchAs{}) }
+	guard := parse_optional_expr(m['guard'] or { json2.Any(json2.Null{}) })
+	mut body := []Stmt{}
+	if body_raw := m['body'] {
+		for s in body_raw.as_array() {
+			if stmt := parse_stmt(s.as_map()) {
+				body << stmt
+			}
+		}
+	}
+	return MatchCase{
+		pattern: pattern
+		guard:   guard
+		body:    body
+		loc:     parse_location(m)
+	}
+}
+
+// parse_match_pattern parses a match pattern node from the JSON map.
+fn parse_match_pattern(m map[string]json2.Any) ?MatchPattern {
+	pt := m['_type'] or { return none }.str()
+	match pt {
+		'MatchValue' {
+			val_raw := m['value'] or { return none }
+			val := parse_expr(val_raw.as_map()) or { return none }
+			return MatchPattern(MatchValue{
+				value: val
+				loc:   parse_location(m)
+			})
+		}
+		'MatchSingleton' {
+			raw_val := m['value'] or { return none }
+			v := if raw_val is bool {
+				if raw_val as bool { 'true' } else { 'false' }
+			} else if raw_val is json2.Null {
+				'none'
+			} else {
+				s := raw_val.str()
+				if s == 'null' {
+					'none'
+				} else {
+					s
+				}
+			}
+			return MatchPattern(MatchSingleton{
+				value: v
+				loc:   parse_location(m)
+			})
+		}
+		'MatchAs' {
+			name := parse_optional_string(m['name'] or { json2.Any(json2.Null{}) })
+			mut inner_pat := ?MatchPattern(none)
+			if pat_raw := m['pattern'] {
+				pm := pat_raw.as_map()
+				if pm.len > 0 {
+					inner_pat = parse_match_pattern(pm)
+				}
+			}
+			return MatchPattern(MatchAs{
+				name:    name
+				pattern: inner_pat
+				loc:     parse_location(m)
+			})
+		}
+		'MatchOr' {
+			mut pats := []MatchPattern{}
+			if pats_raw := m['patterns'] {
+				for p in pats_raw.as_array() {
+					if mp := parse_match_pattern(p.as_map()) {
+						pats << mp
+					}
+				}
+			}
+			return MatchPattern(MatchOr{
+				patterns: pats
+				loc:      parse_location(m)
+			})
+		}
+		'MatchSequence' {
+			mut pats := []MatchPattern{}
+			if pats_raw := m['patterns'] {
+				for p in pats_raw.as_array() {
+					if mp := parse_match_pattern(p.as_map()) {
+						pats << mp
+					}
+				}
+			}
+			return MatchPattern(MatchSequence{
+				patterns: pats
+				loc:      parse_location(m)
+			})
+		}
+		'MatchStar' {
+			name := parse_optional_string(m['name'] or { json2.Any(json2.Null{}) })
+			return MatchPattern(MatchStar{
+				name: name
+				loc:  parse_location(m)
+			})
+		}
+		'MatchMapping' {
+			mut keys := []Expr{}
+			if keys_raw := m['keys'] {
+				for k in keys_raw.as_array() {
+					if e := parse_expr(k.as_map()) {
+						keys << e
+					}
+				}
+			}
+			mut pats := []MatchPattern{}
+			if pats_raw := m['patterns'] {
+				for p in pats_raw.as_array() {
+					if mp := parse_match_pattern(p.as_map()) {
+						pats << mp
+					}
+				}
+			}
+			rest := parse_optional_string(m['rest'] or { json2.Any(json2.Null{}) })
+			return MatchPattern(MatchMapping{
+				keys:     keys
+				patterns: pats
+				rest:     rest
+				loc:      parse_location(m)
+			})
+		}
+		'MatchClass' {
+			cls_raw := m['cls'] or { return none }
+			cls := parse_expr(cls_raw.as_map()) or { return none }
+			mut pats := []MatchPattern{}
+			if pats_raw := m['patterns'] {
+				for p in pats_raw.as_array() {
+					if mp := parse_match_pattern(p.as_map()) {
+						pats << mp
+					}
+				}
+			}
+			mut kwd_attrs := []string{}
+			if ka_raw := m['kwd_attrs'] {
+				for ka in ka_raw.as_array() {
+					kwd_attrs << ka.str()
+				}
+			}
+			mut kwd_patterns := []MatchPattern{}
+			if kp_raw := m['kwd_patterns'] {
+				for kp in kp_raw.as_array() {
+					if mp := parse_match_pattern(kp.as_map()) {
+						kwd_patterns << mp
+					}
+				}
+			}
+			return MatchPattern(MatchClass{
+				cls:          cls
+				patterns:     pats
+				kwd_attrs:    kwd_attrs
+				kwd_patterns: kwd_patterns
+				loc:          parse_location(m)
+			})
+		}
+		else {
+			return none
+		}
+	}
 }

@@ -345,6 +345,7 @@ pub fn (mut t VTranspiler) visit_stmt(stmt Stmt) string {
 		Break { return 'break' }
 		Continue { return 'continue' }
 		TypeAlias { return t.visit_type_alias(stmt) }
+		Match { return t.visit_match(stmt) }
 	}
 }
 
@@ -1635,6 +1636,343 @@ pub fn (mut t VTranspiler) visit_type_alias(node TypeAlias) string {
 	return 'type ${name} = ${t.visit_expr(node.value)}'
 }
 
+// is_simple_match_pattern returns true if a pattern can be represented as a
+// single V match value (a constant, singleton, attribute access, or MatchOr of
+// the same).
+fn is_simple_match_pattern(p MatchPattern) bool {
+	match p {
+		MatchValue {
+			return true
+		}
+		MatchSingleton {
+			return true
+		}
+		MatchAs {
+			return p.name == none && p.pattern == none
+		} // bare wildcard _
+		MatchOr {
+			for sub in p.patterns {
+				if !is_simple_match_pattern(sub) {
+					return false
+				}
+			}
+			return true
+		}
+		else {
+			return false
+		}
+	}
+}
+
+// emit_match_pattern_value renders a simple pattern as its V literal value.
+fn (mut t VTranspiler) emit_match_pattern_value(p MatchPattern) string {
+	match p {
+		MatchValue {
+			return t.visit_expr(p.value)
+		}
+		MatchSingleton {
+			return p.value
+		}
+		MatchOr {
+			mut vals := []string{}
+			for sub in p.patterns {
+				vals << t.emit_match_pattern_value(sub)
+			}
+			return vals.join(', ')
+		}
+		else {
+			return '_'
+		}
+	}
+}
+
+// emit_pattern_condition builds an `if`-chain condition string for a complex
+// pattern that cannot be represented as a plain V match value.
+// Returns '' for a bare wildcard (else branch).
+fn (mut t VTranspiler) emit_pattern_condition(subject string, p MatchPattern) string {
+	match p {
+		MatchValue {
+			return '${subject} == ${t.visit_expr(p.value)}'
+		}
+		MatchSingleton {
+			return '${subject} == ${p.value}'
+		}
+		MatchAs {
+			if p.name == none && p.pattern == none {
+				return '' // wildcard — always matches
+			}
+			if inner := p.pattern {
+				return t.emit_pattern_condition(subject, inner)
+			}
+			return '' // capture-only — always matches
+		}
+		MatchOr {
+			mut parts := []string{}
+			for sub in p.patterns {
+				c := t.emit_pattern_condition(subject, sub)
+				if c.len > 0 {
+					parts << c
+				}
+			}
+			return parts.join(' || ')
+		}
+		MatchSequence {
+			// Emit length check plus element comparisons for fixed-length sequences
+			mut parts := []string{}
+			mut fixed_len := 0
+			mut has_star := false
+			for sp in p.patterns {
+				if sp is MatchStar {
+					has_star = true
+				} else {
+					fixed_len++
+				}
+			}
+			if has_star {
+				parts << '${subject}.len >= ${fixed_len}'
+			} else {
+				parts << '${subject}.len == ${p.patterns.len}'
+			}
+			mut elem_idx := 0
+			for sp in p.patterns {
+				if sp is MatchStar {
+					continue
+				}
+				elem_cond := t.emit_pattern_condition('${subject}[${elem_idx}]', sp)
+				if elem_cond.len > 0 {
+					parts << elem_cond
+				}
+				elem_idx++
+			}
+			return parts.join(' && ')
+		}
+		MatchMapping {
+			mut parts := []string{}
+			for i, k in p.keys {
+				key_str := t.visit_expr(k)
+				parts << '${key_str} in ${subject}'
+				vp := p.patterns[i]
+				val_cond := t.emit_pattern_condition('${subject}[${key_str}]', vp)
+				if val_cond.len > 0 {
+					parts << val_cond
+				}
+			}
+			return parts.join(' && ')
+		}
+		MatchClass {
+			cls_str := t.visit_expr(p.cls)
+			mut parts := []string{}
+			parts << '${subject} is ${cls_str}'
+			for i, attr in p.kwd_attrs {
+				vp := p.kwd_patterns[i]
+				val_cond := t.emit_pattern_condition('${subject}.${attr}', vp)
+				if val_cond.len > 0 {
+					parts << val_cond
+				}
+			}
+			return parts.join(' && ')
+		}
+		MatchStar {
+			return ''
+		}
+	}
+}
+
+// emit_pattern_bindings emits any variable bindings introduced by a pattern,
+// e.g. `case [first, *rest]:` binds `first` and `rest`.
+fn (mut t VTranspiler) emit_pattern_bindings(subject string, p MatchPattern) []string {
+	mut lines := []string{}
+	match p {
+		MatchAs {
+			if name := p.name {
+				if inner := p.pattern {
+					// `case <pat> as name:` — bind after the inner pattern
+					inner_lines := t.emit_pattern_bindings(subject, inner)
+					lines << inner_lines
+				}
+				lines << '${name} := ${subject}'
+			}
+		}
+		MatchOr {
+			// OR patterns cannot introduce bindings (Python rule), nothing to bind
+		}
+		MatchSequence {
+			mut elem_idx := 0
+			mut star_idx := -1
+			for i, sp in p.patterns {
+				if sp is MatchStar {
+					star_idx = i
+					break
+				}
+				elem_idx++
+			}
+			for i, sp in p.patterns {
+				if sp is MatchStar {
+					name := (sp as MatchStar).name or { continue }
+					end_count := p.patterns.len - i - 1
+					if end_count > 0 {
+						lines << '${name} := ${subject}[${i}..${subject}.len - ${end_count}]'
+					} else {
+						lines << '${name} := ${subject}[${i}..]'
+					}
+					_ = star_idx
+				} else {
+					elem_str := '${subject}[${i}]'
+					sub_binds := t.emit_pattern_bindings(elem_str, sp)
+					lines << sub_binds
+					if sp is MatchAs {
+						// already handled by recursive call
+					} else if sp is MatchValue || sp is MatchSingleton {
+						// no binding
+					}
+					_ = elem_idx
+				}
+			}
+		}
+		MatchMapping {
+			for i, k in p.keys {
+				key_str := t.visit_expr(k)
+				sub_binds := t.emit_pattern_bindings('${subject}[${key_str}]', p.patterns[i])
+				lines << sub_binds
+			}
+			if rest := p.rest {
+				// `**rest` capture — not directly expressible in V; emit comment
+				lines << '// ${rest} := remaining keys (not supported in V)'
+			}
+		}
+		MatchClass {
+			for i, attr in p.kwd_attrs {
+				sub_binds := t.emit_pattern_bindings('${subject}.${attr}', p.kwd_patterns[i])
+				lines << sub_binds
+			}
+		}
+		else {}
+	}
+	return lines
+}
+
+// visit_match emits V code for a Python match statement.
+// Simple value/singleton patterns are lowered to a V `match` statement.
+// Complex patterns (sequences, mappings, class patterns, guards) are lowered
+// to an `if`/`else if` chain.
+pub fn (mut t VTranspiler) visit_match(node Match) string {
+	subject := t.visit_expr(node.subject)
+
+	// Decide strategy: use V `match` only when ALL cases are simple values
+	// (no guards, no bindings, no structural patterns).
+	mut all_simple := true
+	for c in node.cases {
+		if c.guard != none {
+			all_simple = false
+			break
+		}
+		if !is_simple_match_pattern(c.pattern) {
+			all_simple = false
+			break
+		}
+		// MatchAs with a name binding cannot go into a V match arm directly
+		if c.pattern is MatchAs {
+			ma := c.pattern as MatchAs
+			if ma.name != none {
+				all_simple = false
+				break
+			}
+		}
+	}
+
+	if all_simple {
+		return t.emit_v_match(subject, node.cases)
+	}
+	return t.emit_if_chain_match(subject, node.cases)
+}
+
+// emit_v_match emits a V `match` statement for simple patterns.
+fn (mut t VTranspiler) emit_v_match(subject string, cases []MatchCase) string {
+	mut buf := []string{}
+	buf << 'match ${subject} {'
+	for c in cases {
+		body_str := t.visit_body_stmts(c.body, 1)
+		match c.pattern {
+			MatchAs {
+				// bare wildcard → else
+				buf << '\telse {'
+				buf << body_str
+				buf << '\t}'
+			}
+			else {
+				val := t.emit_match_pattern_value(c.pattern)
+				buf << '\t${val} {'
+				buf << body_str
+				buf << '\t}'
+			}
+		}
+	}
+	buf << '}'
+	return buf.join('\n')
+}
+
+// emit_if_chain_match emits an if/else-if chain for complex match patterns.
+fn (mut t VTranspiler) emit_if_chain_match(subject string, cases []MatchCase) string {
+	mut buf := []string{}
+	for i, c in cases {
+		cond := t.emit_pattern_condition(subject, c.pattern)
+		bindings := t.emit_pattern_bindings(subject, c.pattern)
+		body_str := t.visit_body_stmts(c.body, 1)
+
+		// For a bare MatchAs capture (case x if guard:), substitute the capture
+		// name with the subject in the guard so `if x < 0` becomes `if n < 0`.
+		capture_subst := if c.pattern is MatchAs {
+			ma := c.pattern as MatchAs
+			if n := ma.name {
+				if ma.pattern == none {
+					n
+				} else {
+					''
+				}
+			} else {
+				''
+			}
+		} else {
+			''
+		}
+
+		// Apply guard; when cond is empty the guard is the full condition.
+		mut full_cond := cond
+		if guard := c.guard {
+			mut guard_expr := t.visit_expr(guard)
+			// Inline capture variable → subject for pure-capture MatchAs
+			if capture_subst.len > 0 {
+				// Replace whole-word occurrences of the capture name with subject
+				guard_expr = guard_expr.replace(capture_subst, subject)
+			}
+			if full_cond.len == 0 {
+				full_cond = guard_expr
+			} else {
+				full_cond = '${full_cond} && ${guard_expr}'
+			}
+		}
+
+		is_wildcard := full_cond.len == 0
+		kw := if i == 0 { 'if' } else { '} else if' }
+
+		if is_wildcard {
+			buf << '} else {'
+			for b in bindings {
+				buf << t.indent_code(b, 1)
+			}
+			buf << body_str
+		} else {
+			buf << '${kw} ${full_cond} {'
+			for b in bindings {
+				buf << t.indent_code(b, 1)
+			}
+			buf << body_str
+		}
+	}
+	buf << '}'
+	return buf.join('\n')
+}
+
 // visit_import handles Python import statements, mapping known modules to V imports.
 pub fn (mut t VTranspiler) visit_import(node Import) string {
 	mut lines := []string{}
@@ -2534,16 +2872,16 @@ pub fn (mut t VTranspiler) visit_call(node Call) string {
 				return '0'
 			}
 			'isdigit' {
-				return '${obj}.bytes().all(fn (c u8) bool { return c.is_digit() })'
+				return '(${obj}.len > 0 && ${obj}.bytes().all(fn (c u8) bool { return c.is_digit() }))'
 			}
 			'isalpha' {
-				return '${obj}.bytes().all(fn (c u8) bool { return c.is_letter() })'
+				return '(${obj}.len > 0 && ${obj}.bytes().all(fn (c u8) bool { return c.is_letter() }))'
 			}
 			'isalnum' {
-				return '${obj}.bytes().all(fn (c u8) bool { return c.is_alnum() })'
+				return '(${obj}.len > 0 && ${obj}.bytes().all(fn (c u8) bool { return c.is_alnum() }))'
 			}
 			'isspace' {
-				return '${obj}.bytes().all(fn (c u8) bool { return c.is_space() })'
+				return '(${obj}.len > 0 && ${obj}.bytes().all(fn (c u8) bool { return c.is_space() }))'
 			}
 			'islower' {
 				return '${obj}.is_lower()'
@@ -2553,6 +2891,57 @@ pub fn (mut t VTranspiler) visit_call(node Call) string {
 			}
 			'istitle' {
 				return '${obj}.is_title()'
+			}
+			'capitalize' {
+				return '${obj}.capitalize()'
+			}
+			'title' {
+				return '${obj}.title()'
+			}
+			'splitlines' {
+				return '${obj}.split_into_lines()'
+			}
+			'expandtabs' {
+				if vargs.len > 0 {
+					return '${obj}.expand_tabs(${vargs[0]})'
+				}
+				return '${obj}.expand_tabs(8)'
+			}
+			'encode' {
+				// Python bytes; ignore encoding arg — return []u8
+				return '${obj}.bytes()'
+			}
+			'zfill' {
+				// No direct V equivalent — pad with leading zeros using strings module
+				t.add_using('strings')
+				if vargs.len > 0 {
+					return 'if ${obj}.len < ${vargs[0]} { strings.repeat(`0`, ${vargs[0]} - ${obj}.len) + ${obj} } else { ${obj} }'
+				}
+				return obj
+			}
+			'ljust' {
+				t.add_using('strings')
+				if vargs.len > 0 {
+					fill := if vargs.len > 1 { vargs[1] } else { "' '" }
+					return 'if ${obj}.len < ${vargs[0]} { ${obj} + strings.repeat(${fill}[0], ${vargs[0]} - ${obj}.len) } else { ${obj} }'
+				}
+				return obj
+			}
+			'rjust' {
+				t.add_using('strings')
+				if vargs.len > 0 {
+					fill := if vargs.len > 1 { vargs[1] } else { "' '" }
+					return 'if ${obj}.len < ${vargs[0]} { strings.repeat(${fill}[0], ${vargs[0]} - ${obj}.len) + ${obj} } else { ${obj} }'
+				}
+				return obj
+			}
+			'center' {
+				t.add_using('strings')
+				if vargs.len > 0 {
+					fill := if vargs.len > 1 { vargs[1] } else { "' '" }
+					return 'if ${obj}.len < ${vargs[0]} { lpad := (${vargs[0]} - ${obj}.len) / 2; strings.repeat(${fill}[0], lpad) + ${obj} + strings.repeat(${fill}[0], ${vargs[0]} - ${obj}.len - lpad) } else { ${obj} }'
+				}
+				return obj
 			}
 			// List methods
 			'remove' {
@@ -2587,10 +2976,11 @@ pub fn (mut t VTranspiler) visit_call(node Call) string {
 				return obj
 			}
 			'index' {
+				// Python list.index() / str.index() raise ValueError if not found
 				if vargs.len > 0 {
-					return '${obj}.index(${vargs[0]}) or { -1 }'
+					return '${obj}.index(${vargs[0]}) or { panic(\'value not found\') }'
 				}
-				return '-1'
+				return '0'
 			}
 			'copy' {
 				return '${obj}.clone()'
