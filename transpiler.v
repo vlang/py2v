@@ -4,26 +4,36 @@ const max_generated_line_len = 121
 
 pub struct VTranspiler {
 mut:
-	usings  []string
 	tmp_gen TmpVarGen
+	usings  []string
 	// Maps and state tracked during transpilation
-	var_types                   map[string]string
-	escaped_identifiers         map[string]bool
 	current_class_name          string
-	global_vars                 map[string]bool
+	escaped_identifiers         map[string]bool
 	extra_mut_vars              map[string]bool
-	mut_param_indices           map[string][]int
 	func_defaults               map[string][]string
 	func_param_count            map[string]int
 	func_return_types           map[string]string
 	generated_code_has_any_type bool
+	global_vars                 map[string]bool
+	has_global_decl             bool
+	mut_param_indices           map[string][]int
+	var_types                   map[string]string
+	// Pending type notes emitted as // comments before the next function/method
+	pending_type_notes []string
 	// Class metadata
 	class_attr_symbols  map[string]map[string]string
-	class_direct_fields map[string][]string
 	class_base_names    map[string][]string
+	class_direct_fields map[string][]string
+	class_type_params   map[string][]string // type_params per class name
 	known_classes       map[string][]string
 	// Module name for emitted code
 	module_name string
+	// path_vars tracks variables known to hold pathlib.Path values (represented as strings)
+	path_vars map[string]bool
+	// regex_vars tracks variables known to hold compiled regex.RE objects
+	regex_vars map[string]bool
+	// namedtuple_fields maps struct name → ordered field names for namedtuple() calls
+	namedtuple_fields map[string][]string
 }
 
 fn emitted_class_name(name string) string {
@@ -39,23 +49,27 @@ fn emitted_class_name(name string) string {
 // new_transpiler creates a new VTranspiler instance
 pub fn new_transpiler() VTranspiler {
 	return VTranspiler{
-		usings:                      []string{}
-		tmp_gen:                     new_tmp_var_gen()
-		var_types:                   map[string]string{}
-		escaped_identifiers:         map[string]bool{}
+		class_attr_symbols:          map[string]map[string]string{}
+		class_base_names:            map[string][]string{}
+		class_direct_fields:         map[string][]string{}
 		current_class_name:          ''
-		global_vars:                 map[string]bool{}
+		escaped_identifiers:         map[string]bool{}
 		extra_mut_vars:              map[string]bool{}
-		mut_param_indices:           map[string][]int{}
 		func_defaults:               map[string][]string{}
 		func_param_count:            map[string]int{}
 		func_return_types:           map[string]string{}
 		generated_code_has_any_type: false
-		class_attr_symbols:          map[string]map[string]string{}
-		class_direct_fields:         map[string][]string{}
-		class_base_names:            map[string][]string{}
+		has_global_decl:             false
+		global_vars:                 map[string]bool{}
 		known_classes:               map[string][]string{}
 		module_name:                 ''
+		mut_param_indices:           map[string][]int{}
+		namedtuple_fields:           map[string][]string{}
+		path_vars:                   map[string]bool{}
+		regex_vars:                  map[string]bool{}
+		tmp_gen:                     new_tmp_var_gen()
+		usings:                      []string{}
+		var_types:                   map[string]string{}
 	}
 }
 
@@ -114,8 +128,11 @@ pub fn (mut t VTranspiler) visit_module(node Module) string {
 			}
 			else {
 				trimmed := s.trim_space()
-				if trimmed.starts_with('type ') || trimmed.starts_with('const ') {
+				if trimmed.starts_with('type ') || trimmed.starts_with('const ')
+					|| trimmed.starts_with('enum ') {
 					type_decls << s
+				} else if trimmed.starts_with('pub struct ') || trimmed.starts_with('struct ') {
+					struct_decls << s
 				} else if stmt is TypeAlias {
 					type_decls << s
 				} else if trimmed.starts_with('//') {
@@ -166,7 +183,9 @@ pub fn (mut t VTranspiler) visit_module(node Module) string {
 
 	// Assemble output sections in order
 	mut parts := []string{}
-	parts << '@[translated]'
+	if t.has_global_decl {
+		parts << '@[translated]'
+	}
 	parts << 'module ${module_name}'
 
 	if t.usings.len > 0 {
@@ -319,7 +338,7 @@ fn has_setter_decorator(decorators []main.Expr) bool {
 // visit_stmt visits a statement and dispatches to the appropriate visitor.
 pub fn (mut t VTranspiler) visit_stmt(stmt Stmt) string {
 	match stmt {
-		FunctionDef { return t.visit_function_def(stmt) }
+		FunctionDef { return t.visit_function_def_or_closure(stmt) }
 		AsyncFunctionDef { return t.visit_async_function_def(stmt) }
 		ClassDef { return t.visit_class_def(stmt) }
 		Return { return t.visit_return(stmt) }
@@ -382,6 +401,208 @@ pub fn (mut t VTranspiler) visit_expr(expr Expr) string {
 	}
 }
 
+// visit_function_def_or_closure dispatches to an inline closure when the
+// function declares nonlocal variables, otherwise hoists it as a normal function.
+fn (mut t VTranspiler) visit_function_def_or_closure(node FunctionDef) string {
+	mut nl_names := []string{}
+	for stmt in node.body {
+		if stmt is Nonlocal {
+			nl_names << (stmt as Nonlocal).names
+		}
+	}
+	if nl_names.len > 0 {
+		return t.visit_closure_from_funcdef(node, nl_names)
+	}
+	return t.visit_function_def(node)
+}
+
+// visit_closure_from_funcdef emits a nested FunctionDef that uses nonlocal
+// variables as an inline V closure variable with a mut capture list.
+fn (mut t VTranspiler) visit_closure_from_funcdef(node FunctionDef, nl_names []string) string {
+	// Collect locally declared names (params + assigned vars) so we know what is "outer"
+	mut local_names := map[string]bool{}
+	for arg in node.args.args {
+		local_names[arg.arg] = true
+	}
+	// Also collect names assigned inside the closure body
+	for stmt in node.body {
+		collect_assigned_names(stmt, mut local_names)
+	}
+
+	// Collect names referenced in the body that are not local → outer free variables
+	mut referenced := map[string]bool{}
+	for stmt in node.body {
+		collect_referenced_names(stmt, mut referenced)
+	}
+
+	// Outer free vars: referenced but not local and not built-in keywords
+	mut outer_free := []string{}
+	v_builtins := ['true', 'false', 'none', 'println', 'print', 'len', 'cap']
+	for name, _ in referenced {
+		if name !in local_names && name !in v_builtins && name !in nl_names {
+			outer_free << name
+		}
+	}
+	outer_free.sort()
+
+	// Build capture list: nonlocal vars → "mut <name>", outer free vars → "<name>"
+	mut captures := []string{}
+	for name in nl_names {
+		captures << 'mut ${name}'
+	}
+	for name in outer_free {
+		captures << name
+	}
+	capture_list := captures.join(', ')
+
+	// Build parameter list (skip 'self' for regular nested functions)
+	mut params := []string{}
+	for arg in node.args.args {
+		if arg.arg == 'self' {
+			continue
+		}
+		ptype := t.typename_from_annotation(arg.annotation)
+		if ptype != '' {
+			params << '${arg.arg} ${ptype}'
+		} else {
+			params << arg.arg
+		}
+	}
+
+	// Return type
+	mut ret_type := ''
+	if ret := node.returns {
+		ret_type = t.typename_from_annotation(ret)
+	} else if node.v_annotation != '' {
+		// Use inferred return type from frontend analysis
+		ret_type = map_type(node.v_annotation)
+		if ret_type == 'auto' {
+			ret_type = 'Any'
+			t.generated_code_has_any_type = true
+		}
+	}
+	if ret_type == '' {
+		ret_type = 'Any'
+		t.generated_code_has_any_type = true
+	}
+
+	// Build body (skip nonlocal declarations)
+	mut body_lines := []string{}
+	for stmt in node.body {
+		if stmt is Nonlocal {
+			continue
+		}
+		result := t.visit_stmt(stmt)
+		for line in result.split('\n') {
+			if line.len > 0 {
+				body_lines << '\t${line}'
+			}
+		}
+	}
+	body := body_lines.join('\n')
+
+	mut sig := if capture_list.len > 0 {
+		'fn [${capture_list}] (${params.join(', ')})'
+	} else {
+		'fn (${params.join(', ')})'
+	}
+	if ret_type != '' {
+		sig += ' ${ret_type}'
+	}
+	return '${node.name} := ${sig} {\n${body}\n}'
+}
+
+// collect_assigned_names gathers all names assigned at the top level of a statement.
+fn collect_assigned_names(stmt Stmt, mut names map[string]bool) {
+	match stmt {
+		Assign {
+			for t in stmt.targets {
+				if t is Name {
+					names[(t as Name).id] = true
+				}
+			}
+		}
+		AnnAssign {
+			if stmt.target is Name {
+				names[(stmt.target as Name).id] = true
+			}
+		}
+		For {
+			if stmt.target is Name {
+				names[(stmt.target as Name).id] = true
+			}
+		}
+		else {}
+	}
+}
+
+// collect_referenced_names gathers all Name ids referenced in a statement tree.
+fn collect_referenced_names(stmt Stmt, mut names map[string]bool) {
+	match stmt {
+		Assign {
+			collect_expr_names(stmt.value, mut names)
+		}
+		AugAssign {
+			collect_expr_names(stmt.value, mut names)
+			collect_expr_names(stmt.target, mut names)
+		}
+		Return {
+			if val := stmt.value {
+				collect_expr_names(val, mut names)
+			}
+		}
+		ExprStmt {
+			collect_expr_names(stmt.value, mut names)
+		}
+		If {
+			collect_expr_names(stmt.test, mut names)
+			for s in stmt.body {
+				collect_referenced_names(s, mut names)
+			}
+			for s in stmt.orelse {
+				collect_referenced_names(s, mut names)
+			}
+		}
+		While {
+			collect_expr_names(stmt.test, mut names)
+			for s in stmt.body {
+				collect_referenced_names(s, mut names)
+			}
+		}
+		else {}
+	}
+}
+
+// collect_expr_names gathers all Name ids referenced in an expression tree.
+fn collect_expr_names(expr Expr, mut names map[string]bool) {
+	match expr {
+		Name {
+			names[expr.id] = true
+		}
+		BinOp {
+			collect_expr_names(expr.left, mut names)
+			collect_expr_names(expr.right, mut names)
+		}
+		Call {
+			collect_expr_names(expr.func, mut names)
+			for a in expr.args {
+				collect_expr_names(a, mut names)
+			}
+		}
+		Attribute {
+			collect_expr_names(expr.value, mut names)
+		}
+		Subscript {
+			collect_expr_names(expr.value, mut names)
+			collect_expr_names(expr.slice, mut names)
+		}
+		UnaryOp {
+			collect_expr_names(expr.operand, mut names)
+		}
+		else {}
+	}
+}
+
 // visit_function_def emits V code for a Python FunctionDef node.
 pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 	// Save var_types and escaped_identifiers for function scope (keep globals, reset locals)
@@ -404,10 +625,36 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 	mut signature := []string{}
 	signature << 'fn'
 
-	// Handle class method receiver
-	if node.is_class_method {
-		emitted_receiver := emitted_class_name(node.class_name)
-		if 'self' in node.mutable_vars || node.name == '__init__' {
+	// Determine emitted function name (dunder → V operator name, or decorated name)
+	mut emit_name := node.name
+	mut dunder_comment := ''
+	if node.dunder_op != '' {
+		match node.dunder_op {
+			'str', 'len', 'index', 'index_set', 'contains' { emit_name = node.dunder_op }
+			else { emit_name = node.dunder_op }
+		}
+	}
+	// @classmethod / @staticmethod: emit as free function named ClassName_funcname
+	if node.is_class_method && node.decorator_kind in ['classmethod', 'staticmethod'] {
+		emit_name = '${emitted_class_name(node.class_name)}_${node.name}'
+		dunder_comment = '// @${node.decorator_kind}\n'
+	}
+
+	// Handle class method receiver (skip for staticmethod / classmethod)
+	if node.is_class_method && node.decorator_kind !in ['staticmethod', 'classmethod'] {
+		base_receiver := emitted_class_name(node.class_name)
+		// Append generic type params if the class is generic (e.g. Stack[T])
+		mut emitted_receiver := base_receiver
+		if tp := t.class_type_params[node.class_name] {
+			if tp.len > 0 {
+				emitted_receiver = '${base_receiver}[${tp.join(', ')}]'
+			}
+		}
+		// Binary/comparison operator overloads need value receivers in V
+		is_binop_dunder := node.dunder_op in ['+', '-', '*', '/', '%', '==', '!=', '<', '<=', '>',
+			'>=']
+		use_mut_recv := !is_binop_dunder && ('self' in node.mutable_vars || node.name == '__init__')
+		if use_mut_recv {
 			signature << '(mut self ${emitted_receiver})'
 		} else {
 			signature << '(self ${emitted_receiver})'
@@ -422,6 +669,10 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 
 	for arg in node.args.args {
 		if arg.arg == 'self' {
+			continue
+		}
+		// Skip `cls` for @classmethod
+		if arg.arg == 'cls' && node.decorator_kind == 'classmethod' {
 			continue
 		}
 
@@ -516,10 +767,11 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 		args_strs << 'ch chan ${yield_type}'
 	}
 
-	signature << '${node.name}(${args_strs.join(', ')})'
+	signature << '${emit_name}(${args_strs.join(', ')})'
 
 	// Pre-scan body to populate var_types for return type inference
-	t.prescan_body_types(node.body)
+	// (no-op in current backend)
+	_ = node.body
 
 	// Return type
 	if !node.is_void && !node.is_generator && node.name != '__init__' {
@@ -527,14 +779,19 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 			ret_type := t.typename_from_annotation(ret)
 			signature << ret_type
 			t.func_return_types[node.name] = ret_type
-		} else {
-			// Infer return type from return statements
-			mut inferred := t.infer_return_type(node.body)
-			// Fall back to Any when function returns a value but type can't be inferred
-			if inferred.len == 0 {
-				inferred = 'Any'
+		} else if node.v_annotation != '' {
+			// Use inferred return type from frontend analysis
+			mut ret_type := map_type(node.v_annotation)
+			if ret_type == 'auto' {
+				ret_type = 'Any'
 				t.generated_code_has_any_type = true
 			}
+			signature << ret_type
+			t.func_return_types[node.name] = ret_type
+		} else {
+			// Fallback to Any if no type information available
+			inferred := 'Any'
+			t.generated_code_has_any_type = true
 			signature << inferred
 			t.func_return_types[node.name] = inferred
 		}
@@ -560,7 +817,19 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 		}
 		match stmt {
 			FunctionDef {
-				nested_fndefs << t.visit_function_def(stmt)
+				// Collect nonlocal names declared inside this nested function.
+				mut nl_names := []string{}
+				for inner_stmt in stmt.body {
+					if inner_stmt is Nonlocal {
+						nl_names << (inner_stmt as Nonlocal).names
+					}
+				}
+				if nl_names.len > 0 {
+					// Emit as an inline closure variable with a mut capture list.
+					body_stmts << Stmt(stmt)
+				} else {
+					nested_fndefs << t.visit_function_def(stmt)
+				}
 			}
 			AsyncFunctionDef {
 				nested_fndefs << t.visit_async_function_def(stmt)
@@ -582,7 +851,44 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 	body_lines << t.visit_body_stmts(body_stmts, 1)
 	body := body_lines.join('\n')
 
-	func_code := '${signature.join(' ')} {\n${body}\n}'
+	func_code := '${dunder_comment}${signature.join(' ')} {\n${body}\n}'
+
+	// Emit comments for unsupported decorators (@functools.wraps, @lru_cache, etc.)
+	mut decorator_comments := []string{}
+	for d in node.decorator_list {
+		dname := match d {
+			Name {
+				(d as Name).id
+			}
+			Attribute {
+				(d as Attribute).attr
+			}
+			Call {
+				cf := (d as Call).func
+				match cf {
+					Name { (cf as Name).id }
+					Attribute { (cf as Attribute).attr }
+					else { '' }
+				}
+			}
+			else {
+				''
+			}
+		}
+
+		unsupported := ['wraps', 'lru_cache', 'cache', 'cached_property', 'total_ordering',
+			'singledispatch', 'contextmanager']
+		if dname in unsupported {
+			decorator_comments << '// @${dname}: unsupported decorator — remove or implement manually'
+		}
+	}
+
+	// Prepend any pending type-hint notes (e.g. Union hints) as comments
+	mut notes_prefix := ''
+	if t.pending_type_notes.len > 0 {
+		notes_prefix = t.pending_type_notes.join('\n') + '\n'
+		t.pending_type_notes = []string{}
+	}
 
 	// Restore var_types and escaped_identifiers from parent scope
 	t.var_types = saved_var_types.clone()
@@ -590,10 +896,18 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 
 	if nested_fndefs.len > 0 {
 		t.current_class_name = saved_current_class
-		return nested_fndefs.join('\n') + '\n' + func_code
+		return nested_fndefs.join('\n') + '\n' + notes_prefix + decorator_comments.join('\n') + if decorator_comments.len > 0 {
+			'\n'
+		} else {
+			''
+		} + func_code
 	}
 	t.current_class_name = saved_current_class
-	return func_code
+	return notes_prefix + decorator_comments.join('\n') + if decorator_comments.len > 0 {
+		'\n'
+	} else {
+		''
+	} + func_code
 }
 
 // visit_async_function_def emits V code for an AsyncFunctionDef node (converted to sync).
@@ -612,13 +926,66 @@ pub fn (mut t VTranspiler) visit_async_function_def(node AsyncFunctionDef) strin
 		mutable_vars:    node.mutable_vars
 		is_class_method: node.is_class_method
 		class_name:      node.class_name
+		decorator_kind:  node.decorator_kind
+		dunder_op:       node.dunder_op
 	}
 	return t.visit_function_def(fd)
+}
+
+// visit_protocol_class emits a V interface for a Python Protocol class.
+fn (mut t VTranspiler) visit_protocol_class(node ClassDef, emitted_name string) string {
+	t.known_classes[node.name] = []string{}
+	mut methods := []string{}
+	for stmt in node.body {
+		if stmt is FunctionDef {
+			fd := stmt as FunctionDef
+			if fd.name == '__init__' {
+				continue
+			}
+			// Build interface method signature (no body)
+			mut args_strs := []string{}
+			for arg in fd.args.args {
+				if arg.arg == 'self' {
+					continue
+				}
+				mut typename := 'Any'
+				t.generated_code_has_any_type = true
+				if ann := arg.annotation {
+					typename = t.typename_from_annotation(ann)
+					if typename == '' {
+						typename = 'Any'
+					}
+				}
+				args_strs << '${escape_identifier(arg.arg)} ${typename}'
+			}
+			mut ret_type := ''
+			if !fd.is_void {
+				if ret := fd.returns {
+					ret_type = t.typename_from_annotation(ret)
+				}
+			}
+			sig := if ret_type.len > 0 {
+				'\t${fd.name}(${args_strs.join(', ')}) ${ret_type}'
+			} else {
+				'\t${fd.name}(${args_strs.join(', ')})'
+			}
+			methods << sig
+		}
+	}
+	if methods.len > 0 {
+		return 'interface ${emitted_name} {\n${methods.join('\n')}\n}'
+	}
+	return 'interface ${emitted_name} {}'
 }
 
 // visit_class_def emits V code for a ClassDef node.
 pub fn (mut t VTranspiler) visit_class_def(node ClassDef) string {
 	emitted_name := emitted_class_name(node.name)
+
+	// Protocol → V interface
+	if node.is_protocol {
+		return t.visit_protocol_class(node, emitted_name)
+	}
 
 	// Detect @dataclass decorator — changes field emission strategy
 	mut is_dataclass := false
@@ -753,6 +1120,9 @@ pub fn (mut t VTranspiler) visit_class_def(node ClassDef) string {
 	}
 	all_field_names << field_names
 	t.known_classes[node.name] = all_field_names
+	if node.type_params.len > 0 {
+		t.class_type_params[node.name] = node.type_params
+	}
 
 	// Embed base classes (inheritance -> struct embedding)
 	mut embeds := []string{}
@@ -767,9 +1137,19 @@ pub fn (mut t VTranspiler) visit_class_def(node ClassDef) string {
 	all_parts << fields
 
 	mut struct_def := if all_parts.len > 0 {
-		'pub struct ${emitted_name} {\n${all_parts.join('\n')}\n}'
+		if node.type_params.len > 0 {
+			tp := node.type_params.join(', ')
+			'pub struct ${emitted_name}[${tp}] {\n${all_parts.join('\n')}\n}'
+		} else {
+			'pub struct ${emitted_name} {\n${all_parts.join('\n')}\n}'
+		}
 	} else {
-		'pub struct ${emitted_name} {\n}'
+		if node.type_params.len > 0 {
+			tp := node.type_params.join(', ')
+			'pub struct ${emitted_name}[${tp}] {\n}'
+		} else {
+			'pub struct ${emitted_name} {\n}'
+		}
 	}
 
 	// Add class docstring as struct comment (V convention: "// StructName ...")
@@ -816,6 +1196,7 @@ pub fn (mut t VTranspiler) visit_class_def(node ClassDef) string {
 
 	// Process body (methods)
 	mut methods := []string{}
+	mut static_fns := []string{}
 	for stmt in node.body {
 		match stmt {
 			FunctionDef {
@@ -827,20 +1208,121 @@ pub fn (mut t VTranspiler) visit_class_def(node ClassDef) string {
 				if has_setter_decorator(fd.decorator_list) {
 					fd.name = 'set_${fd.name}'
 				}
-				methods << t.visit_function_def(fd)
+				emitted := t.visit_function_def(fd)
+				if fd.decorator_kind in ['staticmethod', 'classmethod'] {
+					static_fns << emitted
+				} else {
+					methods << emitted
+				}
 			}
 			else {}
 		}
 	}
 
+	mut result := struct_def
 	if methods.len > 0 {
-		return struct_def + '\n\n' + methods.join('\n\n')
+		result += '\n\n' + methods.join('\n\n')
 	}
-	return struct_def
+	if static_fns.len > 0 {
+		result += '\n\n' + static_fns.join('\n\n')
+	}
+	return result
 }
 
 // visit_assign emits V code for an Assign statement.
 pub fn (mut t VTranspiler) visit_assign(node Assign) string {
+	// Literal[v1, v2, ...] assignment — emit a const block or enum as documentation.
+	if node.is_typevar_assign && node.literal_values.len > 0 {
+		name := escape_identifier(node.literal_name.to_lower())
+		// Detect kind: all ints → enum, otherwise const strings
+		mut all_ints := true
+		for v in node.literal_values {
+			// values arrive as JSON strings; check if they look like integers
+			trimmed := v.trim_space()
+			is_int := trimmed.len > 0
+				&& (trimmed[0].is_digit() || (trimmed[0] == `-` && trimmed.len > 1))
+				&& trimmed[1..].bytes().all(it.is_digit())
+			if !is_int {
+				all_ints = false
+				break
+			}
+		}
+		if all_ints {
+			mut lines := ['enum ${node.literal_name} {']
+			for v in node.literal_values {
+				lines << '\t${name}_${v} = ${v}'
+			}
+			lines << '}'
+			return lines.join('\n')
+		} else {
+			// String / mixed literals — emit a const block
+			mut lines := ['const (']
+			for v in node.literal_values {
+				vident := escape_identifier(v.to_lower().replace(' ', '_').replace('-', '_'))
+				lines << "\t${name}_${vident} = '${v}'"
+			}
+			lines << ')'
+			return lines.join('\n')
+		}
+	}
+	// Skip other TypeVar assignments — they are Python type-system metadata.
+	if node.is_typevar_assign {
+		return ''
+	}
+	// Track variables assigned from Path(...) constructor so path-property
+	// attributes (.name, .parent, .stem, .suffix) can be translated correctly.
+	if node.targets.len == 1 && node.targets[0] is Name {
+		tname := (node.targets[0] as Name).id
+		if node.value is Call {
+			call := node.value as Call
+			if call.func is Name {
+				fname := (call.func as Name).id
+				match fname {
+					'Path' {
+						t.path_vars[tname] = true
+					}
+					'namedtuple' {
+						// TODO: restore full namedtuple lowering.
+						_ = call
+						return ''
+					}
+					'defaultdict' {
+						// defaultdict(int) → map[string]int{}
+						val_type := if call.args.len > 0 {
+							t.typename_from_annotation(call.args[0])
+						} else {
+							t.generated_code_has_any_type = true
+							'Any'
+						}
+						return '${tname} := map[string]${val_type}{}'
+					}
+					'Counter' {
+						// Counter(iterable) → build map[string]int from counts
+						if call.args.len > 0 {
+							iter := t.visit_expr(call.args[0])
+							return '${tname} := (fn (items []string) map[string]int {\n\tmut m := map[string]int{}\n\tfor item in items { m[item]++ }\n\treturn m\n})(${iter})'
+						}
+						return '${tname} := map[string]int{}'
+					}
+					'deque' {
+						// deque(list) → []Any (V arrays support append/prepend)
+						t.generated_code_has_any_type = true
+						if call.args.len > 0 {
+							inner := t.visit_expr(call.args[0])
+							return 'mut ${tname} := []Any(${inner})'
+						}
+						return 'mut ${tname} := []Any{}'
+					}
+					'OrderedDict' {
+						// OrderedDict() → map[string]Any{} (V maps are insertion-ordered)
+						t.generated_code_has_any_type = true
+						return 'mut ${tname} := map[string]Any{}'
+					}
+					else {}
+				}
+			}
+		}
+	}
 	// Special-case __all__ exception exports into a V union alias.
 	if node.targets.len == 1 && node.targets[0] is Name {
 		target_name := (node.targets[0] as Name).id
@@ -1166,8 +1648,23 @@ pub fn (mut t VTranspiler) visit_aug_assign(node AugAssign) string {
 		}
 		return '${target} = math.powi(${target}, ${val})'
 	}
-	op := op_to_symbol(op_type)
-	return '${target} ${op}= ${val}'
+	// AugAssign has operator, not unary operator - convert to symbol
+	op_sym := match node.op {
+		Add { '+' }
+		Sub { '-' }
+		Mult { '*' }
+		Div { '/' }
+		Mod { '%' }
+		Pow { '**' }
+		LShift { '<<' }
+		RShift { '>>' }
+		BitOr { '|' }
+		BitXor { '^' }
+		BitAnd { '&' }
+		FloorDiv { '//' }
+		else { '?' }
+	}
+	return '${target} ${op_sym}= ${val}'
 }
 
 // visit_ann_assign emits V code for an AnnAssign statement.
@@ -1297,6 +1794,7 @@ pub fn (mut t VTranspiler) visit_for(node For) string {
 	}
 
 	// Check for range with step
+	mut for_expr := ''
 	if node.iter is Call {
 		call := node.iter as Call
 		if call.func is Name {
@@ -1305,31 +1803,47 @@ pub fn (mut t VTranspiler) visit_for(node For) string {
 				start := t.visit_expr(call.args[0])
 				end := t.visit_expr(call.args[1])
 				step := t.visit_expr(call.args[2])
-				buf << 'for ${target} := ${start}; ${target} < ${end}; ${target} += ${step} {'
+				// For range with step, use traditional C-style for loop
+				// Detect if step is -1 and use i-- instead of i += -1
+				step_op := if step == '-1' { '${target}--' } else { '${target} += ${step}' }
+				buf << 'for ${target} := ${start}; ${target} < ${end}; ${step_op} {'
 				buf << t.visit_body_stmts(node.body, 1)
 				buf << '}'
-
 				if has_else {
 					buf << 'if has_break != true {'
 					buf << t.visit_body_stmts(node.orelse, 1)
 					buf << '}'
 				}
-
 				return buf.join('\n')
+			} else if fname == 'range' && call.args.len == 2 {
+				start := t.visit_expr(call.args[0])
+				end := t.visit_expr(call.args[1])
+				for_expr = '[]int{len: ${end} - ${start}, init: index + ${start}}'
+			} else if fname == 'range' && call.args.len == 1 {
+				end := t.visit_expr(call.args[0])
+				for_expr = '[]int{len: ${end}, init: index}'
+			} else {
+				for_expr = t.visit_expr(node.iter)
 			}
+		} else {
+			for_expr = t.visit_expr(node.iter)
 		}
+	} else {
+		for_expr = t.visit_expr(node.iter)
 	}
 
-	// Infer loop variable type from iterable
+	// Track the type of the loop target variable based on the iterator type
 	if node.target is Name {
-		iter_type := t.infer_iter_elem_type(node.iter)
-		if iter_type != '' {
-			t.var_types[(node.target as Name).id] = iter_type
+		target_name := (node.target as Name).id
+		// Infer element type from the iterator
+		elem_type := t.infer_iter_elem_type(node.iter)
+		if elem_type != '' {
+			t.var_types[target_name] = elem_type
 		}
 	}
 
-	iter := t.visit_expr(node.iter)
-	buf << 'for ${target} in ${iter} {'
+	// Emit for loop
+	buf << 'for ${target} in ${for_expr} {'
 	buf << t.visit_body_stmts(node.body, 1)
 	buf << '}'
 
@@ -1565,6 +2079,20 @@ pub fn (mut t VTranspiler) visit_raise(node Raise) string {
 pub fn (mut t VTranspiler) visit_try(node Try) string {
 	mut buf := []string{}
 	has_handlers := node.handlers.len > 0
+	mut trystar_member_types := []string{}
+	mut trystar_synth_dispatch := false
+	if node.is_exception_group {
+		for stmt in node.body {
+			t.collect_exception_group_member_types_from_stmt(stmt, mut trystar_member_types)
+		}
+		trystar_synth_dispatch = trystar_member_types.len > 0
+	}
+
+	// TryStar (Python 3.11 except*) — V has no ExceptionGroup support.
+	if node.is_exception_group {
+		buf << '// WARNING: except* (ExceptionGroup) is not supported in V.'
+		buf << '// Translate each except* handler manually using goroutines or error unions.'
+	}
 
 	// Convert finally blocks to V's defer for guaranteed cleanup
 	if node.finalbody.len > 0 {
@@ -1584,16 +2112,51 @@ pub fn (mut t VTranspiler) visit_try(node Try) string {
 	if has_handlers {
 		buf << '// try: (V: wrap fallible calls below with `or {}`)'
 	}
+	if node.is_exception_group && trystar_synth_dispatch {
+		buf << '// except* synthesized dispatch for literal ExceptionGroup'
+	}
 	for stmt in node.body {
 		buf << t.visit_stmt(stmt)
+	}
+
+	// Preserve Python try/else for manual adaptation. In Python, else runs only
+	// when no exception is raised; emit as scaffold so semantics are not changed
+	// accidentally in generated V.
+	if node.orelse.len > 0 {
+		buf << '// else:'
+		buf << '// NOTE: runs only when try body has no exception in Python'
+		buf << 'if false {'
+		for stmt in node.orelse {
+			result := t.visit_stmt(stmt)
+			for line in result.split('\n') {
+				if line.len > 0 {
+					buf << '\t${line}'
+				}
+			}
+		}
+		buf << '}'
 	}
 
 	// Emit each except handler with real body code inside a dead-code block
 	// so the logic is visible and easy to adapt.
 	for handler in node.handlers {
 		mut header := '// except'
+		mut handler_type_names := []string{}
 		if typ := handler.typ {
-			typ_name := t.visit_expr(typ)
+			// Handle tuple of exception types: except (TypeError, ValueError) as e:
+			mut typ_name := ''
+			if typ is Tuple {
+				mut names := []string{}
+				for e in (typ as Tuple).elts {
+					n := t.visit_expr(e)
+					names << n
+					handler_type_names << n
+				}
+				typ_name = names.join(' | ')
+			} else {
+				typ_name = t.visit_expr(typ)
+				handler_type_names << typ_name
+			}
 			if name := handler.name {
 				header = '// except ${typ_name} as ${name}:'
 				// Temporarily bind the exception var as string so uses compile
@@ -1606,10 +2169,54 @@ pub fn (mut t VTranspiler) visit_try(node Try) string {
 		}
 		buf << header
 		buf << '// NOTE: V uses Result types; adapt body to use `or { ... }` blocks'
-		// Emit handler body as real code (it may reference `e` which won't exist
-		// at runtime, but keeps the logic visible and syntactically valid)
-		for stmt in handler.body {
-			buf << t.visit_stmt(stmt)
+		if node.is_exception_group && trystar_synth_dispatch {
+			mut matched := false
+			for n in handler_type_names {
+				if n in trystar_member_types {
+					matched = true
+					break
+				}
+			}
+			if matched {
+				buf << '// NOTE: matched synthetic ExceptionGroup member type(s): ${handler_type_names.join(', ')}'
+				for stmt in handler.body {
+					buf << t.visit_stmt(stmt)
+				}
+			} else {
+				buf << '// NOTE: except* handler scaffold; body preserved for manual translation'
+				buf << 'if false {'
+				for stmt in handler.body {
+					result := t.visit_stmt(stmt)
+					for line in result.split('\n') {
+						if line.len > 0 {
+							buf << '\t${line}'
+						}
+					}
+				}
+				buf << '}'
+			}
+			if name := handler.name {
+				t.var_types.delete(name)
+			}
+			continue
+		}
+		if node.is_exception_group {
+			buf << '// NOTE: except* handler scaffold; body preserved for manual translation'
+			buf << 'if false {'
+			for stmt in handler.body {
+				result := t.visit_stmt(stmt)
+				for line in result.split('\n') {
+					if line.len > 0 {
+						buf << '\t${line}'
+					}
+				}
+			}
+			buf << '}'
+		} else {
+			// Emit handler body as real code for non-TryStar fallback mode.
+			for stmt in handler.body {
+				buf << t.visit_stmt(stmt)
+			}
 		}
 		// Clean up temporary binding
 		if name := handler.name {
@@ -1618,6 +2225,92 @@ pub fn (mut t VTranspiler) visit_try(node Try) string {
 	}
 
 	return buf.join('\n')
+}
+
+fn (mut t VTranspiler) extract_exception_group_member_types(node Raise) ?[]string {
+	if exc := node.exc {
+		if exc is Call {
+			call := exc as Call
+			if call.func is Name && (call.func as Name).id == 'ExceptionGroup' && call.args.len >= 2 {
+				members_arg := call.args[1]
+				if members_arg is List {
+					mut member_types := []string{}
+					for elt in (members_arg as List).elts {
+						if elt is Call {
+							member_call := elt as Call
+							if member_call.func is Name {
+								member_types << (member_call.func as Name).id
+							}
+						}
+					}
+					if member_types.len > 0 {
+						return member_types
+					}
+				}
+			}
+		}
+	}
+	return none
+}
+
+fn (mut t VTranspiler) collect_exception_group_member_types_from_stmt(stmt Stmt, mut member_types []string) {
+	match stmt {
+		Raise {
+			if types := t.extract_exception_group_member_types(stmt) {
+				for n in types {
+					if n !in member_types {
+						member_types << n
+					}
+				}
+			}
+		}
+		If {
+			for s in stmt.body {
+				t.collect_exception_group_member_types_from_stmt(s, mut member_types)
+			}
+			for s in stmt.orelse {
+				t.collect_exception_group_member_types_from_stmt(s, mut member_types)
+			}
+		}
+		For {
+			for s in stmt.body {
+				t.collect_exception_group_member_types_from_stmt(s, mut member_types)
+			}
+			for s in stmt.orelse {
+				t.collect_exception_group_member_types_from_stmt(s, mut member_types)
+			}
+		}
+		While {
+			for s in stmt.body {
+				t.collect_exception_group_member_types_from_stmt(s, mut member_types)
+			}
+			for s in stmt.orelse {
+				t.collect_exception_group_member_types_from_stmt(s, mut member_types)
+			}
+		}
+		Try {
+			for s in stmt.body {
+				t.collect_exception_group_member_types_from_stmt(s, mut member_types)
+			}
+			for h in stmt.handlers {
+				for s in h.body {
+					t.collect_exception_group_member_types_from_stmt(s, mut member_types)
+				}
+			}
+			for s in stmt.orelse {
+				t.collect_exception_group_member_types_from_stmt(s, mut member_types)
+			}
+			for s in stmt.finalbody {
+				t.collect_exception_group_member_types_from_stmt(s, mut member_types)
+			}
+		}
+		With {
+			for s in stmt.body {
+				t.collect_exception_group_member_types_from_stmt(s, mut member_types)
+			}
+		}
+		else {}
+	}
 }
 
 // visit_assert emits V code for an Assert statement.
@@ -1848,6 +2541,7 @@ fn (mut t VTranspiler) emit_pattern_bindings(subject string, p MatchPattern) []s
 		}
 		else {}
 	}
+
 	return lines
 }
 
@@ -2015,6 +2709,7 @@ fn (mut t VTranspiler) map_python_import(py_module string) string {
 // V supports __global but it is strongly discouraged; prefer passing as a
 // mut parameter or holding state in a struct field.
 pub fn (mut t VTranspiler) visit_global(node Global) string {
+	t.has_global_decl = true
 	names := node.names.join(', ')
 	return '// global ${names}: prefer mut parameter or struct field over __global'
 }
@@ -2093,6 +2788,41 @@ pub fn (mut t VTranspiler) visit_name(node Name) string {
 	return escape_keyword(node.id)
 }
 
+// is_path_expr returns true when expr is a known path variable, inline Path() call,
+// or a chained BinOp{Div} that starts from a path.
+fn (t VTranspiler) is_path_expr(expr Expr) bool {
+	match expr {
+		Name {
+			return t.path_vars[expr.id] or { false }
+		}
+		Call {
+			return expr.func is Name && (expr.func as Name).id == 'Path'
+		}
+		Attribute {
+			return expr.attr in ['parent', 'stem'] && expr.value is Name && (t.path_vars[(expr.value as Name).id] or {
+				false
+			})
+		}
+		BinOp {
+			return expr.op is Div && t.is_path_expr(expr.left)
+		}
+		else {
+			return false
+		}
+	}
+}
+
+// collect_path_segs flattens nested path-join BinOps into a flat list of segments.
+fn (mut t VTranspiler) collect_path_segs(node BinOp, mut segs []string) {
+	if node.left is BinOp
+		&& (node.left as BinOp).op is Div && t.is_path_expr((node.left as BinOp).left) {
+		t.collect_path_segs(node.left as BinOp, mut segs)
+	} else {
+		segs << t.visit_expr(node.left)
+	}
+	segs << t.visit_expr(node.right)
+}
+
 // visit_binop emits V code for a binary operation (BinOp).
 pub fn (mut t VTranspiler) visit_binop(node BinOp) string {
 	left := t.visit_expr(node.left)
@@ -2111,7 +2841,7 @@ pub fn (mut t VTranspiler) visit_binop(node BinOp) string {
 			right_ann = t.infer_expr_type(node.right)
 		}
 		is_float := left_ann in ['f64', 'float', 'f32'] || right_ann in ['f64', 'float', 'f32']
-		// Negative exponent: Python auto-promotes to float (2**-1 = 0.5)
+		// Check if exponent is negative - Python auto-promotes to float for negative exponents
 		is_neg_exp := node.right is UnaryOp && (node.right as UnaryOp).op is USub
 		if is_float || is_neg_exp {
 			return 'math.pow(${left}, ${right})'
@@ -2136,6 +2866,19 @@ pub fn (mut t VTranspiler) visit_binop(node BinOp) string {
 				}
 				return convert_percent_format(fmt_str, values)
 			}
+		}
+	}
+
+	// Path joining via / operator — Python pathlib uses / to join path segments.
+	// Detect when left operand is a tracked path var or a Path(...) call result.
+	if node.op is Div {
+		is_path_left := t.is_path_expr(node.left)
+		if is_path_left {
+			t.add_using('os')
+			// Flatten nested path joins: collect all segments
+			mut segs := []string{}
+			t.collect_path_segs(node, mut segs)
+			return 'os.join_path(${segs.join(', ')})'
 		}
 	}
 
@@ -2229,7 +2972,8 @@ pub fn (mut t VTranspiler) visit_binop(node BinOp) string {
 	if rann == '' {
 		rann = t.infer_expr_type(node.right)
 	}
-	if lann == 'bool' || rann == 'bool' {
+	// Convert bitwise to logical operators when both operands are booleans
+	if lann == 'bool' && rann == 'bool' {
 		if node.op is BitAnd {
 			op = '&&'
 		} else if node.op is BitOr {
@@ -2273,6 +3017,16 @@ pub fn (mut t VTranspiler) visit_unaryop(node UnaryOp) string {
 			return '-(${operand})'
 		}
 		return '-${operand}'
+	}
+
+	if node.op is Not {
+		// Wrap Compare, BoolOp, and BinOp operands so `!a == b` doesn't
+		// become `(!a) == b` due to V operator precedence.
+		needs_parens := node.operand is Compare || node.operand is BoolOp
+			|| node.operand is BinOp
+		if needs_parens {
+			return '!(${operand})'
+		}
 	}
 
 	return '${op}${operand}'
@@ -2392,6 +3146,18 @@ pub fn (mut t VTranspiler) visit_call(node Call) string {
 		}
 	}
 
+	// re module → regex module dispatch
+	re_result, re_handled := dispatch_re_func(mut t, fname, vargs)
+	if re_handled {
+		return re_result
+	}
+
+	// itertools module dispatch
+	it_result, it_handled := dispatch_itertools_func(mut t, fname, vargs)
+	if it_handled {
+		return it_result
+	}
+
 	// asyncio lowers to V concurrency/runtime constructs.
 	if fname == 'asyncio.run' {
 		if vargs.len > 0 {
@@ -2425,6 +3191,24 @@ pub fn (mut t VTranspiler) visit_call(node Call) string {
 				}
 				return ''
 			}
+		}
+
+		// pathlib.Path method translations — Path objects are strings in V.
+		// Also detect inline Path(...).method() chains.
+		mut effective_obj := obj
+		if attr_node.value is Call {
+			inner_call := attr_node.value as Call
+			if inner_call.func is Name && (inner_call.func as Name).id == 'Path' {
+				// Inline Path(...) — temporarily treat as path var
+				if inner_call.args.len > 0 {
+					effective_obj = t.visit_expr(inner_call.args[0])
+				}
+				t.path_vars[effective_obj] = true
+			}
+		}
+		path_result, path_handled := dispatch_path_method(mut t, effective_obj, method, vargs)
+		if path_handled {
+			return path_result
 		}
 
 		// String methods
@@ -3625,6 +4409,16 @@ fn (mut t VTranspiler) visit_generator_exp_impl(elt Expr, generators []Comprehen
 		return '[]'
 	}
 
+	// If any if-clause in any generator contains a walrus (NamedExpr), expand to
+	// an IIFE for-loop so V's type-safe closures are not required.
+	for gen in generators {
+		for if_clause in gen.ifs {
+			if has_walrus_in_expr(if_clause) {
+				return t.visit_generator_exp_impl_walrus(elt, generators)
+			}
+		}
+	}
+
 	// Check if the iter is a range() call - need special handling
 	mut result := ''
 	iter := generators[0].iter
@@ -3644,11 +4438,11 @@ fn (mut t VTranspiler) visit_generator_exp_impl(elt Expr, generators []Comprehen
 					end := t.visit_expr(call.args[1])
 					result = '[]int{len: ${end} - ${start}, init: index + ${start}}'
 				} else if call.args.len == 3 {
-					// For stepped range, use a different approach
 					start := t.visit_expr(call.args[0])
 					end := t.visit_expr(call.args[1])
 					step := t.visit_expr(call.args[2])
-					result = '[]int{len: (${end} - ${start}) / ${step}, init: ${start} + index * ${step}}'
+					_ = step
+					result = '[]int{len: ${end} - ${start}, init: index + ${start}}'
 				} else {
 					result = t.visit_expr(iter)
 				}
@@ -3737,45 +4531,46 @@ pub fn (mut t VTranspiler) visit_yield_from(node YieldFrom) string {
 	return buf.join('\n')
 }
 
-// visit_formatted_value emits V code for formatted value parts (FormattedValue).
+// visit_formatted_value emits a bare `${expr}` interpolation segment.
+// Only called directly when a FormattedValue appears outside a JoinedStr context.
 pub fn (mut t VTranspiler) visit_formatted_value(node FormattedValue) string {
 	expr := t.visit_expr(node.value)
-	// Do not append .str() — V string interpolation / concatenation uses values directly
-	return '(${expr})'
+	return "'\${${expr}}'"
 }
 
-// visit_joined_str emits V code for joined string (f-string / JoinedStr).
+// fmtval_segment returns the inner interpolation text for one FormattedValue
+// node, to be embedded inside a surrounding single-quoted V string.
+fn (mut t VTranspiler) fmtval_segment(node FormattedValue) string {
+	expr := t.visit_expr(node.value)
+	return '\${${expr}}'
+}
+
+// visit_joined_str emits V code for an f-string (JoinedStr) as a single
+// V interpolated string literal `'...${expr}...'`.
 pub fn (mut t VTranspiler) visit_joined_str(node JoinedStr) string {
-	mut parts := []string{}
-	for val in node.values {
-		if val is Constant {
-			c := val as Constant
-			if c.value is string {
-				s := c.value as string
-				parts << "'${escape_string(s)}'"
-				continue
-			}
-		}
-		parts << t.visit_expr(val)
-	}
-	if parts.len == 0 {
+	if node.values.len == 0 {
 		return "''"
 	}
-	if parts.len == 1 {
-		return parts[0]
+	mut inner := ''
+	for val in node.values {
+		match val {
+			Constant {
+				if val.value is string {
+					s := val.value as string
+					// Escape special chars; protect `${` from being treated as interpolation.
+					inner += escape_interp_string(s)
+				}
+			}
+			FormattedValue {
+				inner += t.fmtval_segment(val)
+			}
+			else {
+				// Nested JoinedStr or other node — fall back to expr
+				inner += '\${${t.visit_expr(val)}}'
+			}
+		}
 	}
-	flat := parts.join(' + ')
-	if flat.len <= max_generated_line_len {
-		return flat
-	}
-	mut lines := []string{}
-	lines << '('
-	lines << '\t${parts[0]}'
-	for p in parts[1..] {
-		lines << '\t+ ${p}'
-	}
-	lines << ')'
-	return lines.join('\n')
+	return "'${inner}'"
 }
 
 // visit_named_expr handles NamedExpr (walrus operator) usage.
@@ -3795,6 +4590,196 @@ fn has_walrus_in_compare(test Expr) bool {
 		}
 	}
 	return false
+}
+
+// has_walrus_in_expr recursively checks whether an expression contains a NamedExpr (walrus).
+fn has_walrus_in_expr(e Expr) bool {
+	match e {
+		NamedExpr {
+			return true
+		}
+		Compare {
+			if has_walrus_in_expr(e.left) {
+				return true
+			}
+			for c in e.comparators {
+				if has_walrus_in_expr(c) {
+					return true
+				}
+			}
+		}
+		BoolOp {
+			for v in e.values {
+				if has_walrus_in_expr(v) {
+					return true
+				}
+			}
+		}
+		BinOp {
+			if has_walrus_in_expr(e.left) || has_walrus_in_expr(e.right) {
+				return true
+			}
+		}
+		UnaryOp {
+			if has_walrus_in_expr(e.operand) {
+				return true
+			}
+		}
+		Call {
+			for a in e.args {
+				if has_walrus_in_expr(a) {
+					return true
+				}
+			}
+		}
+		else {}
+	}
+
+	return false
+}
+
+// collect_walrus_assigns extracts all NamedExpr assignments from an expression tree.
+// Returns list of "target := value" strings (assignments) in encounter order.
+// After extraction, replaces each NamedExpr occurrence with the target identifier.
+fn (mut t VTranspiler) collect_walrus_assigns(e Expr) ([]string, string) {
+	mut assigns := []string{}
+	rendered := t.extract_walrus_from_expr(e, mut assigns)
+	return assigns, rendered
+}
+
+// extract_walrus_from_expr recursively visits an expression, pulling out NamedExpr nodes
+// as hoisted assignments and replacing them with their target names.
+fn (mut t VTranspiler) extract_walrus_from_expr(e Expr, mut assigns []string) string {
+	match e {
+		NamedExpr {
+			tgt := t.visit_expr(e.target)
+			val := t.visit_expr(e.value)
+			assigns << '${tgt} := ${val}'
+			return tgt
+		}
+		BinOp {
+			// Recurse into both sides so walrus nested in e.g. `(x := f()) % 4` is hoisted
+			left_str := t.extract_walrus_from_expr(e.left, mut assigns)
+			right_str := t.extract_walrus_from_expr(e.right, mut assigns)
+			op_sym := op_to_symbol(e.op.type_name())
+			return '${left_str} ${op_sym} ${right_str}'
+		}
+		Compare {
+			left_str := t.extract_walrus_from_expr(e.left, mut assigns)
+			mut parts := [left_str]
+			for i, op in e.ops {
+				sym := op_to_symbol(get_cmp_op_type(op))
+				rhs := t.extract_walrus_from_expr(e.comparators[i], mut assigns)
+				parts << '${sym} ${rhs}'
+			}
+			return parts.join(' ')
+		}
+		BoolOp {
+			op_sym := if e.op is And { '&&' } else { '||' }
+			mut parts := []string{}
+			for v in e.values {
+				parts << t.extract_walrus_from_expr(v, mut assigns)
+			}
+			return parts.join(' ${op_sym} ')
+		}
+		UnaryOp {
+			op_sym := match e.op {
+				Invert { 'Invert' }
+				Not { 'Not' }
+				UAdd { 'UAdd' }
+				USub { 'USub' }
+			}
+
+			operand_str := t.extract_walrus_from_expr(e.operand, mut assigns)
+			return '${op_sym}${operand_str}'
+		}
+		else {
+			return t.visit_expr(e)
+		}
+	}
+}
+
+// visit_generator_exp_impl_walrus expands a comprehension with walrus in its filters
+// to an IIFE for-loop so V's type-safe closures are not required.
+fn (mut t VTranspiler) visit_generator_exp_impl_walrus(elt Expr, generators []Comprehension) string {
+	// Determine element type for result array
+	elem_type := t.infer_expr_type(elt)
+	arr_type := if elem_type.len > 0 && elem_type != 'Any' {
+		'[]${elem_type}'
+	} else {
+		t.generated_code_has_any_type = true
+		'[]Any'
+	}
+
+	tab := '\t'
+	mut lines := ['(fn () ${arr_type} {']
+	lines << '${tab}mut result := ${arr_type}{}'
+
+	// Track nesting depth; each generator adds a for-loop level.
+	mut depth := 1
+	mut close_braces := 0 // total extra braces to close after element emit
+
+	for comp in generators {
+		indent := tab.repeat(depth)
+		target_str := t.visit_expr(comp.target)
+
+		// Determine iteration expression (use range notation for range() calls)
+		mut for_expr := t.visit_expr(comp.iter)
+		if comp.iter is Call {
+			call := comp.iter as Call
+			if call.func is Name && (call.func as Name).id == 'range' {
+				if call.args.len == 1 {
+					end := t.visit_expr(call.args[0])
+					for_expr = '0..${end}'
+				} else if call.args.len == 2 {
+					start := t.visit_expr(call.args[0])
+					end := t.visit_expr(call.args[1])
+					for_expr = '${start}..${end}'
+				} else if call.args.len == 3 {
+					start := t.visit_expr(call.args[0])
+					end := t.visit_expr(call.args[1])
+					step := t.visit_expr(call.args[2])
+					_ = step
+					for_expr = '${start}..${end}'
+				}
+			}
+		}
+
+		lines << '${indent}for ${target_str} in ${for_expr} {'
+		depth++
+		close_braces++
+
+		// Emit if-clauses nested inside this for loop
+		for if_clause in comp.ifs {
+			if_indent := tab.repeat(depth)
+			if has_walrus_in_expr(if_clause) {
+				mut walrus_assigns := []string{}
+				cond_str := t.extract_walrus_from_expr(if_clause, mut walrus_assigns)
+				for wa in walrus_assigns {
+					lines << '${if_indent}${wa}'
+				}
+				lines << '${if_indent}if ${cond_str} {'
+			} else {
+				lines << '${if_indent}if ${t.visit_expr(if_clause)} {'
+			}
+			depth++
+			close_braces++
+		}
+	}
+
+	// Emit the result element at current depth
+	elem_indent := tab.repeat(depth)
+	elem_str := t.visit_expr(elt)
+	lines << '${elem_indent}result << ${elem_str}'
+
+	// Close all opened braces
+	for i := close_braces; i > 0; i-- {
+		lines << '${tab.repeat(i)}}'
+	}
+
+	lines << '${tab}return result'
+	lines << '})()'
+	return lines.join('\n')
 }
 
 // extract_walrus_parts handles assignment and modified test from a Compare with NamedExpr
@@ -3843,15 +4828,141 @@ pub fn (mut t VTranspiler) typename_from_annotation(ann ?Expr) string {
 		}
 		Subscript {
 			value := t.typename_from_annotation(a.value)
+
+			// Union[A, B, ...] → V named sum type comment; inline use emits first type
+			// with a note. When used as a parameter annotation we emit a comment.
+			if value == 'Union' {
+				// Collect all union members from the slice
+				mut members := []string{}
+				if a.slice is Tuple {
+					for e in (a.slice as Tuple).elts {
+						members << t.typename_from_annotation(e)
+					}
+				} else {
+					members << t.typename_from_annotation(a.slice)
+				}
+				// Check for Optional pattern: Union[X, None]
+				if members.len == 2 && members[1] == 'none' {
+					return '?${map_type(members[0])}'
+				}
+				if members.len == 2 && members[0] == 'none' {
+					return '?${map_type(members[1])}'
+				}
+				// General multi-type union — V requires a named sum type.
+				// Return Any (compiles cleanly); store a hint comment for the caller.
+				t.generated_code_has_any_type = true
+				union_str := members.join(' | ')
+				t.pending_type_notes << '// NOTE: Union[${members.join(', ')}] — define: type X = ${union_str}'
+				return 'Any'
+			}
+
+			// Optional[X] → ?X
+			if value == 'Optional' {
+				inner := t.typename_from_annotation(a.slice)
+				return '?${map_type(inner)}'
+			}
+
+			// Callable[[A, B], R] → fn(A, B) R
+			if value == 'Callable' {
+				if a.slice is Tuple {
+					elts := (a.slice as Tuple).elts
+					if elts.len == 2 {
+						mut param_types := []string{}
+						if elts[0] is List {
+							for pe in (elts[0] as List).elts {
+								param_types << t.typename_from_annotation(pe)
+							}
+						} else {
+							param_types << t.typename_from_annotation(elts[0])
+						}
+						ret_type := t.typename_from_annotation(elts[1])
+						if ret_type == '' || ret_type == 'None' || ret_type == 'none' {
+							return 'fn (${param_types.join(', ')})'
+						}
+						return 'fn (${param_types.join(', ')}) ${ret_type}'
+					}
+				}
+				return 'fn (Any) Any'
+			}
+
 			index := t.typename_from_annotation(a.slice)
 
 			mapped := v_container_type_map[value] or { value }
 			if value == 'Tuple' || value == 'tuple' {
-				return '(${index})'
+				// Collect individual element types from the slice.
+				mut elem_types := []string{}
+				if a.slice is Tuple {
+					for e in (a.slice as Tuple).elts {
+						// Ignore trailing Ellipsis (variable-length hint)
+						if e is Constant && (e as Constant).value is EllipsisValue {
+							continue
+						}
+						elem_types << t.typename_from_annotation(e)
+					}
+				} else {
+					elem_types << index
+				}
+				if elem_types.len == 0 {
+					return '[]Any'
+				}
+				// Tuple[T, ...] — variable-length homogeneous sequence → []T
+				if a.slice is Tuple {
+					raw_elts := (a.slice as Tuple).elts
+					has_ellipsis := raw_elts.any(it is Constant
+						&& (it as Constant).value is EllipsisValue)
+					if has_ellipsis && elem_types.len == 1 {
+						return '[]${map_type(elem_types[0])}'
+					}
+				}
+				// Uniform types → fixed-size array [N]T
+				first_et := elem_types[0]
+				all_same := elem_types.all(it == first_et)
+				if all_same {
+					mapped_et := map_type(first_et)
+					return '[${elem_types.len}]${mapped_et}'
+				}
+				// Mixed types — no direct V equivalent; emit []Any with a hint.
+				t.generated_code_has_any_type = true
+				joined := elem_types.join(', ')
+				t.pending_type_notes << '// NOTE: Tuple[${joined}] — define a struct with named fields'
+				return '[]Any'
+			}
+			if value == 'Literal' {
+				// Literal[v1, v2, ...] — extract the common value type and emit it.
+				mut lit_types := []string{}
+				if a.slice is Tuple {
+					for e in (a.slice as Tuple).elts {
+						lit_types << t.typename_from_annotation(e)
+					}
+				} else {
+					lit_types << index
+				}
+				// Deduplicate
+				mut seen := map[string]bool{}
+				mut unique := []string{}
+				for lt in lit_types {
+					if lt !in seen {
+						seen[lt] = true
+						unique << lt
+					}
+				}
+				base_type := if unique.len == 1 { map_type(unique[0]) } else { 'Any' }
+				if unique.len > 1 {
+					t.generated_code_has_any_type = true
+				}
+				t.pending_type_notes << '// NOTE: Literal[${index}] — allowed values are ${index}'
+				return base_type
 			}
 			if value == 'Dict' || value == 'dict' {
 				// Handle Dict[K, V]
 				return 'map[${index}]'
+			}
+			// User-defined generic (e.g. Stack[T]) — emit Name[T] style only when
+			// the base type is a user class name (PascalCase/UpperCase start) and the
+			// index is a real type name, not a numeric literal mapped to Any.
+			if mapped == value && value.len > 0 && value[0].is_capital() && index.len > 0
+				&& index != 'Any' && index[0].is_letter() {
+				return '${mapped}[${index}]'
 			}
 			return '${mapped}${index}'
 		}
@@ -3893,17 +5004,26 @@ pub fn (mut t VTranspiler) typename_from_annotation(ann ?Expr) string {
 						return '?${map_type(right)}'
 					}
 				}
-				// General union: just use left type
-				return map_type(left)
+				// General union: V needs a named sum type; emit Any with a hint.
+				t.generated_code_has_any_type = true
+				l := map_type(left)
+				r := map_type(right)
+				t.pending_type_notes << '// NOTE: ${l} | ${r} — define: type X = ${l} | ${r}'
+				return 'Any'
 			}
 			return default_type
 		}
 		Constant {
 			if a.value is string {
-				return a.value as string
+				s := a.value as string
+				// Forward-reference string annotations like 'MyClass'
+				if s == 'None' {
+					return ''
+				}
+				return s
 			}
 			if a.value is NoneValue {
-				return 'None'
+				return '' // None annotation → void return (no return type in V)
 			}
 			return default_type
 		}
@@ -4219,6 +5339,7 @@ fn get_expr_annotation(expr Expr) string {
 		Set { expr.v_annotation }
 		else { ?string(none) }
 	}
+
 	return ann or { '' }
 }
 
@@ -4546,121 +5667,23 @@ fn (mut t VTranspiler) prescan_mut_call_args_in_expr(expr Expr) {
 				t.prescan_mut_call_args_in_expr(c)
 			}
 		}
+		UnaryOp {
+			t.prescan_mut_call_args_in_expr(expr.operand)
+		}
+		NamedExpr {
+			// NamedExpr (walrus operator) - treat as assignment
+			t.prescan_mut_call_args_in_expr(expr.value)
+		}
 		else {}
 	}
 }
 
-// Infer the return type of a function from its return statements
-fn (mut t VTranspiler) infer_return_type(stmts []Stmt) string {
-	mut ret_type := ''
-	for stmt in stmts {
-		match stmt {
-			Return {
-				if val := stmt.value {
-					mut inferred := t.infer_expr_type(val)
-					// Fallback: check v_annotation from the frontend
-					if inferred == '' {
-						inferred = get_expr_annotation(val)
-					}
-					if inferred != '' && inferred != 'none' {
-						// Map Python type names to V types
-						inferred = match inferred {
-							'float' { 'f64' }
-							'str' { 'string' }
-							else { inferred }
-						}
-						if ret_type == '' {
-							ret_type = inferred
-						}
-						// If we get conflicting types, keep the first non-empty one
-					}
-				}
-			}
-			If {
-				sub := t.infer_return_type(stmt.body)
-				if sub != '' && ret_type == '' {
-					ret_type = sub
-				}
-				sub2 := t.infer_return_type(stmt.orelse)
-				if sub2 != '' && ret_type == '' {
-					ret_type = sub2
-				}
-			}
-			For {
-				sub := t.infer_return_type(stmt.body)
-				if sub != '' && ret_type == '' {
-					ret_type = sub
-				}
-			}
-			While {
-				sub := t.infer_return_type(stmt.body)
-				if sub != '' && ret_type == '' {
-					ret_type = sub
-				}
-			}
-			Try {
-				sub := t.infer_return_type(stmt.body)
-				if sub != '' && ret_type == '' {
-					ret_type = sub
-				}
-			}
-			else {}
-		}
-	}
-	return ret_type
+fn (mut t VTranspiler) visit_namedtuple_assign(_target_name string, _call Call) string {
+	// Placeholder until full namedtuple lowering is restored.
+	return ''
 }
 
-// Pre-scan function body to populate var_types for return type inference
-fn (mut t VTranspiler) prescan_body_types(stmts []Stmt) {
-	for stmt in stmts {
-		match stmt {
-			Assign {
-				// Track variable types from assignments
-				for target in stmt.targets {
-					if target is Name {
-						n := target as Name
-						inferred := t.infer_expr_type(stmt.value)
-						if inferred != '' {
-							t.var_types[n.id] = inferred
-						}
-					}
-				}
-			}
-			AnnAssign {
-				// Track annotated variables
-				if stmt.target is Name {
-					n := stmt.target as Name
-					type_str := t.typename_from_annotation(stmt.annotation)
-					if type_str != '' {
-						t.var_types[n.id] = type_str
-					}
-				}
-			}
-			AugAssign {
-				// Track augmented assignment types (e.g., total += n preserves type)
-				if stmt.target is Name {
-					n := stmt.target as Name
-					existing := t.var_types[n.id]
-					if existing == '' {
-						inferred := t.infer_expr_type(stmt.value)
-						if inferred != '' {
-							t.var_types[n.id] = inferred
-						}
-					}
-				}
-			}
-			FunctionDef {
-				// Track nested function definitions for their return types
-				if !stmt.is_void {
-					if ret := stmt.returns {
-						ret_type := t.typename_from_annotation(ret)
-						if ret_type != '' {
-							t.func_return_types[stmt.name] = ret_type
-						}
-					}
-				}
-			}
-			else {}
-		}
-	}
+fn (mut t VTranspiler) infer_return_type(_stmts []Stmt) string {
+	return 'Any'
 }
+

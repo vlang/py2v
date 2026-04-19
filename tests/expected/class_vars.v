@@ -1,4 +1,3 @@
-@[translated]
 module main
 
 // Config holds application settings.

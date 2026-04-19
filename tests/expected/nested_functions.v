@@ -1,4 +1,3 @@
-@[translated]
 module main
 
 fn inner(y int) int {
@@ -13,7 +12,7 @@ fn adder(x int) int {
 	return x + n
 }
 
-fn make_adder(n int) int {
+fn make_adder(n int) fn (int) int {
 	return adder
 }
 

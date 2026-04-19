@@ -36,18 +36,18 @@ pub struct UAdd {}
 pub struct USub {}
 
 pub type Operator = Add
-	| Sub
-	| Mult
-	| MatMult
-	| Div
-	| Mod
-	| Pow
-	| LShift
-	| RShift
+	| BitAnd
 	| BitOr
 	| BitXor
-	| BitAnd
+	| Div
 	| FloorDiv
+	| LShift
+	| MatMult
+	| Mod
+	| Mult
+	| Pow
+	| RShift
+	| Sub
 
 pub struct Add {}
 
@@ -98,61 +98,67 @@ pub struct In {}
 pub struct NotIn {}
 
 // Forward declarations - all expression and statement types
+// Constant is listed first so V's type_default_impl uses it as the default
+// variant — Constant does not contain any Expr fields, breaking the recursion
+// that would otherwise occur through Attribute.value Expr.
 pub type Expr = Constant
-	| Name
-	| BinOp
-	| UnaryOp
-	| BoolOp
-	| Compare
-	| Call
 	| Attribute
-	| Subscript
-	| Slice
-	| List
-	| Tuple
-	| Dict
-	| Set
-	| IfExp
-	| Lambda
-	| ListComp
-	| SetComp
-	| DictComp
-	| GeneratorExp
 	| Await
+	| BinOp
+	| BoolOp
+	| Call
+	| Compare
+	| Dict
+	| DictComp
+	| FormattedValue
+	| GeneratorExp
+	| IfExp
+	| JoinedStr
+	| Lambda
+	| List
+	| ListComp
+	| Name
+	| NamedExpr
+	| Set
+	| SetComp
+	| Slice
+	| Starred
+	| Subscript
+	| Tuple
+	| UnaryOp
 	| Yield
 	| YieldFrom
-	| FormattedValue
-	| JoinedStr
-	| NamedExpr
-	| Starred
 
-pub type Stmt = FunctionDef
-	| AsyncFunctionDef
-	| ClassDef
-	| Return
-	| Delete
-	| Assign
-	| AugAssign
+// Pass is listed first so V's type_default_impl uses it as the default
+// variant — Pass has no Expr/Stmt fields, preventing deep recursion through
+// AnnAssign.target Expr.
+pub type Stmt = Pass
 	| AnnAssign
-	| For
-	| AsyncFor
-	| While
-	| If
-	| With
-	| AsyncWith
-	| Raise
-	| Try
 	| Assert
+	| Assign
+	| AsyncFor
+	| AsyncFunctionDef
+	| AsyncWith
+	| AugAssign
+	| Break
+	| ClassDef
+	| Continue
+	| Delete
+	| ExprStmt
+	| For
+	| FunctionDef
+	| Global
+	| If
 	| Import
 	| ImportFrom
-	| Global
-	| Nonlocal
-	| ExprStmt
-	| Pass
-	| Break
-	| Continue
-	| TypeAlias
 	| Match
+	| Nonlocal
+	| Raise
+	| Return
+	| Try
+	| TypeAlias
+	| While
+	| With
 
 // Module is the root node
 pub struct Module {
@@ -171,15 +177,15 @@ pub mut:
 	v_annotation ?string
 }
 
-pub type ConstantValue = int
-	| i64
-	| f64
-	| string
-	| bool
-	| BytesValue
-	| NoneValue
-	| EllipsisValue
+pub type ConstantValue = BytesValue
 	| ComplexValue
+	| EllipsisValue
+	| NoneValue
+	| bool
+	| f64
+	| i64
+	| int
+	| string
 
 pub struct BytesValue {
 pub:
@@ -430,6 +436,9 @@ pub mut:
 	mutable_vars    []string
 	is_class_method bool
 	class_name      string
+	decorator_kind  string
+	dunder_op       string
+	v_annotation    string   // Inferred return type (e.g., 'int', 'bool')
 }
 
 pub struct AsyncFunctionDef {
@@ -446,6 +455,9 @@ pub mut:
 	mutable_vars    []string
 	is_class_method bool
 	class_name      string
+	decorator_kind  string
+	dunder_op       string
+	v_annotation    string   // Inferred return type (e.g., 'int', 'bool')
 }
 
 pub struct Arguments {
@@ -478,6 +490,8 @@ pub mut:
 	declarations      map[string]string
 	class_defaults    map[string]Expr
 	docstring_comment ?string
+	is_protocol       bool
+	type_params       []string
 }
 
 pub struct Return {
@@ -499,6 +513,9 @@ pub mut:
 	type_comment      ?string
 	loc               Location
 	redefined_targets []string
+	is_typevar_assign bool
+	literal_values    []string // non-empty when Literal[v1, v2, ...] assignment
+	literal_name      string   // name being bound (e.g. 'Status' in Status = Literal[...])
 }
 
 pub struct AugAssign {
@@ -589,11 +606,12 @@ pub mut:
 
 pub struct Try {
 pub mut:
-	body      []Stmt
-	handlers  []ExceptHandler
-	orelse    []Stmt
-	finalbody []Stmt
-	loc       Location
+	body               []Stmt
+	handlers           []ExceptHandler
+	orelse             []Stmt
+	finalbody          []Stmt
+	loc                Location
+	is_exception_group bool
 }
 
 pub struct ExceptHandler {

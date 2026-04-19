@@ -160,6 +160,172 @@ def _is_generator(node: ast.FunctionDef) -> bool:
     return False
 
 
+def _infer_type_from_value(node: ast.AST) -> str:
+    """Infer a type string from a value expression."""
+    if isinstance(node, ast.Constant):
+        if isinstance(node.value, bool):
+            return "bool"
+        if isinstance(node.value, int):
+            return "int"
+        if isinstance(node.value, float):
+            return "float"
+        if isinstance(node.value, str):
+            return "str"
+    if isinstance(node, ast.List):
+        return "list"
+    if isinstance(node, ast.Dict):
+        return "dict"
+    # For None literal (ast.Constant with value=None)
+    if isinstance(node, ast.Constant) and node.value is None:
+        return ""
+    return ""
+
+
+def _infer_homogeneous_dict_value_type(node: ast.Dict) -> str:
+    """Infer dict value type when all values share a simple primitive type."""
+    value_types: Set[str] = set()
+    for v in node.values:
+        if v is None:
+            continue
+        typ = _infer_type_from_value(v)
+        if typ:
+            value_types.add(typ)
+    if len(value_types) == 1:
+        return next(iter(value_types))
+    return ""
+
+
+def _normalize_inferred_type_name(typ: str) -> str:
+    if typ == "str":
+        return "string"
+    if typ == "float":
+        return "f64"
+    return typ
+
+
+def _infer_nested_function_type(fn: ast.FunctionDef) -> str:
+    """Infer a V-style function type for a nested function definition."""
+    param_types: List[str] = []
+    for a in fn.args.args:
+        if a.annotation is not None:
+            ann = _annotation_to_str(a.annotation)
+            param_types.append(_normalize_inferred_type_name(ann if ann else "Any"))
+        else:
+            param_types.append("Any")
+
+    if fn.returns is not None:
+        ret = _annotation_to_str(fn.returns)
+        ret_type = _normalize_inferred_type_name(ret if ret else "Any")
+    else:
+        inferred = _infer_return_type(fn)
+        ret_type = inferred if inferred else "Any"
+
+    return f"fn ({', '.join(param_types)}) {ret_type}"
+
+
+def _collect_returns_excluding_nested(node: ast.FunctionDef) -> List[ast.Return]:
+    """Collect return statements in a function body, excluding nested functions."""
+
+    class ReturnCollector(ast.NodeVisitor):
+        def __init__(self):
+            self.returns: List[ast.Return] = []
+
+        def visit_Return(self, n: ast.Return):
+            self.returns.append(n)
+
+        def visit_FunctionDef(self, n: ast.FunctionDef):
+            # Skip nested functions when inferring parent return type.
+            return
+
+        visit_AsyncFunctionDef = visit_FunctionDef
+
+    collector = ReturnCollector()
+    for stmt in node.body:
+        collector.visit(stmt)
+    return collector.returns
+
+
+def _infer_return_type(node: ast.FunctionDef) -> str:
+    """Infer the return type from a function's return statements.
+
+    Returns a type string (e.g., 'int', 'bool', 'string') if all returns
+    consistently resolve to one type. Returns empty string when inference is
+    ambiguous.
+    """
+    if node.returns is not None:
+        return ""
+
+    # Track simple local assignment types to resolve `return name` and
+    # `return mapping[key]` patterns.
+    local_types: Dict[str, str] = {}
+    local_dict_value_types: Dict[str, str] = {}
+    nested_function_types: Dict[str, str] = {}
+    for stmt in node.body:
+        if isinstance(stmt, ast.FunctionDef):
+            nested_function_types[stmt.name] = _infer_nested_function_type(stmt)
+            continue
+        if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1 and isinstance(stmt.targets[0], ast.Name):
+            name = stmt.targets[0].id
+            typ = _infer_type_from_value(stmt.value)
+            if typ:
+                local_types[name] = typ
+            if isinstance(stmt.value, ast.Dict):
+                dict_value_typ = _infer_homogeneous_dict_value_type(stmt.value)
+                if dict_value_typ:
+                    local_dict_value_types[name] = dict_value_typ
+
+    return_types: Set[str] = set()
+    saw_none_return = False
+    for ret_stmt in _collect_returns_excluding_nested(node):
+        if ret_stmt.value is None:
+            continue
+
+        expr = ret_stmt.value
+
+        if isinstance(expr, ast.Constant) and expr.value is None:
+            saw_none_return = True
+            continue
+
+        # Comparisons and boolean ops always return bool.
+        if isinstance(expr, (ast.Compare, ast.BoolOp)):
+            return_types.add("bool")
+            continue
+
+        typ = _infer_type_from_value(expr)
+        if typ:
+            return_types.add(typ)
+            continue
+
+        if isinstance(expr, ast.Name):
+            local_typ = local_types.get(expr.id, "")
+            if local_typ:
+                return_types.add(local_typ)
+                continue
+            nested_fn_typ = nested_function_types.get(expr.id, "")
+            if nested_fn_typ:
+                return_types.add(nested_fn_typ)
+                continue
+            return ""
+
+        if isinstance(expr, ast.Subscript) and isinstance(expr.value, ast.Name):
+            value_typ = local_dict_value_types.get(expr.value.id, "")
+            if value_typ:
+                return_types.add(value_typ)
+                continue
+            return ""
+
+        # Keep inference conservative for calls and complex expressions.
+        return ""
+
+    if not return_types or len(return_types) > 1:
+        return ""
+
+    ret = next(iter(return_types))
+    if ret == "str":
+        return "string"
+    return ret
+
+
 def _has_main_guard(tree: ast.Module) -> Optional[ast.If]:
     """Find `if __name__ == "__main__":` at the module level."""
     for node in tree.body:
@@ -359,6 +525,86 @@ def _find_redefined_targets(tree: ast.Module) -> Dict[int, List[str]]:
     return result
 
 
+def _detect_decorator_kind(decorator_list) -> str:
+    """Return the decorator kind for a function: staticmethod, classmethod, property,
+    setter, or empty string."""
+    for d in decorator_list:
+        if isinstance(d, ast.Name):
+            if d.id == "staticmethod":
+                return "staticmethod"
+            if d.id == "classmethod":
+                return "classmethod"
+            if d.id == "property":
+                return "property"
+        if isinstance(d, ast.Attribute):
+            if d.attr == "setter":
+                return "setter"
+            if d.attr == "property":
+                return "property"
+    return ""
+
+
+# Mapping of Python dunder names to their V operator/method equivalents.
+_DUNDER_V_OP: Dict[str, str] = {
+    "__add__": "+",
+    "__sub__": "-",
+    "__mul__": "*",
+    "__truediv__": "/",
+    "__floordiv__": "/",
+    "__mod__": "%",
+    "__eq__": "==",
+    "__ne__": "!=",
+    "__lt__": "<",
+    "__le__": "<=",
+    "__gt__": ">",
+    "__ge__": ">=",
+    "__str__": "str",
+    "__repr__": "str",
+    "__len__": "len",
+    "__getitem__": "index",
+    "__setitem__": "index_set",
+    "__contains__": "contains",
+    "__neg__": "-",
+    "__pos__": "+",
+    "__invert__": "~",
+}
+
+
+def _dunder_to_v_op(name: str) -> str:
+    """Return the V operator/method name for a Python dunder method, or ''."""
+    return _DUNDER_V_OP.get(name, "")
+
+
+def _is_protocol_class(node: ast.ClassDef) -> bool:
+    """Return True if the class directly inherits from Protocol."""
+    for base in node.bases:
+        if isinstance(base, ast.Name) and base.id == "Protocol":
+            return True
+        if isinstance(base, ast.Attribute) and base.attr == "Protocol":
+            return True
+    return False
+
+
+def _extract_generic_type_params(node: ast.ClassDef) -> List[str]:
+    """Return list of type parameter names from Generic[T, U, ...] base class."""
+    for base in node.bases:
+        # Generic[T] or typing.Generic[T]
+        if isinstance(base, ast.Subscript):
+            name = ""
+            if isinstance(base.value, ast.Name):
+                name = base.value.id
+            elif isinstance(base.value, ast.Attribute):
+                name = base.value.attr
+            if name == "Generic":
+                # slice is either a Name (single) or Tuple (multiple)
+                s = base.slice
+                if isinstance(s, ast.Name):
+                    return [s.id]
+                if isinstance(s, ast.Tuple):
+                    return [e.id for e in s.elts if isinstance(e, ast.Name)]
+    return []
+
+
 def _detect_class_methods(tree: ast.Module):
     """Mark methods inside classes with is_class_method and class_name."""
     for node in ast.walk(tree):
@@ -368,26 +614,6 @@ def _detect_class_methods(tree: ast.Module):
                     item._is_class_method = True
                     item._class_name = node.name
 
-
-def _infer_type_from_value(node: ast.AST) -> str:
-    """Infer a type string from a value expression."""
-    if isinstance(node, ast.Constant):
-        if isinstance(node.value, bool):
-            return "bool"
-        if isinstance(node.value, int):
-            return "int"
-        if isinstance(node.value, float):
-            return "float"
-        if isinstance(node.value, str):
-            return "str"
-    if isinstance(node, ast.List):
-        return "list"
-    if isinstance(node, ast.Dict):
-        return "dict"
-    # For None literal (ast.Constant with value=None)
-    if isinstance(node, ast.Constant) and node.value is None:
-        return ""
-    return ""
 
 
 def _extract_class_declarations(node: ast.ClassDef) -> Dict[str, str]:
@@ -567,6 +793,11 @@ def _node_to_dict(node: ast.AST, mutable_vars: Set[str],
         result["is_generator"] = _is_generator(node)
         result["is_class_method"] = getattr(node, "_is_class_method", False)
         result["class_name"] = getattr(node, "_class_name", "")
+        result["decorator_kind"] = _detect_decorator_kind(node.decorator_list)
+        result["dunder_op"] = _dunder_to_v_op(node.name)
+        inferred_ret = _infer_return_type(node)
+        if inferred_ret:
+            result["v_annotation"] = inferred_ret
 
     elif isinstance(node, ast.ClassDef):
         result["name"] = node.name
@@ -576,6 +807,8 @@ def _node_to_dict(node: ast.AST, mutable_vars: Set[str],
         result["decorator_list"] = [_node_to_dict(d, mutable_vars, redefined, ctx) for d in node.decorator_list]
         result["declarations"] = _extract_class_declarations(node)
         result["class_defaults"] = _extract_class_defaults(node, mutable_vars, redefined, ctx)
+        result["is_protocol"] = _is_protocol_class(node)
+        result["type_params"] = _extract_generic_type_params(node)
         # Extract class-level docstring
         if (node.body
                 and isinstance(node.body[0], ast.Expr)
@@ -596,6 +829,36 @@ def _node_to_dict(node: ast.AST, mutable_vars: Set[str],
         redef = redefined.get(id(node), [])
         if redef:
             result["redefined_targets"] = redef
+        # Mark TypeVar assignments so the backend can skip them
+        if (isinstance(node.value, ast.Call)
+                and isinstance(node.value.func, (ast.Name, ast.Attribute))):
+            fname = (node.value.func.id if isinstance(node.value.func, ast.Name)
+                     else node.value.func.attr)
+            if fname == "TypeVar":
+                result["is_typevar_assign"] = True
+        # Literal[...] subscript type aliases are pure type-system metadata.
+        if (isinstance(node.value, ast.Subscript)
+                and isinstance(node.value.value, (ast.Name, ast.Attribute))):
+            sname = (node.value.value.id if isinstance(node.value.value, ast.Name)
+                     else node.value.value.attr)
+            if sname == "Literal":
+                result["is_typevar_assign"] = True
+                # Extract the literal values so the backend can emit a const block.
+                slice_node = node.value.slice
+                raw_elts = []
+                if isinstance(slice_node, ast.Tuple):
+                    raw_elts = slice_node.elts
+                else:
+                    raw_elts = [slice_node]
+                lit_values = []
+                for elt in raw_elts:
+                    if isinstance(elt, ast.Constant):
+                        lit_values.append(elt.value)
+                if lit_values:
+                    result["literal_values"] = lit_values
+                    # name is the first target identifier
+                    if node.targets and isinstance(node.targets[0], ast.Name):
+                        result["literal_name"] = node.targets[0].id
 
     elif isinstance(node, ast.AugAssign):
         result["target"] = _node_to_dict(node.target, mutable_vars, redefined, ctx)
@@ -636,6 +899,12 @@ def _node_to_dict(node: ast.AST, mutable_vars: Set[str],
     elif isinstance(node, ast.Raise):
         result["exc"] = _node_to_dict(node.exc, mutable_vars, redefined, ctx) if node.exc else None
         result["cause"] = _node_to_dict(node.cause, mutable_vars, redefined, ctx) if node.cause else None
+
+    elif hasattr(ast, "TryStar") and isinstance(node, ast.TryStar):
+        result["body"] = [_node_to_dict(n, mutable_vars, redefined, ctx) for n in node.body]
+        result["handlers"] = [_handler_to_dict(h, mutable_vars, redefined, ctx) for h in node.handlers]
+        result["orelse"] = [_node_to_dict(n, mutable_vars, redefined, ctx) for n in node.orelse]
+        result["finalbody"] = [_node_to_dict(n, mutable_vars, redefined, ctx) for n in node.finalbody]
 
     elif isinstance(node, ast.Try):
         result["body"] = [_node_to_dict(n, mutable_vars, redefined, ctx) for n in node.body]

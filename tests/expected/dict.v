@@ -1,4 +1,3 @@
-@[translated]
 module main
 
 fn implicit_keys() bool {

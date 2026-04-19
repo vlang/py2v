@@ -1,4 +1,3 @@
-@[translated]
 module main
 
 // Rectangle as a dataclass

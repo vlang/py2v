@@ -1,4 +1,3 @@
-@[translated]
 module main
 
 fn greet(name string, greeting string) string {

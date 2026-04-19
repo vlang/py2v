@@ -1,4 +1,3 @@
-@[translated]
 module main
 
 fn simple_generator(ch chan int) {

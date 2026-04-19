@@ -2,48 +2,53 @@ module main
 
 // V type mapping from Python types
 pub const v_type_map = {
-	'int':      'int'
-	'float':    'f64'
-	'str':      'string'
-	'bool':     'bool'
-	'complex':  'complex128'
 	'Bool':     'bool' // SMT Bool type
+	'None':     'Any'
+	'bool':     'bool'
 	'bytes':    '[]u8'
-	'tuple':    '[]int' // V doesn't have tuples, use arrays
-	'c_int8':   'i8'
 	'c_int16':  'i16'
 	'c_int32':  'int'
 	'c_int64':  'i64'
-	'c_uint8':  'u8'
+	'c_int8':   'i8'
 	'c_uint16': 'u16'
 	'c_uint32': 'u32'
 	'c_uint64': 'u64'
-	'i8':       'i8'
+	'c_uint8':  'u8'
+	'complex':  'complex128'
+	'dict':     'map[string]Any' // bare dict literal/type fallback
+	'float':    'f64'
 	'i16':      'i16'
 	'i32':      'int'
 	'i64':      'i64'
-	'u8':       'u8'
+	'i8':       'i8'
+	'int':      'int'
+	'str':      'string'
+	'tuple':    '[]int' // V doesn't have tuples, use arrays
 	'u16':      'u16'
 	'u32':      'u32'
 	'u64':      'u64'
-	'None':     'Any'
+	'u8':       'u8'
 }
 
 // V container type mapping
 pub const v_container_type_map = {
-	'List':     '[]'
-	'list':     '[]' // Python 3.9+ lowercase generic
 	'Dict':     'map'
-	'dict':     'map' // Python 3.9+ lowercase generic
-	'Set':      '[]' // V doesn't have sets, use arrays
-	'set':      '[]' // Python 3.9+ lowercase generic
+	'List':     '[]'
 	'Optional': '?'
+	'Set':      '[]' // V doesn't have sets, use arrays
 	'Tuple':    '[]' // V doesn't have tuples, use arrays
+	'dict':     'map' // Python 3.9+ lowercase generic
+	'list':     '[]' // Python 3.9+ lowercase generic — parameterized form (see v_type_map for bare)
+	'set':      '[]' // Python 3.9+ lowercase generic
 	'tuple':    '[]' // Python 3.9+ lowercase generic
 }
 
 // V keywords that need escaping with @
 pub const v_keywords = [
+	'__global',
+	'__offsetof',
+	'_likely_',
+	'_unlikely_',
 	'as',
 	'asm',
 	'assert',
@@ -52,12 +57,12 @@ pub const v_keywords = [
 	'const',
 	'continue',
 	'defer',
+	'dump',
 	'else',
 	'enum',
 	'false',
-	'for',
 	'fn',
-	'__global',
+	'for',
 	'go',
 	'goto',
 	'if',
@@ -65,100 +70,96 @@ pub const v_keywords = [
 	'in',
 	'interface',
 	'is',
+	'isreftype',
+	'lock',
 	'match',
 	'module',
 	'mut',
-	'shared',
-	'lock',
-	'rlock',
 	'none',
+	'or',
+	'pub',
 	'return',
+	'rlock',
 	'select',
+	'shared',
 	'sizeof',
-	'isreftype',
-	'_likely_',
-	'_unlikely_',
-	'__offsetof',
+	'static',
 	'struct',
 	'true',
 	'type',
 	'typeof',
-	'dump',
-	'or',
 	'union',
-	'pub',
-	'static',
 	'unsafe',
 ]!
 
 // V built-in type names that conflict when used as identifiers (variable/parameter names)
 // These need escaping with @ only in identifier context, not as type casts
 pub const v_builtin_types = [
-	'string',
-	'int',
-	'i8',
+	'bool',
+	'byte',
+	'byteptr',
+	'charptr',
+	'f32',
+	'f64',
 	'i16',
 	'i64',
-	'u8',
+	'i8',
+	'int',
+	'rune',
+	'string',
 	'u16',
 	'u32',
 	'u64',
-	'f32',
-	'f64',
-	'bool',
-	'byte',
-	'rune',
+	'u8',
 	'voidptr',
-	'charptr',
-	'byteptr',
 ]!
 
 // V width rank for numeric type promotion
 pub const v_width_rank = {
 	'bool': 0
-	'i8':   1
-	'u8':   2
 	'byte': 2
-	'i16':  3
-	'u16':  4
-	'int':  5
-	'u32':  6
-	'i64':  7
-	'u64':  8
 	'f32':  9
 	'f64':  10
+	'i16':  3
+	'i64':  7
+	'i8':   1
+	'int':  5
+	'u16':  4
+	'u32':  6
+	'u64':  8
+	'u8':   2
 }
 
 // op_to_symbol maps Python AST operator names to V symbols.
 pub fn op_to_symbol(op_type string) string {
 	return match op_type {
-		'Eq' { '==' }
-		'NotEq' { '!=' }
-		'Lt' { '<' }
-		'LtE' { '<=' }
-		'Gt' { '>' }
-		'GtE' { '>=' }
-		'Is' { '==' }
-		'IsNot' { '!=' }
-		'In' { 'in' }
-		'NotIn' { '!in' }
 		'Add' { '+' }
-		'Sub' { '-' }
-		'Mult' { '*' }
-		'Div' { '/' }
-		'FloorDiv' { '/' } // Not floor division in V, handled in visit_binop/visit_aug_assign
-		'Mod' { '%' }
-		'Pow' { '**' } // Not a V operator, handled in visit_binop/visit_aug_assign
-		'LShift' { '<<' }
-		'RShift' { '>>' }
+		'And' { '&&' }
+		'BitAnd' { '&' }
 		'BitOr' { '|' }
 		'BitXor' { '^' }
-		'BitAnd' { '&' }
-		'MatMult' { '*' } // No matrix mult in V, fallback to *
-		'And' { '&&' }
-		'Or' { '||' }
-		'Not' { '!' }
+		'Div' { '/' }
+		'Eq' { '==' }
+		'FloorDiv' { '/' } // Not floor division in V, handled in visit_binop/visit_aug_assign
+		'Gt' { '>' }
+		'GtE' { '>=' }
+		'In' { 'in' }
 		'Invert' { '~' }
+		'Is' { '==' }
+		'IsNot' { '!=' }
+		'LShift' { '<<' }
+		'Lt' { '<' }
+		'LtE' { '<=' }
+		'MatMult' { '*' } // No matrix mult in V, fallback to *
+		'Mod' { '%' }
+		'Mult' { '*' }
+		'Not' { '!' }
+		'NotEq' { '!=' }
+		'NotIn' { '!in' }
+		'Or' { '||' }
+		'Pow' { '**' } // Not a V operator, handled in visit_binop/visit_aug_assign
+		'RShift' { '>>' }
+		'Sub' { '-' }
 		'UAdd' { '+' }
 		'USub' { '-' }
 		else { op_type }
@@ -270,14 +271,14 @@ pub fn promote_numeric_type(left_type string, right_type string, op string) stri
 	// For Add, Mult: promote to next-wider type
 	wider := get_wider_type(left_type, right_type)
 	return match wider {
-		'i8' { 'i16' }
-		'u8' { 'u16' }
 		'i16' { 'int' }
-		'u16' { 'u32' }
-		'int' { 'i64' }
-		'u32' { 'u64' }
 		'i64' { 'i64' }
+		'i8' { 'i16' }
+		'int' { 'i64' }
+		'u16' { 'u32' }
+		'u32' { 'u64' }
 		'u64' { 'u64' }
+		'u8' { 'u16' }
 		else { wider }
 	}
 }
@@ -290,45 +291,45 @@ pub const default_type = 'Any'
 // A '!' prefix means "emit comment only" (no direct V equivalent).
 pub const python_to_v_import = {
 	// stdlib with direct V counterparts
+	'__future__':  ''
+	'abc':         ''
+	'argparse':    'flag'
+	'asyncio':     '!// import asyncio: use V goroutines and channels'
+	'base64':      'encoding.base64'
+	'builtins':    ''
+	'cmath':       'math.complex'
+	'collections': 'datatypes'
+	'contextlib':  ''
+	'copy':        ''
+	'csv':         '!// import csv: use V csv or manual parsing'
+	'dataclasses': ''
+	'enum':        ''
+	'functools':   'arrays'
+	'hashlib':     'crypto'
+	'http':        '!// import http: use V net.http'
+	'io':          'os'
+	'itertools':   'arrays'
+	'json':        'json'
+	'logging':     'log'
 	'math':        'math'
 	'os':          'os'
 	'os.path':     'os'
-	'sys':         'os'
-	're':          'regex'
-	'json':        'json'
-	'time':        'time'
-	'random':      'rand'
-	'collections': 'datatypes'
-	'io':          'os'
 	'pathlib':     'os'
-	'subprocess':  'os'
-	'shutil':      'os'
-	'functools':   'arrays'
-	'itertools':   'arrays'
-	// suppress — no V equivalent needed
-	'typing':      ''
-	'abc':         ''
-	'dataclasses': ''
-	'__future__':  ''
-	'contextlib':  ''
-	'enum':        ''
-	'copy':        ''
-	'types':       ''
-	'builtins':    ''
-	// no direct V equivalent → emit comment
-	'threading':   '!// import threading: use V goroutines (go fn(){})'
-	'asyncio':     '!// import asyncio: use V goroutines and channels'
-	'socket':      '!// import socket: use V net module'
-	'http':        '!// import http: use V net.http'
-	'urllib':      '!// import urllib: use V net.http'
-	'requests':    '!// import requests: use V net.http'
-	'logging':     'log'
-	'argparse':    'flag'
-	'struct':      'encoding.binary'
-	'hashlib':     'crypto'
-	'base64':      'encoding.base64'
-	'csv':         '!// import csv: use V csv or manual parsing'
-	'sqlite3':     'db.sqlite'
-	'unittest':    '!// import unittest: use V built-in `assert` and `v test`'
 	'pytest':      '!// import pytest: use V built-in `assert` and `v test`'
+	'random':      'rand'
+	're':          'regex'
+	'requests':    '!// import requests: use V net.http'
+	'shutil':      'os'
+	'socket':      '!// import socket: use V net module'
+	'sqlite3':     'db.sqlite'
+	'struct':      'encoding.binary'
+	'subprocess':  'os'
+	// suppress — no V equivalent needed
+	'sys':         'os'
+	'threading':   '!// import threading: use V goroutines (go fn(){})'
+	'time':        'time'
+	'types':       ''
+	'typing':      ''
+	'unittest':    '!// import unittest: use V built-in `assert` and `v test`'
+	'urllib':      '!// import urllib: use V net.http'
 }

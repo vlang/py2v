@@ -156,6 +156,13 @@ fn parse_stmt(m map[string]json2.Any) ?Stmt {
 		'Try' {
 			return Stmt(parse_try(m))
 		}
+		'TryStar' {
+			// Python 3.11 except* (ExceptionGroup) — parse body/handlers like Try;
+			// the transpiler emits a warning comment.
+			mut t := parse_try(m)
+			t.is_exception_group = true
+			return Stmt(t)
+		}
 		'Assert' {
 			return Stmt(parse_assert(m))
 		}
@@ -281,6 +288,9 @@ fn parse_function_def(m map[string]json2.Any) FunctionDef {
 		mutable_vars:    mutable_vars
 		is_class_method: m['is_class_method'] or { json2.Any(false) }.bool()
 		class_name:      m['class_name'] or { json2.Any('') }.str()
+		decorator_kind:  m['decorator_kind'] or { json2.Any('') }.str()
+		dunder_op:       m['dunder_op'] or { json2.Any('') }.str()
+		v_annotation:    m['v_annotation'] or { json2.Any('') }.str()
 	}
 }
 
@@ -300,6 +310,9 @@ fn parse_async_function_def(m map[string]json2.Any) AsyncFunctionDef {
 		mutable_vars:    fd.mutable_vars
 		is_class_method: fd.is_class_method
 		class_name:      fd.class_name
+		decorator_kind:  fd.decorator_kind
+		dunder_op:       fd.dunder_op
+		v_annotation:    fd.v_annotation
 	}
 }
 
@@ -358,6 +371,12 @@ fn parse_class_def(m map[string]json2.Any) ClassDef {
 			docstring = s
 		}
 	}
+	mut type_params := []string{}
+	if raw_tp := m['type_params'] {
+		for item in raw_tp.as_array() {
+			type_params << item.str()
+		}
+	}
 	return ClassDef{
 		name:              m['name'] or { json2.Any('') }.str()
 		bases:             bases
@@ -368,6 +387,8 @@ fn parse_class_def(m map[string]json2.Any) ClassDef {
 		declarations:      declarations
 		class_defaults:    class_defaults
 		docstring_comment: docstring
+		is_protocol:       m['is_protocol'] or { json2.Any(false) }.bool()
+		type_params:       type_params
 	}
 }
 
@@ -499,6 +520,9 @@ fn parse_assign(m map[string]json2.Any) Assign {
 		type_comment:      parse_optional_string(m['type_comment'] or { json2.Any(json2.Null{}) })
 		loc:               parse_location(m)
 		redefined_targets: redefined
+		is_typevar_assign: m['is_typevar_assign'] or { json2.Any(false) }.bool()
+		literal_values:    (m['literal_values'] or { json2.Any([]json2.Any{}) }).as_array().map(it.str())
+		literal_name:      m['literal_name'] or { json2.Any('') }.str()
 	}
 }
 

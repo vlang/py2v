@@ -1,4 +1,3 @@
-@[translated]
 module main
 
 pub struct TriangleType {
@@ -76,7 +75,7 @@ fn main() {
 	a := default_value(int)
 	b := default_value(int)
 	c := default_value(int)
-	assert !classify_triangle_correct(a, b, c) == classify_triangle(a, b, c)
+	assert !(classify_triangle_correct(a, b, c) == classify_triangle(a, b, c))
 	check_sat()
 	get_model()
 }

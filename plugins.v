@@ -610,6 +610,7 @@ fn visit_logging(level string, args []string) (string, bool) {
 		'critical', 'exception' { 'error' }
 		else { level }
 	}
+
 	return 'log.${v_level}(${args[0]})', true
 }
 
@@ -817,8 +818,282 @@ fn dispatch_builtin_impl(mut t VTranspiler, fname string, node Call, args []stri
 		'logging.basicConfig', 'logging.getLogger' {
 			return DispatchResult{'', true, ''}
 		}
+		// Path constructor — treat Path objects as plain strings in V.
+		'Path' {
+			t.add_using('os')
+			if args.len > 0 {
+				return DispatchResult{args[0], true, 'os'}
+			}
+			return DispatchResult{"''", true, 'os'}
+		}
 		else {
 			return DispatchResult{'', false, ''}
+		}
+	}
+}
+
+// dispatch_path_method translates pathlib.Path method calls to os.* equivalents.
+// Path objects are represented as plain strings in V; os module must be imported.
+// Returns (translated_code, true) when matched, ('', false) otherwise.
+pub fn dispatch_path_method(mut t VTranspiler, obj string, method string, args []string) (string, bool) {
+	// Unique pathlib-only methods always translate; others require obj to be a known path var.
+	unique_path_methods := ['read_text', 'read_bytes', 'write_text', 'write_bytes', 'iterdir',
+		'glob', 'resolve', 'absolute']
+	is_path_var := t.path_vars[obj] or { false }
+	if !is_path_var && method !in unique_path_methods {
+		return '', false
+	}
+	match method {
+		'read_text' {
+			t.add_using('os')
+			return "os.read_file(${obj}) or { '' }", true
+		}
+		'read_bytes' {
+			t.add_using('os')
+			return 'os.read_bytes(${obj}) or { []u8{} }', true
+		}
+		'write_text' {
+			t.add_using('os')
+			text := if args.len > 0 { args[0] } else { "''" }
+			return 'os.write_file(${obj}, ${text})!', true
+		}
+		'write_bytes' {
+			t.add_using('os')
+			data := if args.len > 0 { args[0] } else { '[]u8{}' }
+			return 'os.write_file_array(${obj}, ${data})!', true
+		}
+		'exists' {
+			t.add_using('os')
+			return 'os.exists(${obj})', true
+		}
+		'is_file' {
+			t.add_using('os')
+			return 'os.is_file(${obj})', true
+		}
+		'is_dir' {
+			t.add_using('os')
+			return 'os.is_dir(${obj})', true
+		}
+		'mkdir' {
+			t.add_using('os')
+			// parents/exist_ok keyword args ignored; os.mkdir_all handles both
+			return 'os.mkdir_all(${obj})!', true
+		}
+		'rmdir' {
+			t.add_using('os')
+			return 'os.rmdir(${obj})!', true
+		}
+		'unlink' {
+			t.add_using('os')
+			return 'os.rm(${obj})!', true
+		}
+		'rename' {
+			t.add_using('os')
+			dst := if args.len > 0 { args[0] } else { "''" }
+			return 'os.rename(${obj}, ${dst})!', true
+		}
+		'iterdir' {
+			t.add_using('os')
+			return 'os.ls(${obj}) or { [] }', true
+		}
+		'glob' {
+			t.add_using('os')
+			pattern := if args.len > 0 { args[0] } else { "'*'" }
+			return 'os.glob(os.join_path(${obj}, ${pattern})) or { [] }', true
+		}
+		'stat' {
+			t.add_using('os')
+			return 'os.stat(${obj})!', true
+		}
+		'resolve', 'absolute' {
+			t.add_using('os')
+			return 'os.abs_path(${obj})', true
+		}
+		'open' {
+			t.add_using('os')
+			mode := if args.len > 0 { args[0] } else { "'r'" }
+			return 'os.open_file(${obj}, ${mode}, 0o644)!', true
+		}
+		else {
+			return '', false
+		}
+	}
+}
+
+// dispatch_re_func translates Python `re` module function calls to V `regex` equivalents.
+// V regex works via RE struct objects, so simple one-liner Python calls are lowered to
+// inline compile+call chains using `regex.regex_opt(pattern)!`.
+pub fn dispatch_re_func(mut t VTranspiler, fname string, args []string) (string, bool) {
+	if !fname.starts_with('re.') {
+		return '', false
+	}
+	t.add_using('regex')
+	fn_name := fname[3..] // strip 're.'
+	match fn_name {
+		'compile' {
+			if args.len > 0 {
+				return 'regex.regex_opt(${args[0]}) or { panic(err) }', true
+			}
+			return '', false
+		}
+		'match', 'fullmatch' {
+			// re.match(pattern, string) — anchors at start
+			if args.len >= 2 {
+				anchor := if fn_name == 'fullmatch' { 'true' } else { 'false' }
+				_ = anchor
+				return '(regex.regex_opt(${args[0]}) or { panic(err) }).match_string(${args[1]})', true
+			}
+			return '', false
+		}
+		'search' {
+			// re.search(pattern, string) → find first match position
+			if args.len >= 2 {
+				return '(regex.regex_opt(${args[0]}) or { panic(err) }).find(${args[1]})', true
+			}
+			return '', false
+		}
+		'findall' {
+			// re.findall(pattern, string) → []string of all matches
+			if args.len >= 2 {
+				return '(regex.regex_opt(${args[0]}) or { panic(err) }).find_all_str(${args[1]})', true
+			}
+			return '', false
+		}
+		'sub' {
+			// re.sub(pattern, repl, string) → replace all occurrences
+			if args.len >= 3 {
+				return '(regex.regex_opt(${args[0]}) or { panic(err) }).replace(${args[2]}, ${args[1]})', true
+			}
+			return '', false
+		}
+		'subn' {
+			// re.subn(pattern, repl, string) → (new_string, count) — emit as comment + sub
+			if args.len >= 3 {
+				return '(regex.regex_opt(${args[0]}) or { panic(err) }).replace(${args[2]}, ${args[1]}) /* subn: count not available */', true
+			}
+			return '', false
+		}
+		'split' {
+			// re.split(pattern, string) → []string
+			if args.len >= 2 {
+				return '(regex.regex_opt(${args[0]}) or { panic(err) }).split(${args[1]})', true
+			}
+			return '', false
+		}
+		'escape' {
+			// re.escape(string) — no direct V equivalent; emit as-is with comment
+			if args.len > 0 {
+				return '${args[0]} /* re.escape: manual escaping may be needed */', true
+			}
+			return '', false
+		}
+		else {
+			return '', false
+		}
+	}
+}
+
+// dispatch_itertools_func translates Python `itertools` function calls to V equivalents.
+pub fn dispatch_itertools_func(mut t VTranspiler, fname string, args []string) (string, bool) {
+	if !fname.starts_with('itertools.') {
+		return '', false
+	}
+	fn_name := fname[10..] // strip 'itertools.'
+	match fn_name {
+		'chain' {
+			// itertools.chain(a, b, c) → flatten [[a...], [b...], [c...]]
+			t.add_using('arrays')
+			if args.len == 0 {
+				return '[]', true
+			}
+			return 'arrays.flatten([${args.join(', ')}])', true
+		}
+		'chain.from_iterable' {
+			// itertools.chain.from_iterable(it) → arrays.flatten(it)
+			t.add_using('arrays')
+			if args.len > 0 {
+				return 'arrays.flatten(${args[0]})', true
+			}
+			return '', false
+		}
+		'islice' {
+			// itertools.islice(it, stop) or islice(it, start, stop)
+			if args.len == 2 {
+				return '${args[0]}[..${args[1]}]', true
+			}
+			if args.len >= 3 {
+				return '${args[0]}[${args[1]}..${args[2]}]', true
+			}
+			return '', false
+		}
+		'repeat' {
+			// itertools.repeat(x, n) → []T{len: n, init: x}
+			t.generated_code_has_any_type = true
+			if args.len >= 2 {
+				return '[]Any{len: ${args[1]}, init: ${args[0]}} /* itertools.repeat */', true
+			}
+			if args.len == 1 {
+				return '[]Any{} /* itertools.repeat(${args[0]}): infinite repeat, manual loop required */', true
+			}
+			return '', false
+		}
+		'count' {
+			// itertools.count(start, step) — no direct V equivalent
+			if args.len >= 1 {
+				return '${args[0]} /* itertools.count: use a manual counter loop */', true
+			}
+			return '', false
+		}
+		'zip_longest' {
+			// itertools.zip_longest(*its) — no direct equivalent
+			t.add_using('arrays')
+			t.generated_code_has_any_type = true
+			return '[][]Any{} /* itertools.zip_longest: use arrays.group or manual padding loop */', true
+		}
+		'product' {
+			// itertools.product(a, b) — nested loops; emit stub
+			t.generated_code_has_any_type = true
+			return '[][]Any{} /* itertools.product(${args.join(', ')}): use nested for loops */', true
+		}
+		'combinations', 'combinations_with_replacement' {
+			t.generated_code_has_any_type = true
+			return '[][]Any{} /* itertools.${fn_name}(${args.join(', ')}): no direct V equivalent */', true
+		}
+		'permutations' {
+			t.generated_code_has_any_type = true
+			return '[][]Any{} /* itertools.permutations(${args.join(', ')}): no direct V equivalent */', true
+		}
+		'groupby' {
+			t.generated_code_has_any_type = true
+			return '[][]Any{} /* itertools.groupby(${args.join(', ')}): no direct V equivalent */', true
+		}
+		'takewhile' {
+			if args.len >= 2 {
+				return '${args[1]}.filter(${args[0]})', true
+			}
+			return '', false
+		}
+		'dropwhile' {
+			t.generated_code_has_any_type = true
+			return '[]Any{} /* itertools.dropwhile(${args.join(', ')}): no direct V equivalent */', true
+		}
+		'starmap' {
+			t.generated_code_has_any_type = true
+			return '[]Any{} /* itertools.starmap(${args.join(', ')}): use .map() with destructuring */', true
+		}
+		'accumulate' {
+			t.generated_code_has_any_type = true
+			return '[]Any{} /* itertools.accumulate(${args.join(', ')}): use a manual accumulate loop */', true
+		}
+		'flatten' {
+			t.add_using('arrays')
+			if args.len > 0 {
+				return 'arrays.flatten(${args[0]})', true
+			}
+			return '', false
+		}
+		else {
+			return '', false
 		}
 	}
 }
@@ -831,6 +1106,35 @@ pub fn dispatch_attr(mut t VTranspiler, attr_path string) (string, bool) {
 			return 'os.args', true
 		}
 		else {
+			// Path property attributes — only translate when the object is a known
+			// pathlib.Path variable tracked in t.path_vars.
+			parts := attr_path.split('.')
+			if parts.len >= 2 {
+				obj := parts[..parts.len - 1].join('.')
+				prop := parts[parts.len - 1]
+				// Only translate path properties for known path variables
+				if t.path_vars[obj] or { false } {
+					match prop {
+						'name' {
+							t.add_using('os')
+							return 'os.file_name(${obj})', true
+						}
+						'stem' {
+							t.add_using('os')
+							return 'os.file_name(${obj}).all_before_last(".")', true
+						}
+						'suffix' {
+							t.add_using('os')
+							return '"." + os.file_ext(${obj})', true
+						}
+						'parent' {
+							t.add_using('os')
+							return 'os.dir(${obj})', true
+						}
+						else {}
+					}
+				}
+			}
 			return '', false
 		}
 	}
@@ -839,19 +1143,19 @@ pub fn dispatch_attr(mut t VTranspiler, attr_path string) (string, bool) {
 // Get V annotation from an expression
 fn get_v_annotation(expr Expr) string {
 	match expr {
-		Constant { return expr.v_annotation or { '' } }
-		Name { return expr.v_annotation or { '' } }
-		BinOp { return expr.v_annotation or { '' } }
-		UnaryOp { return expr.v_annotation or { '' } }
-		BoolOp { return expr.v_annotation or { '' } }
-		Compare { return expr.v_annotation or { '' } }
-		Call { return expr.v_annotation or { '' } }
 		Attribute { return expr.v_annotation or { '' } }
-		Subscript { return expr.v_annotation or { '' } }
-		List { return expr.v_annotation or { '' } }
-		Tuple { return expr.v_annotation or { '' } }
+		BinOp { return expr.v_annotation or { '' } }
+		BoolOp { return expr.v_annotation or { '' } }
+		Call { return expr.v_annotation or { '' } }
+		Compare { return expr.v_annotation or { '' } }
+		Constant { return expr.v_annotation or { '' } }
 		Dict { return expr.v_annotation or { '' } }
+		List { return expr.v_annotation or { '' } }
+		Name { return expr.v_annotation or { '' } }
 		Set { return expr.v_annotation or { '' } }
+		Subscript { return expr.v_annotation or { '' } }
+		Tuple { return expr.v_annotation or { '' } }
+		UnaryOp { return expr.v_annotation or { '' } }
 		else { return '' }
 	}
 }

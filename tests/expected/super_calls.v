@@ -1,4 +1,3 @@
-@[translated]
 module main
 
 type Any = bool | int | i64 | f64 | string | []u8
@@ -13,7 +12,7 @@ fn (mut self Base) __init__(value Any) {
 }
 
 fn (self Base) greet() Any {
-	return 'hi ' + (self.value)
+	return 'hi ${self.value}'
 }
 
 pub struct Child {

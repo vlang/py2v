@@ -97,6 +97,45 @@ pub fn escape_string(s string) string {
 	return result.str()
 }
 
+// escape_interp_string escapes `s` for embedding inside a V single-quoted
+// interpolated string literal. Same as escape_string but also escapes `$`
+// when it is immediately followed by `{`, so that literal braced text in
+// the original Python string is not mistaken for a V interpolation.
+pub fn escape_interp_string(s string) string {
+	mut result := strings.new_builder(s.len)
+	for i, c in s {
+		match c {
+			`\\` {
+				result.write_string('\\\\')
+			}
+			`'` {
+				result.write_string("\\'")
+			}
+			`\n` {
+				result.write_string('\\n')
+			}
+			`\r` {
+				result.write_string('\\r')
+			}
+			`\t` {
+				result.write_string('\\t')
+			}
+			`$` {
+				// Escape $ only when followed by `{` to avoid accidental V interpolation.
+				if i + 1 < s.len && s[i + 1] == `{` {
+					result.write_string('\\$')
+				} else {
+					result.write_u8(c)
+				}
+			}
+			else {
+				result.write_u8(c)
+			}
+		}
+	}
+	return result.str()
+}
+
 // bytes_to_v_literal converts `data` to a V byte array literal string.
 pub fn bytes_to_v_literal(data []u8) string {
 	if data.len == 0 {
@@ -686,6 +725,7 @@ pub fn convert_percent_format(fmt_str string, values []string) string {
 				`\t` { result.write_string('\\t') }
 				else { result.write_u8(ch) }
 			}
+
 			i++
 		}
 	}

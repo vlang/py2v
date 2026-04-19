@@ -1,4 +1,3 @@
-@[translated]
 module main
 
 pub struct IntListNonEmpty {

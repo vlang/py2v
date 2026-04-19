@@ -1,4 +1,3 @@
-@[translated]
 module main
 
 fn fib(i int) int {

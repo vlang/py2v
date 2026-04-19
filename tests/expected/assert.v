@@ -1,4 +1,3 @@
-@[translated]
 module main
 
 fn compare_assert(a int, b int) {
@@ -8,7 +7,7 @@ fn compare_assert(a int, b int) {
 
 fn main() {
 	assert true
-	assert !(false)
+	assert !false
 	compare_assert(1, 1)
 	assert true
 	assert true

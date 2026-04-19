@@ -1,4 +1,3 @@
-@[translated]
 module main
 
 const colors_red = 'red'

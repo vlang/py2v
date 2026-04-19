@@ -1,4 +1,3 @@
-@[translated]
 module main
 
 fn main_func() {
@@ -11,7 +10,7 @@ fn main_func() {
 	for i := 0; i < 10; i += 2 {
 		println(i)
 	}
-	for i := 5; i < 0; i += -1 {
+	for i := 5; i < 0; i-- {
 		println(i)
 	}
 }

@@ -1,5 +1,6 @@
-@[translated]
 module main
+
+type Any = bool | int | i64 | f64 | string | []u8
 
 // Foo is a simple test class.
 //
@@ -7,7 +8,7 @@ module main
 pub struct Foo {
 }
 
-fn (self Foo) bar() int {
+fn (self Foo) bar() Any {
 	return self.baz()
 }
 

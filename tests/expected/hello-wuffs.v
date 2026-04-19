@@ -1,7 +1,7 @@
-@[translated]
 module main
 
 import os
+import io
 
 type Any = bool | int | i64 | f64 | string | []u8
 

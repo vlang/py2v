@@ -1,8 +1,7 @@
-@[translated]
 module main
 
 fn demorgan(a bool, b bool) bool {
-	a && b == !!a || !b
+	a && b == !(!a || !b)
 }
 
 fn main() {

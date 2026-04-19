@@ -1,4 +1,3 @@
-@[translated]
 module main
 
 type Any = bool | int | i64 | f64 | string | []u8
@@ -34,7 +33,7 @@ fn direction(cmd string) string {
 	}
 }
 
-fn check_singleton(val Any) Any {
+fn check_singleton(val Any) string {
 	match val {
 		true {
 			return 'yes'
