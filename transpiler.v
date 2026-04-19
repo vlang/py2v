@@ -75,6 +75,10 @@ pub fn new_transpiler() VTranspiler {
 
 // visit_module emits the top-level V module source for a Module node.
 pub fn (mut t VTranspiler) visit_module(node Module) string {
+	// Reset per-module state so repeated transpilation with the same instance
+	// does not leak global-declaration flags.
+	t.has_global_decl = false
+
 	mut module_name := t.module_name
 	if module_name.len == 0 {
 		module_name = 'main'
@@ -2094,19 +2098,7 @@ pub fn (mut t VTranspiler) visit_try(node Try) string {
 		buf << '// Translate each except* handler manually using goroutines or error unions.'
 	}
 
-	// Convert finally blocks to V's defer for guaranteed cleanup
-	if node.finalbody.len > 0 {
-		buf << 'defer {'
-		for stmt in node.finalbody {
-			result := t.visit_stmt(stmt)
-			for line in result.split('\n') {
-				if line.len > 0 {
-					buf << '\t${line}'
-				}
-			}
-		}
-		buf << '}'
-	}
+	t.emit_try_finally_defer(mut buf, node.finalbody)
 
 	// Emit try body directly — wrap fallible calls with `or {}` manually
 	if has_handlers {
@@ -2119,99 +2111,28 @@ pub fn (mut t VTranspiler) visit_try(node Try) string {
 		buf << t.visit_stmt(stmt)
 	}
 
-	// Preserve Python try/else for manual adaptation. In Python, else runs only
-	// when no exception is raised; emit as scaffold so semantics are not changed
-	// accidentally in generated V.
-	if node.orelse.len > 0 {
-		buf << '// else:'
-		buf << '// NOTE: runs only when try body has no exception in Python'
-		buf << 'if false {'
-		for stmt in node.orelse {
-			result := t.visit_stmt(stmt)
-			for line in result.split('\n') {
-				if line.len > 0 {
-					buf << '\t${line}'
-				}
-			}
-		}
-		buf << '}'
-	}
+	t.emit_try_else_scaffold(mut buf, node.orelse)
 
 	// Emit each except handler with real body code inside a dead-code block
 	// so the logic is visible and easy to adapt.
 	for handler in node.handlers {
-		mut header := '// except'
-		mut handler_type_names := []string{}
-		if typ := handler.typ {
-			// Handle tuple of exception types: except (TypeError, ValueError) as e:
-			mut typ_name := ''
-			if typ is Tuple {
-				mut names := []string{}
-				for e in (typ as Tuple).elts {
-					n := t.visit_expr(e)
-					names << n
-					handler_type_names << n
-				}
-				typ_name = names.join(' | ')
-			} else {
-				typ_name = t.visit_expr(typ)
-				handler_type_names << typ_name
-			}
-			if name := handler.name {
-				header = '// except ${typ_name} as ${name}:'
-				// Temporarily bind the exception var as string so uses compile
-				t.var_types[name] = 'string'
-			} else {
-				header = '// except ${typ_name}:'
-			}
-		} else {
-			header = '// except:'
+		meta := t.build_except_handler_meta(handler)
+		if meta.bound_name.len > 0 {
+			// Temporarily bind the exception var as string so uses compile.
+			t.var_types[meta.bound_name] = 'string'
 		}
-		buf << header
+		buf << meta.header
 		buf << '// NOTE: V uses Result types; adapt body to use `or { ... }` blocks'
 		if node.is_exception_group && trystar_synth_dispatch {
-			mut matched := false
-			for n in handler_type_names {
-				if n in trystar_member_types {
-					matched = true
-					break
-				}
-			}
-			if matched {
-				buf << '// NOTE: matched synthetic ExceptionGroup member type(s): ${handler_type_names.join(', ')}'
-				for stmt in handler.body {
-					buf << t.visit_stmt(stmt)
-				}
-			} else {
-				buf << '// NOTE: except* handler scaffold; body preserved for manual translation'
-				buf << 'if false {'
-				for stmt in handler.body {
-					result := t.visit_stmt(stmt)
-					for line in result.split('\n') {
-						if line.len > 0 {
-							buf << '\t${line}'
-						}
-					}
-				}
-				buf << '}'
-			}
-			if name := handler.name {
-				t.var_types.delete(name)
+			t.emit_trystar_handler_body(mut buf, handler, meta.type_names, trystar_member_types)
+			if meta.bound_name.len > 0 {
+				t.var_types.delete(meta.bound_name)
 			}
 			continue
 		}
 		if node.is_exception_group {
-			buf << '// NOTE: except* handler scaffold; body preserved for manual translation'
-			buf << 'if false {'
-			for stmt in handler.body {
-				result := t.visit_stmt(stmt)
-				for line in result.split('\n') {
-					if line.len > 0 {
-						buf << '\t${line}'
-					}
-				}
-			}
-			buf << '}'
+			t.emit_nonexecuting_stmt_scaffold(mut buf, handler.body,
+				'// NOTE: except* handler scaffold; body preserved for manual translation')
 		} else {
 			// Emit handler body as real code for non-TryStar fallback mode.
 			for stmt in handler.body {
@@ -2219,12 +2140,109 @@ pub fn (mut t VTranspiler) visit_try(node Try) string {
 			}
 		}
 		// Clean up temporary binding
-		if name := handler.name {
-			t.var_types.delete(name)
+		if meta.bound_name.len > 0 {
+			t.var_types.delete(meta.bound_name)
 		}
 	}
 
 	return buf.join('\n')
+}
+
+struct ExceptHandlerMeta {
+mut:
+	header     string
+	type_names []string
+	bound_name string
+}
+
+fn (mut t VTranspiler) emit_try_finally_defer(mut buf []string, finalbody []Stmt) {
+	if finalbody.len == 0 {
+		return
+	}
+	buf << 'defer {'
+	for stmt in finalbody {
+		result := t.visit_stmt(stmt)
+		for line in result.split('\n') {
+			if line.len > 0 {
+				buf << '\t${line}'
+			}
+		}
+	}
+	buf << '}'
+}
+
+fn (mut t VTranspiler) emit_try_else_scaffold(mut buf []string, orelse []Stmt) {
+	if orelse.len == 0 {
+		return
+	}
+	buf << '// else:'
+	buf << '// NOTE: runs only when try body has no exception in Python'
+	t.emit_nonexecuting_stmt_scaffold(mut buf, orelse, '')
+}
+
+fn (mut t VTranspiler) emit_nonexecuting_stmt_scaffold(mut buf []string, stmts []Stmt, note string) {
+	if note != '' {
+		buf << note
+	}
+	buf << 'if false {'
+	for stmt in stmts {
+		result := t.visit_stmt(stmt)
+		for line in result.split('\n') {
+			if line.len > 0 {
+				buf << '\t${line}'
+			}
+		}
+	}
+	buf << '}'
+}
+
+fn (mut t VTranspiler) build_except_handler_meta(handler ExceptHandler) ExceptHandlerMeta {
+	mut meta := ExceptHandlerMeta{
+		header:     '// except:'
+		type_names: []string{}
+		bound_name: ''
+	}
+	if typ := handler.typ {
+		mut typ_name := ''
+		if typ is Tuple {
+			mut names := []string{}
+			for e in (typ as Tuple).elts {
+				n := t.visit_expr(e)
+				names << n
+				meta.type_names << n
+			}
+			typ_name = names.join(' | ')
+		} else {
+			typ_name = t.visit_expr(typ)
+			meta.type_names << typ_name
+		}
+		if name := handler.name {
+			meta.header = '// except ${typ_name} as ${name}:'
+			meta.bound_name = name
+		} else {
+			meta.header = '// except ${typ_name}:'
+		}
+	}
+	return meta
+}
+
+fn (mut t VTranspiler) emit_trystar_handler_body(mut buf []string, handler ExceptHandler, handler_type_names []string, trystar_member_types []string) {
+	mut matched := false
+	for n in handler_type_names {
+		if n in trystar_member_types {
+			matched = true
+			break
+		}
+	}
+	if matched {
+		buf << '// NOTE: matched synthetic ExceptionGroup member type(s): ${handler_type_names.join(', ')}'
+		for stmt in handler.body {
+			buf << t.visit_stmt(stmt)
+		}
+		return
+	}
+	t.emit_nonexecuting_stmt_scaffold(mut buf, handler.body,
+		'// NOTE: except* handler scaffold; body preserved for manual translation')
 }
 
 fn (mut t VTranspiler) extract_exception_group_member_types(node Raise) ?[]string {
@@ -2253,61 +2271,49 @@ fn (mut t VTranspiler) extract_exception_group_member_types(node Raise) ?[]strin
 	return none
 }
 
+fn append_unique_strings(mut dst []string, src []string) {
+	for n in src {
+		if n !in dst {
+			dst << n
+		}
+	}
+}
+
+fn (mut t VTranspiler) collect_exception_group_member_types_from_stmts(stmts []Stmt, mut member_types []string) {
+	for s in stmts {
+		t.collect_exception_group_member_types_from_stmt(s, mut member_types)
+	}
+}
+
 fn (mut t VTranspiler) collect_exception_group_member_types_from_stmt(stmt Stmt, mut member_types []string) {
 	match stmt {
 		Raise {
 			if types := t.extract_exception_group_member_types(stmt) {
-				for n in types {
-					if n !in member_types {
-						member_types << n
-					}
-				}
+				append_unique_strings(mut member_types, types)
 			}
 		}
 		If {
-			for s in stmt.body {
-				t.collect_exception_group_member_types_from_stmt(s, mut member_types)
-			}
-			for s in stmt.orelse {
-				t.collect_exception_group_member_types_from_stmt(s, mut member_types)
-			}
+			t.collect_exception_group_member_types_from_stmts(stmt.body, mut member_types)
+			t.collect_exception_group_member_types_from_stmts(stmt.orelse, mut member_types)
 		}
 		For {
-			for s in stmt.body {
-				t.collect_exception_group_member_types_from_stmt(s, mut member_types)
-			}
-			for s in stmt.orelse {
-				t.collect_exception_group_member_types_from_stmt(s, mut member_types)
-			}
+			t.collect_exception_group_member_types_from_stmts(stmt.body, mut member_types)
+			t.collect_exception_group_member_types_from_stmts(stmt.orelse, mut member_types)
 		}
 		While {
-			for s in stmt.body {
-				t.collect_exception_group_member_types_from_stmt(s, mut member_types)
-			}
-			for s in stmt.orelse {
-				t.collect_exception_group_member_types_from_stmt(s, mut member_types)
-			}
+			t.collect_exception_group_member_types_from_stmts(stmt.body, mut member_types)
+			t.collect_exception_group_member_types_from_stmts(stmt.orelse, mut member_types)
 		}
 		Try {
-			for s in stmt.body {
-				t.collect_exception_group_member_types_from_stmt(s, mut member_types)
-			}
+			t.collect_exception_group_member_types_from_stmts(stmt.body, mut member_types)
 			for h in stmt.handlers {
-				for s in h.body {
-					t.collect_exception_group_member_types_from_stmt(s, mut member_types)
-				}
+				t.collect_exception_group_member_types_from_stmts(h.body, mut member_types)
 			}
-			for s in stmt.orelse {
-				t.collect_exception_group_member_types_from_stmt(s, mut member_types)
-			}
-			for s in stmt.finalbody {
-				t.collect_exception_group_member_types_from_stmt(s, mut member_types)
-			}
+			t.collect_exception_group_member_types_from_stmts(stmt.orelse, mut member_types)
+			t.collect_exception_group_member_types_from_stmts(stmt.finalbody, mut member_types)
 		}
 		With {
-			for s in stmt.body {
-				t.collect_exception_group_member_types_from_stmt(s, mut member_types)
-			}
+			t.collect_exception_group_member_types_from_stmts(stmt.body, mut member_types)
 		}
 		else {}
 	}

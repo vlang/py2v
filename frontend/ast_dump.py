@@ -245,6 +245,67 @@ def _collect_returns_excluding_nested(node: ast.FunctionDef) -> List[ast.Return]
     return collector.returns
 
 
+def _merge_local_type(local_types: Dict[str, str], name: str, typ: str):
+    """Merge a discovered local type conservatively.
+
+    If conflicting types are seen for the same name, clear inference for that name.
+    """
+    prev = local_types.get(name, "")
+    if not prev:
+        local_types[name] = typ
+        return
+    if prev != typ:
+        local_types.pop(name, None)
+
+
+def _collect_local_assignment_types_from_stmts(
+    stmts: List[ast.stmt],
+    local_types: Dict[str, str],
+    local_dict_value_types: Dict[str, str],
+):
+    """Collect simple assignment type hints from nested blocks in a function body."""
+    for stmt in stmts:
+        if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1 and isinstance(stmt.targets[0], ast.Name):
+            name = stmt.targets[0].id
+            typ = _infer_type_from_value(stmt.value)
+            if typ:
+                _merge_local_type(local_types, name, typ)
+            if isinstance(stmt.value, ast.Dict):
+                dict_value_typ = _infer_homogeneous_dict_value_type(stmt.value)
+                if dict_value_typ:
+                    prev = local_dict_value_types.get(name, "")
+                    if not prev:
+                        local_dict_value_types[name] = dict_value_typ
+                    elif prev != dict_value_typ:
+                        local_dict_value_types.pop(name, None)
+        elif isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name) and stmt.annotation is not None:
+            ann = _annotation_to_str(stmt.annotation)
+            if ann:
+                _merge_local_type(local_types, stmt.target.id, _normalize_inferred_type_name(ann))
+            if isinstance(stmt.value, ast.Dict):
+                dict_value_typ = _infer_homogeneous_dict_value_type(stmt.value)
+                if dict_value_typ:
+                    prev = local_dict_value_types.get(stmt.target.id, "")
+                    if not prev:
+                        local_dict_value_types[stmt.target.id] = dict_value_typ
+                    elif prev != dict_value_typ:
+                        local_dict_value_types.pop(stmt.target.id, None)
+        elif isinstance(stmt, ast.If):
+            _collect_local_assignment_types_from_stmts(stmt.body, local_types, local_dict_value_types)
+            _collect_local_assignment_types_from_stmts(stmt.orelse, local_types, local_dict_value_types)
+        elif isinstance(stmt, (ast.For, ast.AsyncFor, ast.While)):
+            _collect_local_assignment_types_from_stmts(stmt.body, local_types, local_dict_value_types)
+            _collect_local_assignment_types_from_stmts(stmt.orelse, local_types, local_dict_value_types)
+        elif isinstance(stmt, (ast.With, ast.AsyncWith)):
+            _collect_local_assignment_types_from_stmts(stmt.body, local_types, local_dict_value_types)
+        elif isinstance(stmt, ast.Try):
+            _collect_local_assignment_types_from_stmts(stmt.body, local_types, local_dict_value_types)
+            _collect_local_assignment_types_from_stmts(stmt.orelse, local_types, local_dict_value_types)
+            _collect_local_assignment_types_from_stmts(stmt.finalbody, local_types, local_dict_value_types)
+            for h in stmt.handlers:
+                _collect_local_assignment_types_from_stmts(h.body, local_types, local_dict_value_types)
+
+
 def _infer_return_type(node: ast.FunctionDef) -> str:
     """Infer the return type from a function's return statements.
 
@@ -263,16 +324,8 @@ def _infer_return_type(node: ast.FunctionDef) -> str:
     for stmt in node.body:
         if isinstance(stmt, ast.FunctionDef):
             nested_function_types[stmt.name] = _infer_nested_function_type(stmt)
-            continue
-        if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1 and isinstance(stmt.targets[0], ast.Name):
-            name = stmt.targets[0].id
-            typ = _infer_type_from_value(stmt.value)
-            if typ:
-                local_types[name] = typ
-            if isinstance(stmt.value, ast.Dict):
-                dict_value_typ = _infer_homogeneous_dict_value_type(stmt.value)
-                if dict_value_typ:
-                    local_dict_value_types[name] = dict_value_typ
+
+    _collect_local_assignment_types_from_stmts(node.body, local_types, local_dict_value_types)
 
     return_types: Set[str] = set()
     saw_none_return = False
