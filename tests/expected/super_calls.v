@@ -7,7 +7,7 @@ pub mut:
 	value Any
 }
 
-fn (mut self Base) __init__(value Any) {
+fn (mut self Base) init(value Any) {
 	self.value = value
 }
 
@@ -19,8 +19,8 @@ pub struct Child {
 	Base
 }
 
-fn (mut self Child) __init__(value Any) {
-	self.Base.__init__(value)
+fn (mut self Child) init(value Any) {
+	self.Base.init(value)
 }
 
 fn (self Child) greet() Any {
@@ -30,14 +30,12 @@ fn (self Child) greet() Any {
 pub struct CustomError {
 }
 
-fn (mut self CustomError) __init__(msg Any) {
+fn (mut self CustomError) init(msg Any) {
 }
 
 fn main() {
 	c := Child{
-		Base: Base{
-			value: 'x'
-		}
+		Base: Base{ value: 'x' }
 	}
 	println(c.greet())
 }

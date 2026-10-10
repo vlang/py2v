@@ -4,24 +4,24 @@ type Any = bool | int | i64 | f64 | string | []u8
 
 pub struct Temperature {
 pub mut:
-	_celsius Any
+	celsius_ Any
 }
 
-fn (mut self Temperature) __init__(celsius f64) {
-	self._celsius = celsius
+fn (mut self Temperature) init(celsius f64) {
+	self.celsius_ = celsius
 }
 
-fn (self Temperature) celsius() f64 {
-	return self._celsius
+fn (mut self Temperature) celsius() f64 {
+	return self.celsius_
 }
 
 fn (mut self Temperature) set_celsius(value f64) {
-	self._celsius = value
+	self.celsius_ = value
 }
 
 fn main() {
 	t := Temperature{
-		_celsius: 25
+		celsius_: 25
 	}
 	println(t.celsius)
 	t.set_celsius(30)

@@ -6,7 +6,8 @@ Parses a Python source file into an enriched AST and outputs JSON
 for the py2v V-side transpiler.
 
 Enrichments beyond standard ast.parse():
-  - _type field on every node
+  - node_type field on every node (named to avoid V json2's `_type`
+    sumtype discriminator, which would make decode[json2.Any] fail)
   - mutable_vars, is_void, is_generator on FunctionDef
   - is_class_method, class_name on methods
   - is_mutable on Name nodes
@@ -66,6 +67,10 @@ class ScopeTracker(ast.NodeVisitor):
             self.mutable.add(name)
 
     def visit_AugAssign(self, node: ast.AugAssign):
+        # `self.x += 1` mutates through self, so the method needs a `mut self`
+        # receiver even though no bare Name target appears.
+        if isinstance(node.target, ast.Attribute) and isinstance(node.target.value, ast.Name):
+            self.mutable.add(node.target.value.id)
         for name in _extract_names(node.target):
             self._record_assign(name, node)
             self.mutable.add(name)
@@ -628,6 +633,13 @@ def _dunder_to_v_op(name: str) -> str:
     return _DUNDER_V_OP.get(name, "")
 
 
+# Python names that are renamed on every reference so the emitted V identifier is
+# legal. Keys are Python dunder names, values are their V spelling.
+_DUNDER_NAME_MAP: Dict[str, str] = {
+    "__file__": "file___",
+}
+
+
 def _is_protocol_class(node: ast.ClassDef) -> bool:
     """Return True if the class directly inherits from Protocol."""
     for base in node.bases:
@@ -762,7 +774,7 @@ def _node_to_dict(node: ast.AST, mutable_vars: Set[str],
     # Convenience aliases used throughout this function
     var_annotations = ctx.var_annotations
     result: Dict[str, Any] = {}
-    result["_type"] = type(node).__name__
+    result["node_type"] = type(node).__name__
 
     # Location info
     for attr in ("lineno", "col_offset", "end_lineno", "end_col_offset"):
@@ -915,7 +927,7 @@ def _node_to_dict(node: ast.AST, mutable_vars: Set[str],
 
     elif isinstance(node, ast.AugAssign):
         result["target"] = _node_to_dict(node.target, mutable_vars, redefined, ctx)
-        result["op"] = {"_type": type(node.op).__name__}
+        result["op"] = {"node_type": type(node.op).__name__}
         result["value"] = _node_to_dict(node.value, mutable_vars, redefined, ctx)
 
     elif isinstance(node, ast.AnnAssign):
@@ -998,7 +1010,7 @@ def _node_to_dict(node: ast.AST, mutable_vars: Set[str],
 
     # Expressions
     elif isinstance(node, ast.BoolOp):
-        result["op"] = {"_type": type(node.op).__name__}
+        result["op"] = {"node_type": type(node.op).__name__}
         result["values"] = [_node_to_dict(v, mutable_vars, redefined, ctx) for v in node.values]
 
     elif isinstance(node, ast.NamedExpr):
@@ -1007,11 +1019,11 @@ def _node_to_dict(node: ast.AST, mutable_vars: Set[str],
 
     elif isinstance(node, ast.BinOp):
         result["left"] = _node_to_dict(node.left, mutable_vars, redefined, ctx)
-        result["op"] = {"_type": type(node.op).__name__}
+        result["op"] = {"node_type": type(node.op).__name__}
         result["right"] = _node_to_dict(node.right, mutable_vars, redefined, ctx)
 
     elif isinstance(node, ast.UnaryOp):
-        result["op"] = {"_type": type(node.op).__name__}
+        result["op"] = {"node_type": type(node.op).__name__}
         result["operand"] = _node_to_dict(node.operand, mutable_vars, redefined, ctx)
 
     elif isinstance(node, ast.Lambda):
@@ -1070,7 +1082,7 @@ def _node_to_dict(node: ast.AST, mutable_vars: Set[str],
 
     elif isinstance(node, ast.Compare):
         result["left"] = _node_to_dict(node.left, mutable_vars, redefined, ctx)
-        result["ops"] = [{"_type": type(op).__name__} for op in node.ops]
+        result["ops"] = [{"node_type": type(op).__name__} for op in node.ops]
         result["comparators"] = [_node_to_dict(c, mutable_vars, redefined, ctx) for c in node.comparators]
 
     elif isinstance(node, ast.Call):
@@ -1113,20 +1125,22 @@ def _node_to_dict(node: ast.AST, mutable_vars: Set[str],
     elif isinstance(node, ast.Attribute):
         result["value"] = _node_to_dict(node.value, mutable_vars, redefined, ctx)
         result["attr"] = node.attr
-        result["ctx"] = {"_type": type(node.ctx).__name__}
+        result["ctx"] = {"node_type": type(node.ctx).__name__}
 
     elif isinstance(node, ast.Subscript):
         result["value"] = _node_to_dict(node.value, mutable_vars, redefined, ctx)
         result["slice"] = _node_to_dict(node.slice, mutable_vars, redefined, ctx)
-        result["ctx"] = {"_type": type(node.ctx).__name__}
+        result["ctx"] = {"node_type": type(node.ctx).__name__}
 
     elif isinstance(node, ast.Starred):
         result["value"] = _node_to_dict(node.value, mutable_vars, redefined, ctx)
-        result["ctx"] = {"_type": type(node.ctx).__name__}
+        result["ctx"] = {"node_type": type(node.ctx).__name__}
 
     elif isinstance(node, ast.Name):
-        result["id"] = node.id
-        result["ctx"] = {"_type": type(node.ctx).__name__}
+        # Python module dunders with a direct V spelling are renamed here so
+        # that every reference site agrees. V has no `__file__` ambient value.
+        result["id"] = _DUNDER_NAME_MAP.get(node.id, node.id)
+        result["ctx"] = {"node_type": type(node.ctx).__name__}
         result["is_mutable"] = node.id in mutable_vars
         # Attach simple v_annotation if we discovered one during pre-scan
         if node.id in var_annotations:
@@ -1134,7 +1148,7 @@ def _node_to_dict(node: ast.AST, mutable_vars: Set[str],
 
     elif isinstance(node, (ast.List, ast.Tuple)):
         result["elts"] = [_node_to_dict(e, mutable_vars, redefined, ctx) for e in node.elts]
-        result["ctx"] = {"_type": type(node.ctx).__name__}
+        result["ctx"] = {"node_type": type(node.ctx).__name__}
 
     elif isinstance(node, ast.Slice):
         result["lower"] = _node_to_dict(node.lower, mutable_vars, redefined, ctx) if node.lower else None
@@ -1155,11 +1169,11 @@ def _constant_value(value: Any) -> Any:
     if isinstance(value, (int, float, str)):
         return value
     if isinstance(value, bytes):
-        return {"_type": "bytes", "value": list(value)}
+        return {"node_type": "bytes", "value": list(value)}
     if value is Ellipsis:
-        return {"_type": "Ellipsis"}
+        return {"node_type": "Ellipsis"}
     if isinstance(value, complex):
-        return {"_type": "complex", "real": value.real, "imag": value.imag}
+        return {"node_type": "complex", "real": value.real, "imag": value.imag}
     return str(value)
 
 
@@ -1211,7 +1225,7 @@ def _gather_func_return_annotations(tree: ast.Module) -> Dict[str, str]:
 
 def _arguments_to_dict(args: ast.arguments, mutable_vars: Set[str]) -> Dict[str, Any]:
     return {
-        "_type": "arguments",
+        "node_type": "arguments",
         "posonlyargs": [_arg_to_dict(a, mutable_vars) for a in args.posonlyargs],
         "args": [_arg_to_dict(a, mutable_vars) for a in args.args],
         "vararg": _arg_to_dict(args.vararg, mutable_vars) if args.vararg else None,
@@ -1224,7 +1238,7 @@ def _arguments_to_dict(args: ast.arguments, mutable_vars: Set[str]) -> Dict[str,
 
 def _arg_to_dict(arg: ast.arg, mutable_vars: Set[str]) -> Dict[str, Any]:
     result = {
-        "_type": "arg",
+        "node_type": "arg",
         "arg": arg.arg,
         "annotation": _node_to_dict(arg.annotation, mutable_vars, {}, AnalysisContext.empty()) if arg.annotation else None,
         "type_comment": getattr(arg, "type_comment", None),
@@ -1244,7 +1258,7 @@ def _keyword_to_dict(kw: ast.keyword, mutable_vars: Set[str],
     if ctx is None:
         ctx = AnalysisContext.empty()
     result = {
-        "_type": "keyword",
+        "node_type": "keyword",
         "arg": kw.arg,
         "value": _node_to_dict(kw.value, mutable_vars, redefined, ctx),
     }
@@ -1258,7 +1272,7 @@ def _keyword_to_dict(kw: ast.keyword, mutable_vars: Set[str],
 
 def _alias_to_dict(alias: ast.alias) -> Dict[str, Any]:
     result = {
-        "_type": "alias",
+        "node_type": "alias",
         "name": alias.name,
         "asname": alias.asname,
     }
@@ -1276,7 +1290,7 @@ def _handler_to_dict(handler: ast.ExceptHandler, mutable_vars: Set[str],
     if ctx is None:
         ctx = AnalysisContext.empty()
     result = {
-        "_type": "ExceptHandler",
+        "node_type": "ExceptHandler",
         "type": _node_to_dict(handler.type, mutable_vars, redefined, ctx) if handler.type else None,
         "name": handler.name,
         "body": [_node_to_dict(n, mutable_vars, redefined, ctx) for n in handler.body],
@@ -1295,7 +1309,7 @@ def _withitem_to_dict(item: ast.withitem, mutable_vars: Set[str],
     if ctx is None:
         ctx = AnalysisContext.empty()
     return {
-        "_type": "withitem",
+        "node_type": "withitem",
         "context_expr": _node_to_dict(item.context_expr, mutable_vars, redefined, ctx),
         "optional_vars": _node_to_dict(item.optional_vars, mutable_vars, redefined, ctx) if item.optional_vars else None,
     }
@@ -1307,7 +1321,7 @@ def _comprehension_to_dict(comp: ast.comprehension, mutable_vars: Set[str],
     if ctx is None:
         ctx = AnalysisContext.empty()
     return {
-        "_type": "comprehension",
+        "node_type": "comprehension",
         "target": _node_to_dict(comp.target, mutable_vars, redefined, ctx),
         "iter": _node_to_dict(comp.iter, mutable_vars, redefined, ctx),
         "ifs": [_node_to_dict(i, mutable_vars, redefined, ctx) for i in comp.ifs],
@@ -1359,7 +1373,7 @@ def _pattern_to_dict(pattern, mutable_vars, redefined, ctx):
     if pattern is None:
         return None
     t = type(pattern).__name__
-    result = {"_type": t}
+    result = {"node_type": t}
     if t == "MatchValue":
         result["value"] = _node_to_dict(pattern.value, mutable_vars, redefined, ctx)
     elif t == "MatchSingleton":
@@ -1401,7 +1415,7 @@ def _pattern_to_dict(pattern, mutable_vars, redefined, ctx):
 def _match_case_to_dict(case, mutable_vars, redefined, ctx):
     """Serialize a match_case node."""
     result = {
-        "_type": "match_case",
+        "node_type": "match_case",
         "pattern": _pattern_to_dict(case.pattern, mutable_vars, redefined, ctx),
         "body": [_node_to_dict(s, mutable_vars, redefined, ctx) for s in case.body],
     }

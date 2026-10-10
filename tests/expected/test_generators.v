@@ -31,10 +31,10 @@ fn inner(ch chan int) {
 
 fn generator_with_yield_from(ch chan int) {
 	defer { ch.close() }
-	__gen1 := inner()
-	// yield from __gen1
+	py2v_gen1 := inner()
+	// yield from py2v_gen1
 	for {
-		val := <-__gen1 or { break }
+		val := <-py2v_gen1 or { break }
 		ch <- val
 	}
 	ch <- 3

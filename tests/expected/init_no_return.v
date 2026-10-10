@@ -7,7 +7,7 @@ pub mut:
 	x Any
 }
 
-fn (mut self Thing) __init__(x Any) {
+fn (mut self Thing) init(x Any) {
 	self.x = x
 }
 

@@ -171,10 +171,11 @@ pub fn new_tmp_var_gen() TmpVarGen {
 	}
 }
 
-// next returns a fresh temporary name with `prefix`.
+// next returns a fresh temporary name with `prefix`. The name avoids a leading
+// underscore, which V forbids on variables and struct fields.
 pub fn (mut g TmpVarGen) next(prefix string) string {
 	g.counter++
-	return '__${prefix}${g.counter}'
+	return 'py2v_${prefix}${g.counter}'
 }
 
 // is_numeric_type returns true if `typ` is a known numeric type.

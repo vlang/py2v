@@ -82,7 +82,7 @@ fn main() {
 
 	// Run Python frontend to get JSON AST
 	python_cmd := $if windows { 'python' } $else { 'python3' }
-	result := os.execute('${python_cmd} "${ast_dump_path}" "${input_file}"')
+	result := os.exec_opt([python_cmd, ast_dump_path, input_file]) or { exit(1) }
 	if result.exit_code != 0 {
 		eprintln('Error running Python frontend:')
 		eprintln(result.output)
@@ -168,7 +168,7 @@ fn format_v_code(code string) string {
 		os.rm(tmp_file) or {}
 	}
 
-	result := os.execute('v fmt -w "${tmp_file}"')
+	result := os.exec_opt(['v', 'fmt', '-w', tmp_file]) or { return code }
 	if result.exit_code == 0 {
 		formatted := os.read_file(tmp_file) or { return code }
 		return formatted

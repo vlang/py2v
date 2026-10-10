@@ -9,8 +9,8 @@ fn main() {
 	letters := ['a', 'b']
 	chained := arrays.flatten([nums, letters])
 	sliced := nums[..2]
-	repeated := []Any{len: 3, init: 7} // itertools.repeat
-	pairs := [][]Any{} // itertools.product(nums, letters): use nested for loops
+	repeated := []Any{len: 3, init: 7} /* itertools.repeat */
+	pairs := [][]Any{} /* itertools.product(nums, letters): use nested for loops */
 	println(chained)
 	println(sliced)
 	println(repeated)

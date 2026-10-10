@@ -7,7 +7,7 @@ pub mut:
 	count          ?int
 }
 
-fn (mut self BaseOptions) __init__() {
+fn (mut self BaseOptions) init() {
 	self.mobile_options = none
 	self.names = none
 	self.count = none

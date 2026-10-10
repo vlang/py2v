@@ -8,8 +8,8 @@ fn main_func() {
 	}
 	names := ['Alice', 'Bob']
 	ages := [25, 30]
-	for __zipi1, name in names {
-		age := ages[__zipi1]
+	for py2v_zipi1, name in names {
+		age := ages[py2v_zipi1]
 		println(name)
 		println(age)
 	}
