@@ -97,6 +97,21 @@ pub fn escape_string(s string) string {
 	return result.str()
 }
 
+// v_string_literal renders `s` as a V string literal.
+//
+// V does not accept a backslash escape inside a single-quoted string, so a
+// literal that contains a single quote is emitted double-quoted instead; only
+// the delimiter that does not occur in the content may be used.
+pub fn v_string_literal(s string) string {
+	escaped := escape_string(s)
+	if !s.contains("'") || s.contains('"') {
+		return "'${escaped}'"
+	}
+	// Content has `'` but no `"`: use double quotes. In a double-quoted V
+	// string a single quote needs no escape, and `\'` is an invalid sequence.
+	return '"' + escaped.replace("\\'", "'") + '"'
+}
+
 // escape_interp_string escapes `s` for embedding inside a V single-quoted
 // interpolated string literal. Same as escape_string but also escapes `$`
 // when it is immediately followed by `{`, so that literal braced text in
@@ -719,7 +734,9 @@ pub fn convert_percent_format(fmt_str string, values []string) string {
 			// Escape characters that are special in V string literals
 			match ch {
 				`'` { result.write_string("\\'") }
-				`$` { result.write_string('\\$') }
+				// V needs no escape for a bare `$`; only `${` interpolates. Escaping
+				// it produces an invalid `\$` sequence.
+				`$` { result.write_u8(`$`) }
 				`\\` { result.write_string('\\\\') }
 				`\n` { result.write_string('\\n') }
 				`\r` { result.write_string('\\r') }

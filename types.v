@@ -44,7 +44,7 @@ pub const v_container_type_map = {
 }
 
 // V keywords that need escaping with @
-pub const v_keywords = [
+pub const v_keywords = [..]string[
 	'__global',
 	'__offsetof',
 	'_likely_',
@@ -90,11 +90,11 @@ pub const v_keywords = [
 	'typeof',
 	'union',
 	'unsafe',
-]!
+]
 
 // V built-in type names that conflict when used as identifiers (variable/parameter names)
 // These need escaping with @ only in identifier context, not as type casts
-pub const v_builtin_types = [
+pub const v_builtin_types = [..]string[
 	'bool',
 	'byte',
 	'byteptr',
@@ -112,7 +112,7 @@ pub const v_builtin_types = [
 	'u64',
 	'u8',
 	'voidptr',
-]!
+]
 
 // V width rank for numeric type promotion
 pub const v_width_rank = {
@@ -255,7 +255,7 @@ pub const python_dunder_method_names = {
 	// ambient value, so it is emitted as a name the caller can define, but the
 	// name must still be a legal V identifier.
 	'__file__':      'file___'
-}!
+}
 
 // python_dunder_class_attrs are Python bookkeeping class attributes that have no
 // runtime meaning in V and must not become struct fields.

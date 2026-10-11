@@ -31,6 +31,9 @@ mut:
 	known_classes       map[string][]string
 	// Module name for emitted code
 	module_name string
+	// current_return_count is the arity of the enclosing function's V return
+	// tuple, or 0 when it returns a single value.
+	current_return_count int
 	// Project translation state. `emit_pub` makes top-level symbols visible
 	// across V modules; `registry` maps Python module paths to V modules;
 	// `current_dotted` is this module's Python dotted path.
@@ -86,6 +89,7 @@ pub fn new_transpiler() VTranspiler {
 		imported_classes:            map[string][]string{}
 		known_classes:               map[string][]string{}
 		module_name:                 ''
+		current_return_count:        0
 		mut_param_indices:           map[string][]int{}
 		mut_receiver_methods:        map[string]bool{}
 		namedtuple_fields:           map[string][]string{}
@@ -279,6 +283,18 @@ pub fn (mut t VTranspiler) visit_body_stmts(stmts []Stmt, level int) string {
 // visit_return emits V code for a Return statement.
 pub fn (mut t VTranspiler) visit_return(node Return) string {
 	if val := node.value {
+		// A function with an N-tuple return type must return N separate values;
+		// returning the V array literal is not a multi-return.
+		if t.current_return_count > 0 && (val is Tuple || val is List) {
+			elts := if val is Tuple { (val as Tuple).elts } else { (val as List).elts }
+			if elts.len == t.current_return_count {
+				mut parts := []string{}
+				for e in elts {
+					parts << t.visit_expr(e)
+				}
+				return 'return ${parts.join(', ')}'
+			}
+		}
 		return 'return ${t.visit_expr(val)}'
 	}
 	return 'return'
@@ -500,7 +516,7 @@ fn (mut t VTranspiler) visit_closure_from_funcdef(node FunctionDef, nl_names []s
 	// Return type
 	mut ret_type := ''
 	if ret := node.returns {
-		ret_type = t.typename_from_annotation(ret)
+		ret_type = v_return_type(t.typename_from_annotation(ret))
 	} else if node.v_annotation != '' {
 		// Use inferred return type from frontend analysis
 		ret_type = map_type(node.v_annotation)
@@ -797,6 +813,20 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 		param_idx++
 	}
 
+	// Python keyword-only args come after `*args`, but V requires the variadic
+	// parameter to be last, so emit them here, before it.
+	for i, kwonly in node.args.kwonlyargs {
+		kwname := escape_identifier(kwonly.arg)
+		mut kwtype := 'Any'
+		t.generated_code_has_any_type = true
+		if ann := kwonly.annotation {
+			kwtype = t.typename_from_annotation(ann)
+		}
+		// V has no default parameter values; defaults are filled in at call
+		// sites via func_defaults instead.
+		args_strs << '${kwname} ${kwtype}'
+	}
+
 	// Register function's mut parameter indices for call-site mut keyword generation
 	if mut_indices.len > 0 && !node.is_class_method {
 		t.mut_param_indices[node.name] = mut_indices
@@ -810,6 +840,13 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 		}
 		t.func_defaults[node.name] = default_strs
 		t.func_param_count[node.name] = param_idx
+	}
+
+	// **kwargs has to precede *args: V requires the variadic parameter to be
+	// last, so a signature with both cannot put kwargs after it.
+	if kwarg := node.args.kwarg {
+		t.generated_code_has_any_type = true
+		args_strs << '${escape_identifier(kwarg.arg)} map[string]Any // **kwargs'
 	}
 
 	// Handle vararg (*args)
@@ -829,23 +866,6 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 		args_strs << '${escape_identifier(vararg.arg)} ${typename}'
 	}
 
-	// Handle **kwargs — emit as map[string]Any with a comment
-	if kwarg := node.args.kwarg {
-		t.generated_code_has_any_type = true
-		args_strs << '${escape_identifier(kwarg.arg)} map[string]Any // **kwargs'
-	}
-
-	// Handle keyword-only args (after *)
-	for kwonly in node.args.kwonlyargs {
-		kwname := escape_identifier(kwonly.arg)
-		mut kwtype := 'Any'
-		t.generated_code_has_any_type = true
-		if ann := kwonly.annotation {
-			kwtype = t.typename_from_annotation(ann)
-		}
-		args_strs << '${kwname} ${kwtype}'
-	}
-
 	// For generator functions, add channel parameter
 	if node.is_generator {
 		yield_type := t.infer_generator_yield_type(node.body)
@@ -859,9 +879,14 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 	_ = node.body
 
 	// Return type
+	saved_return_count := t.current_return_count
+	t.current_return_count = 0
 	if !node.is_void && !node.is_generator && node.name != '__init__' {
 		if ret := node.returns {
-			ret_type := t.typename_from_annotation(ret)
+			ret_type := v_return_type(t.typename_from_annotation(ret))
+			if ret_type.starts_with('(') {
+				t.current_return_count = ret_type.count(',') + 1
+			}
 			signature << ret_type
 			t.func_return_types[node.name] = ret_type
 		} else if node.v_annotation != '' {
@@ -979,6 +1004,8 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 	t.var_types = saved_var_types.clone()
 	t.escaped_identifiers = saved_escaped_identifiers.clone()
 
+	// A nested function must not inherit the enclosing function's return arity.
+	t.current_return_count = saved_return_count
 	if nested_fndefs.len > 0 {
 		t.current_class_name = saved_current_class
 		return nested_fndefs.join('\n') + '\n' + notes_prefix + decorator_comments.join('\n') + if decorator_comments.len > 0 {
@@ -1635,9 +1662,14 @@ pub fn (mut t VTranspiler) visit_assign(node Assign) string {
 								}
 							}
 							op := if any_redefined { '=' } else { ':=' }
-							// All unpack targets get mut (V needs this for array element operations)
-							subkw := if !any_redefined { 'mut ' } else { '' }
-							assigns << '${subkw}${t.visit_expr(st)} ${op} ${tmp_var}[${i}]'
+							// Array elements need mut for V, but a discard target
+							// must stay bare: V rejects `mut _`.
+							lhs := t.visit_expr(st)
+							mut subkw := ''
+							if !any_redefined && lhs.trim_space() != '_' {
+								subkw = 'mut '
+							}
+							assigns << '${subkw}${lhs} ${op} ${tmp_var}[${i}]'
 						}
 					}
 				}
@@ -1766,8 +1798,13 @@ fn (mut t VTranspiler) handle_starred_unpack(elts []main.Expr, value_str string)
 			}
 		}
 
-		// All starred unpack targets need mut for V array operations
-		assigns << 'mut ${t.visit_expr(target_elt)} := ${idx_val}'
+		// Array elements need mut for V slice assignment, but a discard target
+		// (`_`) must stay bare: V rejects `mut _`.
+		mut lhs := t.visit_expr(target_elt)
+		if lhs.trim_space() != '_' {
+			lhs = 'mut ${lhs}'
+		}
+		assigns << '${lhs} := ${idx_val}'
 	}
 
 	return assigns.join('\n')
@@ -1924,6 +1961,29 @@ pub fn (mut t VTranspiler) visit_for(node For) string {
 			}
 		}
 		if all_names && target_names.len > 0 {
+			// V allows at most two iteration variables, but Python commonly unpacks
+			// three or more (e.g. `for a, b, c in d.values()`). Bind the sequence
+			// once and destructure with indexing instead.
+			mut iter_is_special := false
+			if node.iter is Call {
+				call := node.iter as Call
+				if call.func is Name {
+					n := (call.func as Name).id
+					iter_is_special = n in ['enumerate', 'zip', 'reversed']
+				}
+			}
+			if target_names.len > 2 && !iter_is_special {
+				seq := t.new_tmp('seq')
+				item := t.new_tmp('item')
+				buf << '${seq} := ${t.visit_expr(node.iter)}'
+				buf << 'for ${item} in ${seq} {'
+				for k, name in target_names {
+					buf << t.indent_code('${name} := ${item}[${k}]', 2)
+				}
+				buf << t.visit_body_stmts(node.body, 2)
+				buf << '\t}'
+				return buf.join('\n')
+			}
 			target = target_names.join(', ')
 
 			// enumerate(seq) => for i, v in seq
@@ -2935,6 +2995,15 @@ pub fn (mut t VTranspiler) visit_expr_stmt(node ExprStmt) string {
 		if c.value is EllipsisValue {
 			return '// ...'
 		}
+		// A bare string used as a statement is a Python no-op. Emitting it as a V
+		// expression statement is a type error, so keep the text as a comment.
+		if c.value is string {
+			mut out := []string{}
+			for raw_line in (c.value as string).split('\n') {
+				out << '// ${raw_line.trim_space()}'
+			}
+			return out.join('\n')
+		}
 	}
 	result := t.visit_expr(node.value)
 	if result.len == 0 {
@@ -2976,7 +3045,7 @@ pub fn (mut t VTranspiler) visit_constant(node Constant) string {
 			return '${node.value as f64}'
 		}
 		string {
-			return "'${escape_string(node.value as string)}'"
+			return v_string_literal(node.value as string)
 		}
 		BytesValue {
 			bv := node.value as BytesValue
@@ -4679,7 +4748,10 @@ pub fn (mut t VTranspiler) visit_dict(node Dict) string {
 		}
 	}
 	if pairs.len == 0 {
-		return '{}'
+		// V has no untyped empty map literal; fall back to a string-keyed map,
+		// which is what Python code almost always means for `{}`.
+		t.generated_code_has_any_type = true
+		return 'map[string]Any{}'
 	}
 	return '{\n${pairs.join('\n')}\n}'
 }
@@ -4964,13 +5036,24 @@ pub fn (mut t VTranspiler) visit_joined_str(node JoinedStr) string {
 		return "''"
 	}
 	mut inner := ''
+	mut use_double := false
 	for val in node.values {
 		match val {
 			Constant {
 				if val.value is string {
 					s := val.value as string
-					// Escape special chars; protect `${` from being treated as interpolation.
-					inner += escape_interp_string(s)
+					// Escape special chars; protect `${` from being treated as
+					// interpolation. A literal `'` cannot be backslash-escaped in a
+					// V single-quoted string, so use a double-quoted literal instead.
+					if s.contains("'") && !s.contains('"') {
+						use_double = true
+					}
+					mut piece := escape_interp_string(s)
+					if use_double {
+						// In a double-quoted V string `\'` is an invalid escape.
+						piece = piece.replace("\\'", "'")
+					}
+					inner += piece
 				}
 			}
 			FormattedValue {
@@ -4981,6 +5064,9 @@ pub fn (mut t VTranspiler) visit_joined_str(node JoinedStr) string {
 				inner += '\${${t.visit_expr(val)}}'
 			}
 		}
+	}
+	if use_double {
+		return '"' + inner + '"'
 	}
 	return "'${inner}'"
 }
@@ -5300,7 +5386,11 @@ pub fn (mut t VTranspiler) typename_from_annotation(ann ?Expr) string {
 			index := t.typename_from_annotation(a.slice)
 
 			mapped := v_container_type_map[value] or { value }
-			if value == 'Tuple' || value == 'tuple' {
+			// `value` has already been mapped through the container table, so the
+			// raw subscript name is needed to recognise `Tuple`/`tuple`.
+			base := a.value
+			base_name := if base is Name { (base as Name).id } else { value }
+			if base_name == 'Tuple' || base_name == 'tuple' {
 				// Collect individual element types from the slice.
 				mut elem_types := []string{}
 				if a.slice is Tuple {
@@ -5339,7 +5429,7 @@ pub fn (mut t VTranspiler) typename_from_annotation(ann ?Expr) string {
 				t.pending_type_notes << '// NOTE: Tuple[${joined}] — define a struct with named fields'
 				return '[]Any'
 			}
-			if value == 'Literal' {
+			if base_name == 'Literal' {
 				// Literal[v1, v2, ...] — extract the common value type and emit it.
 				mut lit_types := []string{}
 				if a.slice is Tuple {
@@ -5365,7 +5455,7 @@ pub fn (mut t VTranspiler) typename_from_annotation(ann ?Expr) string {
 				t.pending_type_notes << '// NOTE: Literal[${index}] — allowed values are ${index}'
 				return base_type
 			}
-			if value == 'Dict' || value == 'dict' {
+			if base_name == 'Dict' || base_name == 'dict' {
 				// Dict[K, V] — V spells this map[K]V, with no comma. The slice is
 				// a Tuple of two elements, so recurse over each separately.
 				if a.slice is Tuple {
@@ -6254,4 +6344,27 @@ fn (t VTranspiler) constructor_name(call Call) string {
 		return name
 	}
 	return ''
+}
+
+// v_return_type adapts a type expression to return-type position. A fixed-size
+// array annotation such as `tuple[int, int]` maps to `[2]int` in variable
+// position, but V requires multiple return values to be written `(int, int)`.
+fn v_return_type(typ string) string {
+	if typ.len < 3 || typ[0] != `[` {
+		return typ
+	}
+	close_idx := typ.index_u8(`]`)
+	if close_idx < 2 {
+		return typ
+	}
+	count := typ[1..close_idx].int()
+	elem := typ[close_idx + 1..]
+	if count <= 0 {
+		return typ
+	}
+	mut parts := []string{}
+	for _ in 0 .. count {
+		parts << elem
+	}
+	return '(${parts.join(', ')})'
 }

@@ -15,12 +15,12 @@ enum Speed {
 	speed_5 = 5
 }
 
-fn coords() [2]int {
-	return [1, 2]
+fn coords() (int, int) {
+	return 1, 2
 }
 
-fn rgb() [3]int {
-	return [255, 0, 128]
+fn rgb() (int, int, int) {
+	return 255, 0, 128
 }
 
 // NOTE: Tuple[int, string] — define a struct with named fields
