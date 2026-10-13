@@ -25,7 +25,7 @@ Change workflow (required)
 
 Build & test (development)
 - Build: from repo root run `v .` (do not use `-o` during normal development).
-- Run regression suite: `sh tests/run_tests.sh` (Linux/macOS).
+- Run regression suite: `v tests/run_tests.vsh` (V script; runs on every platform).
 - Targeted V test: `v test py2v_test.v`.
 - Refresh expected fixtures after intentional changes: `sh tests/update_expected.sh`.
 - Reproduce a case quickly: `./py2v tests/cases/<case>.py`.
