@@ -412,6 +412,13 @@ pub const python_to_v_import = {
 	'sqlite3':     'db.sqlite'
 	'struct':      'encoding.binary'
 	'subprocess':  'os'
+	// errno/stat/signal/warnings are rewritten inline at the use site.
+	'errno':       ''
+	'stat':        ''
+	'signal':      ''
+	'warnings':    ''
+	// fcntl has no V counterpart; its call sites become explanatory comments.
+	'fcntl':       ''
 	// suppress — no V equivalent needed
 	'sys':         'os'
 	'threading':   '!// import threading: use V goroutines (go fn(){})'
@@ -421,3 +428,146 @@ pub const python_to_v_import = {
 	'unittest':    '!// import unittest: use V built-in `assert` and `v test`'
 	'urllib':      '!// import urllib: use V net.http'
 }
+
+// Python stdlib modules that py2v handles inline rather than by importing a V
+// module. The value is the V module to import, or '' when the module's contents
+// are rewritten at the use site and no import is needed.
+pub const python_stdlib_inline_modules = ['errno', 'stat', 'signal', 'warnings']!
+
+// stat_mode_predicates maps Python `stat.S_ISxxx(mode)` predicates to the POSIX
+// file-type mask test expressed against V's `os.Stat.mode` (a raw u32).
+//
+// V has no `os.Stat.is_dir()` helper, so the test is inlined: a predicate is
+// true when the file-type bits equal the expected value.
+pub const stat_mode_masks = {
+	'S_IFMT':   '0o170000'
+	'S_IFSOCK': '0o140000'
+	'S_IFLNK':  '0o120000'
+	'S_IFREG':  '0o100000'
+	'S_IFBLK':  '0o060000'
+	'S_IFDIR':  '0o040000'
+	'S_IFCHR':  '0o020000'
+	'S_IFIFO':  '0o010000'
+	'S_IMODE':  '0o7777'
+}!
+
+// stat_mode_predicates are the `S_ISxxx` names, mapped to the mask they test.
+pub const stat_mode_predicates = {
+	'S_ISSOCK': 'S_IFSOCK'
+	'S_ISLNK':  'S_IFLNK'
+	'S_ISREG':  'S_IFREG'
+	'S_ISBLK':  'S_IFBLK'
+	'S_ISDIR':  'S_IFDIR'
+	'S_ISCHR':  'S_IFCHR'
+	'S_ISFIFO': 'S_IFIFO'
+}!
+
+// stat_bit_predicates are the `S_ISxxx` names that test a single permission or
+// set-id bit, which need no file-type masking.
+pub const stat_bit_predicates = ['S_ISUID', 'S_ISGID', 'S_ISVTX']!
+pub const stat_bit_masks = ['0o4000', '0o2000', '0o1000']!
+
+// errno_values maps the Python errno constants portage checks against to their
+// POSIX numeric values. V's os package does not expose errno constants, so the
+// numbers are emitted directly; they are stable ABI values.
+pub const errno_values = {
+	'EPERM':        '1'
+	'ENOENT':       '2'
+	'ESRCH':        '3'
+	'EINTR':        '4'
+	'EIO':          '5'
+	'ENXIO':        '6'
+	'E2BIG':        '7'
+	'ENOEXEC':      '8'
+	'EBADF':        '9'
+	'ECHILD':       '10'
+	'EAGAIN':       '11'
+	'ENOMEM':       '12'
+	'EACCES':       '13'
+	'EFAULT':       '14'
+	'EBUSY':        '16'
+	'EEXIST':       '17'
+	'EXDEV':        '18'
+	'ENODEV':       '19'
+	'ENOTDIR':      '20'
+	'EISDIR':       '21'
+	'EINVAL':       '22'
+	'ENFILE':       '23'
+	'EMFILE':       '24'
+	'ENOTTY':       '25'
+	'ETXTBSY':      '26'
+	'EFBIG':        '27'
+	'ENOSPC':       '28'
+	'ESPIPE':       '29'
+	'EROFS':        '30'
+	'EMLINK':       '31'
+	'EPIPE':        '32'
+	'EDOM':         '33'
+	'ERANGE':       '34'
+	'EDEADLK':      '35'
+	'ENAMETOOLONG': '36'
+	'ENOSYS':       '38'
+	'ENOTEMPTY':    '39'
+	'ELOOP':        '40'
+	'ENOMSG':       '42'
+	'EIDRM':        '43'
+	'EOVERFLOW':    '75'
+	'ESTALE':       '116'
+	'EDQUOT':       '122'
+	'ENOTSUP':      '95'
+	'EOPNOTSUPP':   '95'
+}!
+
+// signal_values maps Python signal names to V's `os.Signal` enum members. V uses
+// POSIX numbering, so the mapping is a rename rather than a renumbering.
+pub const signal_values = {
+	'SIGHUP':    'os.Signal.hup'
+	'SIGINT':    'os.Signal.int'
+	'SIGQUIT':   'os.Signal.quit'
+	'SIGILL':    'os.Signal.ill'
+	'SIGTRAP':   'os.Signal.trap'
+	'SIGABRT':   'os.Signal.abrt'
+	'SIGBUS':    'os.Signal.bus'
+	'SIGFPE':    'os.Signal.fpe'
+	'SIGKILL':   'os.Signal.kill'
+	'SIGUSR1':   'os.Signal.usr1'
+	'SIGSEGV':   'os.Signal.segv'
+	'SIGUSR2':   'os.Signal.usr2'
+	'SIGPIPE':   'os.Signal.pipe'
+	'SIGALRM':   'os.Signal.alrm'
+	'SIGTERM':   'os.Signal.term'
+	'SIGCHLD':   'os.Signal.chld'
+	'SIGCONT':   'os.Signal.cont'
+	'SIGSTOP':   'os.Signal.stop'
+	'SIGTSTP':   'os.Signal.tstp'
+	'SIGTTIN':   'os.Signal.ttin'
+	'SIGTTOU':   'os.Signal.ttou'
+	'SIGURG':    'os.Signal.urg'
+	'SIGXCPU':   'os.Signal.xcpu'
+	'SIGXFSZ':   'os.Signal.xfsz'
+	'SIGVTALRM': 'os.Signal.vtalrm'
+	'SIGPROF':   'os.Signal.prof'
+	'SIGWINCH':  'os.Signal.winch'
+	'SIGPOLL':   'os.Signal.poll'
+	'SIGPWR':    'os.Signal.pwr'
+	'SIGSYS':    'os.Signal.sys'
+}!
+
+// signal_unrepresentable are Python signal sentinels with no V counterpart:
+// V installs handlers only, and offers no default/ignore enum value.
+pub const signal_unrepresentable = ['SIG_DFL', 'SIG_IGN', 'SIG_BLOCK', 'SIG_UNBLOCK', 'SIG_SETMASK']!
+
+// fcntl_values are the advisory-lock modes. The V stdlib has no fcntl, so the
+// accompanying calls are emitted as comments; these names are kept so a constant
+// reference does not leak into the output as an unresolved identifier.
+pub const fcntl_values = {
+	'LOCK_SH':    '1'
+	'LOCK_EX':    '2'
+	'LOCK_NB':    '4'
+	'LOCK_UN':    '8'
+	'F_GETFD':    '1'
+	'F_SETFD':    '2'
+	'F_GETFL':    '3'
+	'F_SETFL':    '4'
+	'FD_CLOEXEC': '1'
+}!

@@ -1106,8 +1106,121 @@ pub fn dispatch_itertools_func(mut t VTranspiler, fname string, args []string) (
 	}
 }
 
+// dispatch_stdlib_const rewrites a `module.CONSTANT` reference for the Python
+// standard library modules py2v models inline (errno, stat, signal).
+fn dispatch_stdlib_const(attr_path string) string {
+	parts := attr_path.split('.')
+	if parts.len != 2 {
+		return ''
+	}
+	mod := parts[0]
+	name := parts[1]
+	// V has no named constants for these, so the numeric value is emitted
+	// bare. A trailing comment here would make vfmt rewrap the surrounding
+	// expression across lines, so the name is not annotated.
+	if mod == 'errno' {
+		return errno_values[name] or { '' }
+	}
+	if mod == 'signal' {
+		return signal_values[name] or { '' }
+	}
+	if mod == 'stat' {
+		return stat_mode_masks[name] or { '' }
+	}
+	if mod == 'fcntl' {
+		// V's os package has no advisory locking, so the lock modes are only
+		// meaningful alongside the fcntl calls that are stubbed out.
+		return fcntl_values[name] or { '' }
+	}
+	return ''
+}
+
+// dispatch_stdlib_call rewrites a `module.func(args)` call for the Python
+// standard library modules py2v models inline.
+pub fn dispatch_stdlib_call(mut t VTranspiler, mod string, fname string, args []string) (string, bool) {
+	if mod == 'stat' {
+		// `S_ISxxx(mode)` is a masked comparison against the file-type bits.
+		if mask_name := stat_mode_predicates[fname] {
+			if args.len == 1 {
+				mask := stat_mode_masks[mask_name]
+				return '((${args[0]}) & ${stat_mode_masks['S_IFMT']}) == ${mask}', true
+			}
+			return '', false
+		}
+		// `S_ISUID`-style tests are a single bit.
+		if fname in stat_bit_predicates {
+			if args.len == 1 {
+				idx := stat_bit_predicates.index(fname)
+				return '((${args[0]}) & ${stat_bit_masks[idx]}) != 0', true
+			}
+		}
+		// `S_IMODE(mode)` strips the file-type bits.
+		if fname == 'S_IMODE' && args.len == 1 {
+			return '(${args[0]}) & ${stat_mode_masks['S_IMODE']}', true
+		}
+		return '', false
+	}
+	if mod == 'warnings' {
+		if fname == 'warn' {
+			t.add_using('log')
+			if args.len > 0 {
+				return 'log.warn(${args[0]})', true
+			}
+			return 'log.warn("")', true
+		}
+		// Filtering and capture APIs have no V counterpart.
+		if fname in ['filterwarnings', 'simplefilter', 'catch_warnings', 'resetwarnings'] {
+			return '/* warnings.${fname}: no V equivalent */ true', true
+		}
+		return '', false
+	}
+	if mod == 'signal' {
+		if fname == 'signal' {
+			t.add_using('os')
+			if args.len >= 2 {
+				// os.signal_opt returns the previous handler and is the
+				// panic-free variant of os.signal. Its `or` value must be a
+				// SignalHandler, not a Signal.
+				// V's SignalHandler takes an os.Signal, but a Python signal handler
+				// takes none. The adapter ignores the value and calls the handler,
+				// which keeps the user's function body intact.
+				t.add_using('os')
+				// V's SignalHandler takes an os.Signal but a Python handler takes
+				// none, so wrap the call in an adapter closure. A handler that is
+				// already an inline closure is passed through unchanged.
+				handler := args[1]
+				v_handler := if handler.starts_with('(fn') && handler.contains('os.Signal') {
+					handler
+				} else {
+					'fn (_ os.Signal) { ${handler}() }'
+				}
+				return 'os.signal_opt(${args[0]}, ${v_handler}) or { os.SignalHandler(unsafe { nil }) }', true
+			}
+			return '', false
+		}
+		// These have no V counterpart.
+		if fname in ['pthread_sigmask', 'set_wakeup_fd', 'alarm', 'pause'] {
+			return '/* signal.${fname}: no V equivalent */ true', true
+		}
+		return '', false
+	}
+	if mod == 'fcntl' {
+		// V's os package has no advisory file locking or fcntl-style calls.
+		if fname in ['flock', 'lockf', 'fcntl', 'ioctl'] {
+			return '/* ${mod}.${fname}: V os has no fcntl equivalent */ true', true
+		}
+	}
+	return '', false
+}
+
 // dispatch_attr handles attribute accesses like sys.argv.
 pub fn dispatch_attr(mut t VTranspiler, attr_path string) (string, bool) {
+	{
+		hit := dispatch_stdlib_const(attr_path)
+		if hit.len > 0 {
+			return hit, true
+		}
+	}
 	match attr_path {
 		'sys.argv' {
 			t.add_using('os')
