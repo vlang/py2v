@@ -89,6 +89,33 @@ for case_file in "$CASES_DIR"/*.py; do
     fi
 done
 
+# Multi-module package check: a Python package must transpile to a V project
+# whose cross-module references resolve and which the V compiler accepts.
+# pkg_multi covers cross-module classes and calls; pkg_multi2 adds underscore
+# field escaping, which must agree between declaration and use.
+for PKG_NAME in pkg_multi pkg_multi2; do
+PKG_CASE="$CASES_DIR/$PKG_NAME"
+if [ -d "$PKG_CASE" ]; then
+    PKG_OUT=$(mktemp -d /tmp/py2v_pkg_XXXXXX)
+    if "$PY2V" --package "$PKG_CASE" -o "$PKG_OUT" >/dev/null 2>&1; then
+        printf 'Module {\n\tname: %s\n\tdescription: %s\n\tversion: %s\n\tlicense: %s\n}\n' \
+            "'$PKG_NAME'" "'py2v multi-module fixture'" "'0.0.1'" "'MIT'" > "$PKG_OUT/v.mod"
+        if v -shared -check "$PKG_OUT" >/dev/null 2>&1; then
+            printf "%b\n" "${GREEN}PASS${NC} $PKG_NAME (multi-module)"
+            ((PASSED++)) || true
+        else
+            printf "%b\n" "${RED}FAIL${NC} $PKG_NAME (multi-module does not compile)"
+            v -shared -check "$PKG_OUT" 2>&1 | head -20
+            ((FAILED++)) || true
+        fi
+    else
+        printf "%b\n" "${RED}FAIL${NC} $PKG_NAME (translation error)"
+        ((FAILED++)) || true
+    fi
+    rm -rf "$PKG_OUT"
+fi
+done
+
 echo ""
 echo "────────────────────────────────────────────────────────────"
 printf "%b\n" "Summary: ${GREEN}$PASSED passed${NC}, ${RED}$FAILED failed${NC}, ${YELLOW}$SKIPPED skipped${NC}"

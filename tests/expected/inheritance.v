@@ -15,10 +15,7 @@ pub mut:
 fn main() {
 	d := Dog{
 		breed:  'Labrador'
-		Animal: Animal{
-			name:  'Buddy'
-			sound: 'Woof'
-		}
+		Animal: Animal{ name: 'Buddy', sound: 'Woof' }
 	}
 	println(d.name)
 	println(d.sound)

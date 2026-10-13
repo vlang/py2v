@@ -11,7 +11,7 @@ fn parse_type_annotation(m map[string]json2.Any) ?string {
 	// Then try inferred_annotation (object with id field)
 	if raw_inf := m['inferred_annotation'] {
 		inf_map := raw_inf.as_map()
-		typ := inf_map['_type'] or { json2.Any('') }.str()
+		typ := inf_map['node_type'] or { json2.Any('') }.str()
 
 		// Handle Name annotation (simple types like 'int', 'str')
 		if typ == 'Name' {
@@ -25,13 +25,13 @@ fn parse_type_annotation(m map[string]json2.Any) ?string {
 		// Handle Subscript annotation (generic types like 'List[int]', 'Dict[str, int]')
 		if typ == 'Subscript' {
 			value_map := (inf_map['value'] or { json2.Any('') }).as_map()
-			value_type := (value_map['_type'] or { json2.Any('') }).str()
+			value_type := (value_map['node_type'] or { json2.Any('') }).str()
 
 			if value_type == 'Name' {
 				container := (value_map['id'] or { json2.Any('') }).str()
 				// Parse the slice to get the element type
 				slice_map := (inf_map['slice'] or { json2.Any('') }).as_map()
-				slice_type := (slice_map['_type'] or { json2.Any('') }).str()
+				slice_type := (slice_map['node_type'] or { json2.Any('') }).str()
 
 				mut elem_type := 'Any'
 				if slice_type == 'Name' {
@@ -106,7 +106,7 @@ fn parse_location(m map[string]json2.Any) Location {
 
 // Parse a statement node
 fn parse_stmt(m map[string]json2.Any) ?Stmt {
-	node_type := m['_type'] or { return none }.str()
+	node_type := m['node_type'] or { return none }.str()
 	match node_type {
 		'FunctionDef' {
 			return Stmt(parse_function_def(m))
@@ -218,7 +218,7 @@ fn parse_stmt(m map[string]json2.Any) ?Stmt {
 
 // Parse an expression node
 fn parse_expr(m map[string]json2.Any) ?Expr {
-	node_type := m['_type'] or { return none }.str()
+	node_type := m['node_type'] or { return none }.str()
 	match node_type {
 		'Constant' { return Expr(parse_constant(m)) }
 		'Name' { return Expr(parse_name(m)) }
@@ -463,9 +463,11 @@ fn parse_optional_arg(raw json2.Any) ?Arg {
 fn parse_keyword(m map[string]json2.Any) Keyword {
 	return Keyword{
 		arg:   parse_optional_string(m['arg'] or { json2.Any(json2.Null{}) })
-		value: parse_expr(map_field(m, 'value')) or { Expr(Constant{
-			value: NoneValue{}
-		}) }
+		value: parse_expr(map_field(m, 'value')) or {
+			Expr(Constant{
+				value: NoneValue{}
+			})
+		}
 		loc:   parse_location(m)
 	}
 }
@@ -529,13 +531,17 @@ fn parse_assign(m map[string]json2.Any) Assign {
 // Parse AugAssign
 fn parse_aug_assign(m map[string]json2.Any) AugAssign {
 	return AugAssign{
-		target: parse_expr(map_field(m, 'target')) or { Expr(Constant{
-			value: NoneValue{}
-		}) }
+		target: parse_expr(map_field(m, 'target')) or {
+			Expr(Constant{
+				value: NoneValue{}
+			})
+		}
 		op:     parse_operator(map_field(m, 'op'))
-		value:  parse_expr(map_field(m, 'value')) or { Expr(Constant{
-			value: NoneValue{}
-		}) }
+		value:  parse_expr(map_field(m, 'value')) or {
+			Expr(Constant{
+				value: NoneValue{}
+			})
+		}
 		loc:    parse_location(m)
 	}
 }
@@ -629,9 +635,11 @@ fn parse_while(m map[string]json2.Any) While {
 		}
 	}
 	return While{
-		test:   parse_expr(map_field(m, 'test')) or { Expr(Constant{
-			value: NoneValue{}
-		}) }
+		test:   parse_expr(map_field(m, 'test')) or {
+			Expr(Constant{
+				value: NoneValue{}
+			})
+		}
 		body:   body
 		orelse: orelse
 		loc:    parse_location(m)
@@ -658,9 +666,11 @@ fn parse_if(m map[string]json2.Any) If {
 		}
 	}
 	return If{
-		test:   parse_expr(map_field(m, 'test')) or { Expr(Constant{
-			value: NoneValue{}
-		}) }
+		test:   parse_expr(map_field(m, 'test')) or {
+			Expr(Constant{
+				value: NoneValue{}
+			})
+		}
 		body:   body
 		orelse: orelse
 		loc:    parse_location(m)
@@ -784,9 +794,11 @@ fn parse_except_handler(m map[string]json2.Any) ExceptHandler {
 // Parse Assert
 fn parse_assert(m map[string]json2.Any) Assert {
 	return Assert{
-		test: parse_expr(map_field(m, 'test')) or { Expr(Constant{
-			value: NoneValue{}
-		}) }
+		test: parse_expr(map_field(m, 'test')) or {
+			Expr(Constant{
+				value: NoneValue{}
+			})
+		}
 		msg:  parse_optional_expr(m['msg'] or { json2.Any(json2.Null{}) })
 		loc:  parse_location(m)
 	}
@@ -861,9 +873,11 @@ fn parse_nonlocal(m map[string]json2.Any) Nonlocal {
 // Parse ExprStmt
 fn parse_expr_stmt(m map[string]json2.Any) ExprStmt {
 	return ExprStmt{
-		value: parse_expr(map_field(m, 'value')) or { Expr(Constant{
-			value: NoneValue{}
-		}) }
+		value: parse_expr(map_field(m, 'value')) or {
+			Expr(Constant{
+				value: NoneValue{}
+			})
+		}
 		loc:   parse_location(m)
 	}
 }
@@ -886,7 +900,7 @@ fn parse_constant_value(raw json2.Any) ConstantValue {
 	}
 	if raw is map[string]json2.Any {
 		m := raw as map[string]json2.Any
-		if typ := m['_type'] {
+		if typ := m['node_type'] {
 			typ_str := typ.str()
 			if typ_str == 'Ellipsis' {
 				return EllipsisValue{}
@@ -903,7 +917,7 @@ fn parse_constant_value(raw json2.Any) ConstantValue {
 				}
 			}
 			if typ_str == 'complex' {
-				// Frontend emits complex literal as {"_type":"complex","real":...,"imag":...}
+				// Frontend emits complex literal as {"node_type":"complex","real":...,"imag":...}
 				real := (m['real'] or { json2.Any(0.0) }).f64()
 				imag := (m['imag'] or { json2.Any(0.0) }).f64()
 				return ComplexValue{
@@ -954,7 +968,7 @@ fn parse_name(m map[string]json2.Any) Name {
 
 // Parse context
 fn parse_context(m map[string]json2.Any) ExprContext {
-	ctx_type := m['_type'] or { json2.Any('Load') }.str()
+	ctx_type := m['node_type'] or { json2.Any('Load') }.str()
 	return match ctx_type {
 		'Store' { ExprContext(Store{}) }
 		'Del' { ExprContext(Del{}) }
@@ -983,7 +997,7 @@ fn parse_binop(m map[string]json2.Any) BinOp {
 
 // Parse Operator
 fn parse_operator(m map[string]json2.Any) Operator {
-	op_type := m['_type'] or { json2.Any('Add') }.str()
+	op_type := m['node_type'] or { json2.Any('Add') }.str()
 	return match op_type {
 		'Sub' { Operator(Sub{}) }
 		'Mult' { Operator(Mult{}) }
@@ -1016,7 +1030,7 @@ fn parse_unaryop(m map[string]json2.Any) UnaryOp {
 }
 
 fn parse_unary_operator(m map[string]json2.Any) UnaryOperator {
-	op_type := m['_type'] or { json2.Any('Not') }.str()
+	op_type := m['node_type'] or { json2.Any('Not') }.str()
 	return match op_type {
 		'Invert' { UnaryOperator(Invert{}) }
 		'UAdd' { UnaryOperator(UAdd{}) }
@@ -1044,7 +1058,7 @@ fn parse_boolop(m map[string]json2.Any) BoolOp {
 }
 
 fn parse_bool_operator(m map[string]json2.Any) BoolOperator {
-	op_type := m['_type'] or { json2.Any('And') }.str()
+	op_type := m['node_type'] or { json2.Any('And') }.str()
 	return match op_type {
 		'Or' { BoolOperator(Or{}) }
 		else { BoolOperator(And{}) }
@@ -1081,7 +1095,7 @@ fn parse_compare(m map[string]json2.Any) Compare {
 }
 
 fn parse_cmp_op(m map[string]json2.Any) CmpOp {
-	op_type := m['_type'] or { json2.Any('Eq') }.str()
+	op_type := m['node_type'] or { json2.Any('Eq') }.str()
 	return match op_type {
 		'NotEq' { CmpOp(NotEq{}) }
 		'Lt' { CmpOp(Lt{}) }
@@ -1250,15 +1264,21 @@ fn parse_set(m map[string]json2.Any) Set {
 // Parse IfExp
 fn parse_ifexp(m map[string]json2.Any) IfExp {
 	return IfExp{
-		test:   parse_expr(map_field(m, 'test')) or { Expr(Constant{
-			value: NoneValue{}
-		}) }
-		body:   parse_expr(map_field(m, 'body')) or { Expr(Constant{
-			value: NoneValue{}
-		}) }
-		orelse: parse_expr(map_field(m, 'orelse')) or { Expr(Constant{
-			value: NoneValue{}
-		}) }
+		test:   parse_expr(map_field(m, 'test')) or {
+			Expr(Constant{
+				value: NoneValue{}
+			})
+		}
+		body:   parse_expr(map_field(m, 'body')) or {
+			Expr(Constant{
+				value: NoneValue{}
+			})
+		}
+		orelse: parse_expr(map_field(m, 'orelse')) or {
+			Expr(Constant{
+				value: NoneValue{}
+			})
+		}
 		loc:    parse_location(m)
 	}
 }
@@ -1267,9 +1287,11 @@ fn parse_ifexp(m map[string]json2.Any) IfExp {
 fn parse_lambda(m map[string]json2.Any) Lambda {
 	mut lam := Lambda{
 		args: parse_arguments(m['args'] or { json2.Any(map[string]json2.Any{}) })
-		body: parse_expr(map_field(m, 'body')) or { Expr(Constant{
-			value: NoneValue{}
-		}) }
+		body: parse_expr(map_field(m, 'body')) or {
+			Expr(Constant{
+				value: NoneValue{}
+			})
+		}
 		loc:  parse_location(m)
 	}
 	if ann := parse_type_annotation(m) {
@@ -1297,9 +1319,11 @@ fn parse_list_comp(m map[string]json2.Any) ListComp {
 		}
 	}
 	return ListComp{
-		elt:        parse_expr(map_field(m, 'elt')) or { Expr(Constant{
-			value: NoneValue{}
-		}) }
+		elt:        parse_expr(map_field(m, 'elt')) or {
+			Expr(Constant{
+				value: NoneValue{}
+			})
+		}
 		generators: generators
 		loc:        parse_location(m)
 	}
@@ -1314,9 +1338,11 @@ fn parse_set_comp(m map[string]json2.Any) SetComp {
 		}
 	}
 	return SetComp{
-		elt:        parse_expr(map_field(m, 'elt')) or { Expr(Constant{
-			value: NoneValue{}
-		}) }
+		elt:        parse_expr(map_field(m, 'elt')) or {
+			Expr(Constant{
+				value: NoneValue{}
+			})
+		}
 		generators: generators
 		loc:        parse_location(m)
 	}
@@ -1331,9 +1357,11 @@ fn parse_dict_comp(m map[string]json2.Any) DictComp {
 		}
 	}
 	return DictComp{
-		key:        parse_expr(map_field(m, 'key')) or { Expr(Constant{
-			value: NoneValue{}
-		}) }
+		key:        parse_expr(map_field(m, 'key')) or {
+			Expr(Constant{
+				value: NoneValue{}
+			})
+		}
 		value:      parse_expr(map_field(m, 'value')) or {
 			Expr(Constant{
 				value: NoneValue{}
@@ -1353,9 +1381,11 @@ fn parse_generator_exp(m map[string]json2.Any) GeneratorExp {
 		}
 	}
 	return GeneratorExp{
-		elt:        parse_expr(map_field(m, 'elt')) or { Expr(Constant{
-			value: NoneValue{}
-		}) }
+		elt:        parse_expr(map_field(m, 'elt')) or {
+			Expr(Constant{
+				value: NoneValue{}
+			})
+		}
 		generators: generators
 		loc:        parse_location(m)
 	}
@@ -1376,9 +1406,11 @@ fn parse_comprehension(m map[string]json2.Any) Comprehension {
 				value: NoneValue{}
 			})
 		}
-		iter:     parse_expr(map_field(m, 'iter')) or { Expr(Constant{
-			value: NoneValue{}
-		}) }
+		iter:     parse_expr(map_field(m, 'iter')) or {
+			Expr(Constant{
+				value: NoneValue{}
+			})
+		}
 		ifs:      ifs
 		is_async: m['is_async'] or { json2.Any(false) }.bool()
 	}
@@ -1387,9 +1419,11 @@ fn parse_comprehension(m map[string]json2.Any) Comprehension {
 // Parse Await
 fn parse_await(m map[string]json2.Any) Await {
 	return Await{
-		value: parse_expr(map_field(m, 'value')) or { Expr(Constant{
-			value: NoneValue{}
-		}) }
+		value: parse_expr(map_field(m, 'value')) or {
+			Expr(Constant{
+				value: NoneValue{}
+			})
+		}
 		loc:   parse_location(m)
 	}
 }
@@ -1405,9 +1439,11 @@ fn parse_yield(m map[string]json2.Any) Yield {
 // Parse YieldFrom
 fn parse_yield_from(m map[string]json2.Any) YieldFrom {
 	return YieldFrom{
-		value: parse_expr(map_field(m, 'value')) or { Expr(Constant{
-			value: NoneValue{}
-		}) }
+		value: parse_expr(map_field(m, 'value')) or {
+			Expr(Constant{
+				value: NoneValue{}
+			})
+		}
 		loc:   parse_location(m)
 	}
 }
@@ -1445,12 +1481,16 @@ fn parse_joined_str(m map[string]json2.Any) JoinedStr {
 // Parse NamedExpr
 fn parse_named_expr(m map[string]json2.Any) NamedExpr {
 	return NamedExpr{
-		target: parse_expr(map_field(m, 'target')) or { Expr(Constant{
-			value: NoneValue{}
-		}) }
-		value:  parse_expr(map_field(m, 'value')) or { Expr(Constant{
-			value: NoneValue{}
-		}) }
+		target: parse_expr(map_field(m, 'target')) or {
+			Expr(Constant{
+				value: NoneValue{}
+			})
+		}
+		value:  parse_expr(map_field(m, 'value')) or {
+			Expr(Constant{
+				value: NoneValue{}
+			})
+		}
 		loc:    parse_location(m)
 	}
 }
@@ -1458,9 +1498,11 @@ fn parse_named_expr(m map[string]json2.Any) NamedExpr {
 // Parse Starred
 fn parse_starred(m map[string]json2.Any) Starred {
 	return Starred{
-		value: parse_expr(map_field(m, 'value')) or { Expr(Constant{
-			value: NoneValue{}
-		}) }
+		value: parse_expr(map_field(m, 'value')) or {
+			Expr(Constant{
+				value: NoneValue{}
+			})
+		}
 		ctx:   parse_context(map_field(m, 'ctx'))
 		loc:   parse_location(m)
 	}
@@ -1492,9 +1534,11 @@ fn parse_optional_string(raw json2.Any) ?string {
 // parse_match parses a Match statement node.
 fn parse_match(m map[string]json2.Any) Match {
 	subject_raw := m['subject'] or { json2.Any(json2.Null{}) }
-	subject := parse_expr(subject_raw.as_map()) or { Expr(Name{
-		id: '_'
-	}) }
+	subject := parse_expr(subject_raw.as_map()) or {
+		Expr(Name{
+			id: '_'
+		})
+	}
 	mut cases := []MatchCase{}
 	if cases_raw := m['cases'] {
 		for c in cases_raw.as_array() {
@@ -1531,7 +1575,7 @@ fn parse_match_case(m map[string]json2.Any) MatchCase {
 
 // parse_match_pattern parses a match pattern node from the JSON map.
 fn parse_match_pattern(m map[string]json2.Any) ?MatchPattern {
-	pt := m['_type'] or { return none }.str()
+	pt := m['node_type'] or { return none }.str()
 	match pt {
 		'MatchValue' {
 			val_raw := m['value'] or { return none }

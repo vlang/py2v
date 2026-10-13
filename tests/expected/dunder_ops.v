@@ -8,7 +8,7 @@ pub mut:
 	y Any
 }
 
-fn (mut self Vector) __init__(x int, y int) {
+fn (mut self Vector) init(x int, y int) {
 	self.x = x
 	self.y = y
 }

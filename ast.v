@@ -438,7 +438,7 @@ pub mut:
 	class_name      string
 	decorator_kind  string
 	dunder_op       string
-	v_annotation    string   // Inferred return type (e.g., 'int', 'bool')
+	v_annotation    string // Inferred return type (e.g., 'int', 'bool')
 }
 
 pub struct AsyncFunctionDef {
@@ -457,7 +457,7 @@ pub mut:
 	class_name      string
 	decorator_kind  string
 	dunder_op       string
-	v_annotation    string   // Inferred return type (e.g., 'int', 'bool')
+	v_annotation    string // Inferred return type (e.g., 'int', 'bool')
 }
 
 pub struct Arguments {

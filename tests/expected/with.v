@@ -8,17 +8,17 @@ pub mut:
 	closed Any
 }
 
-fn (mut self MockFile) __init__(name Any) {
+fn (mut self MockFile) init(name Any) {
 	self.name = name
 	self.closed = false
 }
 
-fn (self MockFile) __enter__() Any {
+fn (self MockFile) enter() Any {
 	println('Opening ${self.name}')
 	return self
 }
 
-fn (mut self MockFile) __exit__(exc_type Any, exc_val Any, exc_tb Any) bool {
+fn (mut self MockFile) exit(exc_type Any, exc_val Any, exc_tb Any) bool {
 	println('Closing ${self.name}')
 	self.closed = true
 	return false

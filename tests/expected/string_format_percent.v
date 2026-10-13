@@ -3,7 +3,7 @@ module main
 fn main_func() {
 	name := 'world'
 	age := 25
-	pi := 3.1415900000000003
+	pi := 3.14159
 	println('hello ${name}')
 	println('name=${name} age=${age}')
 	println('pi is ${pi:.2f}')

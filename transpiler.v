@@ -7,12 +7,14 @@ mut:
 	tmp_gen TmpVarGen
 	usings  []string
 	// Maps and state tracked during transpilation
-	current_class_name          string
-	escaped_identifiers         map[string]bool
-	extra_mut_vars              map[string]bool
-	func_defaults               map[string][]string
-	func_param_count            map[string]int
-	func_return_types           map[string]string
+	current_class_name  string
+	escaped_identifiers map[string]bool
+	extra_mut_vars      map[string]bool
+	func_defaults       map[string][]string
+	func_param_count    map[string]int
+	func_return_types   map[string]string
+	// Methods whose receiver must be `mut` in V, keyed ClassName_method.
+	mut_receiver_methods        map[string]bool
 	generated_code_has_any_type bool
 	global_vars                 map[string]bool
 	has_global_decl             bool
@@ -22,12 +24,35 @@ mut:
 	pending_type_notes []string
 	// Class metadata
 	class_attr_symbols  map[string]map[string]string
+	class_field_escapes map[string]map[string]string
 	class_base_names    map[string][]string
 	class_direct_fields map[string][]string
 	class_type_params   map[string][]string // type_params per class name
 	known_classes       map[string][]string
 	// Module name for emitted code
 	module_name string
+	// current_return_count is the arity of the enclosing function's V return
+	// tuple, or 0 when it returns a single value.
+	current_return_count int
+	// Project translation state. `emit_pub` makes top-level symbols visible
+	// across V modules; `registry` maps Python module paths to V modules;
+	// `current_dotted` is this module's Python dotted path.
+	emit_pub       bool
+	registry       ModuleRegistry
+	current_dotted string
+	// import_aliases maps a name bound by `from proj.mod import name` to the V
+	// module prefix needed to reach it, e.g. `double` -> `util`.
+	import_aliases map[string]string
+	// imported_modules records local names bound by module imports, so that
+	// `name.attr(...)` is not mistaken for a method call on a value.
+	imported_modules map[string]bool
+	// module_aliases maps a local name from `import a.b as c` to the Python
+	// module it refers to.
+	module_aliases map[string]string
+	// imported_classes maps a class name imported from another project module to
+	// its field list, so struct literals and base-class checks resolve without
+	// transpiling that module first.
+	imported_classes map[string][]string
 	// path_vars tracks variables known to hold pathlib.Path values (represented as strings)
 	path_vars map[string]bool
 	// regex_vars tracks variables known to hold compiled regex.RE objects
@@ -52,6 +77,7 @@ pub fn new_transpiler() VTranspiler {
 		class_attr_symbols:          map[string]map[string]string{}
 		class_base_names:            map[string][]string{}
 		class_direct_fields:         map[string][]string{}
+		class_field_escapes:         map[string]map[string]string{}
 		current_class_name:          ''
 		escaped_identifiers:         map[string]bool{}
 		extra_mut_vars:              map[string]bool{}
@@ -61,9 +87,15 @@ pub fn new_transpiler() VTranspiler {
 		generated_code_has_any_type: false
 		has_global_decl:             false
 		global_vars:                 map[string]bool{}
+		import_aliases:              map[string]string{}
+		imported_modules:            map[string]bool{}
+		module_aliases:              map[string]string{}
+		imported_classes:            map[string][]string{}
 		known_classes:               map[string][]string{}
 		module_name:                 ''
+		current_return_count:        0
 		mut_param_indices:           map[string][]int{}
+		mut_receiver_methods:        map[string]bool{}
 		namedtuple_fields:           map[string][]string{}
 		path_vars:                   map[string]bool{}
 		regex_vars:                  map[string]bool{}
@@ -92,8 +124,13 @@ pub fn (mut t VTranspiler) visit_module(node Module) string {
 	mut main_fn_override := '' // full `fn main() {...}` from guard rewrite
 	mut comment_lines := []string{} // top-level import comments etc.
 
+	mut nested_fndefs := []string{}
+	// A `def` nested inside a module-level `if`/`for`/`try` cannot be emitted
+	// there: V only allows `fn` declarations at module top level.
+	mut hoisted_body := t.hoist_module_fns(node.body, mut nested_fndefs)
+
 	mut first_stmt := true
-	for stmt in node.body {
+	for stmt in hoisted_body {
 		// Skip module-level docstrings (first bare string constant)
 		if first_stmt {
 			first_stmt = false
@@ -206,6 +243,9 @@ pub fn (mut t VTranspiler) visit_module(node Module) string {
 	if struct_decls.len > 0 {
 		parts << struct_decls.join('\n\n')
 	}
+	for f in nested_fndefs {
+		func_decls << f
+	}
 	if func_decls.len > 0 {
 		parts << func_decls.join('\n\n')
 	}
@@ -255,6 +295,18 @@ pub fn (mut t VTranspiler) visit_body_stmts(stmts []Stmt, level int) string {
 // visit_return emits V code for a Return statement.
 pub fn (mut t VTranspiler) visit_return(node Return) string {
 	if val := node.value {
+		// A function with an N-tuple return type must return N separate values;
+		// returning the V array literal is not a multi-return.
+		if t.current_return_count > 0 && (val is Tuple || val is List) {
+			elts := if val is Tuple { (val as Tuple).elts } else { (val as List).elts }
+			if elts.len == t.current_return_count {
+				mut parts := []string{}
+				for e in elts {
+					parts << t.visit_expr(e)
+				}
+				return 'return ${parts.join(', ')}'
+			}
+		}
 		return 'return ${t.visit_expr(val)}'
 	}
 	return 'return'
@@ -476,7 +528,7 @@ fn (mut t VTranspiler) visit_closure_from_funcdef(node FunctionDef, nl_names []s
 	// Return type
 	mut ret_type := ''
 	if ret := node.returns {
-		ret_type = t.typename_from_annotation(ret)
+		ret_type = v_return_type(t.typename_from_annotation(ret))
 	} else if node.v_annotation != '' {
 		// Use inferred return type from frontend analysis
 		ret_type = map_type(node.v_annotation)
@@ -609,6 +661,27 @@ fn collect_expr_names(expr Expr, mut names map[string]bool) {
 
 // visit_function_def emits V code for a Python FunctionDef node.
 pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
+	// Pre-pass: a local that receives a `mut self` method call must itself be
+	// declared `mut`, and that has to be known before the body is emitted.
+	{
+		// Seed the type of `x = Klass(...)` before scanning for mut receivers.
+		for st in node.body {
+			if st is Assign {
+				a := st as Assign
+				if a.targets.len == 1 && a.targets[0] is Name && a.value is Call {
+					call := a.value as Call
+					cls := t.constructor_name(call)
+					if cls != '' {
+						t.var_types[(a.targets[0] as Name).id] = cls
+					}
+				}
+			}
+		}
+		for recv, _ in t.collect_mut_receivers(node.body) {
+			t.extra_mut_vars[recv] = true
+		}
+	}
+
 	// Save var_types and escaped_identifiers for function scope (keep globals, reset locals)
 	saved_var_types := t.var_types.clone()
 	saved_escaped_identifiers := t.escaped_identifiers.clone()
@@ -627,7 +700,14 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 	t.var_types = func_var_types.clone()
 
 	mut signature := []string{}
-	signature << 'fn'
+	// Cross-module symbols need a `pub` visibility in V; single-file output
+	// does not. `emit_pub` is set when translating a project rather than a
+	// single script.
+	if t.emit_pub && node.name != 'main' {
+		signature << 'pub fn'
+	} else {
+		signature << 'fn'
+	}
 
 	// Determine emitted function name (dunder → V operator name, or decorated name)
 	mut emit_name := node.name
@@ -637,11 +717,26 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 			'str', 'len', 'index', 'index_set', 'contains' { emit_name = node.dunder_op }
 			else { emit_name = node.dunder_op }
 		}
+	} else if v_name := python_dunder_method_names[node.name] {
+		emit_name = v_name
+	} else {
+		emit_name = escape_leading_underscore(node.name)
 	}
 	// @classmethod / @staticmethod: emit as free function named ClassName_funcname
 	if node.is_class_method && node.decorator_kind in ['classmethod', 'staticmethod'] {
 		emit_name = '${emitted_class_name(node.class_name)}_${node.name}'
 		dunder_comment = '// @${node.decorator_kind}\n'
+	}
+
+	// Binary/comparison operator overloads need value receivers in V, and V
+	// requires both operands of an operator to have the same type.
+	is_binop_dunder := node.dunder_op in ['+', '-', '*', '/', '%', '==', '!=', '<', '<=', '>',
+		'>=']
+	mut emitted_receiver_type := emitted_class_name(node.class_name)
+	if tp := t.class_type_params[node.class_name] {
+		if tp.len > 0 {
+			emitted_receiver_type = '${emitted_receiver_type}[${tp.join(', ')}]'
+		}
 	}
 
 	// Handle class method receiver (skip for staticmethod / classmethod)
@@ -654,10 +749,18 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 				emitted_receiver = '${base_receiver}[${tp.join(', ')}]'
 			}
 		}
-		// Binary/comparison operator overloads need value receivers in V
-		is_binop_dunder := node.dunder_op in ['+', '-', '*', '/', '%', '==', '!=', '<', '<=', '>',
-			'>=']
-		use_mut_recv := !is_binop_dunder && ('self' in node.mutable_vars || node.name == '__init__')
+		mut use_mut_recv := !is_binop_dunder && ('self' in node.mutable_vars || node.name == '__init__')
+		// A method that calls `super().m()` on a base with a `mut self` receiver
+		// mutates the embedded value, so it needs `mut self` here as well.
+		if !use_mut_recv && node.is_class_method {
+			mut v_name := node.dunder_op
+			if v_name == '' {
+				v_name = python_dunder_method_names[node.name] or { node.name }
+			}
+			if t.mut_receiver_methods['${node.class_name}_${v_name}'] {
+				use_mut_recv = true
+			}
+		}
 		if use_mut_recv {
 			signature << '(mut self ${emitted_receiver})'
 		} else {
@@ -683,6 +786,12 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 		mut typename := ''
 		if ann := arg.annotation {
 			typename = t.typename_from_annotation(ann)
+		}
+
+		// Python commonly leaves the operand of a comparison unannotated, which
+		// would otherwise become `Any`; V needs the receiver type there.
+		if typename == '' && is_binop_dunder && node.is_class_method {
+			typename = emitted_receiver_type
 		}
 
 		mut arg_name := escape_identifier(arg.arg)
@@ -716,6 +825,20 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 		param_idx++
 	}
 
+	// Python keyword-only args come after `*args`, but V requires the variadic
+	// parameter to be last, so emit them here, before it.
+	for i, kwonly in node.args.kwonlyargs {
+		kwname := escape_identifier(kwonly.arg)
+		mut kwtype := 'Any'
+		t.generated_code_has_any_type = true
+		if ann := kwonly.annotation {
+			kwtype = t.typename_from_annotation(ann)
+		}
+		// V has no default parameter values; defaults are filled in at call
+		// sites via func_defaults instead.
+		args_strs << '${kwname} ${kwtype}'
+	}
+
 	// Register function's mut parameter indices for call-site mut keyword generation
 	if mut_indices.len > 0 && !node.is_class_method {
 		t.mut_param_indices[node.name] = mut_indices
@@ -729,6 +852,15 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 		}
 		t.func_defaults[node.name] = default_strs
 		t.func_param_count[node.name] = param_idx
+	}
+
+	// **kwargs has to precede *args: V requires the variadic parameter to be
+	// last, so a signature with both cannot put kwargs after it.
+	if kwarg := node.args.kwarg {
+		t.generated_code_has_any_type = true
+		// No trailing comment: a `//` after the last parameter would swallow the
+		// opening brace of the function body.
+		args_strs << '${escape_identifier(kwarg.arg)} map[string]Any'
 	}
 
 	// Handle vararg (*args)
@@ -748,23 +880,6 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 		args_strs << '${escape_identifier(vararg.arg)} ${typename}'
 	}
 
-	// Handle **kwargs — emit as map[string]Any with a comment
-	if kwarg := node.args.kwarg {
-		t.generated_code_has_any_type = true
-		args_strs << '${escape_identifier(kwarg.arg)} map[string]Any // **kwargs'
-	}
-
-	// Handle keyword-only args (after *)
-	for kwonly in node.args.kwonlyargs {
-		kwname := escape_identifier(kwonly.arg)
-		mut kwtype := 'Any'
-		t.generated_code_has_any_type = true
-		if ann := kwonly.annotation {
-			kwtype = t.typename_from_annotation(ann)
-		}
-		args_strs << '${kwname} ${kwtype}'
-	}
-
 	// For generator functions, add channel parameter
 	if node.is_generator {
 		yield_type := t.infer_generator_yield_type(node.body)
@@ -778,9 +893,14 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 	_ = node.body
 
 	// Return type
+	saved_return_count := t.current_return_count
+	t.current_return_count = 0
 	if !node.is_void && !node.is_generator && node.name != '__init__' {
 		if ret := node.returns {
-			ret_type := t.typename_from_annotation(ret)
+			ret_type := v_return_type(t.typename_from_annotation(ret))
+			if ret_type.starts_with('(') {
+				t.current_return_count = ret_type.count(',') + 1
+			}
 			signature << ret_type
 			t.func_return_types[node.name] = ret_type
 		} else if node.v_annotation != '' {
@@ -844,6 +964,11 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 		}
 	}
 
+	// A nested `def` may sit inside a block (if/for/try/with). V only allows
+	// `fn` declarations at the top level of a function body, so lift any that are
+	// nested deeper and emit them alongside the others.
+	body_stmts = t.hoist_block_fns(body_stmts, mut nested_fndefs)
+
 	// Pre-scan body for variables passed to mut-parameter functions
 	t.prescan_mut_call_args(body_stmts)
 
@@ -898,6 +1023,8 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 	t.var_types = saved_var_types.clone()
 	t.escaped_identifiers = saved_escaped_identifiers.clone()
 
+	// A nested function must not inherit the enclosing function's return arity.
+	t.current_return_count = saved_return_count
 	if nested_fndefs.len > 0 {
 		t.current_class_name = saved_current_class
 		return nested_fndefs.join('\n') + '\n' + notes_prefix + decorator_comments.join('\n') + if decorator_comments.len > 0 {
@@ -1073,12 +1200,53 @@ pub fn (mut t VTranspiler) visit_class_def(node ClassDef) string {
 		}
 	}
 
+	// Map each Python field name to its V spelling so attribute access agrees
+	// with the struct declaration.
+	//
+	// V has one namespace per struct for fields and methods, while Python keeps
+	// `self._celsius` and a `@property celsius` distinct. Escaping the leading
+	// underscore can therefore collide with a method name, so a collision keeps
+	// an extra trailing underscore.
+	mut method_names := map[string]bool{}
+	for stmt in node.body {
+		if stmt is FunctionDef {
+			mut v_name := (stmt as FunctionDef).dunder_op
+			if v_name == '' {
+				v_name = python_dunder_method_names[(stmt as FunctionDef).name] or {
+					(stmt as FunctionDef).name
+				}
+			}
+			if (stmt as FunctionDef).decorator_kind == 'setter' {
+				v_name = 'set_${v_name}'
+			}
+			method_names[v_name] = true
+		}
+	}
+	mut field_escapes := map[string]string{}
+	for decl, _ in node.declarations {
+		if decl in python_dunder_class_attrs {
+			continue
+		}
+		mut escaped := escape_leading_underscore(decl)
+		if escaped != decl && escaped in method_names {
+			escaped += '_'
+		}
+		field_escapes[decl] = escaped
+	}
+	t.class_field_escapes[node.name] = field_escapes.clone()
+
 	if node.declarations.len > 0 {
 		mut has_typed_fields := false
 		for decl, typename in node.declarations {
+			// Python bookkeeping attributes (__slots__ and friends) have no V
+			// counterpart; emitting them as fields is always wrong.
+			if decl in python_dunder_class_attrs {
+				continue
+			}
 			if decl in class_attr_syms && decl !in init_field_names {
 				continue
 			}
+			mut field_name := field_escapes[decl] or { decl }
 			mut decl_type := typename
 			if decl_type == '' {
 				// Preserve untyped __init__ fields so method assignments compile.
@@ -1099,11 +1267,11 @@ pub fn (mut t VTranspiler) visit_class_def(node ClassDef) string {
 			}
 			if default_expr := node.class_defaults[decl] {
 				default_str := t.visit_expr(default_expr)
-				fields << t.indent_code('${decl} ${typ} = ${default_str}', 1)
+				fields << t.indent_code('${field_name} ${typ} = ${default_str}', 1)
 			} else {
-				fields << t.indent_code('${decl} ${typ}', 1)
+				fields << t.indent_code('${field_name} ${typ}', 1)
 			}
-			field_names << decl
+			field_names << field_name
 		}
 	}
 	for base in node.bases {
@@ -1198,6 +1366,37 @@ pub fn (mut t VTranspiler) visit_class_def(node ClassDef) string {
 		}
 	}
 
+	// Pre-pass: record which methods need a `mut self` receiver, so that calls
+	// through an embedded base (`self.Base.method(...)` from `super()`) can mark
+	// the embedded value as mutable.
+	base_name_early := t.class_base_names[node.name] or { []string{} }
+	base_key := if base_name_early.len > 0 { emitted_class_name(base_name_early[0]) } else { '' }
+	for stmt in node.body {
+		if stmt is FunctionDef {
+			is_binop := stmt.dunder_op in ['+', '-', '*', '/', '%', '==', '!=', '<', '<=', '>',
+				'>=']
+			mut needs_mut := !is_binop && ('self' in stmt.mutable_vars || stmt.name == '__init__')
+			// A `super().method()` call reaches an embedded base value, so this
+			// method needs a `mut self` receiver whenever the base method does.
+			if !needs_mut && base_key != '' {
+				for called in collect_super_calls(stmt.body) {
+					v_called := python_dunder_method_names[called] or { called }
+					if t.mut_receiver_methods['${base_key}_${v_called}'] {
+						needs_mut = true
+						break
+					}
+				}
+			}
+			if needs_mut {
+				mut v_name := stmt.dunder_op
+				if v_name == '' {
+					v_name = python_dunder_method_names[stmt.name] or { stmt.name }
+				}
+				t.mut_receiver_methods['${node.name}_${v_name}'] = true
+			}
+		}
+	}
+
 	// Process body (methods)
 	mut methods := []string{}
 	mut static_fns := []string{}
@@ -1273,6 +1472,15 @@ pub fn (mut t VTranspiler) visit_assign(node Assign) string {
 	if node.is_typevar_assign {
 		return ''
 	}
+	// Record the type of `x = Klass(...)` so a later `x.method()` call can see
+	// whether that method needs a `mut` receiver.
+	if node.targets.len == 1 && node.targets[0] is Name && node.value is Call {
+		call := node.value as Call
+		cls := t.constructor_name(call)
+		if cls != '' {
+			t.var_types[(node.targets[0] as Name).id] = cls
+		}
+	}
 	// Track variables assigned from Path(...) constructor so path-property
 	// attributes (.name, .parent, .stem, .suffix) can be translated correctly.
 	if node.targets.len == 1 && node.targets[0] is Name {
@@ -1301,12 +1509,16 @@ pub fn (mut t VTranspiler) visit_assign(node Assign) string {
 						return '${tname} := map[string]${val_type}{}'
 					}
 					'Counter' {
-						// Counter(iterable) → build map[string]int from counts
-						if call.args.len > 0 {
-							iter := t.visit_expr(call.args[0])
-							return '${tname} := (fn (items []string) map[string]int {\n\tmut m := map[string]int{}\n\tfor item in items { m[item]++ }\n\treturn m\n})(${iter})'
+						// A user class of the same name shadows collections.Counter,
+						// which is reached in Python as `collections.Counter(...)`.
+						if fname !in t.known_classes {
+							// Counter(iterable) → build map[string]int from counts
+							if call.args.len > 0 {
+								iter := t.visit_expr(call.args[0])
+								return '${tname} := (fn (items []string) map[string]int {\n\tmut m := map[string]int{}\n\tfor item in items { m[item]++ }\n\treturn m\n})(${iter})'
+							}
+							return '${tname} := map[string]int{}'
 						}
-						return '${tname} := map[string]int{}'
 					}
 					'deque' {
 						// deque(list) → []Any (V arrays support append/prepend)
@@ -1473,9 +1685,14 @@ pub fn (mut t VTranspiler) visit_assign(node Assign) string {
 								}
 							}
 							op := if any_redefined { '=' } else { ':=' }
-							// All unpack targets get mut (V needs this for array element operations)
-							subkw := if !any_redefined { 'mut ' } else { '' }
-							assigns << '${subkw}${t.visit_expr(st)} ${op} ${tmp_var}[${i}]'
+							// Array elements need mut for V, but a discard target
+							// must stay bare: V rejects `mut _`.
+							lhs := t.visit_expr(st)
+							mut subkw := ''
+							if !any_redefined && lhs.trim_space() != '_' {
+								subkw = 'mut '
+							}
+							assigns << '${subkw}${lhs} ${op} ${tmp_var}[${i}]'
 						}
 					}
 				}
@@ -1495,7 +1712,7 @@ pub fn (mut t VTranspiler) visit_assign(node Assign) string {
 					// Check if value is a list/tuple literal with same length
 					is_list_literal :=
 						(node.value is List && (node.value as List).elts.len == elts.len)
-						|| (node.value is Tuple && (node.value as Tuple).elts.len == elts.len)
+							|| (node.value is Tuple && (node.value as Tuple).elts.len == elts.len)
 
 					if is_list_literal {
 						mut subtargets := []string{}
@@ -1604,8 +1821,13 @@ fn (mut t VTranspiler) handle_starred_unpack(elts []main.Expr, value_str string)
 			}
 		}
 
-		// All starred unpack targets need mut for V array operations
-		assigns << 'mut ${t.visit_expr(target_elt)} := ${idx_val}'
+		// Array elements need mut for V slice assignment, but a discard target
+		// (`_`) must stay bare: V rejects `mut _`.
+		mut lhs := t.visit_expr(target_elt)
+		if lhs.trim_space() != '_' {
+			lhs = 'mut ${lhs}'
+		}
+		assigns << '${lhs} := ${idx_val}'
 	}
 
 	return assigns.join('\n')
@@ -1718,13 +1940,18 @@ pub fn (mut t VTranspiler) visit_ann_assign(node AnnAssign) string {
 				}
 				return '${kw}${target} ${op} [${elts.join(', ')}]'
 			}
-			return '${kw}${target} ${op} ${type_str}{}'
+			return '${kw}${target} ${op} ${t.zero_value_for(type_str)}'
 		}
 
 		return '${kw}${target} ${op} ${val_str}'
 	}
 
-	return '${kw}${target} ${op} ${type_str}{}'
+	return '${kw}${target} ${op} ${t.zero_value_for(type_str)}'
+}
+
+// zero_value_for returns a V zero-value expression for the named type.
+pub fn (t VTranspiler) zero_value_for(typ string) string {
+	return zero_value_for_type(typ)
 }
 
 // visit_for emits V code for a For loop.
@@ -1757,6 +1984,29 @@ pub fn (mut t VTranspiler) visit_for(node For) string {
 			}
 		}
 		if all_names && target_names.len > 0 {
+			// V allows at most two iteration variables, but Python commonly unpacks
+			// three or more (e.g. `for a, b, c in d.values()`). Bind the sequence
+			// once and destructure with indexing instead.
+			mut iter_is_special := false
+			if node.iter is Call {
+				call := node.iter as Call
+				if call.func is Name {
+					n := (call.func as Name).id
+					iter_is_special = n in ['enumerate', 'zip', 'reversed']
+				}
+			}
+			if target_names.len > 2 && !iter_is_special {
+				seq := t.new_tmp('seq')
+				item := t.new_tmp('item')
+				buf << '${seq} := ${t.visit_expr(node.iter)}'
+				buf << 'for ${item} in ${seq} {'
+				for k, name in target_names {
+					buf << t.indent_code('${name} := ${item}[${k}]', 2)
+				}
+				buf << t.visit_body_stmts(node.body, 2)
+				buf << '\t}'
+				return buf.join('\n')
+			}
 			target = target_names.join(', ')
 
 			// enumerate(seq) => for i, v in seq
@@ -2678,6 +2928,19 @@ pub fn (mut t VTranspiler) visit_import(node Import) string {
 	mut lines := []string{}
 	for alias in node.names {
 		lines << t.map_python_import(alias.name)
+		// `import a.b as c` binds the local name `c`, not `a`, so record both:
+		// the alias for reference resolution and the module marker so that
+		// `c.attr(...)` is not treated as a method call on a value.
+		mut local := alias.name.split('.')[0]
+		mut aliased := false
+		if a2 := alias.asname {
+			local = a2
+			aliased = true
+		}
+		t.imported_modules[local] = true
+		if aliased {
+			t.module_aliases[local] = alias.name
+		}
 	}
 	return lines.filter(it.len > 0).join('\n')
 }
@@ -2685,11 +2948,43 @@ pub fn (mut t VTranspiler) visit_import(node Import) string {
 // visit_import_from handles Python 'from X import Y', mapping the module.
 pub fn (mut t VTranspiler) visit_import_from(node ImportFrom) string {
 	module_name := node.mod or { '' }
+	// `from proj.mod import name` binds `name`; record where it now lives so
+	// every reference can be qualified with its V module.
+	if t.registry.contains(module_name) {
+		v_mod := t.registry.v_module_for(module_name)
+		// A module never imports itself: V merges a directory into one module.
+		if !t.registry.is_project_root(module_name) && v_mod != t.module_name {
+			t.add_using(v_mod)
+		}
+		for alias in node.names {
+			local := alias.asname or { alias.name }
+			// A relative import names a sibling module; resolve it against the
+			// current module's package.
+			target := if alias.name == '' { module_name } else { module_name + '.' + alias.name }
+			if t.registry.contains(target) && !t.registry.is_project_root(target) {
+				t.import_aliases[local] = t.registry.v_module_for(target)
+				continue
+			}
+			if v_mod != t.module_name {
+				t.import_aliases[local] = v_mod
+			}
+		}
+		t.seed_imported_classes(module_name)
+		return ''
+	}
 	return t.map_python_import(module_name)
 }
 
 // map_python_import converts a Python module name to a V import line or comment.
 fn (mut t VTranspiler) map_python_import(py_module string) string {
+	// A module belonging to the scanned project maps to a V module of the same
+	// layout, so it needs a real import rather than a "no equivalent" comment.
+	if t.registry.contains(py_module) {
+		if !t.registry.is_project_root(py_module) {
+			t.add_using(t.registry.v_module_for(py_module))
+		}
+		return ''
+	}
 	// Strip sub-module suffix for top-level lookup first
 	top := py_module.split('.')[0]
 	// Check exact match first, then top-level
@@ -2708,6 +3003,7 @@ fn (mut t VTranspiler) map_python_import(py_module string) string {
 	}
 	// Register the V module so the header import block is emitted
 	t.add_using(v_mod)
+	t.imported_modules[top] = true
 	return ''
 }
 
@@ -2734,6 +3030,15 @@ pub fn (mut t VTranspiler) visit_expr_stmt(node ExprStmt) string {
 		c := node.value as Constant
 		if c.value is EllipsisValue {
 			return '// ...'
+		}
+		// A bare string used as a statement is a Python no-op. Emitting it as a V
+		// expression statement is a type error, so keep the text as a comment.
+		if c.value is string {
+			mut out := []string{}
+			for raw_line in (c.value as string).split('\n') {
+				out << '// ${raw_line.trim_space()}'
+			}
+			return out.join('\n')
 		}
 	}
 	result := t.visit_expr(node.value)
@@ -2776,7 +3081,7 @@ pub fn (mut t VTranspiler) visit_constant(node Constant) string {
 			return '${node.value as f64}'
 		}
 		string {
-			return "'${escape_string(node.value as string)}'"
+			return v_string_literal(node.value as string)
 		}
 		BytesValue {
 			bv := node.value as BytesValue
@@ -2791,7 +3096,16 @@ pub fn (mut t VTranspiler) visit_name(node Name) string {
 	if t.escaped_identifiers[node.id] or { false } {
 		return '${node.id}_'
 	}
-	return escape_keyword(node.id)
+	// A bare `_` is the Python throwaway target and stays as V's discard name.
+	if node.id == '_' {
+		return '_'
+	}
+	// A name bound by `from other_module import name` lives in another V
+	// module, so references must be qualified.
+	if prefix := t.import_aliases[node.id] {
+		return '${prefix}.${escape_keyword(escape_leading_underscore(node.id))}'
+	}
+	return escape_keyword(escape_leading_underscore(node.id))
 }
 
 // is_path_expr returns true when expr is a known path variable, inline Path() call,
@@ -3190,10 +3504,19 @@ pub fn (mut t VTranspiler) visit_call(node Call) string {
 			if super_call.func is Name && (super_call.func as Name).id == 'super' {
 				base_name := t.resolve_super_base()
 				if base_name.len > 0 {
-					if vargs.len > 0 {
-						return 'self.${base_name}.${method}(${vargs.join(', ')})'
+					// Base methods are emitted under their V spelling, so a
+					// `super().__init__(...)` must target the base's `init`.
+					v_method := python_dunder_method_names[method] or { method }
+					// A base method with a `mut self` receiver needs the embedded
+					// value itself declared mutable at the call site.
+					mut recv := 'self'
+					if t.mut_receiver_methods['${base_name}_${v_method}'] {
+						recv = 'mut self'
 					}
-					return 'self.${base_name}.${method}()'
+					if vargs.len > 0 {
+						return '${recv}.${base_name}.${v_method}(${vargs.join(', ')})'
+					}
+					return '${recv}.${base_name}.${v_method}()'
 				}
 				return ''
 			}
@@ -3768,7 +4091,7 @@ pub fn (mut t VTranspiler) visit_call(node Call) string {
 			'index' {
 				// Python list.index() / str.index() raise ValueError if not found
 				if vargs.len > 0 {
-					return '${obj}.index(${vargs[0]}) or { panic(\'value not found\') }'
+					return "${obj}.index(${vargs[0]}) or { panic('value not found') }"
 				}
 				return '0'
 			}
@@ -3792,39 +4115,91 @@ pub fn (mut t VTranspiler) visit_call(node Call) string {
 				}
 				return '${obj}.sort(a < b)'
 			}
-			// Dict methods
+			// Dict methods. These names are shared with user classes, so only
+			// rewrite when the receiver is a known map; otherwise fall through to
+			// the generic method call below and keep the user's own method.
 			'keys' {
-				return '${obj}.keys()'
+				if t.is_map_expr(attr_node.value) {
+					return '${obj}.keys()'
+				}
 			}
 			'values' {
-				return '${obj}.values()'
+				if t.is_map_expr(attr_node.value) {
+					return '${obj}.values()'
+				}
 			}
 			'items' {
-				// V doesn't have items(), iterate directly
-				return '${obj} // .items() - iterate with for k, v in dict'
+				if t.is_map_expr(attr_node.value) {
+					// V doesn't have items(), iterate directly
+					return '${obj} // .items() - iterate with for k, v in dict'
+				}
 			}
 			'get' {
-				if vargs.len >= 2 {
-					return '${obj}[${vargs[0]}] or { ${vargs[1]} }'
+				if t.is_map_expr(attr_node.value) {
+					if vargs.len >= 2 {
+						return '${obj}[${vargs[0]}] or { ${vargs[1]} }'
+					}
+					if vargs.len == 1 {
+						return '${obj}[${vargs[0]}] or { none }'
+					}
 				}
-				if vargs.len == 1 {
-					return '${obj}[${vargs[0]}] or { none }'
-				}
-				return obj
 			}
 			'update' {
-				if vargs.len > 0 {
-					return '// ${obj}.update() - manually merge dicts'
+				if t.is_map_expr(attr_node.value) {
+					if vargs.len > 0 {
+						return '// ${obj}.update() - manually merge dicts'
+					}
+					return obj
 				}
-				return obj
 			}
-			else {}
+			else {
+				// Not a known builtin method: forward it as an ordinary V method
+				// call. Falling through here used to drop the call entirely and
+				// evaluate to the bare receiver.
+				mut call := if vargs.len > 0 {
+					'${obj}.${method}(${vargs.join(', ')})'
+				} else {
+					'${obj}.${method}()'
+				}
+				// list.append becomes the V `<<` operator.
+				if method == 'append' && vargs.len > 0 {
+					call = '${obj} << ${vargs[0]}'
+				}
+				// A qualified callee like `sys.exit` or `logging.info` is handled by
+				// the builtin table further down; only treat it as a method call
+				// when the receiver is a plain local.
+				if attr_node.value is Name && !t.is_known_module_receiver((attr_node.value as Name).id) {
+					// Calling a method with a `mut self` receiver mutates the local,
+					// so the local must be declared `mut`.
+					recv := (attr_node.value as Name).id
+					recv_type := t.var_types[recv] or { t.infer_expr_type(attr_node.value) }
+					if t.mut_receiver_methods['${recv_type}_${method}'] {
+						t.extra_mut_vars[recv] = true
+					}
+					return call
+				}
+			}
 		}
 	}
 
 	// Check if this is a struct constructor call (known dataclass)
-	if fname in t.known_classes {
-		emitted_ctor := emitted_class_name(fname)
+	// Only a bare Name can be a constructor. `b.get()` also lands here when the
+	// method table above misses, because the receiver may share a class-attr
+	// symbol name; treating it as a constructor would silently drop the method.
+	// A qualified name (`util.Box`) still names a struct, so look the class up by
+	// its bare name while keeping the qualified spelling in the emitted literal.
+	mut ctor_lookup := fname
+	if dot := fname.last_index('.') {
+		ctor_lookup = fname[dot + 1..]
+	}
+	if node.func !is Attribute && ctor_lookup in t.known_classes {
+		// Keep the module qualifier: `Box{}` would refer to nothing when the
+		// class lives in another V module.
+		emitted_ctor := if ctor_lookup == fname {
+			emitted_class_name(fname)
+		} else {
+			fname
+		}
 		mut field_vals := map[string]string{}
 
 		// Handle keyword arguments
@@ -3931,6 +4306,130 @@ fn (mut t VTranspiler) resolve_super_base() string {
 		return ''
 	}
 	return emitted_class_name(base)
+}
+
+// collect_super_calls returns the method names invoked through a `super()` call
+// anywhere in the statement list.
+fn collect_super_calls(stmts []Stmt) []string {
+	mut names := []string{}
+	for stmt in stmts {
+		collect_super_calls_in_stmt(stmt, mut names)
+	}
+	return names
+}
+
+fn collect_super_calls_in_stmt(stmt Stmt, mut names []string) {
+	match stmt {
+		ExprStmt {
+			collect_super_calls_in_expr((stmt as ExprStmt).value, mut names)
+		}
+		Return {
+			if ret := (stmt as Return).value {
+				collect_super_calls_in_expr(ret, mut names)
+			}
+		}
+		Assign {
+			collect_super_calls_in_expr((stmt as Assign).value, mut names)
+		}
+		AugAssign {
+			collect_super_calls_in_expr((stmt as AugAssign).value, mut names)
+		}
+		AnnAssign {
+			if v := (stmt as AnnAssign).value {
+				collect_super_calls_in_expr(v, mut names)
+			}
+		}
+		If {
+			for s in (stmt as If).body {
+				collect_super_calls_in_stmt(s, mut names)
+			}
+			for s in (stmt as If).orelse {
+				collect_super_calls_in_stmt(s, mut names)
+			}
+		}
+		For {
+			for s in (stmt as For).body {
+				collect_super_calls_in_stmt(s, mut names)
+			}
+		}
+		While {
+			for s in (stmt as While).body {
+				collect_super_calls_in_stmt(s, mut names)
+			}
+		}
+		With {
+			for s in (stmt as With).body {
+				collect_super_calls_in_stmt(s, mut names)
+			}
+		}
+		Try {
+			for s in (stmt as Try).body {
+				collect_super_calls_in_stmt(s, mut names)
+			}
+		}
+		else {}
+	}
+}
+
+fn collect_super_calls_in_expr(expr Expr, mut names []string) {
+	match expr {
+		Call {
+			c := expr as Call
+			if c.func is Attribute {
+				attr := c.func as Attribute
+				if attr.value is Call {
+					inner := attr.value as Call
+					if inner.func is Name && (inner.func as Name).id == 'super' {
+						append_unique_strings(mut names, [attr.attr])
+					}
+				}
+			}
+			for a in c.args {
+				collect_super_calls_in_expr(a, mut names)
+			}
+			for kw in c.keywords {
+				collect_super_calls_in_expr(kw.value, mut names)
+			}
+		}
+		Attribute {
+			collect_super_calls_in_expr((expr as Attribute).value, mut names)
+		}
+		BinOp {
+			collect_super_calls_in_expr((expr as BinOp).left, mut names)
+			collect_super_calls_in_expr((expr as BinOp).right, mut names)
+		}
+		UnaryOp {
+			collect_super_calls_in_expr((expr as UnaryOp).operand, mut names)
+		}
+		BoolOp {
+			for v in (expr as BoolOp).values {
+				collect_super_calls_in_expr(v, mut names)
+			}
+		}
+		Compare {
+			collect_super_calls_in_expr((expr as Compare).left, mut names)
+			for c in (expr as Compare).comparators {
+				collect_super_calls_in_expr(c, mut names)
+			}
+		}
+		IfExp {
+			collect_super_calls_in_expr((expr as IfExp).body, mut names)
+			collect_super_calls_in_expr((expr as IfExp).orelse, mut names)
+		}
+		Await {
+			collect_super_calls_in_expr((expr as Await).value, mut names)
+		}
+		NamedExpr {
+			collect_super_calls_in_expr((expr as NamedExpr).value, mut names)
+		}
+		Subscript {
+			collect_super_calls_in_expr((expr as Subscript).value, mut names)
+		}
+		Starred {
+			collect_super_calls_in_expr((expr as Starred).value, mut names)
+		}
+		else {}
+	}
 }
 
 fn should_emit_ref_field_type(typ string) bool {
@@ -4042,7 +4541,19 @@ pub fn (mut t VTranspiler) visit_attribute(node Attribute) string {
 	}
 
 	value := t.visit_expr(node.value)
-	attr := node.attr
+	mut attr := node.attr
+	// Struct fields and locals are declared under their escaped V spelling, so an
+	// access to `self._foo` must use the same escape the declaration used.
+	if t.current_class_name != '' {
+		if escapes := t.class_field_escapes[t.current_class_name] {
+			if v_attr := escapes[attr] {
+				attr = v_attr
+			}
+		}
+	}
+	// Dunder methods are emitted under a different name, so `self.__int__()`
+	// must call the method as declared.
+	attr = python_dunder_method_names[attr] or { attr }
 	attr_path := '${value}.${attr}'
 
 	// Try attribute dispatch
@@ -4273,7 +4784,10 @@ pub fn (mut t VTranspiler) visit_dict(node Dict) string {
 		}
 	}
 	if pairs.len == 0 {
-		return '{}'
+		// V has no untyped empty map literal; fall back to a string-keyed map,
+		// which is what Python code almost always means for `{}`.
+		t.generated_code_has_any_type = true
+		return 'map[string]Any{}'
 	}
 	return '{\n${pairs.join('\n')}\n}'
 }
@@ -4369,10 +4883,10 @@ pub fn (mut t VTranspiler) visit_dict_comp(node DictComp) string {
 	if v == 'Any' {
 		t.generated_code_has_any_type = true
 	}
-	map_type := 'map[${k}]${v}'
+	mtype := 'map[${k}]${v}'
 
-	buf << '(fn () ${map_type} {'
-	buf << 'mut result := ${map_type}{}'
+	buf << '(fn () ${mtype} {'
+	buf << 'mut result := ${mtype}{}'
 
 	for comp in node.generators {
 		target := t.visit_expr(comp.target)
@@ -4558,13 +5072,24 @@ pub fn (mut t VTranspiler) visit_joined_str(node JoinedStr) string {
 		return "''"
 	}
 	mut inner := ''
+	mut use_double := false
 	for val in node.values {
 		match val {
 			Constant {
 				if val.value is string {
 					s := val.value as string
-					// Escape special chars; protect `${` from being treated as interpolation.
-					inner += escape_interp_string(s)
+					// Escape special chars; protect `${` from being treated as
+					// interpolation. A literal `'` cannot be backslash-escaped in a
+					// V single-quoted string, so use a double-quoted literal instead.
+					if s.contains("'") && !s.contains('"') {
+						use_double = true
+					}
+					mut piece := escape_interp_string(s)
+					if use_double {
+						// In a double-quoted V string `\'` is an invalid escape.
+						piece = piece.replace("\\'", "'")
+					}
+					inner += piece
 				}
 			}
 			FormattedValue {
@@ -4575,6 +5100,9 @@ pub fn (mut t VTranspiler) visit_joined_str(node JoinedStr) string {
 				inner += '\${${t.visit_expr(val)}}'
 			}
 		}
+	}
+	if use_double {
+		return '"' + inner + '"'
 	}
 	return "'${inner}'"
 }
@@ -4726,7 +5254,7 @@ fn (mut t VTranspiler) visit_generator_exp_impl_walrus(elt Expr, generators []Co
 	mut close_braces := 0 // total extra braces to close after element emit
 
 	for comp in generators {
-		indent := tab.repeat(depth)
+		indent_ := tab.repeat(depth)
 		target_str := t.visit_expr(comp.target)
 
 		// Determine iteration expression (use range notation for range() calls)
@@ -4751,7 +5279,7 @@ fn (mut t VTranspiler) visit_generator_exp_impl_walrus(elt Expr, generators []Co
 			}
 		}
 
-		lines << '${indent}for ${target_str} in ${for_expr} {'
+		lines << '${indent_}for ${target_str} in ${for_expr} {'
 		depth++
 		close_braces++
 
@@ -4894,7 +5422,11 @@ pub fn (mut t VTranspiler) typename_from_annotation(ann ?Expr) string {
 			index := t.typename_from_annotation(a.slice)
 
 			mapped := v_container_type_map[value] or { value }
-			if value == 'Tuple' || value == 'tuple' {
+			// `value` has already been mapped through the container table, so the
+			// raw subscript name is needed to recognise `Tuple`/`tuple`.
+			base := a.value
+			base_name := if base is Name { (base as Name).id } else { value }
+			if base_name == 'Tuple' || base_name == 'tuple' {
 				// Collect individual element types from the slice.
 				mut elem_types := []string{}
 				if a.slice is Tuple {
@@ -4933,7 +5465,7 @@ pub fn (mut t VTranspiler) typename_from_annotation(ann ?Expr) string {
 				t.pending_type_notes << '// NOTE: Tuple[${joined}] — define a struct with named fields'
 				return '[]Any'
 			}
-			if value == 'Literal' {
+			if base_name == 'Literal' {
 				// Literal[v1, v2, ...] — extract the common value type and emit it.
 				mut lit_types := []string{}
 				if a.slice is Tuple {
@@ -4959,8 +5491,17 @@ pub fn (mut t VTranspiler) typename_from_annotation(ann ?Expr) string {
 				t.pending_type_notes << '// NOTE: Literal[${index}] — allowed values are ${index}'
 				return base_type
 			}
-			if value == 'Dict' || value == 'dict' {
-				// Handle Dict[K, V]
+			if base_name == 'Dict' || base_name == 'dict' {
+				// Dict[K, V] — V spells this map[K]V, with no comma. The slice is
+				// a Tuple of two elements, so recurse over each separately.
+				if a.slice is Tuple {
+					kvs := (a.slice as Tuple).elts
+					if kvs.len == 2 {
+						k := t.typename_from_annotation(kvs[0])
+						v := t.typename_from_annotation(kvs[1])
+						return 'map[${k}]${v}'
+					}
+				}
 				return 'map[${index}]'
 			}
 			// User-defined generic (e.g. Stack[T]) — emit Name[T] style only when
@@ -5693,3 +6234,346 @@ fn (mut t VTranspiler) infer_return_type(_stmts []Stmt) string {
 	return 'Any'
 }
 
+// is_map_expr reports whether an expression is known to be a V map. Dict method
+// names like `get`/`keys` are also valid user method names, so rewriting one to
+// a map operation is only safe when the receiver really is a map.
+pub fn (mut t VTranspiler) is_map_expr(expr Expr) bool {
+	typ := t.infer_expr_type(expr)
+	if typ.starts_with('map[') {
+		return true
+	}
+	if typ.starts_with('[]') || typ.starts_with('[') || typ == 'string' {
+		return false
+	}
+	if expr is Dict || expr is DictComp {
+		return typ.starts_with('map[')
+	}
+	return false
+}
+
+// is_known_module_receiver reports whether a name refers to an imported module
+// rather than a value, in which case `name.attr(...)` is a module-level call that
+// the builtin table should translate instead of a method call.
+pub fn (t VTranspiler) is_known_module_receiver(name string) bool {
+	return t.imported_modules[name] or { false }
+}
+
+// seed_imported_classes records the field lists of classes visible through a
+// `from ... import ...` in the scanned module, so that later struct literals and
+// `isinstance`-style checks can resolve them without re-reading that module.
+pub fn (mut t VTranspiler) seed_imported_classes(module_dotted string) {
+	if t.registry.lookup(module_dotted).dotted == '' {
+		return
+	}
+	for name in t.registry.symbols_named_in(module_dotted) {
+		fields := t.registry.class_fields(module_dotted, name)
+		if fields.len > 0 {
+			if name !in t.imported_classes {
+				t.imported_classes[name] = fields
+			}
+			t.known_classes[name] = fields
+		}
+		// Mirror mut-receiver methods so call sites can mark locals `mut`.
+		for key, needs_mut in t.registry.mut_methods {
+			if needs_mut && key.starts_with(name + '.') {
+				cls := name
+				meth := key[name.len + 1..]
+				t.mut_receiver_methods['${cls}_${meth}'] = true
+			}
+		}
+	}
+}
+
+// collect_mut_receivers finds local variables that are the receiver of a method
+// call whose V method takes a `mut self`, returning (variable, method) pairs.
+pub fn (t VTranspiler) collect_mut_receivers(stmts []Stmt) map[string]string {
+	mut found := map[string]string{}
+	t.scan_mut_receivers(stmts, mut found)
+	return found
+}
+
+fn (t VTranspiler) scan_mut_receivers(stmts []Stmt, mut found map[string]string) {
+	for stmt in stmts {
+		t.scan_mut_receivers_stmt(stmt, mut found)
+	}
+}
+
+fn (t VTranspiler) scan_mut_receivers_stmt(stmt Stmt, mut found map[string]string) {
+	match stmt {
+		ExprStmt {
+			t.scan_mut_receivers_expr((stmt as ExprStmt).value, mut found)
+		}
+		Return {
+			if v := (stmt as Return).value {
+				t.scan_mut_receivers_expr(v, mut found)
+			}
+		}
+		Assign {
+			t.scan_mut_receivers_expr((stmt as Assign).value, mut found)
+		}
+		AnnAssign {
+			if v := (stmt as AnnAssign).value {
+				t.scan_mut_receivers_expr(v, mut found)
+			}
+		}
+		If {
+			for s in (stmt as If).body {
+				t.scan_mut_receivers_stmt(s, mut found)
+			}
+			for s in (stmt as If).orelse {
+				t.scan_mut_receivers_stmt(s, mut found)
+			}
+		}
+		For {
+			for s in (stmt as For).body {
+				t.scan_mut_receivers_stmt(s, mut found)
+			}
+		}
+		While {
+			for s in (stmt as While).body {
+				t.scan_mut_receivers_stmt(s, mut found)
+			}
+		}
+		With {
+			for s in (stmt as With).body {
+				t.scan_mut_receivers_stmt(s, mut found)
+			}
+		}
+		else {}
+	}
+}
+
+fn (t VTranspiler) scan_mut_receivers_expr(expr Expr, mut found map[string]string) {
+	match expr {
+		Call {
+			c := expr as Call
+			if c.func is Attribute {
+				attr := c.func as Attribute
+				if attr.value is Name {
+					recv := (attr.value as Name).id
+					recv_type := t.var_types[recv] or { '' }
+					if recv_type != '' && t.mut_receiver_methods['${recv_type}_${attr.attr}'] {
+						found[recv] = attr.attr
+					}
+				}
+				t.scan_mut_receivers_expr(attr.value, mut found)
+			}
+			for a in c.args {
+				t.scan_mut_receivers_expr(a, mut found)
+			}
+		}
+		else {}
+	}
+}
+
+// constructor_name returns the class a call constructs, or '' when the callee is
+// an ordinary function. Only a real class records a variable type here; treating
+// `gap = max(...)` as a constructor would clobber the inferred type of `gap`.
+fn (t VTranspiler) constructor_name(call Call) string {
+	mut name := ''
+	if call.func is Name {
+		name = (call.func as Name).id
+	} else if call.func is Attribute {
+		name = (call.func as Attribute).attr
+	}
+	if name != '' && name in t.known_classes {
+		return name
+	}
+	return ''
+}
+
+// v_return_type adapts a type expression to return-type position. A fixed-size
+// array annotation such as `tuple[int, int]` maps to `[2]int` in variable
+// position, but V requires multiple return values to be written `(int, int)`.
+fn v_return_type(typ string) string {
+	if typ.len < 3 || typ[0] != `[` {
+		return typ
+	}
+	close_idx := typ.index_u8(`]`)
+	if close_idx < 2 {
+		return typ
+	}
+	count := typ[1..close_idx].int()
+	elem := typ[close_idx + 1..]
+	if count <= 0 {
+		return typ
+	}
+	mut parts := []string{}
+	for _ in 0 .. count {
+		parts << elem
+	}
+	return '(${parts.join(', ')})'
+}
+
+// hoist_block_fns lifts function definitions out of nested blocks in `stmts`,
+// appending their V code to `out`. Statements are rewritten in place through the
+// returned list.
+pub fn (mut t VTranspiler) hoist_block_fns(stmts []Stmt, mut out []string) []Stmt {
+	mut result := []Stmt{}
+	for stmt in stmts {
+		result << t.hoist_in_stmt(stmt, mut out)
+	}
+	return result
+}
+
+fn (mut t VTranspiler) hoist_in_stmt(stmt Stmt, mut out []string) Stmt {
+	// Lift the definition out of the block. V has no way to declare a function
+	// inside a nested block, so the block keeps a `pass` in its place.
+	//
+	// A closure that captures `nonlocal` variables cannot be hoisted: it has to
+	// stay an inline closure so it captures by reference.
+	if stmt is FunctionDef {
+		fd := stmt as FunctionDef
+		for inner in fd.body {
+			if inner is Nonlocal {
+				return stmt
+			}
+		}
+		out << t.visit_function_def(fd)
+		return Stmt(Pass{})
+	}
+	if stmt is AsyncFunctionDef {
+		out << t.visit_async_function_def(stmt as AsyncFunctionDef)
+		return Stmt(Pass{})
+	}
+	match stmt {
+		If {
+			s := stmt as If
+			return Stmt(If{
+				test:   s.test
+				body:   t.hoist_block_fns(s.body, mut out)
+				orelse: t.hoist_block_fns(s.orelse, mut out)
+				loc:    s.loc
+				level:  s.level
+			})
+		}
+		For {
+			s := stmt as For
+			return Stmt(For{
+				target: s.target
+				iter:   s.iter
+				body:   t.hoist_block_fns(s.body, mut out)
+				orelse: t.hoist_block_fns(s.orelse, mut out)
+				loc:    s.loc
+				level:  s.level
+			})
+		}
+		While {
+			s := stmt as While
+			return Stmt(While{
+				test:   s.test
+				body:   t.hoist_block_fns(s.body, mut out)
+				orelse: t.hoist_block_fns(s.orelse, mut out)
+				loc:    s.loc
+				level:  s.level
+			})
+		}
+		With {
+			s := stmt as With
+			return Stmt(With{
+				items: s.items
+				body:  t.hoist_block_fns(s.body, mut out)
+				loc:   s.loc
+			})
+		}
+		Try {
+			s := stmt as Try
+			mut handlers := []ExceptHandler{}
+			for h in s.handlers {
+				handlers << ExceptHandler{
+					typ:  h.typ
+					name: h.name
+					body: t.hoist_block_fns(h.body, mut out)
+					loc:  h.loc
+				}
+			}
+			return Stmt(Try{
+				body:               t.hoist_block_fns(s.body, mut out)
+				handlers:           handlers
+				orelse:             t.hoist_block_fns(s.orelse, mut out)
+				finalbody:          t.hoist_block_fns(s.finalbody, mut out)
+				loc:                s.loc
+				is_exception_group: s.is_exception_group
+			})
+		}
+		else {
+			return stmt
+		}
+	}
+}
+
+// hoist_module_fns lifts function definitions declared inside module-level
+// blocks out to module scope, where V requires them.
+pub fn (mut t VTranspiler) hoist_module_fns(stmts []Stmt, mut out []string) []Stmt {
+	// Top-level statements are already in the right place; only recurse into
+	// blocks, where a nested `fn` would be illegal in V.
+	mut result := []Stmt{}
+	for stmt in stmts {
+		match stmt {
+			If {
+				s := stmt as If
+				result << Stmt(If{
+					test:   s.test
+					body:   t.hoist_in_stmt_list(s.body, mut out)
+					orelse: t.hoist_in_stmt_list(s.orelse, mut out)
+					loc:    s.loc
+					level:  s.level
+				})
+			}
+			For {
+				s := stmt as For
+				result << Stmt(For{
+					target: s.target
+					iter:   s.iter
+					body:   t.hoist_in_stmt_list(s.body, mut out)
+					orelse: t.hoist_in_stmt_list(s.orelse, mut out)
+					loc:    s.loc
+					level:  s.level
+				})
+			}
+			While {
+				s := stmt as While
+				result << Stmt(While{
+					test:   s.test
+					body:   t.hoist_in_stmt_list(s.body, mut out)
+					orelse: t.hoist_in_stmt_list(s.orelse, mut out)
+					loc:    s.loc
+					level:  s.level
+				})
+			}
+			Try {
+				s := stmt as Try
+				mut handlers := []ExceptHandler{}
+				for h in s.handlers {
+					handlers << ExceptHandler{
+						typ:  h.typ
+						name: h.name
+						body: t.hoist_in_stmt_list(h.body, mut out)
+						loc:  h.loc
+					}
+				}
+				result << Stmt(Try{
+					body:               t.hoist_in_stmt_list(s.body, mut out)
+					handlers:           handlers
+					orelse:             t.hoist_in_stmt_list(s.orelse, mut out)
+					finalbody:          t.hoist_in_stmt_list(s.finalbody, mut out)
+					loc:                s.loc
+					is_exception_group: s.is_exception_group
+				})
+			}
+			else {
+				result << stmt
+			}
+		}
+	}
+	return result
+}
+
+// hoist_in_stmt_list lifts definitions out of a block's statement list.
+fn (mut t VTranspiler) hoist_in_stmt_list(stmts []Stmt, mut out []string) []Stmt {
+	mut result := []Stmt{}
+	for stmt in stmts {
+		result << t.hoist_in_stmt(stmt, mut out)
+	}
+	return result
+}

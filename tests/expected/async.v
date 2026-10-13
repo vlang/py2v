@@ -11,9 +11,9 @@ fn async_gen(ch chan Any) {
 
 fn show_async() {
 	// async for lowered to goroutine + channel
-	__ch1 := chan Any{}
-	go async_gen(__ch1)
-	for val in __ch1 {
+	py2v_ch1 := chan Any{}
+	go async_gen(py2v_ch1)
+	for val in py2v_ch1 {
 		println(val)
 	}
 }

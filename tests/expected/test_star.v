@@ -19,10 +19,10 @@ fn main_func() {
 	all_nums := ((([0]).concat(numbers)).concat(others)).concat([6])
 	println(all_nums)
 	data := [10, 20, 30, 40, 50]
-	__unpack1 := data
-	mut a := __unpack1[0]
-	mut rest := __unpack1[1..__unpack1.len - 1]
-	mut e := __unpack1.last()
+	py2v_unpack1 := data
+	mut a := py2v_unpack1[0]
+	mut rest := py2v_unpack1[1..py2v_unpack1.len - 1]
+	mut e := py2v_unpack1.last()
 	println(a)
 	println(rest)
 	println(e)

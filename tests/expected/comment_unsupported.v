@@ -4,9 +4,9 @@ type Any = bool | int | i64 | f64 | string | []u8
 
 fn do_unsupported() {
 	a := 1
-	(fn () map[string]main.Any {
+	(fn () map[string]Any {
 		mut result := map[string]Any{}
-		for [key, value] in {} {
+		for [key, value] in map[string]Any{} {
 			result[key + 1] = value + 1
 		}
 		return result

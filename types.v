@@ -44,7 +44,7 @@ pub const v_container_type_map = {
 }
 
 // V keywords that need escaping with @
-pub const v_keywords = [
+pub const v_keywords = [..]string[
 	'__global',
 	'__offsetof',
 	'_likely_',
@@ -90,11 +90,11 @@ pub const v_keywords = [
 	'typeof',
 	'union',
 	'unsafe',
-]!
+]
 
 // V built-in type names that conflict when used as identifiers (variable/parameter names)
 // These need escaping with @ only in identifier context, not as type casts
-pub const v_builtin_types = [
+pub const v_builtin_types = [..]string[
 	'bool',
 	'byte',
 	'byteptr',
@@ -112,7 +112,7 @@ pub const v_builtin_types = [
 	'u64',
 	'u8',
 	'voidptr',
-]!
+]
 
 // V width rank for numeric type promotion
 pub const v_width_rank = {
@@ -234,6 +234,63 @@ pub fn escape_keyword(name string) string {
 	return name
 }
 
+// python_dunder_method_names maps Python dunder methods that V expresses as
+// ordinary named methods rather than operators. V forbids a leading underscore
+// on method names, so `__init__` becomes `init`.
+pub const python_dunder_method_names = {
+	'__init__':      'init'
+	'__post_init__': 'post_init'
+	'__enter__':     'enter'
+	'__exit__':      'exit'
+	'__new__':       'new'
+	'__del__':       'del'
+	// Numeric protocol hooks. V has no reserved spellings for these, and they
+	// read better as explicit conversion methods than as mangled names.
+	'__int__':       'to_int'
+	'__float__':     'to_float'
+	'__bool__':      'to_bool'
+	'__index__':     'to_index'
+	'__hash__':      'hash_value'
+	// Python module-level dunders with no V counterpart. V has no `__file__`
+	// ambient value, so it is emitted as a name the caller can define, but the
+	// name must still be a legal V identifier.
+	'__file__':      'file___'
+}
+
+// python_dunder_class_attrs are Python bookkeeping class attributes that have no
+// runtime meaning in V and must not become struct fields.
+pub const python_dunder_class_attrs = ['__slots__', '__doc__', '__module__', '__qualname__', '__dict__',
+	'__weakref__', '__annotations__', '__dataclass_fields__']!
+
+// escape_leading_underscore maps a Python identifier that starts with `_` to a
+// legal V identifier. V forbids a leading underscore on fields, methods, and
+// local variables, while Python code uses `_name` for private-by-convention and
+// dunders for protocol hooks. Leading underscores are moved to the end, which
+// matches V's own shadow-avoidance convention (the same one escape_identifier
+// uses for built-in type names): `_foo` becomes `foo_`, `__foo` becomes `foo__`.
+//
+// A bare `_` is the Python throwaway target and is left alone, since V accepts
+// `_` as a discard name.
+pub fn escape_leading_underscore(name string) string {
+	if name == '_' {
+		return name
+	}
+	if name == '' || name[0] != `_` {
+		return name
+	}
+	mut lead := 0
+	for lead < name.len && name[lead] == `_` {
+		lead++
+	}
+	rest := name[lead..]
+	if rest.len == 0 {
+		// All-underscore name such as `__`: V cannot express this, so use `_`.
+		return '_'
+	}
+	// `lead` underscores move to the end: `_foo` -> `foo_`, `__foo` -> `foo__`.
+	return '${rest}${'_'.repeat(lead)}'
+}
+
 // escape_identifier escapes names that conflict with V keywords or built-in type names.
 pub fn escape_identifier(name string) string {
 	if is_keyword(name) {
@@ -243,7 +300,38 @@ pub fn escape_identifier(name string) string {
 	if name in v_builtin_types {
 		return '${name}_'
 	}
-	return name
+	return escape_leading_underscore(name)
+}
+
+// zero_value_for_type returns a V expression of zero value for `typ`.
+//
+// A bare `x := <typ>{}` only makes sense for container types. For a scalar the
+// `{}` suffix is not valid V at all (`a := bool{}` does not parse), so scalars
+// get an explicit zero literal instead.
+pub fn zero_value_for_type(typ string) string {
+	if typ == '' {
+		return 'Any{}'
+	}
+	if typ.starts_with('[]') || typ.starts_with('map[') || typ.starts_with('[') {
+		return '${typ}{}'
+	}
+	if typ.starts_with('?') {
+		return 'none'
+	}
+	if typ == 'string' {
+		return "''"
+	}
+	if typ == 'bool' {
+		return 'false'
+	}
+	if typ in ['f32', 'f64'] {
+		return '0.0'
+	}
+	if typ in v_width_rank {
+		return '0'
+	}
+	// User-defined struct or enum: its zero value.
+	return '${typ}{}'
 }
 
 // get_wider_type returns the wider numeric type for binary operations.

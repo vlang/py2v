@@ -698,9 +698,13 @@ fn dispatch_builtin_impl(mut t VTranspiler, fname string, node Call, args []stri
 				first := node.args[0]
 				if first is Lambda {
 					lam := first as Lambda
-					iter_expr := if node.args.len > 1 { node.args[1] } else { Expr(Constant{
+					iter_expr := if node.args.len > 1 {
+						node.args[1]
+					} else {
+						Expr(Constant{
 							value: NoneValue{}
-						}) }
+						})
+					}
 					closure := build_typed_lambda_closure(mut t, lam, iter_expr)
 					iter_code := args[1]
 					return DispatchResult{'${iter_code}.map(${closure})', true, ''}
@@ -714,9 +718,13 @@ fn dispatch_builtin_impl(mut t VTranspiler, fname string, node Call, args []stri
 				first := node.args[0]
 				if first is Lambda {
 					lam := first as Lambda
-					iter_expr := if node.args.len > 1 { node.args[1] } else { Expr(Constant{
+					iter_expr := if node.args.len > 1 {
+						node.args[1]
+					} else {
+						Expr(Constant{
 							value: NoneValue{}
-						}) }
+						})
+					}
 					closure := build_typed_lambda_closure(mut t, lam, iter_expr)
 					iter_code := args[1]
 					return DispatchResult{'${iter_code}.filter(${closure})', true, ''}

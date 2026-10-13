@@ -8,7 +8,7 @@ fn main_func() {
 	nums2.sort(a > b)
 	println(nums2)
 	original := [5, 2, 8, 1, 9]
-	sorted_list := (fn (a []main.Any) []main.Any {
+	sorted_list := (fn (a []Any) []Any {
 		mut b := a.clone()
 		b.sort()
 		return b

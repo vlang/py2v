@@ -5,7 +5,7 @@ pub mut:
 	items []T
 }
 
-fn (mut self Stack[T]) __init__() {
+fn (mut self Stack[T]) init() {
 	self.items = []T{}
 }
 

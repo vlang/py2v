@@ -7,7 +7,7 @@ pub mut:
 	value Any
 }
 
-fn (mut self MathHelper) __init__(value int) {
+fn (mut self MathHelper) init(value int) {
 	self.value = value
 }
 

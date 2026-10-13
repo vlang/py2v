@@ -25,6 +25,6 @@ fn main() {
 	// import ctypes: no known V equivalent
 	// import pytest: use V built-in `assert` and `v test`
 	// import py2many.result: no known V equivalent
-	pytest.main([__file__])
+	pytest.main([file___])
 	println('OK')
 }

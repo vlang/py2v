@@ -3,10 +3,10 @@ module main
 fn main_func() {
 	t := [1, 2, 3]
 	println(t)
-	__unpack1 := t
-	mut a := __unpack1[0]
-	mut b := __unpack1[1]
-	mut c := __unpack1[2]
+	py2v_unpack1 := t
+	mut a := py2v_unpack1[0]
+	mut b := py2v_unpack1[1]
+	mut c := py2v_unpack1[2]
 	println(a)
 	println(b)
 	println(c)

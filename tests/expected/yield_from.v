@@ -10,10 +10,10 @@ fn generator1(ch chan int) {
 fn generator2(ch chan int) {
 	defer { ch.close() }
 	ch <- 0
-	__gen1 := generator1()
-	// yield from __gen1
+	py2v_gen1 := generator1()
+	// yield from py2v_gen1
 	for {
-		val := <-__gen1 or { break }
+		val := <-py2v_gen1 or { break }
 		ch <- val
 	}
 	ch <- 4

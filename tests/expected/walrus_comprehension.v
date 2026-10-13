@@ -5,7 +5,7 @@ type Any = bool | int | i64 | f64 | string | []u8
 fn squares_above(n int) list {
 	return (fn () []Any {
 		mut result := []Any{}
-		for x in 0..n {
+		for x in 0 .. n {
 			y := x * x
 			if y > 5 {
 				result << y
