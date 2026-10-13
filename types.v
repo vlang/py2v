@@ -287,7 +287,8 @@ pub fn escape_leading_underscore(name string) string {
 		// All-underscore name such as `__`: V cannot express this, so use `_`.
 		return '_'
 	}
-	return '${rest}${'_'.repeat(lead - 1)}'
+	// `lead` underscores move to the end: `_foo` -> `foo_`, `__foo` -> `foo__`.
+	return '${rest}${'_'.repeat(lead)}'
 }
 
 // escape_identifier escapes names that conflict with V keywords or built-in type names.

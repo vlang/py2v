@@ -46,6 +46,9 @@ mut:
 	// imported_modules records local names bound by module imports, so that
 	// `name.attr(...)` is not mistaken for a method call on a value.
 	imported_modules map[string]bool
+	// module_aliases maps a local name from `import a.b as c` to the Python
+	// module it refers to.
+	module_aliases map[string]string
 	// imported_classes maps a class name imported from another project module to
 	// its field list, so struct literals and base-class checks resolve without
 	// transpiling that module first.
@@ -86,6 +89,7 @@ pub fn new_transpiler() VTranspiler {
 		global_vars:                 map[string]bool{}
 		import_aliases:              map[string]string{}
 		imported_modules:            map[string]bool{}
+		module_aliases:              map[string]string{}
 		imported_classes:            map[string][]string{}
 		known_classes:               map[string][]string{}
 		module_name:                 ''
@@ -120,8 +124,13 @@ pub fn (mut t VTranspiler) visit_module(node Module) string {
 	mut main_fn_override := '' // full `fn main() {...}` from guard rewrite
 	mut comment_lines := []string{} // top-level import comments etc.
 
+	mut nested_fndefs := []string{}
+	// A `def` nested inside a module-level `if`/`for`/`try` cannot be emitted
+	// there: V only allows `fn` declarations at module top level.
+	mut hoisted_body := t.hoist_module_fns(node.body, mut nested_fndefs)
+
 	mut first_stmt := true
-	for stmt in node.body {
+	for stmt in hoisted_body {
 		// Skip module-level docstrings (first bare string constant)
 		if first_stmt {
 			first_stmt = false
@@ -233,6 +242,9 @@ pub fn (mut t VTranspiler) visit_module(node Module) string {
 	}
 	if struct_decls.len > 0 {
 		parts << struct_decls.join('\n\n')
+	}
+	for f in nested_fndefs {
+		func_decls << f
 	}
 	if func_decls.len > 0 {
 		parts << func_decls.join('\n\n')
@@ -846,7 +858,9 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 	// last, so a signature with both cannot put kwargs after it.
 	if kwarg := node.args.kwarg {
 		t.generated_code_has_any_type = true
-		args_strs << '${escape_identifier(kwarg.arg)} map[string]Any // **kwargs'
+		// No trailing comment: a `//` after the last parameter would swallow the
+		// opening brace of the function body.
+		args_strs << '${escape_identifier(kwarg.arg)} map[string]Any'
 	}
 
 	// Handle vararg (*args)
@@ -949,6 +963,11 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 			}
 		}
 	}
+
+	// A nested `def` may sit inside a block (if/for/try/with). V only allows
+	// `fn` declarations at the top level of a function body, so lift any that are
+	// nested deeper and emit them alongside the others.
+	body_stmts = t.hoist_block_fns(body_stmts, mut nested_fndefs)
 
 	// Pre-scan body for variables passed to mut-parameter functions
 	t.prescan_mut_call_args(body_stmts)
@@ -1490,12 +1509,16 @@ pub fn (mut t VTranspiler) visit_assign(node Assign) string {
 						return '${tname} := map[string]${val_type}{}'
 					}
 					'Counter' {
-						// Counter(iterable) → build map[string]int from counts
-						if call.args.len > 0 {
-							iter := t.visit_expr(call.args[0])
-							return '${tname} := (fn (items []string) map[string]int {\n\tmut m := map[string]int{}\n\tfor item in items { m[item]++ }\n\treturn m\n})(${iter})'
+						// A user class of the same name shadows collections.Counter,
+						// which is reached in Python as `collections.Counter(...)`.
+						if fname !in t.known_classes {
+							// Counter(iterable) → build map[string]int from counts
+							if call.args.len > 0 {
+								iter := t.visit_expr(call.args[0])
+								return '${tname} := (fn (items []string) map[string]int {\n\tmut m := map[string]int{}\n\tfor item in items { m[item]++ }\n\treturn m\n})(${iter})'
+							}
+							return '${tname} := map[string]int{}'
 						}
-						return '${tname} := map[string]int{}'
 					}
 					'deque' {
 						// deque(list) → []Any (V arrays support append/prepend)
@@ -2905,6 +2928,19 @@ pub fn (mut t VTranspiler) visit_import(node Import) string {
 	mut lines := []string{}
 	for alias in node.names {
 		lines << t.map_python_import(alias.name)
+		// `import a.b as c` binds the local name `c`, not `a`, so record both:
+		// the alias for reference resolution and the module marker so that
+		// `c.attr(...)` is not treated as a method call on a value.
+		mut local := alias.name.split('.')[0]
+		mut aliased := false
+		if a2 := alias.asname {
+			local = a2
+			aliased = true
+		}
+		t.imported_modules[local] = true
+		if aliased {
+			t.module_aliases[local] = alias.name
+		}
 	}
 	return lines.filter(it.len > 0).join('\n')
 }
@@ -6367,4 +6403,177 @@ fn v_return_type(typ string) string {
 		parts << elem
 	}
 	return '(${parts.join(', ')})'
+}
+
+// hoist_block_fns lifts function definitions out of nested blocks in `stmts`,
+// appending their V code to `out`. Statements are rewritten in place through the
+// returned list.
+pub fn (mut t VTranspiler) hoist_block_fns(stmts []Stmt, mut out []string) []Stmt {
+	mut result := []Stmt{}
+	for stmt in stmts {
+		result << t.hoist_in_stmt(stmt, mut out)
+	}
+	return result
+}
+
+fn (mut t VTranspiler) hoist_in_stmt(stmt Stmt, mut out []string) Stmt {
+	// Lift the definition out of the block. V has no way to declare a function
+	// inside a nested block, so the block keeps a `pass` in its place.
+	//
+	// A closure that captures `nonlocal` variables cannot be hoisted: it has to
+	// stay an inline closure so it captures by reference.
+	if stmt is FunctionDef {
+		fd := stmt as FunctionDef
+		for inner in fd.body {
+			if inner is Nonlocal {
+				return stmt
+			}
+		}
+		out << t.visit_function_def(fd)
+		return Stmt(Pass{})
+	}
+	if stmt is AsyncFunctionDef {
+		out << t.visit_async_function_def(stmt as AsyncFunctionDef)
+		return Stmt(Pass{})
+	}
+	match stmt {
+		If {
+			s := stmt as If
+			return Stmt(If{
+				test:   s.test
+				body:   t.hoist_block_fns(s.body, mut out)
+				orelse: t.hoist_block_fns(s.orelse, mut out)
+				loc:    s.loc
+				level:  s.level
+			})
+		}
+		For {
+			s := stmt as For
+			return Stmt(For{
+				target: s.target
+				iter:   s.iter
+				body:   t.hoist_block_fns(s.body, mut out)
+				orelse: t.hoist_block_fns(s.orelse, mut out)
+				loc:    s.loc
+				level:  s.level
+			})
+		}
+		While {
+			s := stmt as While
+			return Stmt(While{
+				test:   s.test
+				body:   t.hoist_block_fns(s.body, mut out)
+				orelse: t.hoist_block_fns(s.orelse, mut out)
+				loc:    s.loc
+				level:  s.level
+			})
+		}
+		With {
+			s := stmt as With
+			return Stmt(With{
+				items: s.items
+				body:  t.hoist_block_fns(s.body, mut out)
+				loc:   s.loc
+			})
+		}
+		Try {
+			s := stmt as Try
+			mut handlers := []ExceptHandler{}
+			for h in s.handlers {
+				handlers << ExceptHandler{
+					typ:  h.typ
+					name: h.name
+					body: t.hoist_block_fns(h.body, mut out)
+					loc:  h.loc
+				}
+			}
+			return Stmt(Try{
+				body:               t.hoist_block_fns(s.body, mut out)
+				handlers:           handlers
+				orelse:             t.hoist_block_fns(s.orelse, mut out)
+				finalbody:          t.hoist_block_fns(s.finalbody, mut out)
+				loc:                s.loc
+				is_exception_group: s.is_exception_group
+			})
+		}
+		else {
+			return stmt
+		}
+	}
+}
+
+// hoist_module_fns lifts function definitions declared inside module-level
+// blocks out to module scope, where V requires them.
+pub fn (mut t VTranspiler) hoist_module_fns(stmts []Stmt, mut out []string) []Stmt {
+	// Top-level statements are already in the right place; only recurse into
+	// blocks, where a nested `fn` would be illegal in V.
+	mut result := []Stmt{}
+	for stmt in stmts {
+		match stmt {
+			If {
+				s := stmt as If
+				result << Stmt(If{
+					test:   s.test
+					body:   t.hoist_in_stmt_list(s.body, mut out)
+					orelse: t.hoist_in_stmt_list(s.orelse, mut out)
+					loc:    s.loc
+					level:  s.level
+				})
+			}
+			For {
+				s := stmt as For
+				result << Stmt(For{
+					target: s.target
+					iter:   s.iter
+					body:   t.hoist_in_stmt_list(s.body, mut out)
+					orelse: t.hoist_in_stmt_list(s.orelse, mut out)
+					loc:    s.loc
+					level:  s.level
+				})
+			}
+			While {
+				s := stmt as While
+				result << Stmt(While{
+					test:   s.test
+					body:   t.hoist_in_stmt_list(s.body, mut out)
+					orelse: t.hoist_in_stmt_list(s.orelse, mut out)
+					loc:    s.loc
+					level:  s.level
+				})
+			}
+			Try {
+				s := stmt as Try
+				mut handlers := []ExceptHandler{}
+				for h in s.handlers {
+					handlers << ExceptHandler{
+						typ:  h.typ
+						name: h.name
+						body: t.hoist_in_stmt_list(h.body, mut out)
+						loc:  h.loc
+					}
+				}
+				result << Stmt(Try{
+					body:               t.hoist_in_stmt_list(s.body, mut out)
+					handlers:           handlers
+					orelse:             t.hoist_in_stmt_list(s.orelse, mut out)
+					finalbody:          t.hoist_in_stmt_list(s.finalbody, mut out)
+					loc:                s.loc
+					is_exception_group: s.is_exception_group
+				})
+			}
+			else {
+				result << stmt
+			}
+		}
+	}
+	return result
+}
+
+// hoist_in_stmt_list lifts definitions out of a block's statement list.
+fn (mut t VTranspiler) hoist_in_stmt_list(stmts []Stmt, mut out []string) []Stmt {
+	mut result := []Stmt{}
+	for stmt in stmts {
+		result << t.hoist_in_stmt(stmt, mut out)
+	}
+	return result
 }

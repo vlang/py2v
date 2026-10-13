@@ -16,7 +16,7 @@ fn bisect_right(data []int, item int) int {
 
 fn bin_it(limits []int, data []int) []int {
 	mut bins := [0]
-	for x in limits {
+	for x_ in limits {
 		bins << 0
 	}
 	for d in data {

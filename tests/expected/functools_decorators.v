@@ -21,9 +21,10 @@ fn factorial(n int) int {
 }
 
 // @wraps: unsupported decorator — remove or implement manually
-fn wrapper(kwargs map[string]Any // **kwargs, args ...Any) Any {
+fn wrapper(kwargs map[string]Any, args ...Any) Any {
 	return func(...args, kwargs)
 }
+
 fn my_decorator(func Any) fn () Any {
 	return wrapper
 }

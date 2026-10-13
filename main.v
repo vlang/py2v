@@ -337,7 +337,13 @@ fn translate_package(python_cmd string, ast_dump string, package_dir string, out
 			symbols:   collect_module_symbols(mod)
 		})
 		for cls in collect_classes(mod) {
-			registry.class_fields_by_path['${dotted}.${cls.name}'] = cls.fields
+			// Store fields under their V spelling so struct literals built in
+			// another module agree with the declaration here.
+			mut v_fields := []string{}
+			for f in cls.fields {
+				v_fields << escape_leading_underscore(f)
+			}
+			registry.class_fields_by_path['${dotted}.${cls.name}'] = v_fields
 		}
 		// Record which imported methods need a `mut` receiver so call sites on
 		// local variables of that class can declare the variable `mut`.

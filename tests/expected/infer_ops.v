@@ -5,18 +5,18 @@ type Any = bool | int | i64 | f64 | string | []u8
 fn foo() {
 	a := 10
 	b := 20
-	c1 := a + b
-	c2 := a - b
-	c3 := a * b
-	c4 := a / b
-	c5 := -a
+	c1_ := a + b
+	c2_ := a - b
+	c3_ := a * b
+	c4_ := a / b
+	c5_ := -a
 	d := 2
-	e1 := a + d
-	e2 := a - d
-	e3 := a * d
-	e4 := f64(a) / d
-	f := -3
-	g := -a
+	e1_ := a + d
+	e2_ := a - d
+	e3_ := a * d
+	e4_ := f64(a) / d
+	f_ := -3
+	g_ := -a
 }
 
 fn add1(x i8, y i8) Any {

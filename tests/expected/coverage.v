@@ -81,10 +81,10 @@ fn show() {
 	s := '1    2'
 	println(s)
 	assert infer_bool(1)
-	escape_quotes := ' foo \"bar\" baz '
+	escape_quotes_ := ' foo \"bar\" baz '
 	assert 'aaabbccc'.contains('bbc')
 	assert 1 != 0
-	c1, _, c2 = 1, 2, 3
+	c1_, _, c2_ = 1, 2, 3
 }
 
 fn main() {
