@@ -40,18 +40,18 @@ if __name__ == "__main__":
 
 **V output:**
 ```v
-@[translated]
 module main
 
+@[translated]
 fn fib(i int) int {
-    if i == 0 || i == 1 {
-        return 1
-    }
-    return fib((i - 1)) + fib((i - 2))
+	if i == 0 || i == 1 {
+		return 1
+	}
+	return fib(i - 1) + fib(i - 2)
 }
 
 fn main() {
-    println((fib(5)).str())
+	println(fib(5))
 }
 ```
 
@@ -71,16 +71,14 @@ fn main() {
 
 ## Running Tests
 
+The test runner is a V script, so the same command works on every platform:
+
 ```bash
-cd tests
-sh run_tests.sh
+v run tests/run_tests.vsh
 ```
 
-Windows
-```PowerShell
-cd tests
-./run_tests.ps1
-```
+Set `VERBOSE=1` to print expected/generated excerpts for failing cases, or
+`PY2V=<path>` to exercise a specific `py2v` binary.
 
 ## Architecture
 

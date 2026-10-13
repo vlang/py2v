@@ -13,6 +13,9 @@ tmp/
 # Test artifacts
 tests/actual_output/
 py2v
+
+tests/run_tests
+.py2v.v3cc.*
 **/__pycache__/
 *.pyc
 *.pyo
