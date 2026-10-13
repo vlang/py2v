@@ -17,22 +17,8 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Setup V (Linux)
-        if: runner.os == 'Linux'
-        run: |
-          wget -qO /tmp/v.zip https://github.com/vlang/v/releases/latest/download/v_linux.zip
-          unzip -q /tmp/v.zip -d /tmp
-          echo /tmp/v >> "$GITHUB_PATH"
-
-      - name: Setup V (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $vZip = Join-Path $env:RUNNER_TEMP "v_windows.zip"
-          $vDir = Join-Path $env:RUNNER_TEMP "v"
-          Invoke-WebRequest -Uri "https://github.com/vlang/v/releases/latest/download/v_windows.zip" -OutFile $vZip
-          Expand-Archive -Path $vZip -DestinationPath $env:RUNNER_TEMP -Force
-          "$vDir" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+      - name: Setup V
+        uses: vlang/setup-v@v1.7
 
       - name: Build
         run: v .
