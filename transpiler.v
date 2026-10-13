@@ -3540,6 +3540,19 @@ pub fn (mut t VTranspiler) visit_call(node Call) string {
 			return path_result
 		}
 
+		// errno / stat / signal / warnings are rewritten at the use site; they do
+		// not correspond to a V module import. This runs after the path
+		// dispatcher so a `Path` value keeps its own method handling.
+		if attr_node.value is Name {
+			recv_mod := (attr_node.value as Name).id
+			if recv_mod in python_stdlib_inline_modules || recv_mod == 'fcntl' {
+				res, ok := dispatch_stdlib_call(mut t, recv_mod, method, vargs)
+				if ok {
+					return res
+				}
+			}
+		}
+
 		// String methods
 		match method {
 			'strip' {
