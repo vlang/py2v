@@ -80,6 +80,20 @@ pub fn is_numeric_string(s string) bool {
 	return true
 }
 
+// control_char_escape returns the `\xNN` escape for a character that must not
+// appear raw inside a V string literal, or an empty string when `c` is safe to
+// emit directly.
+//
+// Without this a Python `'\x00'` literal becomes a real NUL byte in the
+// generated source, which makes the whole file read as binary to grep, diff and
+// most editors even though the V compiler accepts it.
+fn control_char_escape(c u8) string {
+	if c < 0x20 || c == 0x7f {
+		return '\\x${c:02x}'
+	}
+	return ''
+}
+
 // escape_string escapes characters in `s` for inclusion in a V string literal.
 pub fn escape_string(s string) string {
 	mut result := strings.new_builder(s.len)
@@ -91,7 +105,14 @@ pub fn escape_string(s string) string {
 			`\n` { result.write_string('\\n') }
 			`\r` { result.write_string('\\r') }
 			`\t` { result.write_string('\\t') }
-			else { result.write_u8(c) }
+			else {
+				esc := control_char_escape(c)
+				if esc == '' {
+					result.write_u8(c)
+				} else {
+					result.write_string(esc)
+				}
+			}
 		}
 	}
 	return result.str()
@@ -144,7 +165,12 @@ pub fn escape_interp_string(s string) string {
 				}
 			}
 			else {
-				result.write_u8(c)
+				esc := control_char_escape(c)
+				if esc == '' {
+					result.write_u8(c)
+				} else {
+					result.write_string(esc)
+				}
 			}
 		}
 	}

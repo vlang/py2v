@@ -476,6 +476,9 @@ pub mut:
 	arg          string
 	annotation   ?Expr
 	type_comment ?string
+	// v_annotation is an inferred type for a parameter the frontend could not
+	// read from an annotation, such as one that only feeds an annotated field.
+	v_annotation string
 	loc          Location
 }
 

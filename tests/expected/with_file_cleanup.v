@@ -2,8 +2,16 @@ module main
 
 import os
 
+// TODO(py2v): no V equivalent for import tempfile
+// Provide one in python_to_v_import (types.v) or port the module.
+
+// TODO(py2v): no V mapping for tempfile.mktemp
+// Each site below is stubbed with a zero value.
+
+type Any = bool | int | i64 | f64 | string | []u8
+
 fn write_and_read() {
-	path := tempfile.mktemp()
+	path := Any(0)
 	if true {
 		mut f := os.create(path) or { panic(err) }
 		defer { f.close() }
@@ -34,7 +42,6 @@ fn nested_files() {
 }
 
 fn main() {
-	// import tempfile: no known V equivalent
 	write_and_read()
 	nested_files()
 }

@@ -300,7 +300,55 @@ pub fn escape_identifier(name string) string {
 	if name in v_builtin_types {
 		return '${name}_'
 	}
+	// Reserved names are renamed identically on both sides, so that a
+	// declaration and its references cannot drift apart.
+	if name in v_reserved_idents {
+		return '${name}_'
+	}
 	return escape_leading_underscore(name)
+}
+
+// v_reserved_idents are Python names that cannot be used verbatim for a V local
+// or parameter.
+//
+// `v` is the V compiler's own namespace, importable as `v.abc` and friends. A
+// local named `v` is emitted verbatim, `v fmt` then adds `import v` for the
+// `v.something` it sees, and the module stops resolving. Only bare locals are
+// affected: a struct field reached as `self.v` never looks like a module, so
+// fields keep escape_leading_underscore and stay consistent with their uses.
+const v_reserved_idents = ['v']!
+
+// escape_local_ident rewrites a Python name for use as a V local, parameter or
+// reference. `escape_identifier` cannot be used for references because it also
+// renames the Python builtins `int`, `bool` and `str`, which builtin dispatch
+// matches on by name; this keeps the two declaration sites in agreement with it.
+pub fn escape_local_ident(name string) string {
+	if name in v_reserved_idents {
+		return '${name}_'
+	}
+	return escape_keyword(escape_leading_underscore(name))
+}
+
+// escape_local_decl produces the V spelling of a Python name being declared as
+// a variable or parameter.
+//
+// V rejects an uppercase letter anywhere in a variable or parameter name, while
+// Python freely uses `Atom`, `_ForkWatcher` or `EI_CLASS` in those positions —
+// mostly by passing a class as an argument or by naming a constant in SCREAMING
+// CASE. Lowercasing is the only spelling V accepts.
+//
+// Callers must not apply this to a name that denotes a type: a class keeps its
+// capitalisation so that references resolve to the declared struct.
+pub fn escape_local_decl(name string) string {
+	escaped := escape_identifier(name)
+	if escaped == '' {
+		return escaped
+	}
+	first := escaped[0]
+	if first >= `A` && first <= `Z` {
+		return escaped.to_lower()
+	}
+	return escaped
 }
 
 // zero_value_for_type returns a V expression of zero value for `typ`.
@@ -428,6 +476,89 @@ pub const python_to_v_import = {
 	'unittest':    '!// import unittest: use V built-in `assert` and `v test`'
 	'urllib':      '!// import urllib: use V net.http'
 }
+
+// python_unmapped_members are `module.member` spellings with no V equivalent.
+//
+// Mapping a module is not enough: `subprocess` becomes V's `os` at module level,
+// but `subprocess.Popen` has no member there, and emitting it produces a field
+// access V cannot parse. Anything listed here is stubbed at the call site and
+// reported in a module-scope TODO rather than emitted verbatim.
+pub const python_unmapped_members = [
+	// Python spawns processes through a Popen object; V runs a process directly.
+	'subprocess.Popen',
+	'subprocess.run',
+	'subprocess.call',
+	'subprocess.check_output',
+	'subprocess.check_call',
+	'subprocess.CalledProcessError',
+	'subprocess.TimeoutExpired',
+	'subprocess.PopenError',
+	'subprocess.PIPE',
+	'subprocess.STDOUT',
+	'subprocess.STDERR',
+	'subprocess.STIN',
+	'subprocess.DEVNULL',
+	// Python locks and threads have no direct V spelling; V uses sync and
+	// goroutines, which are not interchangeable at a call site.
+	'threading.Thread',
+	'threading.Event',
+	'threading.Lock',
+	'threading.RLock',
+	'threading.Condition',
+	'threading.Semaphore',
+	'threading.Timer',
+	'multiprocessing.Process',
+	'multiprocessing.Pipe',
+	'multiprocessing.Queue',
+	'multiprocessing.get_start_method',
+	'multiprocessing.set_start_method',
+	'multiprocessing.reduction',
+	// Runtime introspection and platform probes.
+	'platform.system',
+	'platform.python_implementation',
+	'platform.uname',
+	'platform.machine',
+	'platform.release',
+	// Python's struct module packs binary records; V has no matching API, only
+	// fixed-width encoding helpers.
+	'struct.Struct',
+	'struct.pack',
+	'struct.unpack',
+	'struct.calcsize',
+	'struct.unpack_from',
+	'struct.pack_into',
+	// Constant tables V spells differently.
+	'signal.SIG_DFL',
+	'signal.SIG_IGN',
+	'signal.SIGINT',
+	'signal.SIGTERM',
+	'signal.SIGKILL',
+	'signal.SIGSTOP',
+	'signal.SIGCONT',
+	'signal.SIGALRM',
+	'signal.SIGCHLD',
+	'signal.SIGPIPE',
+	'signal.SIGQUIT',
+	'signal.SIGUSR1',
+	'signal.SIGUSR2',
+	'signal.SIGWINCH',
+]!
+
+// python_unmapped_names are bare Python callables with no V equivalent.
+//
+// The functional forms build a type at runtime, which V has no way to express.
+// They are stubbed at the call site and reported, rather than emitted as a call
+// to a name V will not accept.
+pub const python_unmapped_names = [
+	// Functional API Enum('Name', [...]) has no static V spelling.
+	'Enum',
+	'IntEnum',
+	'Flag',
+	'IntFlag',
+	'unique',
+	// struct.Struct(...) likewise.
+	'Struct',
+]!
 
 // Python stdlib modules that py2v handles inline rather than by importing a V
 // module. The value is the V module to import, or '' when the module's contents

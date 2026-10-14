@@ -6,7 +6,6 @@ A Python to V transpiler. Converts Python source code to the [V programming lang
 
 - [V compiler](https://vlang.io/)
 - Python 3.8+
-- [py2many](https://github.com/py2many/py2many) - `pip install py2many`
 
 ## Building
 
@@ -23,7 +22,16 @@ py2v input.py
 
 # Output to file
 py2v input.py -o output.v
+
+# Translate and immediately compile-check the result
+py2v input.py -o output.v --check
+
+# Same for a whole package, checked in parallel
+py2v --package ./src -o ./out --check --jobs 8
 ```
+
+`--check` prints a `module<TAB>errors<TAB>first_error` table on stdout and a summary on
+stderr, and exits 1 if any module fails to compile.
 
 ## Example
 
@@ -80,12 +88,31 @@ v run tests/run_tests.vsh
 Set `VERBOSE=1` to print expected/generated excerpts for failing cases, or
 `PY2V=<path>` to exercise a specific `py2v` binary.
 
+## Translating a Package
+
+`--package` treats the directory as a Python source tree and emits a V project.
+One Python *package* becomes one V module, named after its dotted path and
+prefixed with `py_`:
+
+```
+mypkg/util/digraph.py  ->  out/py_mypkg_util/digraph.v   (module py_mypkg_util)
+mypkg/__init__.py     ->  out/py_mypkg/__init__.v
+```
+
+V compiles a directory as a single module, so a package's `__init__.py` and its
+sibling modules share one namespace in exactly the way Python does. Modules are
+kept flat and prefixed so a generated directory can never shadow a vlib module
+(`sync`, `term`, …) or start with `_`, which V rejects as a module name.
+
+Absolute, relative (`from . import x`), parent (`from ..pkg import y`) and star
+(`from pkg.m import *`) imports are all resolved to the right V module.
+
 ## Architecture
 
 py2v uses a two-stage pipeline:
 
-1. **Python frontend** (`frontend/ast_dump.py`) - Parses Python source using py2many's analysis passes, enriches the AST with type inference and scope information, outputs JSON
-2. **V backend** (`transpiler.v`) - Consumes the JSON AST and generates V code
+1. **Python frontend** (`frontend/ast_dump.py`) - Parses Python source with the standard library `ast` module, then enriches the tree with type inference, mutability analysis and scope information, and emits it as JSON
+2. **V backend** (`parser.v` + `transpiler.v`) - Converts the JSON AST into V code
 
 ## License
 

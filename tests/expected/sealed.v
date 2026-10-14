@@ -1,5 +1,8 @@
 module main
 
+// TODO(py2v): no V equivalent for import adt
+// Provide one in python_to_v_import (types.v) or port the module.
+
 pub struct Packet {
 pub mut:
 	val f64
@@ -12,7 +15,6 @@ pub mut:
 }
 
 fn main() {
-	// import adt: no known V equivalent
 	a := Register.VALUE(10)
 	assert a.is_value()
 	a.value()

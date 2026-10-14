@@ -1,5 +1,8 @@
 module main
 
+// TODO(py2v): no V equivalent for import adt, py2many.smt
+// Provide one in python_to_v_import (types.v) or port the module.
+
 pub struct TriangleType {
 pub mut:
 	EQUILATERAL int
@@ -69,9 +72,6 @@ fn classify_triangle(a int, b int, c int) TriangleType {
 }
 
 fn main() {
-	// import adt: no known V equivalent
-	// import py2many.smt: no known V equivalent
-	// import py2many.smt: no known V equivalent
 	a := default_value(int)
 	b := default_value(int)
 	c := default_value(int)
