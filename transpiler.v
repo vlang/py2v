@@ -37,15 +37,32 @@ mut:
 	// Project translation state. `emit_pub` makes top-level symbols visible
 	// across V modules; `registry` maps Python module paths to V modules;
 	// `current_dotted` is this module's Python dotted path.
+	// current_is_package is true when that path names a package rather than a
+	// module, which is what a relative import resolves against.
 	emit_pub       bool
 	registry       ModuleRegistry
 	current_dotted string
+	// current_is_package reports whether current_dotted names a package, i.e.
+	// the file being emitted is an `__init__.py`.
+	current_is_package bool
 	// import_aliases maps a name bound by `from proj.mod import name` to the V
 	// module prefix needed to reach it, e.g. `double` -> `util`.
 	import_aliases map[string]string
 	// imported_modules records local names bound by module imports, so that
 	// `name.attr(...)` is not mistaken for a method call on a value.
 	imported_modules map[string]bool
+	// loop_idents holds the iteration variables currently in scope. V forbids a
+	// nested loop from reusing one, so a collision forces a fresh name.
+	loop_idents map[string]bool
+	// renamed_idents maps a Python name to the V name its current scope bound
+	// it to.
+	renamed_idents map[string]string
+	// import_prefixes records the V module names that name references get
+	// qualified with, whether they came from `import pkg` or from
+	// `from pkg.mod import name`. A reference such as `pkg.Klass` starts with
+	// one of these, which is what tells a qualified constructor apart from a
+	// method call on a value that happens to share a class name.
+	import_prefixes map[string]bool
 	// module_aliases maps a local name from `import a.b as c` to the Python
 	// module it refers to.
 	module_aliases map[string]string
@@ -53,6 +70,33 @@ mut:
 	// its field list, so struct literals and base-class checks resolve without
 	// transpiling that module first.
 	imported_classes map[string][]string
+	// star_imports lists the V modules reached through `from X import *`. Their
+	// public names are visible unqualified, so a bare reference has to be
+	// qualified with whichever of these modules defines it.
+	star_imports []string
+	// local_idents maps a Python local name to the V spelling it was declared
+	// under, so that references agree with the declaration. V rejects uppercase
+	// in variable and parameter names, so the two can differ.
+	local_idents map[string]string
+	// module_idents does the same for module-level bindings. A module constant
+	// such as `USER_CONFIG_PATH` is declared lowercase and has to be read back
+	// under that spelling from the constants that build on it, including from
+	// inside functions, where the local scope table does not apply.
+	module_idents map[string]string
+	// submodule_aliases maps a local name bound by `from . import mod` to the
+	// Python submodule it names, when that submodule shares the current V module.
+	submodule_aliases map[string]string
+	// unmapped_modules lists Python modules that were imported but have no V
+	// mapping. Calls into them cannot be expressed as V, and emitting them
+	// verbatim produces `ctypes.CDLL(a, b)` — a field access V cannot parse.
+	unmapped_modules map[string]bool
+	// unmapped_calls records the call sites that had to be stubbed, reported
+	// once at module scope so the gap is visible rather than silent.
+	unmapped_calls []string
+	// unresolved_imports lists Python modules with no V counterpart. They are
+	// reported at module scope rather than left to fail as undefined
+	// identifiers at every use site.
+	unresolved_imports []string
 	// path_vars tracks variables known to hold pathlib.Path values (represented as strings)
 	path_vars map[string]bool
 	// regex_vars tracks variables known to hold compiled regex.RE objects
@@ -89,8 +133,16 @@ pub fn new_transpiler() VTranspiler {
 		global_vars:                 map[string]bool{}
 		import_aliases:              map[string]string{}
 		imported_modules:            map[string]bool{}
+		import_prefixes:             map[string]bool{}
+		loop_idents:                 map[string]bool{}
+		unmapped_modules:            map[string]bool{}
+		unmapped_calls:              []string{}
+		renamed_idents:              map[string]string{}
 		module_aliases:              map[string]string{}
 		imported_classes:            map[string][]string{}
+		submodule_aliases:           map[string]string{}
+		local_idents:                map[string]string{}
+		module_idents:               map[string]string{}
 		known_classes:               map[string][]string{}
 		module_name:                 ''
 		current_return_count:        0
@@ -121,6 +173,7 @@ pub fn (mut t VTranspiler) visit_module(node Module) string {
 	mut struct_decls := []string{} // `pub struct ...` (from ClassDef)
 	mut func_decls := []string{} // `fn ...` (non-main functions)
 	mut main_fn_body := []string{} // body lines for fn main()
+	mut main_fn_stmts := []Stmt{} // the statements those lines came from
 	mut main_fn_override := '' // full `fn main() {...}` from guard rewrite
 	mut comment_lines := []string{} // top-level import comments etc.
 
@@ -128,6 +181,25 @@ pub fn (mut t VTranspiler) visit_module(node Module) string {
 	// A `def` nested inside a module-level `if`/`for`/`try` cannot be emitted
 	// there: V only allows `fn` declarations at module top level.
 	mut hoisted_body := t.hoist_module_fns(node.body, mut nested_fndefs)
+
+	// Record the V spelling of every module-level binding before anything is
+	// rendered, so that a constant's value refers to it by that same spelling.
+	for stmt in hoisted_body {
+		if stmt is Assign {
+			assign := stmt as Assign
+			if assign.targets.len == 1 && assign.targets[0] is Name {
+				id := (assign.targets[0] as Name).id
+				t.module_idents[id] = escape_local_decl(id)
+			}
+		}
+		if stmt is AnnAssign {
+			ann := stmt as AnnAssign
+			if ann.target is Name {
+				id := (ann.target as Name).id
+				t.module_idents[id] = escape_local_decl(id)
+			}
+		}
+	}
 
 	mut first_stmt := true
 	for stmt in hoisted_body {
@@ -181,6 +253,7 @@ pub fn (mut t VTranspiler) visit_module(node Module) string {
 					comment_lines << s
 				} else {
 					main_fn_body << s
+					main_fn_stmts << stmt
 				}
 			}
 		}
@@ -191,35 +264,49 @@ pub fn (mut t VTranspiler) visit_module(node Module) string {
 		type_decls.prepend('type Any = bool | int | i64 | f64 | string | []u8')
 	}
 
-	// Build final fn main(): merge guard-rewritten body with module-level inits
+	// A library module has no entry point. Synthesising one would put an
+	// `fn main` in every generated file, and V merges a directory into a single
+	// module, so the second file would collide with the first. Module-level
+	// statements therefore become declarations in their own right, and anything
+	// that is genuinely a runtime statement is reported rather than smuggled
+	// into a function body.
+	mut library_decls := []string{}
 	mut main_str := ''
-	mut all_main_lines := []string{}
-	all_main_lines << comment_lines
-	all_main_lines << main_fn_body
-	if main_fn_override.len > 0 {
-		if all_main_lines.len > 0 {
-			// Inject init lines at start of the guard-rewritten fn main() body
-			open_brace := main_fn_override.index('{') or { -1 }
-			if open_brace >= 0 {
-				head := main_fn_override[0..open_brace + 1]
-				tail := main_fn_override[open_brace + 1..]
-				mut indented := []string{}
-				for line in all_main_lines {
-					indented << indent(line, 1, '\t')
+	if t.emit_pub && main_fn_override.len == 0 {
+		library_decls << comment_lines
+		for i, line in main_fn_body {
+			library_decls << module_scope_decl(main_fn_stmts[i], line)
+		}
+	} else {
+		// Merge the guard-rewritten body with module-level inits.
+		mut all_main_lines := []string{}
+		all_main_lines << comment_lines
+		all_main_lines << main_fn_body
+		if main_fn_override.len > 0 {
+			if all_main_lines.len > 0 {
+				// Inject init lines at start of the guard-rewritten fn main() body
+				open_brace := main_fn_override.index('{') or { -1 }
+				if open_brace >= 0 {
+					head := main_fn_override[0..open_brace + 1]
+					tail := main_fn_override[open_brace + 1..]
+					mut indented := []string{}
+					for line in all_main_lines {
+						indented << indent(line, 1, '\t')
+					}
+					main_str = '${head}\n${indented.join('\n')}${tail}'
+				} else {
+					main_str = main_fn_override
 				}
-				main_str = '${head}\n${indented.join('\n')}${tail}'
 			} else {
 				main_str = main_fn_override
 			}
-		} else {
-			main_str = main_fn_override
+		} else if all_main_lines.len > 0 {
+			mut indented := []string{}
+			for line in all_main_lines {
+				indented << indent(line, 1, '\t')
+			}
+			main_str = 'fn main() {\n${indented.join('\n')}\n}'
 		}
-	} else if all_main_lines.len > 0 {
-		mut indented := []string{}
-		for line in all_main_lines {
-			indented << indent(line, 1, '\t')
-		}
-		main_str = 'fn main() {\n${indented.join('\n')}\n}'
 	}
 
 	// Assemble output sections in order
@@ -235,6 +322,22 @@ pub fn (mut t VTranspiler) visit_module(node Module) string {
 			import_lines << 'import ${u}'
 		}
 		parts << import_lines.join('\n')
+	}
+
+	unresolved := t.unresolved_import_comment()
+	if unresolved != '' {
+		// Reported at module scope. Emitting these inside fn main() would bury
+		// a project-wide problem in the body of one function.
+		parts << unresolved
+	}
+
+	unmapped := t.unmapped_call_comment()
+	if unmapped != '' {
+		parts << unmapped
+	}
+
+	if library_decls.len > 0 {
+		parts << library_decls.join('\n')
 	}
 
 	if type_decls.len > 0 {
@@ -686,6 +789,8 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 	saved_var_types := t.var_types.clone()
 	saved_escaped_identifiers := t.escaped_identifiers.clone()
 	t.escaped_identifiers = map[string]bool{}
+	saved_local_idents := t.local_idents.clone()
+	t.local_idents = map[string]string{}
 	saved_current_class := t.current_class_name
 	if node.is_class_method {
 		t.current_class_name = node.class_name
@@ -787,6 +892,11 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 		if ann := arg.annotation {
 			typename = t.typename_from_annotation(ann)
 		}
+		// A parameter the frontend could only type by inference, for example one
+		// that exists solely to fill an annotated field.
+		if typename == '' && arg.v_annotation != '' {
+			typename = map_type(arg.v_annotation)
+		}
 
 		// Python commonly leaves the operand of a comparison unannotated, which
 		// would otherwise become `Any`; V needs the receiver type there.
@@ -794,7 +904,8 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 			typename = emitted_receiver_type
 		}
 
-		mut arg_name := escape_identifier(arg.arg)
+		mut arg_name := escape_local_decl(arg.arg)
+		t.local_idents[arg.arg] = arg_name
 		// Track identifiers escaped due to built-in type name conflicts
 		if arg.arg in v_builtin_types {
 			t.escaped_identifiers[arg.arg] = true
@@ -818,7 +929,7 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 
 		args_strs << '${arg_name} ${typename}'
 		// Track parameter type for return type inference
-		if typename.len > 0 && typename != 'Any' && !(typename.len == 1 && typename[0] >= `A`
+		if typename != '' && typename != 'Any' && !(typename.len == 1 && typename[0] >= `A`
 			&& typename[0] <= `Z`) {
 			t.var_types[arg.arg] = typename
 		}
@@ -1022,6 +1133,7 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 	// Restore var_types and escaped_identifiers from parent scope
 	t.var_types = saved_var_types.clone()
 	t.escaped_identifiers = saved_escaped_identifiers.clone()
+	t.local_idents = saved_local_idents.clone()
 
 	// A nested function must not inherit the enclosing function's return arity.
 	t.current_return_count = saved_return_count
@@ -1087,7 +1199,7 @@ fn (mut t VTranspiler) visit_protocol_class(node ClassDef, emitted_name string) 
 						typename = 'Any'
 					}
 				}
-				args_strs << '${escape_identifier(arg.arg)} ${typename}'
+				args_strs << '${escape_local_decl(arg.arg)} ${typename}'
 			}
 			mut ret_type := ''
 			if !fd.is_void {
@@ -1954,8 +2066,116 @@ pub fn (t VTranspiler) zero_value_for(typ string) string {
 	return zero_value_for_type(typ)
 }
 
+// fresh_loop_ident picks a V iteration variable name that is not already bound
+// by an enclosing loop, so that nesting a Python loop over the same variable
+// name still compiles.
+fn (t VTranspiler) fresh_loop_ident(name string, pending map[string]string) string {
+	mut taken := map[string]bool{}
+	for k, _ in pending {
+		taken[k] = true
+	}
+	// A plain `for {}` binds no iteration variable, so the candidate name can
+	// be declared in the body without V reading it as a redefinition.
+	mut n := 0
+	for {
+		candidate := if n == 0 { '${name}_' } else { '${name}_${n}' }
+		if !(candidate in t.loop_idents) && !(candidate in taken) {
+			return candidate
+		}
+		n++
+	}
+}
+
+// module_scope_decl renders one module-level statement as a V module-scope
+// declaration.
+//
+// A Python module may run code at import time, and a V module cannot: there is
+// no module body to run. A constant assignment becomes a `const`, which is the
+// case that matters in practice — portage declares its path and error constants
+// this way — and anything else is reported instead of being hidden inside a
+// function that never runs.
+fn module_scope_decl(stmt Stmt, rendered string) string {
+	trimmed := rendered.trim_space()
+	if stmt is Assign {
+		assign := stmt as Assign
+		if assign.targets.len == 1 && assign.targets[0] is Name {
+			name := (assign.targets[0] as Name).id
+			mut value := trimmed
+			if eq := value.index(' := ') {
+				value = value[eq + 4..]
+			}
+			return 'const ${escape_local_decl(name)} = ${value}'
+		}
+	}
+	return '// TODO(py2v): module-level ${stmt_desc(stmt)} has no place in a V ' +
+		'module; move it into a function and call it explicitly.'
+}
+
+// stmt_desc names a statement kind for a diagnostic comment.
+fn stmt_desc(stmt Stmt) string {
+	return match stmt {
+		If { 'if statement' }
+		For { 'for loop' }
+		While { 'while loop' }
+		Try { 'try block' }
+		With { 'with block' }
+		ExprStmt { 'expression' }
+		Import { 'import' }
+		ImportFrom { 'import' }
+		Assert { 'assert' }
+		Delete { 'delete' }
+		Pass { 'pass' }
+		else { 'statement' }
+	}
+}
+
+// for_target_names returns the plain names a for-loop target binds.
+fn for_target_names(target Expr) []string {
+	if target is Tuple || target is List {
+		mut out := []string{}
+		for e in (target as Tuple).elts {
+			if e is Name {
+				out << (e as Name).id
+			}
+		}
+		return out
+	}
+	if target is Name {
+		return [(target as Name).id]
+	}
+	return []
+}
+
 // visit_for emits V code for a For loop.
 pub fn (mut t VTranspiler) visit_for(node For) string {
+	// V rejects reusing an iteration variable name in a nested loop, and
+	// Python allows it freely. Bind the inner loop to a fresh name and record
+	// the rename so the body refers to the variable it actually declares.
+	mut rename := map[string]string{}
+	for name in for_target_names(node.target) {
+		if name in t.loop_idents {
+			rename[name] = t.fresh_loop_ident(name, rename)
+		}
+	}
+	// Every name this loop binds is unbound again on the way out, so a later
+	// loop reusing the same Python name is free to keep it.
+	mut bound := []string{}
+	for name in for_target_names(node.target) {
+		fresh := rename[name] or { name }
+		t.loop_idents[fresh] = true
+		bound << fresh
+	}
+	for name, fresh in rename {
+		t.renamed_idents[name] = fresh
+	}
+	defer {
+		for name, fresh in rename {
+			t.renamed_idents.delete(name)
+		}
+		for fresh in bound {
+			t.loop_idents.delete(fresh)
+		}
+	}
 	mut target := t.visit_expr(node.target)
 	mut buf := []string{}
 
@@ -2902,7 +3122,7 @@ fn (mut t VTranspiler) emit_if_chain_match(subject string, cases []MatchCase) st
 			}
 		}
 
-		is_wildcard := full_cond.len == 0
+		is_wildcard := full_cond == ''
 		kw := if i == 0 { 'if' } else { '} else if' }
 
 		if is_wildcard {
@@ -2945,9 +3165,35 @@ pub fn (mut t VTranspiler) visit_import(node Import) string {
 	return lines.filter(it.len > 0).join('\n')
 }
 
+// resolve_relative_import turns a Python relative import into an absolute
+// dotted module path.
+//
+// `level` is the leading-dot count the frontend records but that nothing else
+// consumed: level 1 is the current package, level 2 its parent, and so on.
+// Dropping more levels than the package has depth lands on the scan root, which
+// is where Python would fail to resolve it too.
+pub fn (t VTranspiler) resolve_relative_import(level int, mod string) string {
+	if level <= 0 {
+		return mod
+	}
+	// `level` counts leading dots, so level 1 is the current package. The
+	// package is the current module's own dotted path for a package `__init__`,
+	// and the path without its last segment for an ordinary module.
+	mut parts := t.current_dotted.split('.').filter(it.len > 0)
+	if !t.current_is_package && parts.len > 0 {
+		parts = parts[..parts.len - 1]
+	}
+	mut ascend := level - 1
+	for ascend > 0 && parts.len > 0 {
+		parts = parts[..parts.len - 1]
+		ascend--
+	}
+	return join_dotted(parts.join('.'), mod)
+}
+
 // visit_import_from handles Python 'from X import Y', mapping the module.
 pub fn (mut t VTranspiler) visit_import_from(node ImportFrom) string {
-	module_name := node.mod or { '' }
+	module_name := t.resolve_relative_import(node.level, node.mod or { '' })
 	// `from proj.mod import name` binds `name`; record where it now lives so
 	// every reference can be qualified with its V module.
 	if t.registry.contains(module_name) {
@@ -2958,21 +3204,144 @@ pub fn (mut t VTranspiler) visit_import_from(node ImportFrom) string {
 		}
 		for alias in node.names {
 			local := alias.asname or { alias.name }
+			if local == '' {
+				// `from proj.mod import *`: every public name of that module
+				// becomes visible unqualified, so record the module and let
+				// bare references be resolved against it.
+				t.add_star_import(module_name)
+				continue
+			}
 			// A relative import names a sibling module; resolve it against the
 			// current module's package.
-			target := if alias.name == '' { module_name } else { module_name + '.' + alias.name }
-			if t.registry.contains(target) && !t.registry.is_project_root(target) {
-				t.import_aliases[local] = t.registry.v_module_for(target)
+			target := if module_name == '' { alias.name } else { module_name + '.' + alias.name }
+			target_v := t.registry.v_module_for(target)
+			if target_v == '' {
+				// Not a module of this project; fall through.
+			} else if target_v != t.module_name {
+				t.import_aliases[local] = target_v
+				t.import_prefixes[target_v] = true
+				continue
+			} else {
+				// `from . import mod` binds a submodule that lands in the V
+				// module already in scope, so `mod.symbol` collapses to
+				// `symbol` at each use site.
+				t.submodule_aliases[local] = target
 				continue
 			}
 			if v_mod != t.module_name {
 				t.import_aliases[local] = v_mod
+				t.import_prefixes[v_mod] = true
 			}
 		}
 		t.seed_imported_classes(module_name)
 		return ''
 	}
 	return t.map_python_import(module_name)
+}
+
+// note_unresolved_import records a Python module that has no V counterpart, so
+// the gap is reported once at module scope instead of turning into an undefined
+// identifier at every use site.
+pub fn (mut t VTranspiler) note_unresolved_import(py_module string) {
+	if py_module == '' || py_module in t.unresolved_imports {
+		return
+	}
+	t.unresolved_imports << py_module
+}
+
+// unmapped_call_base returns the leading segment of a qualified callee when
+// that segment names a Python module with no V mapping, and an empty string
+// otherwise. `ctypes.CDLL` qualifies on such a module; `obj.method` does not.
+fn unmapped_call_base(fname string, unmapped map[string]bool) string {
+	if fname in python_unmapped_names {
+		return fname
+	}
+	if fname in python_unmapped_members {
+		return fname
+	}
+	head, _ := fname.split_once('.') or { return '' }
+	if unmapped[head] {
+		return head
+	}
+	return ''
+}
+
+// note_unmapped_call records a call into a Python module with no V mapping.
+pub fn (mut t VTranspiler) note_unmapped_call(text string) {
+	if text == '' || text in t.unmapped_calls {
+		return
+	}
+	t.unmapped_calls << text
+}
+
+// unmapped_call_comment renders the module-scope note listing every stubbed
+// call, so that nothing is dropped without saying so.
+pub fn (t VTranspiler) unmapped_call_comment() string {
+	if t.unmapped_calls.len == 0 {
+		return ''
+	}
+	mut calls := t.unmapped_calls.clone()
+	calls.sort()
+	return '// TODO(py2v): no V mapping for ' + calls.join(', ') +
+		'\n// Each site below is stubbed with a zero value.'
+}
+
+// unresolved_import_comment renders the module-scope note listing every Python
+// module that could not be mapped, or an empty string when there are none.
+pub fn (t VTranspiler) unresolved_import_comment() string {
+	if t.unresolved_imports.len == 0 {
+		return ''
+	}
+	mut names := t.unresolved_imports.clone()
+	names.sort()
+	return '// TODO(py2v): no V equivalent for import ' + names.join(', ') +
+		'\n// Provide one in python_to_v_import (types.v) or port the module.'
+}
+
+// collapse_submodule_attr rewrites `mod.attr` to `attr` when `mod` was bound by
+// `from . import mod` and that submodule lands in the V module already in scope.
+//
+// The qualifier has no V spelling: Python namespaces a submodule separately, V
+// merges it into the package. Returns an empty string for any other attribute.
+pub fn (t VTranspiler) collapse_submodule_attr(node Attribute) string {
+	if node.value !is Name {
+		return ''
+	}
+	target := t.submodule_aliases[(node.value as Name).id] or { return '' }
+	if t.registry.v_module_for(target) != t.module_name {
+		return ''
+	}
+	attr := python_dunder_method_names[node.attr] or { node.attr }
+	return escape_keyword(escape_leading_underscore(attr))
+}
+
+// add_star_import records a `from X import *` so that a bare reference to a
+// name defined in X can be qualified with X's V module.
+pub fn (mut t VTranspiler) add_star_import(dotted string) {
+	info := t.registry.lookup(dotted)
+	if info.dotted == '' {
+		return
+	}
+	if info.v_module == t.module_name {
+		return
+	}
+	t.add_using(info.v_module)
+	t.star_imports << info.v_module
+}
+
+// star_import_owner returns the V module that defines `name` among the modules
+// reached through `from X import *`, or an empty string when none of them do.
+//
+// Names defined by the current module win, so a star import can never capture a
+// local definition.
+pub fn (t VTranspiler) star_import_owner(name string) string {
+	mut result := ''
+	for module in t.star_imports {
+		if name in t.registry.symbols_named_in(t.registry.dotted_for_v_module(module)) {
+			result = module
+		}
+	}
+	return result
 }
 
 // map_python_import converts a Python module name to a V import line or comment.
@@ -2988,18 +3357,25 @@ fn (mut t VTranspiler) map_python_import(py_module string) string {
 	// Strip sub-module suffix for top-level lookup first
 	top := py_module.split('.')[0]
 	// Check exact match first, then top-level
-	v_mod := if py_module in python_to_v_import {
-		python_to_v_import[py_module]
-	} else if top in python_to_v_import {
-		python_to_v_import[top]
-	} else {
-		'!// import ${py_module}: no known V equivalent'
+	if !(py_module in python_to_v_import) && !(top in python_to_v_import) {
+		t.note_unresolved_import(py_module)
+		t.unmapped_modules[top] = true
+		return ''
 	}
+	if v_mod_value := python_to_v_import[py_module] {
+		if v_mod_value.starts_with('!') {
+			t.note_unresolved_import(py_module)
+			t.unmapped_modules[top] = true
+			return ''
+		}
+	}
+	v_mod := python_to_v_import[py_module] or { python_to_v_import[top] or { '' } }
 	if v_mod == '' {
 		return '' // silently suppressed
 	}
 	if v_mod.starts_with('!') {
-		return v_mod[1..] // emit raw comment
+		t.note_unresolved_import(py_module)
+		return ''
 	}
 	// Register the V module so the header import block is emitted
 	t.add_using(v_mod)
@@ -3100,12 +3476,30 @@ pub fn (mut t VTranspiler) visit_name(node Name) string {
 	if node.id == '_' {
 		return '_'
 	}
+	// A local declared under a rewritten spelling must be referenced by it.
+	if v_ident := t.local_idents[node.id] {
+		return v_ident
+	}
+	// Likewise for a module-level binding such as a constant.
+	if v_ident := t.module_idents[node.id] {
+		return v_ident
+	}
+	// A loop variable renamed to avoid a nested-loop collision.
+	if renamed := t.renamed_idents[node.id] {
+		return renamed
+	}
 	// A name bound by `from other_module import name` lives in another V
 	// module, so references must be qualified.
 	if prefix := t.import_aliases[node.id] {
-		return '${prefix}.${escape_keyword(escape_leading_underscore(node.id))}'
+		return '${prefix}.${escape_local_ident(node.id)}'
 	}
-	return escape_keyword(escape_leading_underscore(node.id))
+	// `from other_module import *` makes that module's names visible without a
+	// binding, so they have to be qualified at every use site instead.
+	star_prefix := t.star_import_owner(node.id)
+	if star_prefix != '' {
+		return '${star_prefix}.${escape_local_ident(node.id)}'
+	}
+	return escape_local_ident(node.id)
 }
 
 // is_path_expr returns true when expr is a known path variable, inline Path() call,
@@ -3392,7 +3786,9 @@ pub fn (mut t VTranspiler) visit_compare(node Compare) string {
 		if right_type == 'string' {
 			return '${right}.contains(${left})'
 		}
-		return '${left} in ${right}'
+		// Parenthesised because V binds `=` more tightly than `in`, so an
+		// unparenthesised `x = a in b` parses as `(x = a) in b` and fails.
+		return '(${left} in ${right})'
 	}
 
 	if node.ops.len > 0 && node.ops[0] is NotIn {
@@ -3407,7 +3803,7 @@ pub fn (mut t VTranspiler) visit_compare(node Compare) string {
 		if right_type == 'string' {
 			return '!${right}.contains(${left})'
 		}
-		return '${left} !in ${right}'
+		return '(${left} !in ${right})'
 	}
 
 	op := op_to_symbol(get_cmp_op_type(node.ops[0]))
@@ -3495,6 +3891,15 @@ pub fn (mut t VTranspiler) visit_call(node Call) string {
 	// Handle string/list methods that need translation
 	if node.func is Attribute {
 		attr_node := node.func as Attribute
+		// A `from . import mod` qualifier is Python-only; call the symbol
+		// directly rather than rebuilding `mod.method(...)` from the AST.
+		collapsed := t.collapse_submodule_attr(attr_node)
+		if collapsed != '' {
+			if vargs.len > 0 {
+				return '${collapsed}(${vargs.join(', ')})'
+			}
+			return '${collapsed}()'
+		}
 		obj := t.visit_expr(attr_node.value)
 		method := attr_node.attr
 
@@ -4195,17 +4600,37 @@ pub fn (mut t VTranspiler) visit_call(node Call) string {
 		}
 	}
 
-	// Check if this is a struct constructor call (known dataclass)
-	// Only a bare Name can be a constructor. `b.get()` also lands here when the
-	// method table above misses, because the receiver may share a class-attr
-	// symbol name; treating it as a constructor would silently drop the method.
-	// A qualified name (`util.Box`) still names a struct, so look the class up by
-	// its bare name while keeping the qualified spelling in the emitted literal.
+	// Check if this is a struct constructor call (known class).
+	//
+	// A bare Name is only a constructor when it names a class: `b.get()` also
+	// lands here when the method table above misses, because the receiver may
+	// share a class-attr symbol name, and treating that as a constructor would
+	// silently drop the method.
+	//
+	// A qualified name is different. `util.Box(...)` names a class reached
+	// through an import and the receiver is a module, not a value, so the lookup
+	// uses the bare name while the emitted literal keeps the qualifier: a bare
+	// `Box{}` would refer to nothing when the class lives in another V module.
 	mut ctor_lookup := fname
 	if dot := fname.last_index('.') {
 		ctor_lookup = fname[dot + 1..]
 	}
-	if node.func !is Attribute && ctor_lookup in t.known_classes {
+	mut is_ctor := ctor_lookup in t.known_classes
+	if node.func is Attribute {
+		receiver := node.func as Attribute
+		if receiver.value is Name && t.is_known_module_receiver((receiver.value as Name).id) {
+			if !(ctor_lookup in t.known_classes) {
+				// `cache.Blocker(...)` reaches a class this module never
+				// transpiled, because it lives in a sibling file of the same V
+				// module. The scan registry knows its fields.
+				t.seed_class_by_name(ctor_lookup)
+			}
+			is_ctor = ctor_lookup in t.known_classes
+		} else {
+			is_ctor = false
+		}
+	}
+	if is_ctor {
 		// Keep the module qualifier: `Box{}` would refer to nothing when the
 		// class lives in another V module.
 		emitted_ctor := if ctor_lookup == fname {
@@ -4270,6 +4695,19 @@ pub fn (mut t VTranspiler) visit_call(node Call) string {
 			return '${fname}${vargs[0]}'
 		}
 		return fname.trim_right(' ')
+	}
+
+	// A call into a Python module with no V mapping. `ctypes.CDLL(name, true)`
+	// is a field access followed by a call as far as V is concerned, so it does
+	// not even parse. Report it and yield a zero value so the rest of the module
+	// still compiles and the remaining work is visible.
+	unmapped_head := unmapped_call_base(fname, t.unmapped_modules)
+	if unmapped_head != '' {
+		t.note_unmapped_call(fname)
+		// The stub yields a value. `Any` is a sum type alias, so it has to be
+		// converted to a concrete variant rather than named bare.
+		t.generated_code_has_any_type = true
+		return 'Any(0)'
 	}
 
 	// Default call
@@ -4528,7 +4966,12 @@ fn should_lowercase_call_name(name string, known map[string][]string) bool {
 		return false
 	}
 	c := name[0]
-	return c >= `A` && c <= `Z`
+	if !(c >= `A` && c <= `Z`) {
+		return false
+	}
+	// Lowercasing must not land on a V keyword: `Struct(...)` would become
+	// `struct(...)`, which V reads as a keyword and cannot parse at all.
+	return !is_keyword(lower_first_ascii(name))
 }
 
 fn lower_first_ascii(name string) string {
@@ -4544,6 +4987,10 @@ fn lower_first_ascii(name string) string {
 
 // visit_attribute emits V code for attribute access (Attribute).
 pub fn (mut t VTranspiler) visit_attribute(node Attribute) string {
+	collapsed := t.collapse_submodule_attr(node)
+	if collapsed != '' {
+		return collapsed
+	}
 	if node.value is Name {
 		class_name := (node.value as Name).id
 		if class_attrs := t.class_attr_symbols[class_name] {
@@ -4566,7 +5013,13 @@ pub fn (mut t VTranspiler) visit_attribute(node Attribute) string {
 	}
 	// Dunder methods are emitted under a different name, so `self.__int__()`
 	// must call the method as declared.
-	attr = python_dunder_method_names[attr] or { attr }
+	//
+	// Everything else has to shed a leading underscore. V reads `x._foo` as the
+	// string literal `x.'foo'`, because `_` is a string prefix character, and a
+	// leading underscore is not a legal field name either. Python reaches these
+	// constantly for private attributes, so the rewrite matches the one the
+	// declaration sites apply.
+	attr = python_dunder_method_names[attr] or { escape_leading_underscore(attr) }
 	attr_path := '${value}.${attr}'
 
 	// Try attribute dispatch
@@ -4838,7 +5291,7 @@ pub fn (mut t VTranspiler) visit_lambda(node Lambda) string {
 	lambda_type := if body_has_arithmetic { 'int' } else { 'string' }
 
 	for arg in node.args.args {
-		name := escape_identifier(arg.arg)
+		name := escape_local_decl(arg.arg)
 		// Track identifiers escaped due to built-in type name conflicts
 		if arg.arg in v_builtin_types {
 			t.escaped_identifiers[arg.arg] = true
@@ -6268,7 +6721,27 @@ pub fn (mut t VTranspiler) is_map_expr(expr Expr) bool {
 // rather than a value, in which case `name.attr(...)` is a module-level call that
 // the builtin table should translate instead of a method call.
 pub fn (t VTranspiler) is_known_module_receiver(name string) bool {
-	return t.imported_modules[name] or { false }
+	if t.imported_modules[name] or { false } {
+		return true
+	}
+	return t.import_prefixes[name] or { false }
+}
+
+// seed_class_by_name registers a class the scan saw under its bare name, so a
+// qualified reference such as `cache.Blocker(...)` can lower to a struct
+// literal even though this module never emitted the class itself.
+pub fn (mut t VTranspiler) seed_class_by_name(name string) {
+	if name in t.known_classes {
+		return
+	}
+	found := t.registry.class_named(name)
+	if found.fields.len == 0 && found.bases.len == 0 {
+		return
+	}
+	t.known_classes[name] = found.fields
+	t.class_direct_fields[name] = found.fields
+	t.class_base_names[name] = found.bases
+	t.imported_classes[name] = found.fields
 }
 
 // seed_imported_classes records the field lists of classes visible through a
@@ -6280,11 +6753,19 @@ pub fn (mut t VTranspiler) seed_imported_classes(module_dotted string) {
 	}
 	for name in t.registry.symbols_named_in(module_dotted) {
 		fields := t.registry.class_fields(module_dotted, name)
-		if fields.len > 0 {
+		bases := t.registry.class_bases(module_dotted, name)
+		// A class that declares no fields of its own is still a class when it
+		// embeds a base: `class B(A)` where `A` holds the state. Registering it
+		// is what lets `B(...)` become a struct literal that fills the base.
+		if fields.len > 0 || bases.len > 0 {
 			if name !in t.imported_classes {
 				t.imported_classes[name] = fields
 			}
 			t.known_classes[name] = fields
+			if bases.len > 0 {
+				t.class_direct_fields[name] = fields
+				t.class_base_names[name] = bases
+			}
 		}
 		// Mirror mut-receiver methods so call sites can mark locals `mut`.
 		for key, needs_mut in t.registry.mut_methods {
@@ -6447,6 +6928,14 @@ fn (mut t VTranspiler) hoist_in_stmt(stmt Stmt, mut out []string) Stmt {
 	}
 	if stmt is AsyncFunctionDef {
 		out << t.visit_async_function_def(stmt as AsyncFunctionDef)
+		return Stmt(Pass{})
+	}
+	// A class under any enclosing block has to move: V cannot declare a struct
+	// or attach a method inside a block, whether that block is module level or a
+	// function body, and portage guards whole classes on feature probes such as
+	// `if HAVE_XATTR:`.
+	if stmt is ClassDef {
+		out << t.visit_class_def(stmt as ClassDef)
 		return Stmt(Pass{})
 	}
 	match stmt {

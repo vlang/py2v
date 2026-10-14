@@ -4,10 +4,10 @@ type Any = bool | int | i64 | f64 | string | []u8
 
 pub struct Base {
 pub mut:
-	value Any
+	value string
 }
 
-fn (mut self Base) init(value Any) {
+fn (mut self Base) init(value string) {
 	self.value = value
 }
 
@@ -19,7 +19,7 @@ pub struct Child {
 	Base
 }
 
-fn (mut self Child) init(value Any) {
+fn (mut self Child) init(value string) {
 	self.Base.init(value)
 }
 

@@ -25,7 +25,7 @@ import json
 import sys
 import os
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 
 @dataclass
@@ -37,6 +37,9 @@ class AnalysisContext:
     """
     var_annotations: Dict[str, str] = field(default_factory=dict)
     func_ret_annotations: Dict[str, str] = field(default_factory=dict)
+    slots_by_class: Dict[str, ast.expr] = field(default_factory=dict)
+    field_types: Dict[str, str] = field(default_factory=dict)
+    class_field_types: Dict[str, Dict[str, str]] = field(default_factory=dict)
 
     @staticmethod
     def empty() -> "AnalysisContext":
@@ -681,33 +684,179 @@ def _detect_class_methods(tree: ast.Module):
 
 
 
-def _extract_class_declarations(node: ast.ClassDef) -> Dict[str, str]:
-    """Extract field declarations from a class body (AnnAssign, Assign, or __init__)."""
+# Python bookkeeping class attributes. They describe the class itself and never
+# become struct fields; the V backend filters them too, but keeping them out of
+# the JSON makes the declarations readable.
+_dunder_class_attrs = frozenset({
+    "__slots__", "__doc__", "__module__", "__qualname__", "__dict__",
+    "__weakref__", "__annotations__", "__dataclass_fields__",
+})
+
+
+def _class_field_types(tree: ast.AST, slots: Dict[str, ast.expr]
+                       ) -> Dict[str, Dict[str, str]]:
+    """Map each class name to its declared field types, for base-class lookup."""
+    result: Dict[str, Dict[str, str]] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef):
+            declarations = _extract_class_declarations(node, slots)
+            result[node.name] = {n: t for n, t in declarations.items() if t}
+    return result
+
+
+def _inherited_field_types(class_name: str, known: Dict[str, Dict[str, str]],
+                           bases: List[str]) -> Dict[str, str]:
+    """Field types a subclass inherits, nearest base first.
+
+    A subclass constructor usually delegates straight to `super().__init__(...)`,
+    so the parameters it accepts are the base's fields even though the subclass
+    declares none of its own.
+    """
+    collected: Dict[str, str] = {}
+    for base in bases:
+        base_fields = known.get(base)
+        if base_fields is None:
+            continue
+        for name, type_name in base_fields.items():
+            collected.setdefault(name, type_name)
+    return collected
+
+
+def _all_args(arguments: ast.arguments) -> List[ast.arg]:
+    """Every declared parameter, including positional-only and keyword-only."""
+    collected: List[ast.arg] = []
+    collected.extend(getattr(arguments, "posonlyargs", []) or [])
+    collected.extend(arguments.args)
+    collected.extend(arguments.kwonlyargs)
+    return collected
+
+
+def _collect_slots_by_class(tree: ast.AST) -> Dict[str, ast.expr]:
+    """Map each class name in a module to its `__slots__` expression."""
+    slots: Dict[str, ast.expr] = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ClassDef):
+            continue
+        for item in node.body:
+            if (isinstance(item, ast.Assign)
+                    and len(item.targets) == 1
+                    and isinstance(item.targets[0], ast.Name)
+                    and item.targets[0].id == "__slots__"):
+                slots[node.name] = item.value
+    return slots
+
+
+def _const_string_sequence(node: ast.expr,
+                           slots: Dict[str, ast.expr]) -> Optional[List[str]]:
+    """Fold a `__slots__` expression into the attribute names it lists.
+
+    Slots are usually a literal tuple, but they are routinely assembled from a
+    base class, so concatenation and a bare name that refers to another class's
+    slots are folded too. Anything that needs real evaluation returns None,
+    which simply means the class falls back to the other field sources.
+    """
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return [node.value]
+    if isinstance(node, (ast.Tuple, ast.List)):
+        names: List[str] = []
+        for element in node.elts:
+            folded = _const_string_sequence(element, slots)
+            if folded is None:
+                return None
+            names.extend(folded)
+        return names
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        left = _const_string_sequence(node.left, slots)
+        right = _const_string_sequence(node.right, slots)
+        if left is None or right is None:
+            return None
+        return left + right
+    if isinstance(node, ast.Name):
+        referenced = slots.get(node.id)
+        if referenced is None:
+            return None
+        return _const_string_sequence(referenced, slots)
+    return None
+
+
+def _self_attribute_targets(body: List[ast.stmt]) -> List[Tuple[str, str]]:
+    """Collect `self.x` assignments in a method body, with a type hint if any.
+
+    Python lets a method assign to any attribute at any point, including inside
+    a branch, so the whole body is walked rather than only its top level.
+    """
+    found: List[Tuple[str, str]] = []
+    for node in ast.walk(ast.Module(body=list(body), type_ignores=[])):
+        target = None
+        annotation = None
+        if isinstance(node, ast.AnnAssign):
+            target = node.target
+            annotation = _annotation_to_str(node.annotation)
+        elif isinstance(node, ast.Assign) and len(node.targets) == 1:
+            target = node.targets[0]
+        if (target is None
+                or not isinstance(target, ast.Attribute)
+                or not isinstance(target.value, ast.Name)
+                or target.value.id != "self"):
+            continue
+        found.append((target.attr, annotation or ""))
+    return found
+
+
+def _extract_class_declarations(node: ast.ClassDef,
+                                slots: Optional[Dict[str, ast.expr]] = None
+                                ) -> Dict[str, str]:
+    """Extract field declarations from a class body.
+
+    Fields come from four places, in the order a V struct should declare them:
+    annotated and plain class-level names, the `__slots__` tuple, and `self.x`
+    assignments. Every method is searched for the latter, not just `__init__`,
+    because plenty of classes only ever assign an attribute from a helper or a
+    lifecycle method, and those fields still have to exist in the struct.
+    """
     decls: Dict[str, str] = {}
+    slots = slots or {}
+
+    def declare(name: str, type_name: str) -> None:
+        if not name or name in _dunder_class_attrs:
+            return
+        if name not in decls:
+            decls[name] = type_name
+        elif not decls[name] and type_name:
+            # A name first seen in `__slots__` is untyped there; the annotated
+            # assignment that fills it later carries the real type.
+            decls[name] = type_name
+
     for item in node.body:
         if isinstance(item, ast.AnnAssign) and isinstance(item.target, ast.Name):
-            type_name = _annotation_to_str(item.annotation)
-            decls[item.target.id] = type_name
-        elif isinstance(item, ast.Assign):
-            # Class-level bare assignment: FIELD = value
-            if (len(item.targets) == 1
-                    and isinstance(item.targets[0], ast.Name)):
-                field_name = item.targets[0].id
-                decls[field_name] = _infer_type_from_value(item.value)
-        elif isinstance(item, ast.FunctionDef) and item.name == "__init__":
-            for stmt in item.body:
-                if (isinstance(stmt, ast.AnnAssign)
-                        and isinstance(stmt.target, ast.Attribute)
-                        and isinstance(stmt.target.value, ast.Name)
-                        and stmt.target.value.id == "self"):
-                    type_name = _annotation_to_str(stmt.annotation)
-                    decls[stmt.target.attr] = type_name
-                elif (isinstance(stmt, ast.Assign)
-                      and len(stmt.targets) == 1
-                      and isinstance(stmt.targets[0], ast.Attribute)
-                      and isinstance(stmt.targets[0].value, ast.Name)
-                      and stmt.targets[0].value.id == "self"):
-                    decls[stmt.targets[0].attr] = ""
+            declare(item.target.id, _annotation_to_str(item.annotation))
+    for item in node.body:
+        # Class-level bare assignment: FIELD = value
+        if (isinstance(item, ast.Assign)
+                and len(item.targets) == 1
+                and isinstance(item.targets[0], ast.Name)
+                and item.targets[0].id != "__slots__"):
+            declare(item.targets[0].id, _infer_type_from_value(item.value))
+
+    declared_slots = slots.get(node.name)
+    if declared_slots is not None:
+        for slot_name in _const_string_sequence(declared_slots, slots) or []:
+            declare(slot_name, "")
+
+    # `__init__` first, so that the fields it establishes lead the struct, then
+    # every other method in declaration order.
+    methods = [item for item in node.body
+               if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))]
+    for method in methods:
+        if method.name != "__init__":
+            continue
+        for name, type_name in _self_attribute_targets(method.body):
+            declare(name, type_name)
+    for method in methods:
+        if method.name == "__init__":
+            continue
+        for name, type_name in _self_attribute_targets(method.body):
+            declare(name, type_name)
     return decls
 
 
@@ -799,7 +948,6 @@ def _node_to_dict(node: ast.AST, mutable_vars: Set[str],
         func_mutable = tracker.mutable
         result["mutable_vars"] = sorted(func_mutable)
 
-        result["args"] = _arguments_to_dict(node.args, func_mutable)
         # Build a local var_annotation map including parameter annotations so
         # Name nodes inside the function body can get v_annotation hints.
         local_ann = dict(var_annotations)
@@ -850,7 +998,22 @@ def _node_to_dict(node: ast.AST, mutable_vars: Set[str],
                     elif typ != '':
                         local_ann[tgt] = typ
 
-        result["body"] = [_node_to_dict(n, func_mutable, redefined, AnalysisContext(local_ann, ctx.func_ret_annotations)) for n in node.body]
+        # `def __init__(self, x): self.x = x` against an annotated field gives
+        # the parameter the field's type. Without it the field is typed but the
+        # assignment that fills it is not, which V rejects.
+        for arg in _all_args(node.args):
+            if arg.annotation is not None or arg.arg == "self":
+                continue
+            field_type = ctx.field_types.get(arg.arg)
+            if field_type and field_type not in ("", "Any"):
+                local_ann[arg.arg] = field_type
+
+        # Serialised after local_ann so an inferred parameter type can ride along.
+        result["args"] = _arguments_to_dict(node.args, func_mutable, local_ann)
+
+        result["body"] = [_node_to_dict(n, func_mutable, redefined,
+                                        AnalysisContext(local_ann, ctx.func_ret_annotations,
+                                                        ctx.slots_by_class, ctx.field_types)) for n in node.body]
         result["decorator_list"] = [_node_to_dict(d, mutable_vars, redefined, ctx) for d in node.decorator_list]
         result["returns"] = _node_to_dict(node.returns, mutable_vars, redefined, ctx) if node.returns else None
         result["type_comment"] = getattr(node, "type_comment", None)
@@ -865,12 +1028,20 @@ def _node_to_dict(node: ast.AST, mutable_vars: Set[str],
             result["v_annotation"] = inferred_ret
 
     elif isinstance(node, ast.ClassDef):
+        declarations = _extract_class_declarations(node, ctx.slots_by_class)
+        own_types = {name: typ for name, typ in declarations.items() if typ}
+        base_names = [b.id for b in node.bases if isinstance(b, ast.Name)]
+        field_types = dict(_inherited_field_types(node.name, ctx.class_field_types,
+                                                  base_names))
+        field_types.update(own_types)
+        body_ctx = AnalysisContext(ctx.var_annotations, ctx.func_ret_annotations,
+                                   ctx.slots_by_class, field_types)
         result["name"] = node.name
         result["bases"] = [_node_to_dict(b, mutable_vars, redefined, ctx) for b in node.bases]
         result["keywords"] = [_keyword_to_dict(kw, mutable_vars, redefined, ctx) for kw in node.keywords]
-        result["body"] = [_node_to_dict(n, mutable_vars, redefined, ctx) for n in node.body]
+        result["body"] = [_node_to_dict(n, mutable_vars, redefined, body_ctx) for n in node.body]
         result["decorator_list"] = [_node_to_dict(d, mutable_vars, redefined, ctx) for d in node.decorator_list]
-        result["declarations"] = _extract_class_declarations(node)
+        result["declarations"] = declarations
         result["class_defaults"] = _extract_class_defaults(node, mutable_vars, redefined, ctx)
         result["is_protocol"] = _is_protocol_class(node)
         result["type_params"] = _extract_generic_type_params(node)
@@ -1223,20 +1394,24 @@ def _gather_func_return_annotations(tree: ast.Module) -> Dict[str, str]:
     return ret
 
 
-def _arguments_to_dict(args: ast.arguments, mutable_vars: Set[str]) -> Dict[str, Any]:
+def _arguments_to_dict(args: ast.arguments, mutable_vars: Set[str],
+                      hints: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+    hints = hints or {}
     return {
         "node_type": "arguments",
-        "posonlyargs": [_arg_to_dict(a, mutable_vars) for a in args.posonlyargs],
-        "args": [_arg_to_dict(a, mutable_vars) for a in args.args],
-        "vararg": _arg_to_dict(args.vararg, mutable_vars) if args.vararg else None,
-        "kwonlyargs": [_arg_to_dict(a, mutable_vars) for a in args.kwonlyargs],
+        "posonlyargs": [_arg_to_dict(a, mutable_vars, hints) for a in args.posonlyargs],
+        "args": [_arg_to_dict(a, mutable_vars, hints) for a in args.args],
+        "vararg": _arg_to_dict(args.vararg, mutable_vars, hints) if args.vararg else None,
+        "kwonlyargs": [_arg_to_dict(a, mutable_vars, hints) for a in args.kwonlyargs],
         "kw_defaults": [_node_to_dict(d, mutable_vars, {}, AnalysisContext.empty()) if d else None for d in args.kw_defaults],
-        "kwarg": _arg_to_dict(args.kwarg, mutable_vars) if args.kwarg else None,
+        "kwarg": _arg_to_dict(args.kwarg, mutable_vars, hints) if args.kwarg else None,
         "defaults": [_node_to_dict(d, mutable_vars, {}, AnalysisContext.empty()) for d in args.defaults],
     }
 
 
-def _arg_to_dict(arg: ast.arg, mutable_vars: Set[str]) -> Dict[str, Any]:
+def _arg_to_dict(arg: ast.arg, mutable_vars: Set[str],
+                 hints: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+    hints = hints or {}
     result = {
         "node_type": "arg",
         "arg": arg.arg,
@@ -1244,6 +1419,10 @@ def _arg_to_dict(arg: ast.arg, mutable_vars: Set[str]) -> Dict[str, Any]:
         "type_comment": getattr(arg, "type_comment", None),
         "is_mutable": arg.arg in mutable_vars,
     }
+    # An inferred type for a parameter that carries no annotation of its own, so
+    # that the declaration and its uses agree on the V type.
+    if arg.annotation is None and hints.get(arg.arg):
+        result["v_annotation"] = hints[arg.arg]
     for attr in ("lineno", "col_offset", "end_lineno", "end_col_offset"):
         if hasattr(arg, attr):
             val = getattr(arg, attr)
@@ -1362,7 +1541,9 @@ def process_file(file_path: str) -> str:
     ctx = AnalysisContext(
         var_annotations=_gather_var_annotations(tree),
         func_ret_annotations=_gather_func_return_annotations(tree),
+        slots_by_class=_collect_slots_by_class(tree),
     )
+    ctx.class_field_types = _class_field_types(tree, ctx.slots_by_class)
 
     result = _node_to_dict(tree, mutable_vars, redefined, ctx)
     return json.dumps(result)

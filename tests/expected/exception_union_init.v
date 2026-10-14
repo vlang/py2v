@@ -1,7 +1,6 @@
 module main
 
-type WebDriverExceptions = BarException | WebDriverException | FooException
+// TODO(py2v): no V equivalent for import exceptions
+// Provide one in python_to_v_import (types.v) or port the module.
 
-fn main() {
-	// import exceptions: no known V equivalent
-}
+type WebDriverExceptions = BarException | WebDriverException | FooException

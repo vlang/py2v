@@ -21,9 +21,9 @@ fn MathHelper_add(a int, b int) int {
 }
 
 // @classmethod
-fn MathHelper_create(v int) MathHelper {
+fn MathHelper_create(v_ int) MathHelper {
 	return MathHelper{
-		value: v
+		value: v_
 	}
 }
 

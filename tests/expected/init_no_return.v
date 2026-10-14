@@ -1,13 +1,11 @@
 module main
 
-type Any = bool | int | i64 | f64 | string | []u8
-
 pub struct Thing {
 pub mut:
-	x Any
+	x int
 }
 
-fn (mut self Thing) init(x Any) {
+fn (mut self Thing) init(x int) {
 	self.x = x
 }
 

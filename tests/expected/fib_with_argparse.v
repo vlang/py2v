@@ -1,5 +1,8 @@
 module main
 
+// TODO(py2v): no V equivalent for import argparse_dataclass
+// Provide one in python_to_v_import (types.v) or port the module.
+
 pub struct Options {
 pub mut:
 	v bool = false
@@ -14,7 +17,6 @@ fn fib(i int) int {
 }
 
 fn main() {
-	// import argparse_dataclass: no known V equivalent
 	mut args := Options.parse_args()
 	if args.v {
 		println('args.v is true')

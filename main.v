@@ -1,20 +1,13 @@
 module main
 
 import os
+import strconv
 
 fn main() {
 	args := os.args[1..]
 
 	if args.len == 0 {
-		eprintln('Usage: py2v <input.py> [-o output.v]')
-		eprintln('')
-		eprintln('Transpiles Python source code to V.')
-		eprintln('')
-		eprintln('Options:')
-		eprintln('  -o <file>       Write output to file instead of stdout')
-		eprintln('  --package <dir> Translate a Python package as a multi-module project')
-		eprintln('  --module-name <n> V module name for single-file output (default: main)')
-		eprintln('  -h, --help      Show this help message')
+		print_usage()
 		exit(1)
 	}
 
@@ -23,6 +16,8 @@ fn main() {
 	mut output_file := ''
 	mut module_name := 'main'
 	mut package_root := '' // Python package dir to translate as one project
+	mut do_check := false
+	mut jobs := default_check_jobs()
 	mut i := 0
 
 	for i < args.len {
@@ -36,16 +31,14 @@ fn main() {
 		} else if arg == '--module-name' && i + 1 < args.len {
 			module_name = sanitize_module_name(args[i + 1])
 			i += 2
+		} else if arg == '--check' {
+			do_check = true
+			i++
+		} else if arg == '--jobs' && i + 1 < args.len {
+			jobs = parse_jobs(args[i + 1])
+			i += 2
 		} else if arg == '-h' || arg == '--help' {
-			eprintln('Usage: py2v <input.py> [-o output.v]')
-			eprintln('')
-			eprintln('Transpiles Python source code to V.')
-			eprintln('')
-			eprintln('Options:')
-			eprintln('  -o <file>       Write output to file instead of stdout')
-			eprintln('  --package <dir> Translate a Python package as a multi-module project')
-			eprintln('  --module-name <n> V module name for single-file output (default: main)')
-			eprintln('  -h, --help      Show this help message')
+			print_usage()
 			exit(0)
 		} else if !arg.starts_with('-') {
 			input_file = arg
@@ -98,9 +91,30 @@ fn main() {
 		ast_dump_dir := os.dir(ast_dump_path)
 		out_root := if output_file != '' { output_file } else { 'out' }
 		translate_package(python_cmd, os.join_path(ast_dump_dir, 'ast_dump.py'),
-			package_root, out_root, module_name) or {
+			package_root, out_root) or {
 			eprintln('error: ${err}')
 			exit(1)
+		}
+		if do_check {
+			modules := check_module_names(out_root)
+			if modules.len == 0 {
+				eprintln('check: no generated V modules under ${out_root}')
+				exit(1)
+			}
+			results := check_v_modules(out_root, modules, jobs)
+			println(check_report(results))
+			eprintln(check_summary(results))
+			for r in check_worst(results, worst_report_limit) {
+				if r.error_count > 0 {
+					eprintln('  ${r.module_name}: ${r.error_count} errors, first: ' +
+						'${r.first_file}: ${r.first_error}')
+				}
+			}
+			for r in results {
+				if r.error_count > 0 {
+					exit(1)
+				}
+			}
 		}
 		return
 	}
@@ -139,7 +153,82 @@ fn main() {
 	} else {
 		print(formatted_code)
 	}
+
+	if do_check {
+		// Without -o the code only exists on stdout, so check a scratch copy.
+		// It needs a directory of its own: V treats the working folder as the
+		// project root and would compile every other .v file sitting in the
+		// system temp directory alongside it.
+		mut scratch := ''
+		mut target := output_file
+		if target == '' {
+			scratch = os.join_path(os.temp_dir(), 'py2v_check_${os.getpid()}')
+			os.mkdir_all(scratch) or {
+				eprintln('Error creating check directory: ${err}')
+				exit(1)
+			}
+			target = os.join_path(scratch, 'main.v')
+			os.write_file(target, formatted_code) or {
+				eprintln('Error writing check target: ${err}')
+				exit(1)
+			}
+		}
+		defer {
+			if scratch != '' {
+				os.rmdir_all(scratch) or {}
+			}
+		}
+		scratch_root := if scratch != '' { scratch } else { os.dir(os.abs_path(target)) }
+		results := check_v_modules(scratch_root, [os.base(target)], jobs)
+		println(check_report(results))
+		eprintln(check_summary(results))
+		if results.len > 0 && results[0].error_count > 0 {
+			exit(1)
+		}
+	}
 }
+
+fn print_usage() {
+	eprintln('Usage: py2v <input.py> [options]')
+	eprintln('       py2v --package <dir> [options]')
+	eprintln('')
+	eprintln('Transpiles Python source code to V.')
+	eprintln('')
+	eprintln('Options:')
+	eprintln('  -o <file>         Write output to file instead of stdout')
+	eprintln('  --package <dir>   Translate a Python package as a multi-module project')
+	eprintln('  --module-name <n> V module name for single-file output (default: main)')
+	eprintln('  --check           Run `v -check` on the generated code and report errors')
+	eprintln('  --jobs <n>        Compilers to run in parallel for --check (default: ${default_check_jobs()})')
+	eprintln('  -h, --help        Show this help message')
+}
+
+// default_check_jobs is the parallelism used by `--check` when the caller does
+// not pick a value. An explicit PY2V_JOBS wins.
+fn default_check_jobs() int {
+	raw := os.getenv('PY2V_JOBS')
+	return parse_jobs(raw)
+}
+
+// parse_jobs reads a job count from `raw`, falling back to the default when the
+// value is absent or not a positive integer.
+fn parse_jobs(raw string) int {
+	if raw == '' {
+		return default_job_count
+	}
+	value := strconv.atoi(raw.trim_space()) or { return default_job_count }
+	if value < 1 {
+		return default_job_count
+	}
+	return value
+}
+
+const default_job_count = 8
+
+// worst_report_limit caps how many of the worst modules `--check` prints to
+// stderr. A large corpus has thousands of errors and listing every one buries
+// the signal.
+const worst_report_limit = 15
 
 fn module_name_from_output_path(output_file string) string {
 	dir_name := os.base(os.dir(output_file))
@@ -276,7 +365,7 @@ fn find_python_files(root string) ![]string {
 
 // translate_package transpiles a Python package tree into a multi-module V
 // project rooted at out_root.
-fn translate_package(python_cmd string, ast_dump string, package_dir string, out_root string, root_module string) ! {
+fn translate_package(python_cmd string, ast_dump string, package_dir string, out_root string) ! {
 	abs_root := os.abs_path(package_dir)
 	if !os.exists(abs_root) {
 		return error('package directory not found: ${abs_root}')
@@ -286,6 +375,9 @@ fn translate_package(python_cmd string, ast_dump string, package_dir string, out
 	// The root package name is the directory name, matching how Python would
 	// import it if its parent were on sys.path.
 	root_dotted := sanitize_module_name(os.base(abs_root))
+	// When the scan root is itself a package its name prefixes everything
+	// inside it; when it merely contains packages it does not.
+	root_is_package := os.exists(os.join_path(abs_root, '__init__.py'))
 
 	// Pass 1: parse every module and record its symbols, so that cross-module
 	// references can be resolved during pass 2.
@@ -293,60 +385,59 @@ fn translate_package(python_cmd string, ast_dump string, package_dir string, out
 	registry.root_dotted = root_dotted
 	registry.output_root = out_root
 	mut parsed := map[string]Module{}
+	// Emitted output paths, so two files can never be written over each other.
+	mut written := map[string]string{}
 	for file in files {
 		rel := rel_path(abs_root, file)
-		raw := py_dotted_from_path(rel)
-		// py_dotted_from_path drops the `__init__` marker; re-append it so the
-		// package file can be routed to `mod.v`.
-		mut dotted := root_dotted + '.' + raw
-		is_init := rel.replace('\\', '/').ends_with('__init__.py')
-		if is_init {
-			dotted += '.__init__'
-		}
-		if is_init && rel.replace('\\', '/') == '__init__.py' {
-			// The root package itself has no V module of its own.
-			continue
+		rel_pkg := py_pkg_dotted(rel)
+		pkg_dotted := qualify_pkg_dotted(rel_pkg, root_dotted, root_is_package)
+		rel_stem := py_stem_from_path(rel)
+		mod_dotted := join_dotted(rel_pkg, rel_stem)
+		abs_mod_dotted := join_dotted(pkg_dotted, rel_stem)
+		if abs_mod_dotted == '' {
+			return error('cannot name module for ${rel}')
 		}
 		mod := run_frontend(python_cmd, ast_dump, file)!
-		parsed[dotted] = mod
-		v_mod := v_module_from_py_path(dotted, root_dotted)
-		// `a/b/__init__.py` is the package `a.b`; it emits to `a/b/mod.v` and
-		// shares the V module of directory `a/b`. Register it under both names
-		// so `from a.b import x` resolves.
-		if is_init {
-			if dotted.len >= root_dotted.len + 10 {
-				pkg_dotted := dotted[..dotted.len - 10]
-				registry.add_module(PyModuleInfo{
-					dotted:    pkg_dotted
-					v_module:  v_mod
-					v_relpath: v_relpath_from_py_path(dotted)
-					symbols:   collect_module_symbols(mod)
-				})
-				for cls in collect_classes(mod) {
-					registry.class_fields_by_path['${pkg_dotted}.${cls.name}'] = cls.fields
-				}
-				for m in collect_mut_methods(mod) {
-					registry.mut_methods['${pkg_dotted}.${m}'] = true
-				}
-			}
+		parsed[abs_mod_dotted] = mod
+		v_mod := v_module_for_pkg(pkg_dotted)
+		rel_path_v := v_relpath_for(v_mod, rel)
+		if prev := written[rel_path_v] {
+			return error('output collision: ${rel} and ${prev} both map to ' +
+				'${rel_path_v}')
 		}
-		registry.add_module(PyModuleInfo{
-			dotted:    dotted
+		written[rel_path_v] = rel
+		info := PyModuleInfo{
+			dotted:    abs_mod_dotted
 			v_module:  v_mod
-			v_relpath: v_relpath_from_py_path(dotted)
+			v_relpath: rel_path_v
 			symbols:   collect_module_symbols(mod)
-		})
-		for cls in collect_classes(mod) {
-			// Store fields under their V spelling so struct literals built in
-			// another module agree with the declaration here.
-			mut v_fields := []string{}
-			for f in cls.fields {
-				v_fields << escape_leading_underscore(f)
-			}
-			registry.class_fields_by_path['${dotted}.${cls.name}'] = v_fields
 		}
-		// Record which imported methods need a `mut` receiver so call sites on
-		// local variables of that class can declare the variable `mut`.
+		// The source spells its own imports with the name the package has on
+		// sys.path, which is not always the name the scanner would derive from
+		// the directory it was pointed at. Register both spellings.
+		mut aliases := []string{}
+		if abs_mod_dotted != mod_dotted {
+			aliases << mod_dotted
+		}
+		registry.add_module_under(info, aliases)
+		// Class fields are looked up by the dotted path a consumer actually
+		// imports under, so every spelling has to be registered, not just the
+		// alternatives.
+		for alias in [abs_mod_dotted, mod_dotted] {
+			if alias == '' {
+				continue
+			}
+			for cls in collect_classes(mod) {
+				mut v_fields := []string{}
+				for f in cls.fields {
+					v_fields << escape_leading_underscore(f)
+				}
+				registry.class_fields_by_path['${alias}.${cls.name}'] = v_fields
+				registry.class_bases_by_path['${alias}.${cls.name}'] = cls.bases
+			}
+		}
+		// Mut receivers are keyed by class and method alone: a consumer matches
+		// them by the bare name it imported the class under.
 		for m in collect_mut_methods(mod) {
 			registry.mut_methods[m] = true
 		}
@@ -372,6 +463,7 @@ fn translate_package(python_cmd string, ast_dump string, package_dir string, out
 		t.emit_pub = true
 		t.registry = registry
 		t.current_dotted = key
+		t.current_is_package = py_stem_from_path(os.base(key)) == ''
 		t.module_name = info.v_module
 		code := t.visit_module(parsed[key]!)
 		formatted := format_v_code(code)
@@ -396,11 +488,12 @@ fn rel_path(base string, path string) string {
 	return os.base(p)
 }
 
-// PyClassSummary is a class name with its field order, used for cross-module
-// struct literal generation.
+// PyClassSummary is a class name with its field order and base classes, used
+// for cross-module struct literal generation.
 struct PyClassSummary {
 	name   string
 	fields []string
+	bases  []string
 }
 
 // collect_classes returns the classes a module defines together with their
@@ -412,17 +505,38 @@ fn collect_classes(mod Module) []PyClassSummary {
 			continue
 		}
 		cd := stmt as ClassDef
-		mut fields := []string{}
-		for field in cd.declarations.keys() {
-			fields << field
-		}
-		fields.sort()
-		out << PyClassSummary{
-			name:   cd.name
-			fields: fields
+		out << class_summary(cd)
+		// A class nested in another is still a struct in V, so it has to be
+		// registered too. Portage nests the value types it attaches to a
+		// container, such as BlockerCache.BlockerData.
+		for inner in cd.body {
+			if inner is ClassDef {
+				out << class_summary(inner)
+			}
 		}
 	}
 	return out
+}
+
+// class_summary describes one class for cross-module struct literal generation.
+fn class_summary(cd ClassDef) PyClassSummary {
+	mut fields := []string{}
+	for field in cd.declarations.keys() {
+		fields << field
+	}
+	mut bases := []string{}
+	for base in cd.bases {
+		if base is Name {
+			bases << (base as Name).id
+		} else if base is Attribute {
+			bases << (base as Attribute).attr
+		}
+	}
+	return PyClassSummary{
+		name:   cd.name
+		fields: fields
+		bases:  bases
+	}
 }
 
 // collect_mut_methods returns `Class.method` pairs whose V receiver is `mut`.

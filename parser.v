@@ -444,6 +444,7 @@ fn parse_arg(m map[string]json2.Any) Arg {
 		arg:          m['arg'] or { json2.Any('') }.str()
 		annotation:   parse_optional_expr(m['annotation'] or { json2.Any(json2.Null{}) })
 		type_comment: parse_optional_string(m['type_comment'] or { json2.Any(json2.Null{}) })
+		v_annotation: parse_type_annotation(m) or { '' }
 		loc:          parse_location(m)
 	}
 }
@@ -890,7 +891,7 @@ fn parse_constant(m map[string]json2.Any) Constant {
 		value:        value
 		kind:         parse_optional_string(m['kind'] or { json2.Any(json2.Null{}) })
 		loc:          parse_location(m)
-		v_annotation: parse_type_annotation(m)
+		v_annotation: parse_type_annotation(m) or { '' }
 	}
 }
 
@@ -962,7 +963,7 @@ fn parse_name(m map[string]json2.Any) Name {
 		ctx:          parse_context(map_field(m, 'ctx'))
 		loc:          parse_location(m)
 		is_mutable:   m['is_mutable'] or { json2.Any(false) }.bool()
-		v_annotation: parse_type_annotation(m)
+		v_annotation: parse_type_annotation(m) or { '' }
 	}
 }
 
@@ -991,7 +992,7 @@ fn parse_binop(m map[string]json2.Any) BinOp {
 			})
 		}
 		loc:          parse_location(m)
-		v_annotation: parse_type_annotation(m)
+		v_annotation: parse_type_annotation(m) or { '' }
 	}
 }
 
@@ -1025,7 +1026,7 @@ fn parse_unaryop(m map[string]json2.Any) UnaryOp {
 			})
 		}
 		loc:          parse_location(m)
-		v_annotation: parse_type_annotation(m)
+		v_annotation: parse_type_annotation(m) or { '' }
 	}
 }
 
@@ -1053,7 +1054,7 @@ fn parse_boolop(m map[string]json2.Any) BoolOp {
 		op:           parse_bool_operator(map_field(m, 'op'))
 		values:       values
 		loc:          parse_location(m)
-		v_annotation: parse_type_annotation(m)
+		v_annotation: parse_type_annotation(m) or { '' }
 	}
 }
 
@@ -1090,7 +1091,7 @@ fn parse_compare(m map[string]json2.Any) Compare {
 		ops:          ops
 		comparators:  comparators
 		loc:          parse_location(m)
-		v_annotation: parse_type_annotation(m)
+		v_annotation: parse_type_annotation(m) or { '' }
 	}
 }
 
@@ -1135,7 +1136,7 @@ fn parse_call(m map[string]json2.Any) Call {
 		args:         args
 		keywords:     keywords
 		loc:          parse_location(m)
-		v_annotation: parse_type_annotation(m)
+		v_annotation: parse_type_annotation(m) or { '' }
 	}
 }
 
@@ -1150,7 +1151,7 @@ fn parse_attribute(m map[string]json2.Any) Attribute {
 		attr:         m['attr'] or { json2.Any('') }.str()
 		ctx:          parse_context(map_field(m, 'ctx'))
 		loc:          parse_location(m)
-		v_annotation: parse_type_annotation(m)
+		v_annotation: parse_type_annotation(m) or { '' }
 	}
 }
 
@@ -1198,7 +1199,7 @@ fn parse_list(m map[string]json2.Any) List {
 		elts:         elts
 		ctx:          parse_context(map_field(m, 'ctx'))
 		loc:          parse_location(m)
-		v_annotation: parse_type_annotation(m)
+		v_annotation: parse_type_annotation(m) or { '' }
 	}
 }
 
@@ -1216,7 +1217,7 @@ fn parse_tuple(m map[string]json2.Any) Tuple {
 		elts:         elts
 		ctx:          parse_context(map_field(m, 'ctx'))
 		loc:          parse_location(m)
-		v_annotation: parse_type_annotation(m)
+		v_annotation: parse_type_annotation(m) or { '' }
 	}
 }
 
@@ -1240,7 +1241,7 @@ fn parse_dict(m map[string]json2.Any) Dict {
 		keys:         keys
 		values:       values
 		loc:          parse_location(m)
-		v_annotation: parse_type_annotation(m)
+		v_annotation: parse_type_annotation(m) or { '' }
 	}
 }
 
@@ -1257,7 +1258,7 @@ fn parse_set(m map[string]json2.Any) Set {
 	return Set{
 		elts:         elts
 		loc:          parse_location(m)
-		v_annotation: parse_type_annotation(m)
+		v_annotation: parse_type_annotation(m) or { '' }
 	}
 }
 

@@ -1,5 +1,8 @@
 module main
 
+// TODO(py2v): no V equivalent for import ctypes
+// Provide one in python_to_v_import (types.v) or port the module.
+
 type Any = bool | int | i64 | f64 | string | []u8
 
 fn foo() {
@@ -73,7 +76,6 @@ fn show() {
 }
 
 fn main() {
-	// import ctypes: no known V equivalent
 	foo()
 	show()
 }

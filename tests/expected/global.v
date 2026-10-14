@@ -13,7 +13,7 @@ fn main() {
 	for j in l_b {
 		println(j)
 	}
-	if 'a' in ['a', 'b'] {
+	if ('a' in ['a', 'b']) {
 		println('OK')
 	}
 }

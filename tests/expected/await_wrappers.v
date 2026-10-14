@@ -1,5 +1,8 @@
 module main
 
+// TODO(py2v): no V equivalent for import asyncio
+// Provide one in python_to_v_import (types.v) or port the module.
+
 fn nested() int {
 	return 7
 }
@@ -12,6 +15,5 @@ fn show() {
 }
 
 fn main() {
-	// import asyncio: use V goroutines and channels
 	show()
 }

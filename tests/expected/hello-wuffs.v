@@ -3,6 +3,12 @@ module main
 import os
 import io
 
+// TODO(py2v): no V equivalent for import ctypes, py2many.result, pytest
+// Provide one in python_to_v_import (types.v) or port the module.
+
+// TODO(py2v): no V mapping for pytest.main
+// Each site below is stubbed with a zero value.
+
 type Any = bool | int | i64 | f64 | string | []u8
 
 pub struct parser {
@@ -21,10 +27,6 @@ fn test_parser(input Any, expected Any) {
 }
 
 fn main() {
-	// import ctypes: no known V equivalent
-	// import ctypes: no known V equivalent
-	// import pytest: use V built-in `assert` and `v test`
-	// import py2many.result: no known V equivalent
-	pytest.main([file___])
+	Any(0)
 	println('OK')
 }

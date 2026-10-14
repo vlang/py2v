@@ -1,5 +1,7 @@
 #!/usr/bin/env -S v
 
+import os
+
 // Unified py2v test runner.
 //
 // Replaces the previous run_tests.sh / run_tests.ps1 pair with a single V script
@@ -66,14 +68,14 @@ const script_dir = os.dir(os.abs_path(@FILE))
 const project_dir = os.dir(script_dir)
 const cases_dir = os.join_path(script_dir, 'cases')
 const expected_dir = os.join_path(script_dir, 'expected')
-const package_fixtures = ['pkg_multi', 'pkg_multi2']
+const package_fixtures = ['pkg_imports', 'pkg_multi', 'pkg_multi2']
 
 mut py2v := resolve_py2v()
 
 // Build py2v when it is missing so a fresh checkout is testable.
 if !os.exists(py2v) {
 	println('Building py2v...')
-	res := os.exec(['v', 'run', project_dir, '-o', py2v])
+	res := os.exec(['v', project_dir, '-o', py2v])
 	if res.exit_code != 0 {
 		eprintln('ERROR: failed to build py2v')
 		eprintln(res.output)
@@ -140,6 +142,12 @@ for entry in case_names {
 
 // Multi-module package fixtures: a Python package must transpile to a V
 // project whose cross-module references resolve and which `v -check` accepts.
+//
+// The check goes through `py2v --package ... --check`, which compiles each
+// generated module through a synthetic entry point. Handing the output tree to
+// `v -shared -check <dir>` instead would be useless: V only walks files
+// reachable from a main module, so a library tree reports success while nothing
+// in it has been looked at.
 for pkg in package_fixtures {
 	pkg_dir := os.join_path(cases_dir, pkg)
 	if !os.is_dir(pkg_dir) {
@@ -147,25 +155,17 @@ for pkg in package_fixtures {
 	}
 	out_dir := os.join_path(os.temp_dir(),
 		'py2v_pkg_${pkg}_${os.getpid()}')
-	res := os.exec([py2v, '--package', pkg_dir, '-o', out_dir])
+	res := os.exec([py2v, '--package', pkg_dir, '-o', out_dir, '--check'])
 	if res.exit_code != 0 {
-		report('FAIL', pkg, ' (multi-module translation error)')
-		failed++
-		failures << fail_line('FAIL', pkg, ' (translation error)')
-		continue
-	}
-	vmod := 'Module {\n\tname: \'${pkg}\'\n\tdescription: \'py2v fixture\'\n' +
-		'\tversion: \'0.0.1\'\n\tlicense: \'MIT\'\n}\n'
-	os.write_file(os.join_path(out_dir, 'v.mod'), vmod) or { panic(err) }
-	check := os.exec(['v', '-shared', '-check', out_dir])
-	if check.exit_code == 0 {
-				report('PASS', pkg, ' (multi-module)')
-		passed++
-	} else {
 		report('FAIL', pkg, ' (multi-module does not compile)')
-		println(excerpt_n(check.output, 20))
+		// The failing run prints the per-module table followed by the first
+		// diagnostics.
+		println(excerpt_n(res.output, 20))
 		failed++
 		failures << fail_line('FAIL', pkg, ' (multi-module does not compile)')
+	} else {
+		report('PASS', pkg, ' (multi-module)')
+		passed++
 	}
 	os.rmdir_all(out_dir) or { panic(err) }
 }

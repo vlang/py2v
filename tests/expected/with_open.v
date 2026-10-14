@@ -2,8 +2,10 @@ module main
 
 import os
 
+// TODO(py2v): no V equivalent for import tempfile
+// Provide one in python_to_v_import (types.v) or port the module.
+
 fn main() {
-	// import tempfile: no known V equivalent
 	if true {
 		temp_file := namedTemporaryFile('a+', false)
 		file_path := temp_file.name

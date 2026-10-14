@@ -31,6 +31,21 @@ Build & test (development)
 - Reproduce a case quickly: `./py2v tests/cases/<case>.py`.
 - Inspect frontend JSON only: `python3 frontend/ast_dump.py tests/cases/<case>.py`.
 
+Checking generated code
+- `./py2v <file.py> --check` writes the module and runs `v -check` on it. It prints a  `module<TAB>errors<TAB>first_error` table on stdout, a summary on stderr, and exits 1 when any error is reported.
+- `./py2v --package <dir> -o <out> --check [--jobs N]` does the same for a whole tree.
+- Never validate generated code with `v -check <dir>` or `v -check <file>`: V only walks files reachable from what it is given, so a library tree passes silently and a single file cannot see its own module's siblings. `check.v` compiles each generated *module* through a synthetic entry point that imports it, which is the only form that resolves both cross-file and cross-module references.
+- Corpus baseline: `v tests/corpus.vsh <root> --baseline <path> --update` records per-module error counts; the same command without `--update` diffs against it and exits 1 when any module regresses. `--baseline` is always explicit, so an external corpus is never written into this repository.
+- The only baselines in `tests/baseline/` are for the fixtures in `tests/cases/`. Do not add a baseline for a corpus that does not ship here; keep those under `/tmp` or wherever the corpus itself lives.
+- `--check` exits 1 for a corpus that has errors, which is expected for a large real-world tree. Use `v tests/corpus.vsh` rather than the exit status when measuring progress.
+
+Generated project layout (`--package`)
+- One Python *package* becomes one V module, named `py_<dotted package path>`, emitted as `<v_module>/<stem>.v` at the top level of the output root.
+- A package `__init__.py` is emitted as `<v_module>/__init__.v`, beside its siblings, because Python shares one namespace across a package's `__init__` and its modules.
+- Generated directories are always top level and always prefixed, so they can never shadow a vlib module (`sync`, `term`, …) and can never start with `_`, which V rejects as a module name.
+- A module is registered in `ModuleRegistry` under every Python path it can legitimately be imported by, since the name on `sys.path` is not always the one the scan directory implies.
+- Fixtures exercising this live in `tests/cases/pkg_imports/` (relative, star and cross-package imports) and `tests/cases/pkg_multi/`.
+
 Mandatory guardrails (enforced for all agent work)
 - Add `2>&1` to commands that may emit to stderr so all output is captured.
 - Keep `.md` lines ≤ 100 characters and run `v check-md` on edited markdown.

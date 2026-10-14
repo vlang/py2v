@@ -1,0 +1,2 @@
+def shout() -> str:
+    return "!"

@@ -1,5 +1,8 @@
 module main
 
+// TODO(py2v): no V equivalent for import py2many.smt
+// Provide one in python_to_v_import (types.v) or port the module.
+
 fn equation(x int, y int) bool {
 	if smt_pre {
 		assert x > 2
@@ -17,8 +20,6 @@ fn fequation(z f64) bool {
 }
 
 fn main() {
-	// import py2many.smt: no known V equivalent
-	// import py2many.smt: no known V equivalent
 	x := default_value(int)
 	y := default_value(int)
 	z := default_value(float)
