@@ -12,18 +12,33 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
+    env:
+      # Explicit test parallelism: a worker peaks near 0.25 GB,
+      # so this stays CPU-bound with ample headroom.
+      VJOBS: '4'
+      # Stop a failing test session at its first failure instead of
+      # running the whole suite to completion; the remaining files
+      # add no signal.
+      VTEST_FAIL_FAST: '1'
+    timeout-minutes: 60
 
     steps:
       - name: Checkout code
+        id: checkout_code
         uses: actions/checkout@v4
 
       - name: Setup V
+        id: setup_v
+        if: ${{ success() && !cancelled() && steps.checkout_code.outcome == 'success' }}
         uses: vlang/setup-v@v1.7
 
       - name: Build
+        id: build
+        if: ${{ success() && !cancelled() && steps.setup_v.outcome == 'success' }}
         run: v .
 
       - name: Run tests
+        if: ${{ success() && !cancelled() && steps.build.outcome == 'success' }}
         id: tests
         shell: bash
         run: |
