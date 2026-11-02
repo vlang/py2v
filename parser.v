@@ -202,8 +202,8 @@ fn parse_stmt(m map[string]json2.Any) ?Stmt {
 			name_expr := parse_expr(name_raw.as_map()) or { return none }
 			value_expr := parse_expr(value_raw.as_map()) or { return none }
 			return Stmt(TypeAlias{
-				name:  name_expr
-				value: value_expr
+				name:  &name_expr
+				value: &value_expr
 				loc:   parse_location(m)
 			})
 		}
@@ -217,36 +217,36 @@ fn parse_stmt(m map[string]json2.Any) ?Stmt {
 }
 
 // Parse an expression node
-fn parse_expr(m map[string]json2.Any) ?Expr {
+fn parse_expr(m map[string]json2.Any) ?&Expr {
 	node_type := m['node_type'] or { return none }.str()
 	match node_type {
-		'Constant' { return Expr(parse_constant(m)) }
-		'Name' { return Expr(parse_name(m)) }
-		'BinOp' { return Expr(parse_binop(m)) }
-		'UnaryOp' { return Expr(parse_unaryop(m)) }
-		'BoolOp' { return Expr(parse_boolop(m)) }
-		'Compare' { return Expr(parse_compare(m)) }
-		'Call' { return Expr(parse_call(m)) }
-		'Attribute' { return Expr(parse_attribute(m)) }
-		'Subscript' { return Expr(parse_subscript(m)) }
-		'Slice' { return Expr(parse_slice(m)) }
-		'List' { return Expr(parse_list(m)) }
-		'Tuple' { return Expr(parse_tuple(m)) }
-		'Dict' { return Expr(parse_dict(m)) }
-		'Set' { return Expr(parse_set(m)) }
-		'IfExp' { return Expr(parse_ifexp(m)) }
-		'Lambda' { return Expr(parse_lambda(m)) }
-		'ListComp' { return Expr(parse_list_comp(m)) }
-		'SetComp' { return Expr(parse_set_comp(m)) }
-		'DictComp' { return Expr(parse_dict_comp(m)) }
-		'GeneratorExp' { return Expr(parse_generator_exp(m)) }
-		'Await' { return Expr(parse_await(m)) }
-		'Yield' { return Expr(parse_yield(m)) }
-		'YieldFrom' { return Expr(parse_yield_from(m)) }
-		'FormattedValue' { return Expr(parse_formatted_value(m)) }
-		'JoinedStr' { return Expr(parse_joined_str(m)) }
-		'NamedExpr' { return Expr(parse_named_expr(m)) }
-		'Starred' { return Expr(parse_starred(m)) }
+		'Constant' { return &Expr(parse_constant(m)) }
+		'Name' { return &Expr(parse_name(m)) }
+		'BinOp' { return &Expr(parse_binop(m)) }
+		'UnaryOp' { return &Expr(parse_unaryop(m)) }
+		'BoolOp' { return &Expr(parse_boolop(m)) }
+		'Compare' { return &Expr(parse_compare(m)) }
+		'Call' { return &Expr(parse_call(m)) }
+		'Attribute' { return &Expr(parse_attribute(m)) }
+		'Subscript' { return &Expr(parse_subscript(m)) }
+		'Slice' { return &Expr(parse_slice(m)) }
+		'List' { return &Expr(parse_list(m)) }
+		'Tuple' { return &Expr(parse_tuple(m)) }
+		'Dict' { return &Expr(parse_dict(m)) }
+		'Set' { return &Expr(parse_set(m)) }
+		'IfExp' { return &Expr(parse_ifexp(m)) }
+		'Lambda' { return &Expr(parse_lambda(m)) }
+		'ListComp' { return &Expr(parse_list_comp(m)) }
+		'SetComp' { return &Expr(parse_set_comp(m)) }
+		'DictComp' { return &Expr(parse_dict_comp(m)) }
+		'GeneratorExp' { return &Expr(parse_generator_exp(m)) }
+		'Await' { return &Expr(parse_await(m)) }
+		'Yield' { return &Expr(parse_yield(m)) }
+		'YieldFrom' { return &Expr(parse_yield_from(m)) }
+		'FormattedValue' { return &Expr(parse_formatted_value(m)) }
+		'JoinedStr' { return &Expr(parse_joined_str(m)) }
+		'NamedExpr' { return &Expr(parse_named_expr(m)) }
+		'Starred' { return &Expr(parse_starred(m)) }
 		else { return none }
 	}
 }
@@ -465,7 +465,7 @@ fn parse_keyword(m map[string]json2.Any) Keyword {
 	return Keyword{
 		arg:   parse_optional_string(m['arg'] or { json2.Any(json2.Null{}) })
 		value: parse_expr(map_field(m, 'value')) or {
-			Expr(Constant{
+			&Expr(Constant{
 				value: NoneValue{}
 			})
 		}
@@ -516,7 +516,7 @@ fn parse_assign(m map[string]json2.Any) Assign {
 	return Assign{
 		targets:           targets
 		value:             parse_expr(map_field(m, 'value')) or {
-			Expr(Constant{
+			&Expr(Constant{
 				value: NoneValue{}
 			})
 		}
@@ -533,13 +533,13 @@ fn parse_assign(m map[string]json2.Any) Assign {
 fn parse_aug_assign(m map[string]json2.Any) AugAssign {
 	return AugAssign{
 		target: parse_expr(map_field(m, 'target')) or {
-			Expr(Constant{
+			&Expr(Constant{
 				value: NoneValue{}
 			})
 		}
 		op:     parse_operator(map_field(m, 'op'))
 		value:  parse_expr(map_field(m, 'value')) or {
-			Expr(Constant{
+			&Expr(Constant{
 				value: NoneValue{}
 			})
 		}
@@ -551,12 +551,12 @@ fn parse_aug_assign(m map[string]json2.Any) AugAssign {
 fn parse_ann_assign(m map[string]json2.Any) AnnAssign {
 	return AnnAssign{
 		target:     parse_expr(map_field(m, 'target')) or {
-			Expr(Constant{
+			&Expr(Constant{
 				value: NoneValue{}
 			})
 		}
 		annotation: parse_expr(map_field(m, 'annotation')) or {
-			Expr(Constant{
+			&Expr(Constant{
 				value: NoneValue{}
 			})
 		}
@@ -586,12 +586,12 @@ fn parse_for(m map[string]json2.Any) For {
 	}
 	return For{
 		target:       parse_expr(map_field(m, 'target')) or {
-			Expr(Constant{
+			&Expr(Constant{
 				value: NoneValue{}
 			})
 		}
 		iter:         parse_expr(map_field(m, 'iter')) or {
-			Expr(Constant{
+			&Expr(Constant{
 				value: NoneValue{}
 			})
 		}
@@ -637,7 +637,7 @@ fn parse_while(m map[string]json2.Any) While {
 	}
 	return While{
 		test:   parse_expr(map_field(m, 'test')) or {
-			Expr(Constant{
+			&Expr(Constant{
 				value: NoneValue{}
 			})
 		}
@@ -668,7 +668,7 @@ fn parse_if(m map[string]json2.Any) If {
 	}
 	return If{
 		test:   parse_expr(map_field(m, 'test')) or {
-			Expr(Constant{
+			&Expr(Constant{
 				value: NoneValue{}
 			})
 		}
@@ -706,7 +706,7 @@ fn parse_with(m map[string]json2.Any) With {
 fn parse_with_item(m map[string]json2.Any) WithItem {
 	return WithItem{
 		context_expr:  parse_expr(map_field(m, 'context_expr')) or {
-			Expr(Constant{
+			&Expr(Constant{
 				value: NoneValue{}
 			})
 		}
@@ -796,7 +796,7 @@ fn parse_except_handler(m map[string]json2.Any) ExceptHandler {
 fn parse_assert(m map[string]json2.Any) Assert {
 	return Assert{
 		test: parse_expr(map_field(m, 'test')) or {
-			Expr(Constant{
+			&Expr(Constant{
 				value: NoneValue{}
 			})
 		}
@@ -875,7 +875,7 @@ fn parse_nonlocal(m map[string]json2.Any) Nonlocal {
 fn parse_expr_stmt(m map[string]json2.Any) ExprStmt {
 	return ExprStmt{
 		value: parse_expr(map_field(m, 'value')) or {
-			Expr(Constant{
+			&Expr(Constant{
 				value: NoneValue{}
 			})
 		}
@@ -981,13 +981,13 @@ fn parse_context(m map[string]json2.Any) ExprContext {
 fn parse_binop(m map[string]json2.Any) BinOp {
 	return BinOp{
 		left:         parse_expr(map_field(m, 'left')) or {
-			Expr(Constant{
+			&Expr(Constant{
 				value: NoneValue{}
 			})
 		}
 		op:           parse_operator(map_field(m, 'op'))
 		right:        parse_expr(map_field(m, 'right')) or {
-			Expr(Constant{
+			&Expr(Constant{
 				value: NoneValue{}
 			})
 		}
@@ -1021,7 +1021,7 @@ fn parse_unaryop(m map[string]json2.Any) UnaryOp {
 	return UnaryOp{
 		op:           parse_unary_operator(map_field(m, 'op'))
 		operand:      parse_expr(map_field(m, 'operand')) or {
-			Expr(Constant{
+			&Expr(Constant{
 				value: NoneValue{}
 			})
 		}
@@ -1084,7 +1084,7 @@ fn parse_compare(m map[string]json2.Any) Compare {
 	}
 	return Compare{
 		left:         parse_expr(map_field(m, 'left')) or {
-			Expr(Constant{
+			&Expr(Constant{
 				value: NoneValue{}
 			})
 		}
@@ -1129,7 +1129,7 @@ fn parse_call(m map[string]json2.Any) Call {
 	}
 	return Call{
 		func:         parse_expr(map_field(m, 'func')) or {
-			Expr(Constant{
+			&Expr(Constant{
 				value: NoneValue{}
 			})
 		}
@@ -1144,7 +1144,7 @@ fn parse_call(m map[string]json2.Any) Call {
 fn parse_attribute(m map[string]json2.Any) Attribute {
 	return Attribute{
 		value:        parse_expr(map_field(m, 'value')) or {
-			Expr(Constant{
+			&Expr(Constant{
 				value: NoneValue{}
 			})
 		}
@@ -1159,12 +1159,12 @@ fn parse_attribute(m map[string]json2.Any) Attribute {
 fn parse_subscript(m map[string]json2.Any) Subscript {
 	return Subscript{
 		value:         parse_expr(map_field(m, 'value')) or {
-			Expr(Constant{
+			&Expr(Constant{
 				value: NoneValue{}
 			})
 		}
 		slice:         parse_expr(map_field(m, 'slice')) or {
-			Expr(Constant{
+			&Expr(Constant{
 				value: NoneValue{}
 			})
 		}
@@ -1266,17 +1266,17 @@ fn parse_set(m map[string]json2.Any) Set {
 fn parse_ifexp(m map[string]json2.Any) IfExp {
 	return IfExp{
 		test:   parse_expr(map_field(m, 'test')) or {
-			Expr(Constant{
+			&Expr(Constant{
 				value: NoneValue{}
 			})
 		}
 		body:   parse_expr(map_field(m, 'body')) or {
-			Expr(Constant{
+			&Expr(Constant{
 				value: NoneValue{}
 			})
 		}
 		orelse: parse_expr(map_field(m, 'orelse')) or {
-			Expr(Constant{
+			&Expr(Constant{
 				value: NoneValue{}
 			})
 		}
@@ -1289,7 +1289,7 @@ fn parse_lambda(m map[string]json2.Any) Lambda {
 	mut lam := Lambda{
 		args: parse_arguments(m['args'] or { json2.Any(map[string]json2.Any{}) })
 		body: parse_expr(map_field(m, 'body')) or {
-			Expr(Constant{
+			&Expr(Constant{
 				value: NoneValue{}
 			})
 		}
@@ -1321,7 +1321,7 @@ fn parse_list_comp(m map[string]json2.Any) ListComp {
 	}
 	return ListComp{
 		elt:        parse_expr(map_field(m, 'elt')) or {
-			Expr(Constant{
+			&Expr(Constant{
 				value: NoneValue{}
 			})
 		}
@@ -1340,7 +1340,7 @@ fn parse_set_comp(m map[string]json2.Any) SetComp {
 	}
 	return SetComp{
 		elt:        parse_expr(map_field(m, 'elt')) or {
-			Expr(Constant{
+			&Expr(Constant{
 				value: NoneValue{}
 			})
 		}
@@ -1359,12 +1359,12 @@ fn parse_dict_comp(m map[string]json2.Any) DictComp {
 	}
 	return DictComp{
 		key:        parse_expr(map_field(m, 'key')) or {
-			Expr(Constant{
+			&Expr(Constant{
 				value: NoneValue{}
 			})
 		}
 		value:      parse_expr(map_field(m, 'value')) or {
-			Expr(Constant{
+			&Expr(Constant{
 				value: NoneValue{}
 			})
 		}
@@ -1383,7 +1383,7 @@ fn parse_generator_exp(m map[string]json2.Any) GeneratorExp {
 	}
 	return GeneratorExp{
 		elt:        parse_expr(map_field(m, 'elt')) or {
-			Expr(Constant{
+			&Expr(Constant{
 				value: NoneValue{}
 			})
 		}
@@ -1403,12 +1403,12 @@ fn parse_comprehension(m map[string]json2.Any) Comprehension {
 	}
 	return Comprehension{
 		target:   parse_expr(map_field(m, 'target')) or {
-			Expr(Constant{
+			&Expr(Constant{
 				value: NoneValue{}
 			})
 		}
 		iter:     parse_expr(map_field(m, 'iter')) or {
-			Expr(Constant{
+			&Expr(Constant{
 				value: NoneValue{}
 			})
 		}
@@ -1421,7 +1421,7 @@ fn parse_comprehension(m map[string]json2.Any) Comprehension {
 fn parse_await(m map[string]json2.Any) Await {
 	return Await{
 		value: parse_expr(map_field(m, 'value')) or {
-			Expr(Constant{
+			&Expr(Constant{
 				value: NoneValue{}
 			})
 		}
@@ -1441,7 +1441,7 @@ fn parse_yield(m map[string]json2.Any) Yield {
 fn parse_yield_from(m map[string]json2.Any) YieldFrom {
 	return YieldFrom{
 		value: parse_expr(map_field(m, 'value')) or {
-			Expr(Constant{
+			&Expr(Constant{
 				value: NoneValue{}
 			})
 		}
@@ -1453,7 +1453,7 @@ fn parse_yield_from(m map[string]json2.Any) YieldFrom {
 fn parse_formatted_value(m map[string]json2.Any) FormattedValue {
 	return FormattedValue{
 		value:       parse_expr(map_field(m, 'value')) or {
-			Expr(Constant{
+			&Expr(Constant{
 				value: NoneValue{}
 			})
 		}
@@ -1483,12 +1483,12 @@ fn parse_joined_str(m map[string]json2.Any) JoinedStr {
 fn parse_named_expr(m map[string]json2.Any) NamedExpr {
 	return NamedExpr{
 		target: parse_expr(map_field(m, 'target')) or {
-			Expr(Constant{
+			&Expr(Constant{
 				value: NoneValue{}
 			})
 		}
 		value:  parse_expr(map_field(m, 'value')) or {
-			Expr(Constant{
+			&Expr(Constant{
 				value: NoneValue{}
 			})
 		}
@@ -1500,7 +1500,7 @@ fn parse_named_expr(m map[string]json2.Any) NamedExpr {
 fn parse_starred(m map[string]json2.Any) Starred {
 	return Starred{
 		value: parse_expr(map_field(m, 'value')) or {
-			Expr(Constant{
+			&Expr(Constant{
 				value: NoneValue{}
 			})
 		}
@@ -1510,7 +1510,7 @@ fn parse_starred(m map[string]json2.Any) Starred {
 }
 
 // Helper functions
-fn parse_optional_expr(raw json2.Any) ?Expr {
+fn parse_optional_expr(raw json2.Any) ?&Expr {
 	if raw is json2.Null {
 		return none
 	}
@@ -1536,7 +1536,7 @@ fn parse_optional_string(raw json2.Any) ?string {
 fn parse_match(m map[string]json2.Any) Match {
 	subject_raw := m['subject'] or { json2.Any(json2.Null{}) }
 	subject := parse_expr(subject_raw.as_map()) or {
-		Expr(Name{
+		&Expr(Name{
 			id: '_'
 		})
 	}
@@ -1616,7 +1616,7 @@ fn parse_match_pattern(m map[string]json2.Any) ?MatchPattern {
 			}
 			return MatchPattern(MatchAs{
 				name:    name
-				pattern: inner_pat
+				pattern: &inner_pat
 				loc:     parse_location(m)
 			})
 		}

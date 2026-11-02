@@ -620,7 +620,7 @@ _DUNDER_V_OP: Dict[str, str] = {
     "__gt__": ">",
     "__ge__": ">=",
     "__str__": "str",
-    "__repr__": "str",
+    "__repr__": "repr",
     "__len__": "len",
     "__getitem__": "index",
     "__setitem__": "index_set",

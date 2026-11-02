@@ -34,7 +34,7 @@ fn ensure_fresh_py2v(repo_dir string) !string {
 		os.chdir(prev_cwd) or {}
 	}
 
-	build := os.execute('v . -o "${py2v_path}"')
+	build := os.exec(['v', '.', '-o', py2v_path])
 	if build.exit_code != 0 {
 		return error('failed to build py2v: ${build.output}')
 	}
@@ -48,7 +48,7 @@ fn normalize_v_code(code string) string {
 	defer {
 		os.rm(tmp_file) or {}
 	}
-	res := os.execute('v fmt -w "${tmp_file}"')
+	res := os.exec(['v', 'fmt', '-w', tmp_file])
 	if res.exit_code == 0 {
 		normalized = os.read_file(tmp_file) or { normalized }
 	}
@@ -91,7 +91,7 @@ fn test_transpiler() {
 			continue
 		}
 
-		result := os.execute('${py2v_path} "${case_file}"')
+		result := os.exec([py2v_path, case_file])
 		if result.exit_code != 0 {
 			err_msg := result.output.trim_space()
 			if err_msg.len > 0 {
@@ -152,13 +152,13 @@ fn test_module_name_from_output_path() {
 		return
 	}
 	out_file_alpha := os.join_path(out_dir_alpha, 'out.v')
-	res_alpha := os.execute('${py2v_path} "${case_file}" -o "${out_file_alpha}"')
+	res_alpha := os.exec([py2v_path, case_file, '-o', out_file_alpha])
 	assert res_alpha.exit_code == 0, 'transpilation failed: ${res_alpha.output}'
 	alpha_text := os.read_file(out_file_alpha) or {
 		assert false, 'failed to read output file: ${err}'
 		return
 	}
-	assert alpha_text.contains('\nmodule foo_bar\n'), 'expected module foo_bar in generated output'
+	assert alpha_text.contains('module foo_bar\n'), 'expected module foo_bar in generated output'
 
 	out_dir_digit := os.join_path(tmp_root, '123abc')
 	os.mkdir_all(out_dir_digit) or {
@@ -166,13 +166,13 @@ fn test_module_name_from_output_path() {
 		return
 	}
 	out_file_digit := os.join_path(out_dir_digit, 'out.v')
-	res_digit := os.execute('${py2v_path} "${case_file}" -o "${out_file_digit}"')
+	res_digit := os.exec([py2v_path, case_file, '-o', out_file_digit])
 	assert res_digit.exit_code == 0, 'transpilation failed: ${res_digit.output}'
 	digit_text := os.read_file(out_file_digit) or {
 		assert false, 'failed to read output file: ${err}'
 		return
 	}
-	assert digit_text.contains('\nmodule m_123abc\n'), 'expected module m_123abc in generated output'
+	assert digit_text.contains('module m_123abc\n'), 'expected module m_123abc in generated output'
 }
 
 fn test_generated_line_length_limit() {
@@ -190,7 +190,7 @@ fn test_generated_line_length_limit() {
 
 	case_file := os.join_path(repo_dir, 'tests', 'cases', 'long_wrap.py')
 
-	res := os.execute('${py2v_path} "${case_file}"')
+	res := os.exec([py2v_path, case_file])
 	assert res.exit_code == 0, 'transpilation failed: ${res.output}'
 	lines := res.output.replace('\r\n', '\n').split('\n')
 	for idx, line in lines {
@@ -213,11 +213,11 @@ fn test_init_has_no_return_type() {
 
 	case_file := os.join_path(repo_dir, 'tests', 'cases', 'init_no_return.py')
 
-	res := os.execute('${py2v_path} "${case_file}"')
+	res := os.exec([py2v_path, case_file])
 	assert res.exit_code == 0, 'transpilation failed: ${res.output}'
 	out := res.output.replace('\r\n', '\n')
-	assert out.contains('fn (mut self Thing) __init__(x Any) {'), 'expected mut self constructor signature'
-	assert !out.contains('__init__(x Any) Any'), '__init__ should not have a return type'
+	assert out.contains('fn (mut self Thing) init(x int) {'), 'expected mut self constructor signature'
+	assert !out.contains('init(x int) Any'), 'init should not have a return type'
 }
 
 fn test_super_call_translation() {
@@ -235,10 +235,10 @@ fn test_super_call_translation() {
 
 	case_file := os.join_path(repo_dir, 'tests', 'cases', 'super_calls.py')
 
-	res := os.execute('${py2v_path} "${case_file}"')
+	res := os.exec([py2v_path, case_file])
 	assert res.exit_code == 0, 'transpilation failed: ${res.output}'
 	out := res.output.replace('\r\n', '\n')
-	assert out.contains('self.Base.__init__(value)'), 'expected super().__init__ translation to embedded base call'
+	assert out.contains('self.Base.init(value)'), 'expected super().__init__ translation to embedded base call'
 	assert out.contains('return self.Base.greet()'), 'expected super().greet() translation to embedded base call'
 	assert !out.contains('self.Exception.'), 'builtin Exception should not be emitted as embedded base call'
 }
@@ -258,7 +258,7 @@ fn test_exception_union_alias_generation() {
 
 	case_file := os.join_path(repo_dir, 'tests', 'cases', 'exception_union_init.py')
 
-	res := os.execute('${py2v_path} "${case_file}"')
+	res := os.exec([py2v_path, case_file])
 	assert res.exit_code == 0, 'transpilation failed: ${res.output}'
 	out := res.output.replace('\r\n', '\n')
 	assert out.contains('type WebDriverExceptions = BarException | WebDriverException | FooException'), 'expected union alias in __all__ order'

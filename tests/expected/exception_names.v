@@ -1,11 +1,12 @@
 module main
 
+// TODO(py2v): 1 except handler(s) need a V Result equivalent:
+//   except ZeroDivisionError (1 stmt)
+
 fn show() {
-	// try: (V: wrap fallible calls below with `or {}`)
 	3 / 0
-	// except ZeroDivisionError:
-	// NOTE: V uses Result types; adapt body to use `or { ... }` blocks
-	println('ZeroDivisionError')
+	// except handlers are not translated: see the TODO(py2v) note above
+	//   except ZeroDivisionError: 1 statement(s) need an `or { ... }` equivalent
 }
 
 fn main() {

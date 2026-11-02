@@ -36,14 +36,20 @@ pub mut:
 	class_bases_by_path map[string][]string
 	// mut_methods names `Class.method` pairs that need a `mut` V receiver.
 	mut_methods map[string]bool
+	// any_declared_in records the V modules whose `Any` sum type has already
+	// been emitted. V rejects a second declaration of the same name, and a
+	// package is merged into one module per subpackage, so every file of that
+	// module would otherwise redeclare it.
+	any_declared_in map[string]bool
 }
 
 // new_module_registry creates an empty registry.
 pub fn new_module_registry() ModuleRegistry {
 	return ModuleRegistry{
-		by_dotted:   map[string]PyModuleInfo{}
-		root_dotted: ''
-		output_root: ''
+		by_dotted:       map[string]PyModuleInfo{}
+		root_dotted:     ''
+		output_root:     ''
+		any_declared_in: map[string]bool{}
 	}
 }
 
@@ -138,6 +144,16 @@ pub fn (r ModuleRegistry) find_symbol_module(symbol string, current_dotted strin
 	return ''
 }
 
+// v_file_stem returns the file stem of a generated `.v` path, or an empty
+// string for a package `__init__` root.
+pub fn v_file_stem(v_relpath string) string {
+	mut base := v_relpath.all_after_last('/')
+	if base.ends_with('.v') {
+		base = base[..base.len - 2]
+	}
+	return py_stem_from_path(base)
+}
+
 // collisions returns symbols defined by more than one file in the same V
 // module, which V will reject as redefinitions.
 pub fn (r ModuleRegistry) collisions() map[string][]string {
@@ -151,7 +167,16 @@ pub fn (r ModuleRegistry) collisions() map[string][]string {
 			continue
 		}
 		owner[info.v_relpath] = dotted
-		for sym in info.symbols {
+		for raw_sym in info.symbols {
+			// A library renames `main` to `<stem>_main`, so two files of one
+			// module can each define one without colliding in V.
+			mut sym := raw_sym
+			if raw_sym == 'main' {
+				stem := v_file_stem(info.v_relpath)
+				if stem != '' {
+					sym = stem + '_main'
+				}
+			}
 			if sym in seen {
 				key := '${info.v_module}.${sym}'
 				if key !in dupes {

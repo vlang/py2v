@@ -213,7 +213,7 @@ fn check_worst(results []CheckResult, n int) []CheckResult {
 
 // check_module_names lists the generated V modules under root, which are the
 // immediate subdirectories that hold a `.v` file, sorted.
-fn check_module_names(root string) []string {
+fn check_module_names(root string) ![]string {
 	mut out := []string{}
 	entries := os.ls(root) or { return out }
 	for name in entries {

@@ -68,7 +68,7 @@ const script_dir = os.dir(os.abs_path(@FILE))
 const project_dir = os.dir(script_dir)
 const cases_dir = os.join_path(script_dir, 'cases')
 const expected_dir = os.join_path(script_dir, 'expected')
-const package_fixtures = ['pkg_imports', 'pkg_multi', 'pkg_multi2']
+const package_fixtures = ['pkg_imports', 'pkg_lib_main', 'pkg_multi', 'pkg_multi2']
 
 mut py2v := resolve_py2v()
 

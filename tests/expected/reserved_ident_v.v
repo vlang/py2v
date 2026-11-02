@@ -30,3 +30,25 @@ fn param_use(v_ int) int {
 fn comprehension(rows [][]int) []string {
 	return rows.map('${v_}')
 }
+
+fn spawn_(x int) int {
+	return x * 2
+}
+
+fn exit_(x int) int {
+	return x - 1
+}
+
+fn malloc_(n int) list {
+	return [0].repeat(n)
+}
+
+fn free_(p list) int {
+	return p.len
+}
+
+fn main() {
+	println(spawn_(21))
+	println(exit_(3))
+	println(free_(malloc_(4)))
+}

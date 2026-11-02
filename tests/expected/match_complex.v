@@ -46,10 +46,10 @@ fn check_guard(n int) string {
 }
 
 fn main() {
-	println(describe([0, 0]))
-	println(describe([3, 0]))
-	println(describe([1, 2]))
-	println(parse_command({
+	println(describe([0, 0].map(Any(it))))
+	println(describe([3, 0].map(Any(it))))
+	println(describe([1, 2].map(Any(it))))
+	println(parse_command(map[string]Any{
 		'action': 'quit'
 	}))
 	println(check_guard(-5))

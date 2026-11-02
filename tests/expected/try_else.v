@@ -1,22 +1,20 @@
 module main
 
+// TODO(py2v): 2 except handler(s) need a V Result equivalent:
+//   else clause (1 stmt)
+//   except ValueError as e (1 stmt)
+
 fn demo(ok bool) {
 	defer {
 		println('finally')
 	}
-	// try: (V: wrap fallible calls below with `or {}`)
 	if !ok {
 		panic('ValueError: ' + 'bad')
 	}
 	println('try')
-	// else:
-	// NOTE: runs only when try body has no exception in Python
-	if false {
-		println('else')
-	}
-	// except ValueError as e:
-	// NOTE: V uses Result types; adapt body to use `or { ... }` blocks
-	println('except')
+	// else: runs only when the try body raises, which no V construct here does
+	// except handlers are not translated: see the TODO(py2v) note above
+	//   except ValueError as e: 1 statement(s) need an `or { ... }` equivalent
 }
 
 fn main() {

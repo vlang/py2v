@@ -1,5 +1,8 @@
 module main
 
+// TODO(py2v): 1 except handler(s) need a V Result equivalent:
+//   except (1 stmt)
+
 fn with_finally(x int) int {
 	mut result := 0
 	defer {
@@ -15,12 +18,10 @@ fn main_func() {
 	defer {
 		println('cleanup')
 	}
-	// try: (V: wrap fallible calls below with `or {}`)
 	x := 10
 	println(x)
-	// except:
-	// NOTE: V uses Result types; adapt body to use `or { ... }` blocks
-	println('error')
+	// except handlers are not translated: see the TODO(py2v) note above
+	//   except: 1 statement(s) need an `or { ... }` equivalent
 }
 
 fn main() {

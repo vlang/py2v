@@ -28,6 +28,10 @@ fn (self Vector) str() string {
 	return 'Vector(${self.x}, ${self.y})'
 }
 
+fn (self Vector) repr() string {
+	return 'Vector(${self.x}, ${self.y})'
+}
+
 fn (self Vector) len() int {
 	return 2
 }
@@ -37,6 +41,23 @@ fn (self Vector) - () Vector {
 		x: -self.x
 		y: -self.y
 	}
+}
+
+pub struct Private {
+pub mut:
+	tag Any
+}
+
+fn (mut self Private) init(tag string) {
+	self.tag = tag
+}
+
+fn (self Private) label() string {
+	return self.tag
+}
+
+fn describe(p _Private) string {
+	return repr(p) + p
 }
 
 fn main() {

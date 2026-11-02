@@ -42,6 +42,9 @@ mut:
 	emit_pub       bool
 	registry       ModuleRegistry
 	current_dotted string
+	// current_stem is this file's stem, used to disambiguate a Python `main`
+	// when several files of one V module define one.
+	current_stem string
 	// current_is_package reports whether current_dotted names a package, i.e.
 	// the file being emitted is an `__init__.py`.
 	current_is_package bool
@@ -54,6 +57,11 @@ mut:
 	// loop_idents holds the iteration variables currently in scope. V forbids a
 	// nested loop from reusing one, so a collision forces a fresh name.
 	loop_idents map[string]bool
+	// scope_idents holds every V name bound so far in the function being
+	// emitted, its parameters included. V rejects a `for` variable that
+	// shadows any of them, not only an enclosing iteration variable, so Python's
+	// habit of rebinding a parameter inside a loop has to be given a fresh name.
+	scope_idents map[string]bool
 	// renamed_idents maps a Python name to the V name its current scope bound
 	// it to.
 	renamed_idents map[string]string
@@ -93,6 +101,9 @@ mut:
 	// unmapped_calls records the call sites that had to be stubbed, reported
 	// once at module scope so the gap is visible rather than silent.
 	unmapped_calls []string
+	// exception_handlers labels the `except` clauses that have no generated
+	// code, reported once at module scope.
+	exception_handlers []string
 	// unresolved_imports lists Python modules with no V counterpart. They are
 	// reported at module scope rather than left to fail as undefined
 	// identifiers at every use site.
@@ -105,12 +116,22 @@ mut:
 	namedtuple_fields map[string][]string
 }
 
+// emitted_class_name maps a Python class name to the V type name. V requires
+// a type name to begin with a capital letter, so a leading underscore is
+// dropped and the next letter is capitalised: `_LazyImport` -> `LazyImport`.
 fn emitted_class_name(name string) string {
 	if name.len == 1 {
 		c := name[0]
 		if c >= `A` && c <= `Z` {
 			return '${name}_struct'
 		}
+	}
+	if name.starts_with('_') {
+		trimmed := name.trim_left('_')
+		if trimmed.len == 0 {
+			return name
+		}
+		return trimmed[0].ascii_str().to_upper() + trimmed[1..]
 	}
 	return name
 }
@@ -135,8 +156,10 @@ pub fn new_transpiler() VTranspiler {
 		imported_modules:            map[string]bool{}
 		import_prefixes:             map[string]bool{}
 		loop_idents:                 map[string]bool{}
+		scope_idents:                map[string]bool{}
 		unmapped_modules:            map[string]bool{}
 		unmapped_calls:              []string{}
+		exception_handlers:          []string{}
 		renamed_idents:              map[string]string{}
 		module_aliases:              map[string]string{}
 		imported_classes:            map[string][]string{}
@@ -158,6 +181,19 @@ pub fn new_transpiler() VTranspiler {
 }
 
 // visit_module emits the top-level V module source for a Module node.
+// emitted_fn_name maps a Python function name to the V name it is declared
+// under. A `main` in a library keeps its Python name in script mode, but a
+// library module is merged with its siblings and must carry one entry point at
+// most, so the name is qualified by the file it came from.
+pub fn (t VTranspiler) emitted_fn_name(name string) string {
+	if t.emit_pub && t.current_stem != '' && name == 'main' {
+		return t.current_stem + '_main'
+	}
+	return name
+}
+
+// visit_module renders a whole Python module: constants, imports, structs and
+// functions, in the order V requires them.
 pub fn (mut t VTranspiler) visit_module(node Module) string {
 	// Reset per-module state so repeated transpilation with the same instance
 	// does not leak global-declaration flags.
@@ -201,6 +237,15 @@ pub fn (mut t VTranspiler) visit_module(node Module) string {
 		}
 	}
 
+	// A library module has no entry point, and V merges a directory into a
+	// single module, so two files that each define `main` would collide. The
+	// Python sources are separate scripts, so `visit_function_def` keeps such a
+	// function under a name derived from its own file. That also covers the
+	// `if __name__ == "__main__"` guard, which the frontend rewrites into a
+	// `main` definition, and a `main` nested inside another function, which has
+	// to be hoisted to the module top level because V only allows `fn`
+	// declarations there.
+
 	mut first_stmt := true
 	for stmt in hoisted_body {
 		// Skip module-level docstrings (first bare string constant)
@@ -226,14 +271,14 @@ pub fn (mut t VTranspiler) visit_module(node Module) string {
 				struct_decls << s
 			}
 			FunctionDef {
-				if stmt.name == 'main' {
+				if stmt.name == 'main' && t.emitted_fn_name('main') == 'main' {
 					main_fn_override = s
 				} else {
 					func_decls << s
 				}
 			}
 			AsyncFunctionDef {
-				if stmt.name == 'main' {
+				if stmt.name == 'main' && t.emitted_fn_name('main') == 'main' {
 					main_fn_override = s
 				} else {
 					func_decls << s
@@ -259,8 +304,11 @@ pub fn (mut t VTranspiler) visit_module(node Module) string {
 		}
 	}
 
-	// Any type alias must be first among type_decls
-	if t.generated_code_has_any_type {
+	// Any type alias must be first among type_decls. A package is merged into
+	// one V module per subpackage, so the alias belongs to that module and only
+	// the first file of it declares it.
+	if t.generated_code_has_any_type && !t.registry.any_declared_in[t.module_name] {
+		t.registry.any_declared_in[t.module_name] = true
 		type_decls.prepend('type Any = bool | int | i64 | f64 | string | []u8')
 	}
 
@@ -334,6 +382,11 @@ pub fn (mut t VTranspiler) visit_module(node Module) string {
 	unmapped := t.unmapped_call_comment()
 	if unmapped != '' {
 		parts << unmapped
+	}
+
+	handlers := t.exception_handler_comment()
+	if handlers != '' {
+		parts << handlers
 	}
 
 	if library_decls.len > 0 {
@@ -631,7 +684,7 @@ fn (mut t VTranspiler) visit_closure_from_funcdef(node FunctionDef, nl_names []s
 	// Return type
 	mut ret_type := ''
 	if ret := node.returns {
-		ret_type = v_return_type(t.typename_from_annotation(ret))
+		ret_type = v_return_type(t.typename_from_annotation(*ret))
 	} else if node.v_annotation != '' {
 		// Use inferred return type from frontend analysis
 		ret_type = map_type(node.v_annotation)
@@ -764,6 +817,15 @@ fn collect_expr_names(expr Expr, mut names map[string]bool) {
 
 // visit_function_def emits V code for a Python FunctionDef node.
 pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
+	if !node.is_class_method {
+		renamed := t.emitted_fn_name(node.name)
+		if renamed != node.name {
+			return t.visit_function_def(FunctionDef{
+				...node
+				name: renamed
+			})
+		}
+	}
 	// Pre-pass: a local that receives a `mut self` method call must itself be
 	// declared `mut`, and that has to be known before the body is emitted.
 	{
@@ -803,6 +865,9 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 		}
 	}
 	t.var_types = func_var_types.clone()
+	// A parameter or local of an enclosing function is not in scope here.
+	saved_scope_idents := t.scope_idents
+	t.scope_idents = map[string]bool{}
 
 	mut signature := []string{}
 	// Cross-module symbols need a `pub` visibility in V; single-file output
@@ -826,6 +891,11 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 		emit_name = v_name
 	} else {
 		emit_name = escape_leading_underscore(node.name)
+		// V reserves a few names for its own intrinsics, so a function declared
+		// under one of them can never be called.
+		if !node.is_class_method {
+			emit_name = escape_fn_name(emit_name)
+		}
 	}
 	// @classmethod / @staticmethod: emit as free function named ClassName_funcname
 	if node.is_class_method && node.decorator_kind in ['classmethod', 'staticmethod'] {
@@ -887,10 +957,13 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 		if arg.arg == 'cls' && node.decorator_kind == 'classmethod' {
 			continue
 		}
+		// A parameter is already bound, so a `for` variable of the same name
+		// must take a fresh one.
+		t.scope_idents[escape_local_ident(arg.arg)] = true
 
 		mut typename := ''
 		if ann := arg.annotation {
-			typename = t.typename_from_annotation(ann)
+			typename = t.typename_from_annotation(*ann)
 		}
 		// A parameter the frontend could only type by inference, for example one
 		// that exists solely to fill an annotated field.
@@ -938,12 +1011,12 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 
 	// Python keyword-only args come after `*args`, but V requires the variadic
 	// parameter to be last, so emit them here, before it.
-	for i, kwonly in node.args.kwonlyargs {
+	for kwonly in node.args.kwonlyargs {
 		kwname := escape_identifier(kwonly.arg)
 		mut kwtype := 'Any'
 		t.generated_code_has_any_type = true
 		if ann := kwonly.annotation {
-			kwtype = t.typename_from_annotation(ann)
+			kwtype = t.typename_from_annotation(*ann)
 		}
 		// V has no default parameter values; defaults are filled in at call
 		// sites via func_defaults instead.
@@ -978,7 +1051,7 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 	if vararg := node.args.vararg {
 		mut typename := ''
 		if ann := vararg.annotation {
-			typename = t.typename_from_annotation(ann)
+			typename = t.typename_from_annotation(*ann)
 		}
 		if typename.starts_with('[]') {
 			typename = '...' + typename[2..]
@@ -1008,7 +1081,7 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 	t.current_return_count = 0
 	if !node.is_void && !node.is_generator && node.name != '__init__' {
 		if ret := node.returns {
-			ret_type := v_return_type(t.typename_from_annotation(ret))
+			ret_type := v_return_type(t.typename_from_annotation(*ret))
 			if ret_type.starts_with('(') {
 				t.current_return_count = ret_type.count(',') + 1
 			}
@@ -1139,6 +1212,7 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 	t.current_return_count = saved_return_count
 	if nested_fndefs.len > 0 {
 		t.current_class_name = saved_current_class
+		t.scope_idents = saved_scope_idents
 		return nested_fndefs.join('\n') + '\n' + notes_prefix + decorator_comments.join('\n') + if decorator_comments.len > 0 {
 			'\n'
 		} else {
@@ -1146,6 +1220,7 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 		} + func_code
 	}
 	t.current_class_name = saved_current_class
+	t.scope_idents = saved_scope_idents
 	return notes_prefix + decorator_comments.join('\n') + if decorator_comments.len > 0 {
 		'\n'
 	} else {
@@ -1156,12 +1231,17 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 // visit_async_function_def emits V code for an AsyncFunctionDef node (converted to sync).
 pub fn (mut t VTranspiler) visit_async_function_def(node AsyncFunctionDef) string {
 	// Convert to regular FunctionDef
+	returns := if r := node.returns {
+	  &r
+	} else {
+	  none
+	}
 	fd := FunctionDef{
 		name:            node.name
 		args:            node.args
 		body:            node.body
 		decorator_list:  node.decorator_list
-		returns:         node.returns
+		returns:         returns
 		type_comment:    node.type_comment
 		loc:             node.loc
 		is_generator:    node.is_generator
@@ -1194,7 +1274,7 @@ fn (mut t VTranspiler) visit_protocol_class(node ClassDef, emitted_name string) 
 				mut typename := 'Any'
 				t.generated_code_has_any_type = true
 				if ann := arg.annotation {
-					typename = t.typename_from_annotation(ann)
+					typename = t.typename_from_annotation(*ann)
 					if typename == '' {
 						typename = 'Any'
 					}
@@ -1204,7 +1284,7 @@ fn (mut t VTranspiler) visit_protocol_class(node ClassDef, emitted_name string) 
 			mut ret_type := ''
 			if !fd.is_void {
 				if ret := fd.returns {
-					ret_type = t.typename_from_annotation(ret)
+					ret_type = t.typename_from_annotation(*ret)
 				}
 			}
 			sig := if ret_type.len > 0 {
@@ -1408,13 +1488,21 @@ pub fn (mut t VTranspiler) visit_class_def(node ClassDef) string {
 		t.class_type_params[node.name] = node.type_params
 	}
 
-	// Embed base classes (inheritance -> struct embedding)
+	// Embed base classes (inheritance -> struct embedding).
+	//
+	// Only bases that resolve to a class in this project are embedded. Python
+	// lets an exception mix in a builtin such as `class E(KeyError, Base)`, and
+	// V has no `KeyError` to embed, so the base is dropped here rather than
+	// becoming a reference to a type that does not exist.
 	mut embeds := []string{}
+	mut embeddable_bases := []string{}
 	for base_name in base_names {
 		if base_name in t.known_classes {
 			embeds << t.indent_code(emitted_class_name(base_name), 1)
+			embeddable_bases << base_name
 		}
 	}
+	t.class_base_names[node.name] = embeddable_bases
 
 	mut all_parts := []string{}
 	all_parts << embeds
@@ -1469,7 +1557,7 @@ pub fn (mut t VTranspiler) visit_class_def(node ClassDef) string {
 		if stmt is FunctionDef {
 			if !stmt.is_void {
 				if ret := stmt.returns {
-					ret_type := t.typename_from_annotation(ret)
+					ret_type := t.typename_from_annotation(*ret)
 					if ret_type.len > 0 {
 						t.func_return_types[stmt.name] = ret_type
 					}
@@ -1546,6 +1634,21 @@ pub fn (mut t VTranspiler) visit_class_def(node ClassDef) string {
 
 // visit_assign emits V code for an Assign statement.
 pub fn (mut t VTranspiler) visit_assign(node Assign) string {
+	// Record what this assignment binds, so a later `for` over the same Python
+	// name is given a fresh V variable instead of shadowing it. Whether a name
+	// was already bound has to be sampled before this statement binds anything,
+	// or a first declaration would look like a rebind of itself.
+	mut was_bound := map[string]bool{}
+	for target in node.targets {
+		if target is Name {
+			was_bound[(target as Name).id] = t.is_bound_in_scope((target as Name).id)
+		}
+	}
+	for target in node.targets {
+		if target is Name {
+			t.note_scope_binding((target as Name).id)
+		}
+	}
 	// Literal[v1, v2, ...] assignment — emit a const block or enum as documentation.
 	if node.is_typevar_assign && node.literal_values.len > 0 {
 		name := escape_identifier(node.literal_name.to_lower())
@@ -1707,6 +1810,14 @@ pub fn (mut t VTranspiler) visit_assign(node Assign) string {
 		if target is Name {
 			n := target as Name
 			is_redefined = n.id in node.redefined_targets || (t.global_vars[n.id] or { false })
+			// Rebinding a name that is already a parameter or local of this
+			// function is a reassignment, not a new declaration. V rejects
+			// `x := ...` when `x` is already in scope, and a Python rebinding of
+			// the same name is the same variable.
+			if !is_redefined && was_bound[n.id] {
+				is_redefined = true
+				t.extra_mut_vars[n.id] = true
+			}
 		}
 
 		value_str := if use_temp { 'tmp' } else { t.visit_expr(node.value) }
@@ -2008,7 +2119,7 @@ pub fn (mut t VTranspiler) visit_aug_assign(node AugAssign) string {
 // visit_ann_assign emits V code for an AnnAssign statement.
 pub fn (mut t VTranspiler) visit_ann_assign(node AnnAssign) string {
 	target := t.visit_expr(node.target)
-	type_str := t.typename_from_annotation(node.annotation)
+	type_str := t.typename_from_annotation(*node.annotation)
 
 	mut kw := ''
 	if node.target is Name {
@@ -2146,6 +2257,27 @@ fn for_target_names(target Expr) []string {
 	return []
 }
 
+// note_scope_binding records the V spelling a Python name is bound to in the
+// function currently being emitted.
+fn (mut t VTranspiler) note_scope_binding(py_name string) {
+	v := t.renamed_idents[py_name] or { escape_local_ident(py_name) }
+	t.scope_idents[v] = true
+}
+
+// is_bound_in_scope reports whether `py_name` is already a parameter or local of
+// the function being emitted.
+fn (t VTranspiler) is_bound_in_scope(py_name string) bool {
+	return t.scope_idents[escape_local_ident(py_name)]
+}
+
+// bind_op returns the operator that binds `v_name`. V rejects a second
+// declaration of a name that is already bound in the function, and a Python
+// loop target that shadows an existing name rebinds that same variable rather
+// than introducing a new one, so this has to be an assignment.
+fn (t VTranspiler) bind_op(v_name string) string {
+	return if t.scope_idents[v_name] { '=' } else { ':=' }
+}
+
 // visit_for emits V code for a For loop.
 pub fn (mut t VTranspiler) visit_for(node For) string {
 	// V rejects reusing an iteration variable name in a nested loop, and
@@ -2153,7 +2285,9 @@ pub fn (mut t VTranspiler) visit_for(node For) string {
 	// the rename so the body refers to the variable it actually declares.
 	mut rename := map[string]string{}
 	for name in for_target_names(node.target) {
-		if name in t.loop_idents {
+		// V rejects a `for` variable that shadows anything already bound in the
+		// enclosing scope, which in Python is an ordinary way to rebind a name.
+		if name in t.loop_idents || escape_local_ident(name) in t.scope_idents {
 			rename[name] = t.fresh_loop_ident(name, rename)
 		}
 	}
@@ -2169,7 +2303,7 @@ pub fn (mut t VTranspiler) visit_for(node For) string {
 		t.renamed_idents[name] = fresh
 	}
 	defer {
-		for name, fresh in rename {
+		for name, _ in rename {
 			t.renamed_idents.delete(name)
 		}
 		for fresh in bound {
@@ -2221,7 +2355,7 @@ pub fn (mut t VTranspiler) visit_for(node For) string {
 				buf << '${seq} := ${t.visit_expr(node.iter)}'
 				buf << 'for ${item} in ${seq} {'
 				for k, name in target_names {
-					buf << t.indent_code('${name} := ${item}[${k}]', 2)
+					buf << t.indent_code('${name} ${t.bind_op(name)} ${item}[${k}]', 2)
 				}
 				buf << t.visit_body_stmts(node.body, 2)
 				buf << '\t}'
@@ -2252,7 +2386,7 @@ pub fn (mut t VTranspiler) visit_for(node For) string {
 						right := t.visit_expr(call.args[1])
 						idx := t.new_tmp('zipi')
 						buf << 'for ${idx}, ${target_names[0]} in ${left} {'
-						buf << '\t${target_names[1]} := ${right}[${idx}]'
+						buf << '\t${target_names[1]} ${t.bind_op(target_names[1])} ${right}[${idx}]'
 						buf << t.visit_body_stmts(node.body, 1)
 						buf << '}'
 						if has_else {
@@ -2550,95 +2684,82 @@ pub fn (mut t VTranspiler) visit_raise(node Raise) string {
 // try body as-is and each except handler inside an `// except` comment header
 // followed by the handler body as real (but guarded) V code so it stays visible
 // and compilable after manual adaptation.
+// visit_try lowers Python's try/except/else/finally.
+//
+// V has no exception mechanism. It reports failure through a `Result` that the
+// caller has to unwrap with `or {}` or `!`, so a `try` block cannot be
+// reproduced unless every fallible statement inside it has already been wrapped.
+// py2v wraps some of them and not others, and an unwrapped failure reaches
+// `panic`, which nothing can catch.
+//
+// Rather than emit a handler that references an exception variable nothing ever
+// bound — which both fails to compile and reads as if it worked — the body is
+// emitted and the handlers are reported. `finally` is the exception: it maps
+// cleanly onto `defer`, so it keeps its code. `else` is dropped because it is
+// unreachable once no exception can be observed.
 pub fn (mut t VTranspiler) visit_try(node Try) string {
 	mut buf := []string{}
-	has_handlers := node.handlers.len > 0
-	mut trystar_member_types := []string{}
-	mut trystar_synth_dispatch := false
-	if node.is_exception_group {
-		for stmt in node.body {
-			t.collect_exception_group_member_types_from_stmt(stmt, mut trystar_member_types)
-		}
-		trystar_synth_dispatch = trystar_member_types.len > 0
-	}
-
-	// TryStar (Python 3.11 except*) — V has no ExceptionGroup support.
-	if node.is_exception_group {
-		buf << '// WARNING: except* (ExceptionGroup) is not supported in V.'
-		buf << '// Translate each except* handler manually using goroutines or error unions.'
-	}
 
 	t.emit_try_finally_defer(mut buf, node.finalbody)
 
-	// Emit try body directly — wrap fallible calls with `or {}` manually
-	if has_handlers {
-		buf << '// try: (V: wrap fallible calls below with `or {}`)'
-	}
-	if node.is_exception_group && trystar_synth_dispatch {
-		buf << '// except* synthesized dispatch for literal ExceptionGroup'
-	}
 	for stmt in node.body {
 		buf << t.visit_stmt(stmt)
 	}
 
-	t.emit_try_else_scaffold(mut buf, node.orelse)
-
-	// Emit each except handler with real body code inside a dead-code block
-	// so the logic is visible and easy to adapt.
-	for handler in node.handlers {
-		meta := t.build_except_handler_meta(handler)
-		if meta.bound_name.len > 0 {
-			// Temporarily bind the exception var as string so uses compile.
-			t.var_types[meta.bound_name] = 'string'
-		}
-		buf << meta.header
-		buf << '// NOTE: V uses Result types; adapt body to use `or { ... }` blocks'
-		if node.is_exception_group && trystar_synth_dispatch {
-			t.emit_trystar_handler_body(mut buf, handler, meta.type_names, trystar_member_types)
-			if meta.bound_name.len > 0 {
-				t.var_types.delete(meta.bound_name)
-			}
-			continue
-		}
-		if node.is_exception_group {
-			t.emit_nonexecuting_stmt_scaffold(mut buf, handler.body,
-				'// NOTE: except* handler scaffold; body preserved for manual translation')
-		} else {
-			// Emit handler body as real code for non-TryStar fallback mode.
-			for stmt in handler.body {
-				buf << t.visit_stmt(stmt)
-			}
-		}
-		// Clean up temporary binding
-		if meta.bound_name.len > 0 {
-			t.var_types.delete(meta.bound_name)
-		}
+	if node.orelse.len > 0 {
+		buf << '// else: runs only when the try body raises, which no V construct here does'
+		t.note_exception_handler('else clause', 1)
 	}
 
+	if node.handlers.len == 0 {
+		return buf.join('\n')
+	}
+
+	buf << '// except handlers are not translated: see the TODO(py2v) note above'
+	for handler in node.handlers {
+		buf << t.describe_except_handler(handler)
+	}
 	return buf.join('\n')
 }
 
-struct ExceptHandlerMeta {
-mut:
-	header     string
-	type_names []string
-	bound_name string
+// describe_except_handler renders one handler as a comment and records that it
+// needs a hand-written V equivalent.
+fn (mut t VTranspiler) describe_except_handler(handler ExceptHandler) string {
+	meta := t.build_except_handler_meta(handler)
+	mut label := 'except'
+	if meta.type_names.len > 0 {
+		label = label + ' ${meta.type_names.join(' | ')}'
+	}
+	if meta.bound_name.len > 0 {
+		label = label + ' as ${meta.bound_name}'
+	}
+	t.note_exception_handler(label, handler.body.len)
+	return '//   ${label}: ${handler.body.len} statement(s) need an `or { ... }` equivalent'
 }
 
-fn (mut t VTranspiler) emit_try_finally_defer(mut buf []string, finalbody []Stmt) {
-	if finalbody.len == 0 {
+// note_exception_handler records a clause that has no generated code, together
+// with how many statements it covers, so the gap is reported once at module
+// scope rather than at every occurrence.
+pub fn (mut t VTranspiler) note_exception_handler(label string, statements int) {
+	if label == '' {
 		return
 	}
-	buf << 'defer {'
-	for stmt in finalbody {
-		result := t.visit_stmt(stmt)
-		for line in result.split('\n') {
-			if line.len > 0 {
-				buf << '\t${line}'
-			}
-		}
+	entry := '${label} (${statements} stmt)'
+	if !(entry in t.exception_handlers) {
+		t.exception_handlers << entry
 	}
-	buf << '}'
+}
+
+// exception_handler_comment renders the module-scope note listing every handler
+// that was left for a human to translate.
+pub fn (t VTranspiler) exception_handler_comment() string {
+	if t.exception_handlers.len == 0 {
+		return ''
+	}
+	mut handlers := t.exception_handlers.clone()
+	handlers.sort()
+	return '// TODO(py2v): ${handlers.len} except handler(s) need a V Result equivalent:\n' +
+		'//   ' + handlers.join('\n//   ')
 }
 
 fn (mut t VTranspiler) emit_try_else_scaffold(mut buf []string, orelse []Stmt) {
@@ -2666,6 +2787,35 @@ fn (mut t VTranspiler) emit_nonexecuting_stmt_scaffold(mut buf []string, stmts [
 	buf << '}'
 }
 
+// ExceptHandlerMeta names what an except clause catches and binds.
+struct ExceptHandlerMeta {
+mut:
+	header     string
+	type_names []string
+	bound_name string
+}
+
+// emit_try_finally_defer maps Python's `finally` onto V's `defer`, which runs
+// when the enclosing function returns or panics. This is the one part of a
+// Python `try` statement V can express directly.
+fn (mut t VTranspiler) emit_try_finally_defer(mut buf []string, finalbody []Stmt) {
+	if finalbody.len == 0 {
+		return
+	}
+	buf << 'defer {'
+	for stmt in finalbody {
+		result := t.visit_stmt(stmt)
+		for line in result.split('\n') {
+			if line.len > 0 {
+				buf << '\t${line}'
+			}
+		}
+	}
+	buf << '}'
+}
+
+// build_except_handler_meta names the exception types a handler catches and the
+// name it binds them to, for use in a diagnostic comment.
 fn (mut t VTranspiler) build_except_handler_meta(handler ExceptHandler) ExceptHandlerMeta {
 	mut meta := ExceptHandlerMeta{
 		header:     '// except:'
@@ -2798,7 +2948,7 @@ pub fn (mut t VTranspiler) visit_assert(node Assert) string {
 // visit_type_alias emits V code for Python 3.12+ `type X = Y` statements.
 pub fn (mut t VTranspiler) visit_type_alias(node TypeAlias) string {
 	name := t.visit_expr(node.name)
-	value := t.typename_from_annotation(node.value)
+	value := t.typename_from_annotation(*node.value)
 	if value.len > 0 {
 		return 'type ${name} = ${value}'
 	}
@@ -3400,6 +3550,46 @@ pub fn (mut t VTranspiler) visit_nonlocal(node Nonlocal) string {
 }
 
 // visit_expr_stmt emits V code for an expression statement (ExprStmt).
+// as_any_slice widens a rendered array literal to a `[]Any`. The `.map` form is
+// used rather than a `[]Any[...]` prefix because `v fmt`, which runs over every
+// file py2v writes, rewrites that prefix into `[]Any{}` followed by an index
+// expression, which no longer compiles.
+fn as_any_slice(s string) string {
+	t := s.trim_space()
+	if !t.starts_with('[') || !t.ends_with(']') {
+		return s
+	}
+	return '${t}.map(Any(it))'
+}
+
+// expr_is_conversion reports whether a rendered expression is exactly one
+// type conversion of the form `Type(arg)`. V reads those as a value expression
+// rather than a statement call, so a discarded conversion needs `_ = `.
+fn expr_is_conversion(expr string) bool {
+	s := expr.trim_space()
+	if !s.ends_with(')') {
+		return false
+	}
+	open := s.index('(') or { return false }
+	if open <= 0 {
+		return false
+	}
+	if s[open..].count('(') != s[open..].count(')') {
+		return false
+	}
+	return match s[..open] {
+		'Any', 'bool', 'byte', 'char', 'f32', 'f64', 'i8', 'i16', 'i32', 'i64',
+		'int', 'isize', 'rune', 'string', 'u8', 'u16', 'u32', 'u64', 'usize',
+		'voidptr' {
+			true
+		}
+		else {
+			false
+		}
+	}
+}
+
+// visit_expr_stmt emits a Python expression statement.
 pub fn (mut t VTranspiler) visit_expr_stmt(node ExprStmt) string {
 	// Check for ellipsis
 	if node.value is Constant {
@@ -3420,6 +3610,9 @@ pub fn (mut t VTranspiler) visit_expr_stmt(node ExprStmt) string {
 	result := t.visit_expr(node.value)
 	if result.len == 0 {
 		return ''
+	}
+	if expr_is_conversion(result) {
+		return '_ = ${result}'
 	}
 	return result
 }
@@ -3476,6 +3669,13 @@ pub fn (mut t VTranspiler) visit_name(node Name) string {
 	if node.id == '_' {
 		return '_'
 	}
+	// A loop variable renamed to avoid shadowing an enclosing binding. This is
+	// checked first: the scope pre-pass records an identity entry in
+	// `local_idents` for every local it sees, and that entry would otherwise
+	// mask the rename.
+	if renamed := t.renamed_idents[node.id] {
+		return renamed
+	}
 	// A local declared under a rewritten spelling must be referenced by it.
 	if v_ident := t.local_idents[node.id] {
 		return v_ident
@@ -3483,10 +3683,6 @@ pub fn (mut t VTranspiler) visit_name(node Name) string {
 	// Likewise for a module-level binding such as a constant.
 	if v_ident := t.module_idents[node.id] {
 		return v_ident
-	}
-	// A loop variable renamed to avoid a nested-loop collision.
-	if renamed := t.renamed_idents[node.id] {
-		return renamed
 	}
 	// A name bound by `from other_module import name` lives in another V
 	// module, so references must be qualified.
@@ -3834,11 +4030,15 @@ pub fn (mut t VTranspiler) visit_call(node Call) string {
 	mut_indices := t.mut_param_indices[fname] or { []int{} }
 
 	mut vargs := []string{}
+	mut list_arg_slots := []int{}
 	for i, arg in node.args {
-		mut arg_str := t.visit_expr(arg)
+		mut arg_str := t.typed_literal_arg(arg)
 		// Add mut keyword if this parameter index requires it
 		if i in mut_indices {
 			arg_str = 'mut ${arg_str}'
+		}
+		if arg is List && (arg as List).elts.len > 0 {
+			list_arg_slots << i
 		}
 		vargs << arg_str
 	}
@@ -3902,6 +4102,31 @@ pub fn (mut t VTranspiler) visit_call(node Call) string {
 		}
 		obj := t.visit_expr(attr_node.value)
 		method := attr_node.attr
+
+		// An explicit `BuiltinError.__init__(self, ...)` reaches a class V has no
+		// counterpart for. Portage does exactly this to mix a builtin exception
+		// into its own hierarchy, as in `class E(KeyError, Base)`.
+		if method == '__init__' && attr_node.value is Name {
+			recv := (attr_node.value as Name).id
+			if recv in t.known_classes {
+				// V reaches an embedded base through the receiver, so an explicit
+				// `Base.__init__(self, x)` becomes `self.Base.init(x)`: the
+				// receiver is implicit in V and must not be forwarded.
+				mut base_args := vargs
+				if base_args.len > 0 && base_args[0] == 'self' {
+					base_args = base_args[1..]
+				}
+				if base_args.len > 0 {
+					return 'self.${emitted_class_name(recv)}.init(${base_args.join(', ')})'
+				}
+				return 'self.${emitted_class_name(recv)}.init()'
+			}
+			if !t.is_known_module_receiver(recv) {
+				t.note_unmapped_call(fname)
+				t.generated_code_has_any_type = true
+				return 'Any(0)'
+			}
+		}
 
 		// Translate Python super().method(...) to embedded-base calls.
 		if attr_node.value is Call {
@@ -4680,7 +4905,7 @@ pub fn (mut t VTranspiler) visit_call(node Call) string {
 	}
 
 	for kw in node.keywords {
-		vargs << t.visit_expr(kw.value)
+		vargs << t.typed_literal_arg(kw.value)
 	}
 
 	// Try builtin dispatch
@@ -4711,9 +4936,19 @@ pub fn (mut t VTranspiler) visit_call(node Call) string {
 	}
 
 	// Default call
-	mut call_name := fname
+	mut call_name := escape_fn_name(fname)
 	if should_lowercase_call_name(call_name, t.known_classes) {
 		call_name = lower_first_ascii(call_name)
+	}
+	// A bare `[a, b, c]` is a fixed-size array literal, so it cannot be passed
+	// where a `[]Any` is expected. `.map(Any(it))` widens it to a slice. This is
+	// applied only here, after the builtin and method handlers have run, because
+	// those want the literal itself: `len([1, 2])` must not become
+	// `len([1, 2].map(Any(it)))`.
+	for slot in list_arg_slots {
+		if slot < vargs.len {
+			vargs[slot] = as_any_slice(vargs[slot])
+		}
 	}
 	if vargs.len > 0 {
 		return '${call_name}(${vargs.join(', ')})'
@@ -5241,6 +5476,22 @@ pub fn (mut t VTranspiler) visit_tuple(node Tuple) string {
 
 // visit_dict emits V code for dict literals (Dict).
 pub fn (mut t VTranspiler) visit_dict(node Dict) string {
+	if node.keys.len == 0 {
+		// V has no untyped empty map literal; fall back to a string-keyed map,
+		// which is what Python code almost always means for `{}`.
+		t.generated_code_has_any_type = true
+		return 'map[string]Any{}'
+	}
+	return t.dict_literal_body(node)
+}
+
+// dict_literal_body renders the `{ k: v, ... }` part of a map literal, without
+// the element type.
+//
+// V requires a separator between map entries and, like every other V literal,
+// accepts a trailing comma. Without them a multi-entry dict does not parse and
+// the unclosed brace swallows the rest of the function.
+fn (mut t VTranspiler) dict_literal_body(node Dict) string {
 	mut pairs := []string{}
 	for i, key_opt in node.keys {
 		if key := key_opt {
@@ -5249,13 +5500,42 @@ pub fn (mut t VTranspiler) visit_dict(node Dict) string {
 			pairs << '\t${k}: ${v}'
 		}
 	}
-	if pairs.len == 0 {
-		// V has no untyped empty map literal; fall back to a string-keyed map,
-		// which is what Python code almost always means for `{}`.
+	return '{\n${pairs.join(',\n')},\n}'
+}
+
+// typed_literal_arg renders one call argument, giving a collection literal the
+// explicit element type V cannot infer in argument position.
+pub fn (mut t VTranspiler) typed_literal_arg(arg Expr) string {
+	if arg is Dict && (arg as Dict).keys.len > 0 {
 		t.generated_code_has_any_type = true
-		return 'map[string]Any{}'
+		return 'map[${t.dict_key_type(arg)}]Any' + t.visit_expr(arg)
 	}
-	return '{\n${pairs.join('\n')}\n}'
+	return t.visit_expr(arg)
+}
+
+// dict_key_type guesses the V map key type from the first literal key, so that a
+// dict passed straight to a function can carry an explicit element type. V has
+// no way to infer one in argument position.
+fn (mut t VTranspiler) dict_key_type(node Dict) string {
+	for key_opt in node.keys {
+		key := key_opt or { continue }
+		if key is Constant {
+			value := (key as Constant).value
+			if value is bool {
+				return 'bool'
+			}
+			if value is int || value is i64 {
+				return 'int'
+			}
+			if value is f64 {
+				return 'f64'
+			}
+			if value is string {
+				return 'string'
+			}
+		}
+	}
+	return 'string'
 }
 
 // visit_set (same as List in V)
@@ -5299,7 +5579,7 @@ pub fn (mut t VTranspiler) visit_lambda(node Lambda) string {
 		// V requires type annotations on each parameter
 		// Use annotation if available, otherwise default based on body analysis
 		if ann := arg.annotation {
-			type_str := t.typename_from_annotation(ann)
+			type_str := t.typename_from_annotation(*ann)
 			args << '${name} ${type_str}'
 		} else {
 			// Use _ for unused parameters (starts with underscore)
@@ -5827,7 +6107,7 @@ pub fn (mut t VTranspiler) typename_from_annotation(ann ?Expr) string {
 			return name
 		}
 		Subscript {
-			value := t.typename_from_annotation(a.value)
+			value := t.typename_from_annotation(*a.value)
 
 			// Union[A, B, ...] → V named sum type comment; inline use emits first type
 			// with a note. When used as a parameter annotation we emit a comment.
@@ -5839,7 +6119,7 @@ pub fn (mut t VTranspiler) typename_from_annotation(ann ?Expr) string {
 						members << t.typename_from_annotation(e)
 					}
 				} else {
-					members << t.typename_from_annotation(a.slice)
+					members << t.typename_from_annotation(*a.slice)
 				}
 				// Check for Optional pattern: Union[X, None]
 				if members.len == 2 && members[1] == 'none' {
@@ -5858,7 +6138,7 @@ pub fn (mut t VTranspiler) typename_from_annotation(ann ?Expr) string {
 
 			// Optional[X] → ?X
 			if value == 'Optional' {
-				inner := t.typename_from_annotation(a.slice)
+				inner := t.typename_from_annotation(*a.slice)
 				return '?${map_type(inner)}'
 			}
 
@@ -5885,7 +6165,7 @@ pub fn (mut t VTranspiler) typename_from_annotation(ann ?Expr) string {
 				return 'fn (Any) Any'
 			}
 
-			index := t.typename_from_annotation(a.slice)
+			index := t.typename_from_annotation(*a.slice)
 
 			mapped := v_container_type_map[value] or { value }
 			// `value` has already been mapped through the container table, so the
@@ -6001,8 +6281,8 @@ pub fn (mut t VTranspiler) typename_from_annotation(ann ?Expr) string {
 		BinOp {
 			// PEP 604: X | None -> ?X
 			if a.op is BitOr {
-				left := t.typename_from_annotation(a.left)
-				right := t.typename_from_annotation(a.right)
+				left := t.typename_from_annotation(*a.left)
+				right := t.typename_from_annotation(*a.right)
 				// X | None -> ?X
 				if a.right is Constant {
 					r := a.right as Constant

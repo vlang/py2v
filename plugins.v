@@ -386,7 +386,7 @@ fn build_typed_lambda_closure(mut t VTranspiler, lam Lambda, iter Expr) string {
 		mut ptype := 'Any'
 		if ann := a.annotation {
 			// Unwrap optional annotation into `ann` and use it
-			ptype = t.typename_from_annotation(ann)
+			ptype = t.typename_from_annotation(*ann)
 		} else if elem_type.len > 0 {
 			ptype = elem_type
 		} else {
@@ -408,7 +408,7 @@ fn build_typed_lambda_closure(mut t VTranspiler, lam Lambda, iter Expr) string {
 		name := escape_identifier(a.arg)
 		if ann := a.annotation {
 			// Unwrap optional annotation into `ann` and use it
-			t.var_types[name] = t.typename_from_annotation(ann)
+			t.var_types[name] = t.typename_from_annotation(*ann)
 		} else if elem_type.len > 0 {
 			t.var_types[name] = elem_type
 		}

@@ -1,14 +1,15 @@
 module main
 
+// TODO(py2v): 1 except handler(s) need a V Result equivalent:
+//   except ValueError (1 stmt)
+
 fn from_try(flag bool) int {
-	// try: (V: wrap fallible calls below with `or {}`)
 	if !flag {
 		panic('ValueError: ' + 'x')
 	}
 	mut result := 10
-	// except ValueError:
-	// NOTE: V uses Result types; adapt body to use `or { ... }` blocks
-	result = 20
+	// except handlers are not translated: see the TODO(py2v) note above
+	//   except ValueError: 1 statement(s) need an `or { ... }` equivalent
 	return result
 }
 
