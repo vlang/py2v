@@ -95,9 +95,14 @@ fn control_char_escape(c u8) string {
 }
 
 // escape_string escapes characters in `s` for inclusion in a V string literal.
+//
+// `$` is escaped when it is immediately followed by `{`. V interpolates `${...}`
+// inside single-quoted strings as well as double-quoted ones, and a Python string
+// is never interpolated, so the text has to be neutralised to survive the
+// translation intact.
 pub fn escape_string(s string) string {
 	mut result := strings.new_builder(s.len)
-	for c in s {
+	for i, c in s {
 		match c {
 			`\\` { result.write_string('\\\\') }
 			`"` { result.write_string('\\"') }
@@ -105,6 +110,13 @@ pub fn escape_string(s string) string {
 			`\n` { result.write_string('\\n') }
 			`\r` { result.write_string('\\r') }
 			`\t` { result.write_string('\\t') }
+			`$` {
+				if i + 1 < s.len && s[i + 1] == `{` {
+					result.write_string('\\$')
+				} else {
+					result.write_u8(c)
+				}
+			}
 			else {
 				esc := control_char_escape(c)
 				if esc == '' {

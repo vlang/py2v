@@ -96,7 +96,7 @@ fn main() {
 			exit(1)
 		}
 		if do_check {
-			modules := check_module_names(out_root)
+			modules := check_module_names(out_root)!
 			if modules.len == 0 {
 				eprintln('check: no generated V modules under ${out_root}')
 				exit(1)
@@ -463,6 +463,7 @@ fn translate_package(python_cmd string, ast_dump string, package_dir string, out
 		t.emit_pub = true
 		t.registry = registry
 		t.current_dotted = key
+		t.current_stem = v_file_stem(info.v_relpath)
 		t.current_is_package = py_stem_from_path(os.base(key)) == ''
 		t.module_name = info.v_module
 		code := t.visit_module(parsed[key]!)

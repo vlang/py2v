@@ -318,6 +318,34 @@ pub fn escape_identifier(name string) string {
 // fields keep escape_leading_underscore and stay consistent with their uses.
 const v_reserved_idents = ['v']!
 
+// v_reserved_fn_names are Python names that V reserves for its own C-backed
+// intrinsics. A user `fn` declared under one of these names cannot be called at
+// all: V reports `expression in `x` must be a function call` at the call site
+// and never resolves it.
+//
+// `print` is deliberately absent. V reserves it as well, but py2v maps Python's
+// `print()` to `println()`, and builtin dispatch matches on the unescaped name,
+// so escaping it here would stop every `print` statement being recognised.
+const v_reserved_fn_names = ['spawn', 'exit', 'malloc', 'free']!
+
+// escape_fn_name renames a function to a spelling V will accept. A qualified
+// name keeps its prefix, so `doebuild.spawn` becomes `doebuild.spawn_` and
+// still reaches the module that declares it.
+pub fn escape_fn_name(name string) string {
+	i := name.last_index('.') or {
+		return if name in v_reserved_fn_names {
+			'${name}_'
+		} else {
+			name
+		}
+	}
+	tail := name[i + 1..]
+	if tail in v_reserved_fn_names {
+		return name[..i + 1] + tail + '_'
+	}
+	return name
+}
+
 // escape_local_ident rewrites a Python name for use as a V local, parameter or
 // reference. `escape_identifier` cannot be used for references because it also
 // renames the Python builtins `int`, `bool` and `str`, which builtin dispatch
@@ -580,7 +608,7 @@ pub const stat_mode_masks = {
 	'S_IFCHR':  '0o020000'
 	'S_IFIFO':  '0o010000'
 	'S_IMODE':  '0o7777'
-}!
+}
 
 // stat_mode_predicates are the `S_ISxxx` names, mapped to the mask they test.
 pub const stat_mode_predicates = {
@@ -591,7 +619,7 @@ pub const stat_mode_predicates = {
 	'S_ISDIR':  'S_IFDIR'
 	'S_ISCHR':  'S_IFCHR'
 	'S_ISFIFO': 'S_IFIFO'
-}!
+}
 
 // stat_bit_predicates are the `S_ISxxx` names that test a single permission or
 // set-id bit, which need no file-type masking.
@@ -647,7 +675,7 @@ pub const errno_values = {
 	'EDQUOT':       '122'
 	'ENOTSUP':      '95'
 	'EOPNOTSUPP':   '95'
-}!
+}
 
 // signal_values maps Python signal names to V's `os.Signal` enum members. V uses
 // POSIX numbering, so the mapping is a rename rather than a renumbering.
@@ -682,7 +710,7 @@ pub const signal_values = {
 	'SIGPOLL':   'os.Signal.poll'
 	'SIGPWR':    'os.Signal.pwr'
 	'SIGSYS':    'os.Signal.sys'
-}!
+}
 
 // signal_unrepresentable are Python signal sentinels with no V counterpart:
 // V installs handlers only, and offers no default/ignore enum value.
@@ -701,4 +729,4 @@ pub const fcntl_values = {
 	'F_GETFL':    '3'
 	'F_SETFL':    '4'
 	'FD_CLOEXEC': '1'
-}!
+}

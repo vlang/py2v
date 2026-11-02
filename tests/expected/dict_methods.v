@@ -1,5 +1,7 @@
 module main
 
+type Any = bool | int | i64 | f64 | string | []u8
+
 fn main_func() {
 	d := {
 		'a': 1

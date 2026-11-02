@@ -1,24 +1,22 @@
 module main
 
+// TODO(py2v): 2 except handler(s) need a V Result equivalent:
+//   except (1 stmt)
+//   except Exception as e (1 stmt)
+
 fn show() {
 	defer {
 		println('Finally')
 	}
-	// try: (V: wrap fallible calls below with `or {}`)
 	panic('Exception: ' + 'foo')
-	// except Exception as e:
-	// NOTE: V uses Result types; adapt body to use `or { ... }` blocks
-	println('caught')
-	// try: (V: wrap fallible calls below with `or {}`)
+	// except handlers are not translated: see the TODO(py2v) note above
+	//   except Exception as e: 1 statement(s) need an `or { ... }` equivalent
 	panic('Exception: ' + 'foo')
-	// except:
-	// NOTE: V uses Result types; adapt body to use `or { ... }` blocks
-	println('Got it')
-	// try: (V: wrap fallible calls below with `or {}`)
+	// except handlers are not translated: see the TODO(py2v) note above
+	//   except: 1 statement(s) need an `or { ... }` equivalent
 	panic('Exception: ' + 'foo')
-	// except Exception as e:
-	// NOTE: V uses Result types; adapt body to use `or { ... }` blocks
-	assert e.contains('foo')
+	// except handlers are not translated: see the TODO(py2v) note above
+	//   except Exception as e: 1 statement(s) need an `or { ... }` equivalent
 }
 
 fn main() {

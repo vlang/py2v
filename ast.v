@@ -214,9 +214,9 @@ pub mut:
 
 pub struct BinOp {
 pub mut:
-	left         Expr
+	left         &Expr
 	op           Operator
-	right        Expr
+	right        &Expr
 	loc          Location
 	v_annotation ?string
 }
@@ -224,7 +224,7 @@ pub mut:
 pub struct UnaryOp {
 pub mut:
 	op           UnaryOperator
-	operand      Expr
+	operand      &Expr
 	loc          Location
 	v_annotation ?string
 }
@@ -239,7 +239,7 @@ pub mut:
 
 pub struct Compare {
 pub mut:
-	left         Expr
+	left         &Expr
 	ops          []CmpOp
 	comparators  []Expr
 	loc          Location
@@ -248,7 +248,7 @@ pub mut:
 
 pub struct Call {
 pub mut:
-	func         Expr
+	func         &Expr
 	args         []Expr
 	keywords     []Keyword
 	loc          Location
@@ -264,7 +264,7 @@ pub mut:
 
 pub struct Attribute {
 pub mut:
-	value        Expr
+	value        &Expr
 	attr         string
 	ctx          ExprContext
 	loc          Location
@@ -273,8 +273,8 @@ pub mut:
 
 pub struct Subscript {
 pub mut:
-	value         Expr
-	slice         Expr
+	value         &Expr
+	slice         &Expr
 	ctx           ExprContext
 	loc           Location
 	v_annotation  ?string
@@ -283,9 +283,9 @@ pub mut:
 
 pub struct Slice {
 pub mut:
-	lower ?Expr
-	upper ?Expr
-	step  ?Expr
+	lower ?&Expr
+	upper ?&Expr
+	step  ?&Expr
 	loc   Location
 }
 
@@ -322,16 +322,16 @@ pub mut:
 
 pub struct IfExp {
 pub mut:
-	test   Expr
-	body   Expr
-	orelse Expr
+	test   &Expr
+	body   &Expr
+	orelse &Expr
 	loc    Location
 }
 
 pub struct Lambda {
 pub mut:
 	args         Arguments
-	body         Expr
+	body         &Expr
 	loc          Location
 	v_annotation ?string
 	inlinable    bool
@@ -340,64 +340,64 @@ pub mut:
 
 pub struct ListComp {
 pub mut:
-	elt        Expr
+	elt        &Expr
 	generators []Comprehension
 	loc        Location
 }
 
 pub struct SetComp {
 pub mut:
-	elt        Expr
+	elt        &Expr
 	generators []Comprehension
 	loc        Location
 }
 
 pub struct DictComp {
 pub mut:
-	key        Expr
-	value      Expr
+	key        &Expr
+	value      &Expr
 	generators []Comprehension
 	loc        Location
 }
 
 pub struct GeneratorExp {
 pub mut:
-	elt        Expr
+	elt        &Expr
 	generators []Comprehension
 	loc        Location
 }
 
 pub struct Comprehension {
 pub mut:
-	target   Expr
-	iter     Expr
+	target   &Expr
+	iter     &Expr
 	ifs      []Expr
 	is_async bool
 }
 
 pub struct Await {
 pub mut:
-	value Expr
+	value &Expr
 	loc   Location
 }
 
 pub struct Yield {
 pub mut:
-	value ?Expr
+	value ?&Expr
 	loc   Location
 }
 
 pub struct YieldFrom {
 pub mut:
-	value Expr
+	value &Expr
 	loc   Location
 }
 
 pub struct FormattedValue {
 pub mut:
-	value       Expr
+	value       &Expr
 	conversion  int
-	format_spec ?Expr
+	format_spec ?&Expr
 	loc         Location
 }
 
@@ -409,14 +409,14 @@ pub mut:
 
 pub struct NamedExpr {
 pub mut:
-	target Expr
-	value  Expr
+	target &Expr
+	value  &Expr
 	loc    Location
 }
 
 pub struct Starred {
 pub mut:
-	value Expr
+	value &Expr
 	ctx   ExprContext
 	loc   Location
 }
@@ -428,7 +428,7 @@ pub mut:
 	args            Arguments
 	body            []Stmt
 	decorator_list  []Expr
-	returns         ?Expr
+	returns         ?&Expr
 	type_comment    ?string
 	loc             Location
 	is_generator    bool
@@ -474,7 +474,7 @@ pub mut:
 pub struct Arg {
 pub mut:
 	arg          string
-	annotation   ?Expr
+	annotation   ?&Expr
 	type_comment ?string
 	// v_annotation is an inferred type for a parameter the frontend could not
 	// read from an annotation, such as one that only feeds an annotated field.
@@ -499,7 +499,7 @@ pub mut:
 
 pub struct Return {
 pub mut:
-	value ?Expr
+	value ?&Expr
 	loc   Location
 }
 
@@ -512,7 +512,7 @@ pub mut:
 pub struct Assign {
 pub mut:
 	targets           []Expr
-	value             Expr
+	value             &Expr
 	type_comment      ?string
 	loc               Location
 	redefined_targets []string
@@ -523,7 +523,7 @@ pub mut:
 
 pub struct AugAssign {
 pub mut:
-	target Expr
+	target &Expr
 	op     Operator
 	value  Expr
 	loc    Location
@@ -531,17 +531,17 @@ pub mut:
 
 pub struct AnnAssign {
 pub mut:
-	target     Expr
-	annotation Expr
-	value      ?Expr
+	target     &Expr
+	annotation &Expr
+	value      ?&Expr
 	simple     int
 	loc        Location
 }
 
 pub struct For {
 pub mut:
-	target       Expr
-	iter         Expr
+	target       &Expr
+	iter         &Expr
 	body         []Stmt
 	orelse       []Stmt
 	type_comment ?string
@@ -551,8 +551,8 @@ pub mut:
 
 pub struct AsyncFor {
 pub mut:
-	target       Expr
-	iter         Expr
+	target       &Expr
+	iter         &Expr
 	body         []Stmt
 	orelse       []Stmt
 	type_comment ?string
@@ -562,7 +562,7 @@ pub mut:
 
 pub struct While {
 pub mut:
-	test   Expr
+	test   &Expr
 	body   []Stmt
 	orelse []Stmt
 	loc    Location
@@ -571,7 +571,7 @@ pub mut:
 
 pub struct If {
 pub mut:
-	test   Expr
+	test   &Expr
 	body   []Stmt
 	orelse []Stmt
 	loc    Location
@@ -588,8 +588,8 @@ pub mut:
 
 pub struct WithItem {
 pub mut:
-	context_expr  Expr
-	optional_vars ?Expr
+	context_expr  &Expr
+	optional_vars ?&Expr
 }
 
 pub struct AsyncWith {
@@ -602,8 +602,8 @@ pub mut:
 
 pub struct Raise {
 pub mut:
-	exc   ?Expr
-	cause ?Expr
+	exc   ?&Expr
+	cause ?&Expr
 	loc   Location
 }
 
@@ -619,7 +619,7 @@ pub mut:
 
 pub struct ExceptHandler {
 pub mut:
-	typ  ?Expr
+	typ  ?&Expr
 	name ?string
 	body []Stmt
 	loc  Location
@@ -627,8 +627,8 @@ pub mut:
 
 pub struct Assert {
 pub mut:
-	test Expr
-	msg  ?Expr
+	test &Expr
+	msg  ?&Expr
 	loc  Location
 }
 
@@ -667,7 +667,7 @@ pub mut:
 
 pub struct ExprStmt {
 pub mut:
-	value Expr
+	value &Expr
 	loc   Location
 }
 
@@ -689,15 +689,15 @@ pub mut:
 // TypeAlias represents Python 3.12+ `type X = Y` statements.
 pub struct TypeAlias {
 pub mut:
-	name  Expr
-	value Expr
+	name  &Expr
+	value &Expr
 	loc   Location
 }
 
 // Match represents a Python 3.10+ structural pattern matching statement.
 pub struct Match {
 pub mut:
-	subject Expr
+	subject &Expr
 	cases   []MatchCase
 	loc     Location
 }
@@ -706,7 +706,7 @@ pub mut:
 pub struct MatchAs {
 pub mut:
 	name    ?string
-	pattern ?MatchPattern
+	pattern ?&MatchPattern
 	loc     Location
 }
 
@@ -714,7 +714,7 @@ pub mut:
 pub struct MatchCase {
 pub mut:
 	pattern MatchPattern
-	guard   ?Expr
+	guard   ?&Expr
 	body    []Stmt
 	loc     Location
 }
@@ -722,7 +722,7 @@ pub mut:
 // MatchClass represents a class pattern like `case Point(x=0, y=0):`.
 pub struct MatchClass {
 pub mut:
-	cls          Expr
+	cls          &Expr
 	patterns     []MatchPattern
 	kwd_attrs    []string
 	kwd_patterns []MatchPattern

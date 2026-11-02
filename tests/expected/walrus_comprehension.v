@@ -45,6 +45,6 @@ fn nested_walrus(matrix list) list {
 
 fn main() {
 	println(squares_above(8))
-	println(evens_doubled([1, 2, 3, 4, 5, 6]))
-	println(nested_walrus([[1, 2, 3], [4, 5, 6]]))
+	println(evens_doubled([1, 2, 3, 4, 5, 6].map(Any(it))))
+	println(nested_walrus([[1, 2, 3], [4, 5, 6]].map(Any(it))))
 }

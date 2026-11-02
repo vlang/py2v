@@ -27,6 +27,6 @@ fn test_parser(input Any, expected Any) {
 }
 
 fn main() {
-	Any(0)
+	_ = Any(0)
 	println('OK')
 }

@@ -1,0 +1,2 @@
+py_pkg_lib_main	0
+py_pkg_lib_main_sub	0

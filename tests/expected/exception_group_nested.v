@@ -1,22 +1,17 @@
 module main
 
+// TODO(py2v): 2 except handler(s) need a V Result equivalent:
+//   except TypeError as eg (1 stmt)
+//   except ValueError as eg (1 stmt)
+
 fn handle(flag bool) {
-	// WARNING: except* (ExceptionGroup) is not supported in V.
-	// Translate each except* handler manually using goroutines or error unions.
-	// try: (V: wrap fallible calls below with `or {}`)
-	// except* synthesized dispatch for literal ExceptionGroup
 	if flag {
 		panic('ExceptionGroup: ' + 'mixed')
 	}
 	println('no raise')
-	// except ValueError as eg:
-	// NOTE: V uses Result types; adapt body to use `or { ... }` blocks
-	// NOTE: matched synthetic ExceptionGroup member type(s): ValueError
-	println('caught value')
-	// except TypeError as eg:
-	// NOTE: V uses Result types; adapt body to use `or { ... }` blocks
-	// NOTE: matched synthetic ExceptionGroup member type(s): TypeError
-	println('caught type')
+	// except handlers are not translated: see the TODO(py2v) note above
+	//   except ValueError as eg: 1 statement(s) need an `or { ... }` equivalent
+	//   except TypeError as eg: 1 statement(s) need an `or { ... }` equivalent
 }
 
 fn main() {
