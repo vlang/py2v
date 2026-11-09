@@ -95,7 +95,28 @@ fn check_v_module(work_dir string, module_name string, slot int) CheckResult {
 	defer {
 		os.rm(entry_path) or {}
 	}
-	for line in run_v_check(work_dir, entry_rel).split('\n') {
+	record_check_output(mut result, run_v_check(work_dir, entry_rel))
+	return result
+}
+
+// check_v_file compiles one standalone generated file, the output of a
+// single-file transpilation. It names the file itself: an importing entry point
+// cannot reach a `main` module (no -o) or a module whose directory name is not
+// its module name (`-o foo-bar/out.v` holds `module foo_bar`), and checking the
+// whole directory would also compile any other .v file that sits beside the
+// output. The file has no generated siblings, so nothing is missed.
+fn check_v_file(path string) CheckResult {
+	mut result := CheckResult{
+		module_name: os.base(path)
+	}
+	record_check_output(mut result, run_v_check(os.dir(path), os.base(path)))
+	return result
+}
+
+// record_check_output adds the diagnostics in one compiler run's output to
+// `result`.
+fn record_check_output(mut result CheckResult, output string) {
+	for line in output.split('\n') {
 		diag := check_diagnostic(line)
 		if diag == '' {
 			continue
@@ -106,7 +127,6 @@ fn check_v_module(work_dir string, module_name string, slot int) CheckResult {
 			result.first_file = check_error_source(line).all_before(':')
 		}
 	}
-	return result
 }
 
 // check_v_modules compiles every generated module under work_dir, running

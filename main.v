@@ -178,8 +178,7 @@ fn main() {
 				os.rmdir_all(scratch) or {}
 			}
 		}
-		scratch_root := if scratch != '' { scratch } else { os.dir(os.abs_path(target)) }
-		results := check_v_modules(scratch_root, [os.base(target)], jobs)
+		results := [check_v_file(os.abs_path(target))]
 		println(check_report(results))
 		eprintln(check_summary(results))
 		if results.len > 0 && results[0].error_count > 0 {
