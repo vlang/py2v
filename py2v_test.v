@@ -263,3 +263,87 @@ fn test_exception_union_alias_generation() {
 	out := res.output.replace('\r\n', '\n')
 	assert out.contains('type WebDriverExceptions = BarException | WebDriverException | FooException'), 'expected union alias in __all__ order'
 }
+
+fn test_check_diagnostic_reads_located_and_unlocated_errors() {
+	d := check_diagnostic('tmpmod/tmpmod.v:3:1: builder error: cannot import module "nosuch" (not found)') or {
+		panic('not read')
+	}
+	assert d.file == 'tmpmod/tmpmod.v'
+	assert d.message == 'builder error: cannot import module "nosuch" (not found)'
+	e := check_diagnostic('out.v:4:9: error: undefined ident: `x`') or { panic('not read') }
+	assert e.file == 'out.v' && e.message == 'undefined ident: `x`'
+	u := check_diagnostic('error: cannot read file') or { panic('not read') }
+	assert u.file == '' && u.message == 'error: cannot read file'
+	b := check_diagnostic('builder error: something') or { panic('not read') }
+	assert b.file == '' && b.message == 'builder error: something'
+}
+
+fn test_check_diagnostic_keeps_a_windows_drive_and_drops_crlf() {
+	d := check_diagnostic('C:/work/out.v:3:1: builder error: cannot import module "x" (not found)\r') or {
+		panic('not read')
+	}
+	assert d.file == 'C:/work/out.v'
+	assert d.message == 'builder error: cannot import module "x" (not found)'
+	w := check_diagnostic('C:\\work\\out.v:12:5: error: undefined ident: `y`\r') or {
+		panic('not read')
+	}
+	assert w.file == 'C:\\work\\out.v' && w.message == 'undefined ident: `y`'
+}
+
+fn test_check_diagnostic_ignores_excerpts_warnings_and_notices() {
+	for line in ["    8 | println('example: error: not a diagnostic')", "   12 | x := 'a:1:2: error: z'",
+		'      |         ~~~~~', 'out.v:1:1: warning: unused variable',
+		'out.v:1:1: notice: unused function', 'Details: error: in a detail line',
+		'x:y:1: error: a location without a line number', ''] {
+		assert check_diagnostic(line) == none, line
+	}
+}
+
+fn test_record_check_run_counts_diagnostics_and_fails_closed() {
+	mut two := CheckResult{}
+	record_check_run(mut two, CheckRun{
+		exit_code: 1
+		output:    'out.v:1:1: error: first\n    1 | a\n      | ^\nDetails: more\nout.v:2:1: error: second\n... and 3 more errors\n'
+	})
+	assert two.error_count == 2 && two.first_error == 'first' && two.first_file == 'out.v'
+	mut silent := CheckResult{}
+	record_check_run(mut silent, CheckRun{
+		exit_code: 1
+		output:    'Unknown option: -shared\n'
+	})
+	assert silent.error_count == 1
+	assert silent.first_error == 'v -check exited with status 1: Unknown option: -shared'
+	mut empty := CheckResult{}
+	record_check_run(mut empty, CheckRun{
+		exit_code: 2
+	})
+	assert empty.error_count == 1
+	assert empty.first_error == 'v -check exited with status 2 (no diagnostic output)'
+	mut clean := CheckResult{}
+	record_check_run(mut clean, CheckRun{
+		output: 'out.v:1:1: warning: unused variable\n'
+	})
+	assert clean.error_count == 0 && clean.first_error == ''
+}
+
+// Package mode: a generated module importing a module that does not exist is
+// reported by V's loader as a located builder error, which must count.
+fn test_check_v_module_counts_a_missing_import() {
+	work_dir := os.join_path(os.temp_dir(), 'py2v_check_import_${os.getpid()}')
+	os.mkdir_all(os.join_path(work_dir, 'tmpmod')) or {
+		assert false, 'failed to create temp dir: ${err}'
+		return
+	}
+	defer {
+		os.rmdir_all(work_dir) or {}
+	}
+	os.write_file(os.join_path(work_dir, 'tmpmod', 'tmpmod.v'),
+		'module tmpmod\n\nimport nosuch_py2v_module\n\npub fn f() {}\n') or {
+		assert false, 'failed to write module: ${err}'
+		return
+	}
+	result := check_v_module(work_dir, 'tmpmod', 0)
+	assert result.error_count == 1, 'a missing import must be counted, got ${result}'
+	assert result.first_error.contains('cannot import module')
+	assert result.first_file == 'tmpmod/tmpmod.v'
+}

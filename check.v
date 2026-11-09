@@ -32,41 +32,90 @@ fn v_command() string {
 	return 'v'
 }
 
-// check_diagnostic returns the compiler diagnostic carried by `line`, or an
-// empty string when `line` is not one.
+// CheckDiagnostic is one error diagnostic printed by `v -check`.
+struct CheckDiagnostic {
+	file    string // empty for a diagnostic without a location
+	message string
+}
+
+// check_diagnostic returns the error diagnostic that `line` starts, or none.
 //
-// `v -check` interleaves diagnostics with numbered source excerpts, so a
-// diagnostic is identified by its own `error:` marker rather than by the mere
-// presence of the word error. Three shapes occur, and all three have to be
-// recognised: a located `file:line:col: error: ...`, a whole-run `error: ...`
-// with no location, and a `builder error: ...` from the module loader.
-fn check_diagnostic(line string) string {
-	trimmed := line.trim_space()
-	if trimmed.starts_with('error: ') || trimmed.starts_with('builder error:') {
-		return trimmed
+// A located diagnostic is `<file>:<line>:<col>: <label>: <message>` with a
+// numeric line and column; the location is read from the right, so a Windows
+// path keeps its drive (`C:/x/out.v`). An unlocated one starts with its label.
+// The labels that fail a check are `error` and `builder error` (the module
+// loader's, for example a missing import); warnings and notices do not. The
+// numbered source excerpts V prints below a diagnostic can contain the same
+// text, `8 | x := 'a:1:2: error: z'`, and are never diagnostics themselves.
+fn check_diagnostic(line string) ?CheckDiagnostic {
+	trimmed := line.trim_right('\r').trim_space()
+	if is_source_excerpt(trimmed) {
+		return none
 	}
-	_, tail := trimmed.split_once(': error: ') or { return '' }
-	return tail.trim_space()
+	for label in ['builder error', 'error'] {
+		if trimmed.starts_with('${label}: ') {
+			return CheckDiagnostic{
+				message: trimmed
+			}
+		}
+		marker := ': ${label}: '
+		at := trimmed.index(marker) or { continue }
+		location := trimmed[..at]
+		col := location.all_after_last(':')
+		rest := location.all_before_last(':')
+		row := rest.all_after_last(':')
+		file := rest.all_before_last(':')
+		if !location.contains(':') || !rest.contains(':') || file == '' || !is_number(row)
+			|| !is_number(col) {
+			continue
+		}
+		body := trimmed[at + marker.len..].trim_space()
+		return CheckDiagnostic{
+			file:    file
+			message: if label == 'error' { body } else { '${label}: ${body}' }
+		}
+	}
+	return none
 }
 
-// check_error_source returns the `path:line:col:` prefix of a diagnostic, or an
-// empty string for a `builder error:` that names no source location.
-fn check_error_source(line string) string {
-	trimmed := line.trim_space()
-	head, _ := trimmed.split_once(': error: ') or { return '' }
-	return head
+fn is_number(s string) bool {
+	return s != '' && s.bytes().all(it.is_digit())
 }
 
-// run_v_check runs `v -check` over one entry file and returns the raw compiler
-// output.
-fn run_v_check(work_dir string, entry_rel string) string {
+// is_source_excerpt reports a line of the numbered source context V prints
+// below a diagnostic: `12 | code`, or `| ~~~` under it.
+fn is_source_excerpt(line string) bool {
+	if line.starts_with('|') {
+		return true
+	}
+	number, after := line.split_once(' |') or { return false }
+	return is_number(number) && (after == '' || after.starts_with(' '))
+}
+
+// CheckRun is one `v -check` run: its exit status and its merged output.
+struct CheckRun {
+	exit_code int
+	output    string
+}
+
+// run_v_check runs `v -check` over one entry file and returns the exit status
+// and the raw compiler output. The output is read to its end before waiting:
+// a compiler that writes more than a pipe holds would otherwise block on the
+// write while py2v blocks on the wait.
+fn run_v_check(work_dir string, entry_rel string) CheckRun {
 	mut proc := os.new_process(v_command())
-	proc.set_args(['-shared', '-check', entry_rel])
+	proc.set_args(['-shared', '-check', '-nocolor', entry_rel])
 	proc.set_work_folder(work_dir)
 	proc.set_redirect_stdio_merged()
 	proc.run()
+	output := proc.stdout_slurp()
 	proc.wait()
-	return proc.stdout_slurp()
+	code := proc.code
+	proc.close()
+	return CheckRun{
+		exit_code: code
+		output:    output
+	}
 }
 
 // check_v_module compiles one generated module and summarises the result.
@@ -95,7 +144,7 @@ fn check_v_module(work_dir string, module_name string, slot int) CheckResult {
 	defer {
 		os.rm(entry_path) or {}
 	}
-	record_check_output(mut result, run_v_check(work_dir, entry_rel))
+	record_check_run(mut result, run_v_check(work_dir, entry_rel))
 	return result
 }
 
@@ -109,22 +158,31 @@ fn check_v_file(path string) CheckResult {
 	mut result := CheckResult{
 		module_name: os.base(path)
 	}
-	record_check_output(mut result, run_v_check(os.dir(path), os.base(path)))
+	record_check_run(mut result, run_v_check(os.dir(path), os.base(path)))
 	return result
 }
 
-// record_check_output adds the diagnostics in one compiler run's output to
-// `result`.
-fn record_check_output(mut result CheckResult, output string) {
-	for line in output.split('\n') {
-		diag := check_diagnostic(line)
-		if diag == '' {
-			continue
-		}
+// record_check_run adds one compiler run to `result`: one error per error
+// diagnostic it printed (V prints at most 20, then `... and N more errors`, so
+// the count is of printed errors). A run that exits non-zero without printing
+// any recognised error still counts as one, so a message shape this parser
+// does not know can never make a failed module look clean.
+fn record_check_run(mut result CheckResult, run CheckRun) {
+	for line in run.output.split('\n') {
+		diag := check_diagnostic(line) or { continue }
 		result.error_count++
 		if result.first_error == '' {
-			result.first_error = diag
-			result.first_file = check_error_source(line).all_before(':')
+			result.first_error = diag.message
+			result.first_file = diag.file
+		}
+	}
+	if run.exit_code != 0 && result.error_count == 0 {
+		result.error_count = 1
+		first := run.output.split('\n').map(it.trim_right('\r').trim_space()).filter(it != '')
+		result.first_error = if first.len > 0 {
+			'v -check exited with status ${run.exit_code}: ${first[0].limit(200)}'
+		} else {
+			'v -check exited with status ${run.exit_code} (no diagnostic output)'
 		}
 	}
 }

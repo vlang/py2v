@@ -210,6 +210,39 @@ for c in single_checks {
 }
 os.rmdir_all(check_root) or { panic(err) }
 
+// A compiler that exits non-zero without printing a V diagnostic must still fail
+// the check: here py2v itself stands in for V and refuses `-shared`. And a
+// compiler that prints more than a pipe holds must not hang it: `loud` prints
+// about 300 KB and exits 1.
+compiler_root := os.join_path(os.temp_dir(), 'py2v_check_compiler_${os.getpid()}')
+os.mkdir_all(compiler_root) or { panic(err) }
+loud_src := os.join_path(compiler_root, 'loud.v')
+os.write_file(loud_src, "fn main() {\n\tline := 'x'.repeat(200)\n\tfor _ in 0 .. 1500 {\n\t\tprintln(line)\n\t}\n\texit(1)\n}\n") or {
+	panic(err)
+}
+loud_bin := os.join_path(compiler_root, $if windows { 'loud.exe' } $else { 'loud' })
+loud_build := os.exec([@VEXE, '-o', loud_bin, loud_src])
+if loud_build.exit_code != 0 {
+	panic('could not build the loud compiler: ${loud_build.output}')
+}
+old_v := os.getenv('V')
+for c in [['fails closed without a diagnostic', py2v], ['drains a large output', loud_bin]] {
+	os.setenv('V', c[1], true)
+	res := os.exec([py2v, hello_py, '--check'])
+	name := 'single-file check: ${c[0]}'
+	if res.exit_code == 1 && res.output.contains('v -check exited with status') {
+		report('PASS', name, '')
+		passed++
+	} else {
+		report('FAIL', name, ' (exit ${res.exit_code})')
+		println(excerpt_n(res.output, 20))
+		failed++
+		failures << fail_line('FAIL', name, '')
+	}
+}
+os.setenv('V', old_v, true)
+os.rmdir_all(compiler_root) or { panic(err) }
+
 println('')
 println('----------------------------------------')
 println('Summary: ' + passed.str() + ' passed, ' + failed.str() +
