@@ -347,3 +347,26 @@ fn test_check_v_module_counts_a_missing_import() {
 	assert result.first_error.contains('cannot import module')
 	assert result.first_file == 'tmpmod/tmpmod.v'
 }
+
+fn test_code_prec_reads_the_top_level_operator_of_emitted_code() {
+	assert code_prec('a + b * c') == 4
+	assert code_prec('a * b') == 5
+	assert code_prec('a && b || c') == 1
+	assert code_prec('x < y') == 3
+	assert code_prec('x is Dog') == 3
+	assert cmp_operand('x is Dog') == '(x is Dog)'
+	assert code_prec('(a + b)') == 10
+	assert code_prec('math.powi(a - 1, 2)') == 10
+	assert code_prec('xs[i - 1].len') == 10
+	assert code_prec("'a + b'") == 10
+	assert code_prec("'\${a + b} - c' + s") == 4
+	assert code_prec('-a') == 9
+	assert code_prec('+a') == 9
+	assert code_prec('!a.contains(b)') == 9
+	assert code_prec('if c { a } else { b }') == 0
+	assert code_prec('f() or { 0 }') == 0
+	assert as_receiver('s + t') == '(s + t)'
+	assert as_receiver('-x') == '(-x)'
+	assert as_receiver('+x') == '(+x)'
+	assert as_receiver('s.trim_space()') == 's.trim_space()'
+}

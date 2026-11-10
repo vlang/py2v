@@ -4,7 +4,7 @@ module main
 // Provide one in python_to_v_import (types.v) or port the module.
 
 fn demorgan(a bool, b bool) bool {
-	a && b == !(!a || !b)
+	(a && b) == !(!a || !b)
 }
 
 fn main() {

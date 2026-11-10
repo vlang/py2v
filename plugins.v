@@ -11,7 +11,7 @@ fn visit_range(args []string) (string, bool) {
 		return '[]int{len: ${args[0]}, init: index}', true
 	}
 	if args.len == 2 {
-		return '[]int{len: ${args[1]} - ${args[0]}, init: index + ${args[0]}}', true
+		return '[]int{len: ${paren_left(args[1], 4)} - ${paren_right(args[0], 4)}, init: index + ${paren_right(args[0], 4)}}', true
 	}
 	if args.len == 3 {
 		return '[]int{len: (${args[1]} - ${args[0]}) / ${args[2]}, init: ${args[0]} + index * ${args[2]}}', true
@@ -212,7 +212,7 @@ fn visit_bool(mut t VTranspiler, node Call, args []string) (string, bool) {
 		}
 		// Check for string - empty string is false
 		if ann == 'string' {
-			return '(${args[0]}.len > 0)', true
+			return '(${as_receiver(args[0])}.len > 0)', true
 		}
 		// Use infer_expr_type as fallback
 		inferred := t.infer_expr_type(node.args[0])
@@ -220,7 +220,7 @@ fn visit_bool(mut t VTranspiler, node Call, args []string) (string, bool) {
 			return '(${args[0]} != 0)', true
 		}
 		if inferred == 'string' {
-			return '(${args[0]}.len > 0)', true
+			return '(${as_receiver(args[0])}.len > 0)', true
 		}
 	}
 	return '(${args[0]} != 0)', true // Default to numeric comparison
@@ -236,12 +236,12 @@ fn visit_int(node Call, args []string) (string, bool) {
 		if node.args[0] is Constant {
 			c := node.args[0] as Constant
 			if c.value is string {
-				return '${args[0]}.int()', true
+				return '${as_receiver(args[0])}.int()', true
 			}
 		}
 		ann := get_v_annotation(node.args[0])
 		if ann == 'string' {
-			return '${args[0]}.int()', true
+			return '${as_receiver(args[0])}.int()', true
 		}
 	}
 	return 'int(${args[0]})', true
@@ -257,12 +257,12 @@ fn visit_float(node Call, args []string) (string, bool) {
 		if node.args[0] is Constant {
 			c := node.args[0] as Constant
 			if c.value is string {
-				return '${args[0]}.f64()', true
+				return '${as_receiver(args[0])}.f64()', true
 			}
 		}
 		ann := get_v_annotation(node.args[0])
 		if ann == 'string' {
-			return '${args[0]}.f64()', true
+			return '${as_receiver(args[0])}.f64()', true
 		}
 	}
 	return 'f64(${args[0]})', true
@@ -303,7 +303,7 @@ fn visit_len(args []string) (string, bool) {
 	if args.len == 0 {
 		return '0', true
 	}
-	return '${args[0]}.len', true
+	return '${as_receiver(args[0])}.len', true
 }
 
 // Handle min() call - returns result and required import
@@ -361,7 +361,7 @@ fn visit_map_builtin(args []string) (string, bool) {
 		return '', false
 	}
 	// map(func, iterable) -> iterable.map(func)
-	return '${args[1]}.map(${args[0]})', true
+	return '${as_receiver(args[1])}.map(${args[0]})', true
 }
 
 // Handle filter() call
@@ -370,7 +370,7 @@ fn visit_filter(args []string) (string, bool) {
 		return '', false
 	}
 	// filter(func, iterable) -> iterable.filter(func)
-	return '${args[1]}.filter(${args[0]})', true
+	return '${as_receiver(args[1])}.filter(${args[0]})', true
 }
 
 // build_typed_lambda_closure builds a typed closure string from a Lambda AST node
@@ -427,12 +427,12 @@ fn build_typed_lambda_closure(mut t VTranspiler, lam Lambda, iter Expr) string {
 
 // Handle all() call
 fn visit_all(args []string) (string, bool) {
-	return '${args[0]}.all(it)', true
+	return '${as_receiver(args[0])}.all(it)', true
 }
 
 // Handle any() call (builtin, not the type)
 fn visit_any_builtin(args []string) (string, bool) {
-	return '${args[0]}.any(it)', true
+	return '${as_receiver(args[0])}.any(it)', true
 }
 
 // Handle enumerate() call — in expression context emit indexed array of tuples.
@@ -490,9 +490,9 @@ fn visit_getattr(args []string) (string, bool) {
 		// Strip quotes from attribute name if it's a string literal
 		attr := args[1].trim('\'"')
 		if args.len >= 3 {
-			return '${args[0]}.${attr} or { ${args[2]} }', true
+			return '${as_receiver(args[0])}.${attr} or { ${args[2]} }', true
 		}
-		return '${args[0]}.${attr}', true
+		return '${as_receiver(args[0])}.${attr}', true
 	}
 	return '', false
 }
@@ -501,7 +501,7 @@ fn visit_getattr(args []string) (string, bool) {
 fn visit_setattr(args []string) (string, bool) {
 	if args.len >= 3 {
 		attr := args[1].trim('\'"')
-		return '${args[0]}.${attr} = ${args[2]}', true
+		return '${as_receiver(args[0])}.${attr} = ${args[2]}', true
 	}
 	return '', false
 }
@@ -511,7 +511,7 @@ fn visit_hasattr(args []string) (string, bool) {
 	if args.len >= 2 {
 		attr := args[1].trim('\'"')
 		// V structs always have their fields; use compile-time check approximation
-		return '(typeof(${args[0]}.${attr}).name != "")', true
+		return '(typeof(${as_receiver(args[0])}.${attr}).name != "")', true
 	}
 	return '', false
 }
@@ -573,12 +573,12 @@ fn visit_dict_fn(args []string) (string, bool) {
 
 // Handle divmod() call
 fn visit_divmod(args []string) (string, bool) {
-	return '(${args[0]} / ${args[1]}, ${args[0]} % ${args[1]})', true
+	return '(${paren_left(args[0], 5)} / ${paren_right(args[1], 5)}, ${paren_left(args[0], 5)} % ${paren_right(args[1], 5)})', true
 }
 
 // Handle ord() call - get unicode code point of character
 fn visit_ord(args []string) (string, bool) {
-	return '${args[0]}[0]', true
+	return '${as_receiver(args[0])}[0]', true
 }
 
 // Handle chr() call - get character from code point
@@ -589,7 +589,7 @@ fn visit_chr(args []string) (string, bool) {
 
 // Handle reversed() call
 fn visit_reversed(args []string) (string, bool) {
-	return '${args[0]}.reverse()', true
+	return '${as_receiver(args[0])}.reverse()', true
 }
 
 // Handle sys.exit() call
@@ -706,7 +706,7 @@ fn dispatch_builtin_impl(mut t VTranspiler, fname string, node Call, args []stri
 						})
 					}
 					closure := build_typed_lambda_closure(mut t, lam, iter_expr)
-					iter_code := args[1]
+					iter_code := as_receiver(args[1])
 					return DispatchResult{'${iter_code}.map(${closure})', true, ''}
 				}
 			}
@@ -726,7 +726,7 @@ fn dispatch_builtin_impl(mut t VTranspiler, fname string, node Call, args []stri
 						})
 					}
 					closure := build_typed_lambda_closure(mut t, lam, iter_expr)
-					iter_code := args[1]
+					iter_code := as_receiver(args[1])
 					return DispatchResult{'${iter_code}.filter(${closure})', true, ''}
 				}
 			}
@@ -1027,10 +1027,10 @@ pub fn dispatch_itertools_func(mut t VTranspiler, fname string, args []string) (
 		'islice' {
 			// itertools.islice(it, stop) or islice(it, start, stop)
 			if args.len == 2 {
-				return '${args[0]}[..${args[1]}]', true
+				return '${as_receiver(args[0])}[..${args[1]}]', true
 			}
 			if args.len >= 3 {
-				return '${args[0]}[${args[1]}..${args[2]}]', true
+				return '${as_receiver(args[0])}[${args[1]}..${args[2]}]', true
 			}
 			return '', false
 		}
@@ -1077,7 +1077,7 @@ pub fn dispatch_itertools_func(mut t VTranspiler, fname string, args []string) (
 		}
 		'takewhile' {
 			if args.len >= 2 {
-				return '${args[1]}.filter(${args[0]})', true
+				return '${as_receiver(args[1])}.filter(${args[0]})', true
 			}
 			return '', false
 		}

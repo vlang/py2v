@@ -2290,7 +2290,7 @@ fn (mut t VTranspiler) visit_aug_assign_once(node AugAssign, op_type string, tar
 		}
 		is_float := left_ann in ['f64', 'float', 'f32'] || right_ann in ['f64', 'float', 'f32']
 		if is_float {
-			return '${target} = math.floor(${target} / ${val})'
+			return '${target} = math.floor(${target} / ${paren_right(val, 5)})'
 		}
 		return '${target} = math.divide_floored(${target}, ${val}).quot'
 	}
@@ -2642,7 +2642,7 @@ pub fn (mut t VTranspiler) visit_for(node For) string {
 			} else if fname == 'range' && call.args.len == 2 {
 				start := t.visit_expr(call.args[0])
 				end := t.visit_expr(call.args[1])
-				for_expr = '[]int{len: ${end} - ${start}, init: index + ${start}}'
+				for_expr = '[]int{len: ${paren_left(end, 4)} - ${paren_right(start, 4)}, init: index + ${paren_right(start, 4)}}'
 			} else if fname == 'range' && call.args.len == 1 {
 				end := t.visit_expr(call.args[0])
 				for_expr = '[]int{len: ${end}, init: index}'
@@ -3227,10 +3227,10 @@ fn (mut t VTranspiler) emit_match_pattern_value(p MatchPattern) string {
 fn (mut t VTranspiler) emit_pattern_condition(subject string, p MatchPattern) string {
 	match p {
 		MatchValue {
-			return '${subject} == ${t.visit_expr(p.value)}'
+			return '${cmp_operand(subject)} == ${cmp_operand(t.visit_expr(p.value))}'
 		}
 		MatchSingleton {
-			return '${subject} == ${p.value}'
+			return '${cmp_operand(subject)} == ${p.value}'
 		}
 		MatchAs {
 			if p.name == none && p.pattern == none {
@@ -3249,7 +3249,7 @@ fn (mut t VTranspiler) emit_pattern_condition(subject string, p MatchPattern) st
 					parts << c
 				}
 			}
-			return parts.join(' || ')
+			return join_conditions(parts, '||')
 		}
 		MatchSequence {
 			// Emit length check plus element comparisons for fixed-length sequences
@@ -3264,48 +3264,48 @@ fn (mut t VTranspiler) emit_pattern_condition(subject string, p MatchPattern) st
 				}
 			}
 			if has_star {
-				parts << '${subject}.len >= ${fixed_len}'
+				parts << '${as_receiver(subject)}.len >= ${fixed_len}'
 			} else {
-				parts << '${subject}.len == ${p.patterns.len}'
+				parts << '${as_receiver(subject)}.len == ${p.patterns.len}'
 			}
 			mut elem_idx := 0
 			for sp in p.patterns {
 				if sp is MatchStar {
 					continue
 				}
-				elem_cond := t.emit_pattern_condition('${subject}[${elem_idx}]', sp)
+				elem_cond := t.emit_pattern_condition('${as_receiver(subject)}[${elem_idx}]', sp)
 				if elem_cond.len > 0 {
 					parts << elem_cond
 				}
 				elem_idx++
 			}
-			return parts.join(' && ')
+			return join_conditions(parts, '&&')
 		}
 		MatchMapping {
 			mut parts := []string{}
 			for i, k in p.keys {
 				key_str := t.visit_expr(k)
-				parts << '${key_str} in ${subject}'
+				parts << '${cmp_operand(key_str)} in ${cmp_operand(subject)}'
 				vp := p.patterns[i]
-				val_cond := t.emit_pattern_condition('${subject}[${key_str}]', vp)
+				val_cond := t.emit_pattern_condition('${as_receiver(subject)}[${key_str}]', vp)
 				if val_cond.len > 0 {
 					parts << val_cond
 				}
 			}
-			return parts.join(' && ')
+			return join_conditions(parts, '&&')
 		}
 		MatchClass {
 			cls_str := t.visit_expr(p.cls)
 			mut parts := []string{}
-			parts << '${subject} is ${cls_str}'
+			parts << '${cmp_operand(subject)} is ${cls_str}'
 			for i, attr in p.kwd_attrs {
 				vp := p.kwd_patterns[i]
-				val_cond := t.emit_pattern_condition('${subject}.${attr}', vp)
+				val_cond := t.emit_pattern_condition('${as_receiver(subject)}.${attr}', vp)
 				if val_cond.len > 0 {
 					parts << val_cond
 				}
 			}
-			return parts.join(' && ')
+			return join_conditions(parts, '&&')
 		}
 		MatchStar {
 			return ''
@@ -3775,7 +3775,7 @@ fn as_any_slice(s string) string {
 	if !t.starts_with('[') || !t.ends_with(']') {
 		return s
 	}
-	return '${t}.map(Any(it))'
+	return '${as_receiver(t)}.map(Any(it))'
 }
 
 // expr_is_conversion reports whether a rendered expression is exactly one
@@ -3949,6 +3949,132 @@ fn (mut t VTranspiler) collect_path_segs(node BinOp, mut segs []string) {
 	segs << t.visit_expr(node.right)
 }
 
+// Precedence of emitted code that binds like a name, a call or a parenthesized
+// expression: it can take a `.field` or an index.
+const atom_prec = 10
+
+// Precedence of a prefix operation (`-x`, `!x`, `~x`): it binds tighter than any binary
+// operator, but `-x.abs()` applies the method to `x` alone.
+const prefix_prec = 9
+
+// v_prec returns V's precedence for the binary operator `op`, from 5 (`*`) down to 1
+// (`||`), or -1 when `op` is not one; V's table is not Python's (`&`, `<<` and `>>` bind
+// like `*`, `|` and `^` like `+`).
+fn v_prec(op string) int {
+	return match op {
+		'*', '/', '%', '<<', '>>', '>>>', '&' { 5 }
+		'+', '-', '|', '^' { 4 }
+		'==', '!=', '<', '<=', '>', '>=', 'in', '!in', 'is', '!is' { 3 }
+		'&&' { 2 }
+		'||' { 1 }
+		'or', 'as' { 0 }
+		else { -1 }
+	}
+}
+
+// code_prec returns the precedence emitted V code binds at, read from the code itself, so
+// it holds for every lowering: the lowest binary operator at its top level (outside
+// brackets and strings), 0 for an `if`, `match` or `fn` expression or a top-level `or` or
+// `as`, prefix_prec for a leading `-`, `+`, `!`, `~`, `&`, `*` or `<-`, and atom_prec otherwise.
+fn code_prec(code string) int {
+	s := code.trim_space()
+	if s.starts_with('if ') || s.starts_with('match ') || s.starts_with('fn ')
+		|| s.starts_with('fn(') {
+		return 0
+	}
+	mut lowest := atom_prec
+	mut depth := 0
+	mut i := 0
+	for i < s.len {
+		c := s[i]
+		if c == `'` || c == `"` || c == `\`` {
+			i = skip_v_string(s, i)
+			continue
+		}
+		if c == `(` || c == `[` || c == `{` {
+			depth++
+		} else if c == `)` || c == `]` || c == `}` {
+			depth--
+		} else if c == ` ` && depth == 0 {
+			end := s.index_after(' ', i + 1) or { -1 }
+			if end > i + 1 {
+				p := v_prec(s[i + 1..end])
+				if p >= 0 && p < lowest {
+					lowest = p
+				}
+			}
+		}
+		i++
+	}
+	if lowest == atom_prec && (s.starts_with('-') || s.starts_with('+') || s.starts_with('!')
+		|| s.starts_with('~')
+		|| s.starts_with('&') || s.starts_with('*') || s.starts_with('<-')) {
+		return prefix_prec
+	}
+	return lowest
+}
+
+// skip_v_string returns the index just past the V string literal starting at `start`,
+// stepping over `${...}` interpolations, which may hold strings of their own.
+fn skip_v_string(s string, start int) int {
+	quote := s[start]
+	mut i := start + 1
+	for i < s.len {
+		c := s[i]
+		if c == `\\` {
+			i += 2
+			continue
+		}
+		if c == `$` && i + 1 < s.len && s[i + 1] == `{` {
+			mut depth := 1
+			i += 2
+			for i < s.len && depth > 0 {
+				d := s[i]
+				if d == `'` || d == `"` || d == `\`` {
+					i = skip_v_string(s, i)
+					continue
+				}
+				if d == `{` {
+					depth++
+				} else if d == `}` {
+					depth--
+				}
+				i++
+			}
+			continue
+		}
+		if c == quote {
+			return i + 1
+		}
+		i++
+	}
+	return s.len
+}
+
+// as_receiver wraps emitted code that does not bind like an atom, for use before `.` or an
+// index: `(s + t).to_upper()`, not `s + t.to_upper()`.
+fn as_receiver(code string) string {
+	return if code_prec(code) < atom_prec { '(${code})' } else { code }
+}
+
+// paren_left wraps a left operand that binds less tightly than an operator of precedence
+// `prec`, and paren_right a right operand that binds less tightly or equally (V groups
+// `a - b - c` as `(a - b) - c`). Both also wrap `&&` under `||` and the reverse, which V
+// refuses unparenthesized ("ambiguous boolean expression").
+fn paren_left(code string, prec int) string {
+	p := code_prec(code)
+	return if p < prec || mixes_and_or(p, prec) { '(${code})' } else { code }
+}
+
+fn paren_right(code string, prec int) string {
+	p := code_prec(code)
+	return if p <= prec || mixes_and_or(p, prec) { '(${code})' } else { code }
+}
+
+fn mixes_and_or(p int, prec int) bool {
+	return p in [1, 2] && prec in [1, 2] && p != prec
+}
+
 // visit_binop emits V code for a binary operation (BinOp).
 pub fn (mut t VTranspiler) visit_binop(node BinOp) string {
 	left := t.visit_expr(node.left)
@@ -4022,7 +4148,7 @@ pub fn (mut t VTranspiler) visit_binop(node BinOp) string {
 		}
 		is_float := left_ann in ['f64', 'float', 'f32'] || right_ann in ['f64', 'float', 'f32']
 		if is_float {
-			return 'math.floor(${left} / ${right})'
+			return 'math.floor(${paren_left(left, 5)} / ${paren_right(right, 5)})'
 		}
 		return 'math.divide_floored(${left}, ${right}).quot'
 	}
@@ -4032,16 +4158,16 @@ pub fn (mut t VTranspiler) visit_binop(node BinOp) string {
 		left_ann := get_expr_annotation(node.left)
 		right_ann := get_expr_annotation(node.right)
 		if right_ann == 'int' && (left_ann == 'string' || left_ann.starts_with('[]')) {
-			return '${left}.repeat(${right})'
+			return '${as_receiver(left)}.repeat(${right})'
 		}
 		// Also check by inferring types when v_annotation is not set
 		left_type := t.infer_expr_type(node.left)
 		if left_type == 'string' {
-			return '${left}.repeat(${right})'
+			return '${as_receiver(left)}.repeat(${right})'
 		}
 		// Check if left is a List literal - list repetition
 		if node.left is List {
-			return '${left}.repeat(${right})'
+			return '${as_receiver(left)}.repeat(${right})'
 		}
 	}
 
@@ -4075,17 +4201,17 @@ pub fn (mut t VTranspiler) visit_binop(node BinOp) string {
 		}
 		// If either operand is float, ensure both are float
 		if left_ann == 'int' && (right_ann == 'f64' || right_ann == 'float') {
-			return 'f64(${left}) ${op} ${right}'
+			return 'f64(${left}) ${op} ${paren_right(right, v_prec(op))}'
 		}
 		if (left_ann == 'f64' || left_ann == 'float') && right_ann == 'int' {
-			return '${left} ${op} f64(${right})'
+			return '${paren_left(left, v_prec(op))} ${op} f64(${right})'
 		}
 		// If right is float but left annotation is unknown/empty, wrap left in f64 to be safe
 		if (right_ann == 'f64' || right_ann == 'float') && left_ann == '' {
-			return 'f64(${left}) ${op} ${right}'
+			return 'f64(${left}) ${op} ${paren_right(right, v_prec(op))}'
 		}
 		if (left_ann == 'f64' || left_ann == 'float') && right_ann == '' {
-			return '${left} ${op} f64(${right})'
+			return '${paren_left(left, v_prec(op))} ${op} f64(${right})'
 		}
 	}
 
@@ -4129,43 +4255,37 @@ pub fn (mut t VTranspiler) visit_binop(node BinOp) string {
 		return '${wider}(${left}) ${op} ${wider}(${right})'
 	}
 
-	return '${left} ${op} ${right}'
+	prec := v_prec(op)
+	return '${paren_left(left, prec)} ${op} ${paren_right(right, prec)}'
 }
 
 // visit_unaryop emits V code for a unary operation (UnaryOp).
 pub fn (mut t VTranspiler) visit_unaryop(node UnaryOp) string {
 	op := op_to_symbol(get_unary_op_type(node.op))
 	operand := t.visit_expr(node.operand)
-
-	if node.op is USub {
-		// Wrap only compound expressions (BinOp) to preserve precedence
-		if node.operand is BinOp {
-			return '-(${operand})'
-		}
-		return '-${operand}'
+	// A prefix binds tighter than any binary operator, so an operand that binds less tightly
+	// than a prefix is wrapped (`-(a + b)`, `!(a == b)`, `+(a > b)`), as is every BinOp and,
+	// under `not`, every comparison and boolean operation, as before. `- -x` would read as
+	// `--x`, so a sign before the same sign is wrapped too.
+	if node.operand is BinOp || code_prec(operand) < prefix_prec
+		|| (node.op is Not && (node.operand is Compare || node.operand is BoolOp))
+		|| (op in ['-', '+'] && operand.starts_with(op)) {
+		return '${op}(${operand})'
 	}
-
-	if node.op is Not {
-		// Wrap Compare, BoolOp, and BinOp operands so `!a == b` doesn't
-		// become `(!a) == b` due to V operator precedence.
-		needs_parens := node.operand is Compare || node.operand is BoolOp
-			|| node.operand is BinOp
-		if needs_parens {
-			return '!(${operand})'
-		}
-	}
-
 	return '${op}${operand}'
 }
 
 // visit_boolop emits V code for a boolean operation (BoolOp).
 pub fn (mut t VTranspiler) visit_boolop(node BoolOp) string {
 	op := op_to_symbol(get_bool_op_type(node.op))
+	own := v_prec(op)
 	mut parts := []string{}
 	for val in node.values {
 		expr_str := t.visit_expr(val)
-		// Wrap nested BoolOps in parentheses to avoid ambiguity
-		if val is BoolOp {
+		p := code_prec(expr_str)
+		// Wrap nested BoolOps, and any operand that binds less tightly than `op` or would put
+		// `&&` beside `||` (`p and (q | r)` on bools), which V refuses.
+		if val is BoolOp || p < own || mixes_and_or(p, own) {
 			parts << '(${expr_str})'
 		} else {
 			parts << expr_str
@@ -4187,7 +4307,7 @@ pub fn (mut t VTranspiler) visit_compare(node Compare) string {
 				attr := cc.func as Attribute
 				if attr.attr == 'values' {
 					dict_obj := t.visit_expr(attr.value)
-					return '${left} in ${dict_obj}.keys().map(${dict_obj}[it])'
+					return '${cmp_operand(left)} in ${as_receiver(dict_obj)}.keys().map(${as_receiver(dict_obj)}[it])'
 				}
 			}
 		}
@@ -4196,11 +4316,11 @@ pub fn (mut t VTranspiler) visit_compare(node Compare) string {
 		right_ann := get_expr_annotation(comp)
 		right_type := if right_ann.len > 0 { right_ann } else { t.infer_expr_type(comp) }
 		if right_type == 'string' {
-			return '${right}.contains(${left})'
+			return '${as_receiver(right)}.contains(${left})'
 		}
 		// Parenthesised because V binds `=` more tightly than `in`, so an
 		// unparenthesised `x = a in b` parses as `(x = a) in b` and fails.
-		return '(${left} in ${right})'
+		return '(${cmp_operand(left)} in ${cmp_operand(right)})'
 	}
 
 	if node.ops.len > 0 && node.ops[0] is NotIn {
@@ -4213,9 +4333,9 @@ pub fn (mut t VTranspiler) visit_compare(node Compare) string {
 			t.infer_expr_type(node.comparators[0])
 		}
 		if right_type == 'string' {
-			return '!${right}.contains(${left})'
+			return '!${as_receiver(right)}.contains(${left})'
 		}
-		return '(${left} !in ${right})'
+		return '(${cmp_operand(left)} !in ${cmp_operand(right)})'
 	}
 
 	op := op_to_symbol(get_cmp_op_type(node.ops[0]))
@@ -4231,11 +4351,29 @@ pub fn (mut t VTranspiler) visit_compare(node Compare) string {
 	if left == 'none' && node.comparators[0] is Constant {
 		c := node.comparators[0] as Constant
 		if c.value is int || c.value is i64 || c.value is f64 {
-			return '0 ${op} ${right}'
+			return '0 ${op} ${cmp_operand(right)}'
 		}
 	}
 
-	return '${left} ${op} ${right}'
+	return '${cmp_operand(left)} ${op} ${cmp_operand(right)}'
+}
+
+// cmp_operand wraps an operand of a comparison that binds at a comparison's level or lower:
+// `(a < b) == c`, `(q && r) == q`.
+fn cmp_operand(code string) string {
+	return if code_prec(code) <= v_prec('==') { '(${code})' } else { code }
+}
+
+// join_conditions joins match conditions with `&&` or `||`, wrapping a condition that binds
+// less tightly or would put `&&` beside `||` (`case [1 | 2]`).
+fn join_conditions(parts []string, op string) string {
+	own := v_prec(op)
+	mut out := []string{cap: parts.len}
+	for part in parts {
+		p := code_prec(part)
+		out << if p < own || mixes_and_or(p, own) { '(${part})' } else { part }
+	}
+	return out.join(' ${op} ')
 }
 
 // visit_call emits V code for function calls (Call).
@@ -4316,7 +4454,7 @@ pub fn (mut t VTranspiler) visit_call(node Call) string {
 			}
 			return '${collapsed}()'
 		}
-		obj := t.visit_expr(attr_node.value)
+		obj := as_receiver(t.visit_expr(attr_node.value))
 		method := attr_node.attr
 
 		// An explicit `BuiltinError.__init__(self, ...)` reaches a class V has no
@@ -4448,7 +4586,7 @@ pub fn (mut t VTranspiler) visit_call(node Call) string {
 						// Do not add .str() — emit the iterable expression as-is.
 						return '(${vargs[0]})'
 					}
-					return '${vargs[0]}.join(${obj})'
+					return '${as_receiver(vargs[0])}.join(${obj})'
 				}
 				return obj
 			}
@@ -5451,7 +5589,7 @@ pub fn (mut t VTranspiler) visit_attribute(node Attribute) string {
 		}
 	}
 
-	value := t.visit_expr(node.value)
+	value := as_receiver(t.visit_expr(node.value))
 	mut attr := node.attr
 	// Struct fields and locals are declared under their escaped V spelling, so an
 	// access to `self._foo` must use the same escape the declaration used.
@@ -5489,7 +5627,7 @@ pub fn (mut t VTranspiler) visit_attribute(node Attribute) string {
 
 // visit_subscript emits V code for subscript access (Subscript).
 pub fn (mut t VTranspiler) visit_subscript(node Subscript) string {
-	value := t.visit_expr(node.value)
+	value := as_receiver(t.visit_expr(node.value))
 
 	if node.is_annotation {
 		index := t.visit_expr(node.slice)
@@ -5918,7 +6056,7 @@ fn (mut t VTranspiler) visit_generator_exp_impl(elt Expr, generators []Comprehen
 				} else if call.args.len == 2 {
 					start := t.visit_expr(call.args[0])
 					end := t.visit_expr(call.args[1])
-					result = '[]int{len: ${end} - ${start}, init: index + ${start}}'
+					result = '[]int{len: ${paren_left(end, 4)} - ${paren_right(start, 4)}, init: index + ${paren_right(start, 4)}}'
 				} else if call.args.len == 3 {
 					start := t.visit_expr(call.args[0])
 					end := t.visit_expr(call.args[1])
@@ -5943,14 +6081,14 @@ fn (mut t VTranspiler) visit_generator_exp_impl(elt Expr, generators []Comprehen
 		mut filter_expr := t.visit_expr(if_clause)
 		// Replace target variable with 'it' for filter lambda
 		filter_expr = filter_expr.replace(target, 'it')
-		result = '${result}.filter(${filter_expr})'
+		result = '${as_receiver(result)}.filter(${filter_expr})'
 	}
 
 	// Apply map - need to use 'it' for the element reference
 	mut map_expr := t.visit_expr(elt)
 	// Replace target variable with 'it' for map lambda
 	map_expr = map_expr.replace(target, 'it')
-	result = '${result}.map(${map_expr})'
+	result = '${as_receiver(result)}.map(${map_expr})'
 
 	return result
 }
