@@ -215,6 +215,7 @@ pub fn is_simple_expr(expr_type string) bool {
 pub struct TmpVarGen {
 mut:
 	counter int
+	taken   map[string]bool
 }
 
 // new_tmp_var_gen creates a new TmpVarGen with counter initialized.
@@ -224,11 +225,32 @@ pub fn new_tmp_var_gen() TmpVarGen {
 	}
 }
 
-// next returns a fresh temporary name with `prefix`. The name avoids a leading
-// underscore, which V forbids on variables and struct fields.
+// next returns a fresh temporary name with `prefix`, skipping names the source already
+// uses. The name avoids a leading underscore, which V forbids on variables and struct
+// fields.
 pub fn (mut g TmpVarGen) next(prefix string) string {
-	g.counter++
-	return 'py2v_${prefix}${g.counter}'
+	for {
+		g.counter++
+		name := 'py2v_${prefix}${g.counter}'
+		if !g.is_taken(name) {
+			return name
+		}
+	}
+	return ''
+}
+
+// is_taken reports whether `name` is a source word, or two source words joined by `_`, the
+// way py2v names a class constant (`Py2v.IDX1` becomes `py2v_idx1`) or a static method.
+fn (g &TmpVarGen) is_taken(name string) bool {
+	if name in g.taken {
+		return true
+	}
+	for i, c in name {
+		if c == `_` && name[..i] in g.taken && name[i + 1..] in g.taken {
+			return true
+		}
+	}
+	return false
 }
 
 // is_numeric_type returns true if `typ` is a known numeric type.

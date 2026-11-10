@@ -166,6 +166,8 @@ pub mut:
 	body              []Stmt
 	loc               Location
 	docstring_comment ?string
+	// source_words lists the words of the source as py2v may emit them; temps avoid them.
+	source_words []string
 }
 
 // Expressions
