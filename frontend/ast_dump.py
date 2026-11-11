@@ -70,10 +70,9 @@ class ScopeTracker(ast.NodeVisitor):
             self.mutable.add(name)
 
     def visit_AugAssign(self, node: ast.AugAssign):
-        # `self.x += 1` mutates through self, so the method needs a `mut self`
-        # receiver even though no bare Name target appears.
-        if isinstance(node.target, ast.Attribute) and isinstance(node.target.value, ast.Name):
-            self.mutable.add(node.target.value.id)
+        # `x[i] += 1` and `self.x += 1` store into x and self as `x[i] = ...`
+        # and `self.x = ...` do, so they need the same `mut`.
+        self._check_subscript_assign(node.target)
         for name in _extract_names(node.target):
             self._record_assign(name, node)
             self.mutable.add(name)
@@ -108,13 +107,23 @@ class ScopeTracker(ast.NodeVisitor):
         self.generic_visit(node)
 
     def _check_subscript_assign(self, target: ast.AST):
-        """x[i] = ... or x[i:j] = ... or x.attr = ... makes x mutable."""
-        if isinstance(target, ast.Subscript) and isinstance(target.value, ast.Name):
-            self.mutable.add(target.value.id)
-            self._record_assign(target.value.id, target)
-        elif isinstance(target, ast.Attribute) and isinstance(target.value, ast.Name):
-            self.mutable.add(target.value.id)
-            self._record_assign(target.value.id, target)
+        """A store into an element or attribute makes the variable it starts from
+        mutable: x[i] = ..., x[i:j] = ..., x.attr = ..., and nested stores such as
+        x[i][j] = ... or self.items[0] = ..., which reach x or self through more
+        than one subscript or attribute. A store straight into a slice
+        (x[:][0] = ...) changes only the copy, so it leaves x unchanged; one that
+        goes on into the copy's elements (grid[:][0][0] = ...) reaches the
+        original rows, so it still counts."""
+        if isinstance(target, (ast.Subscript, ast.Attribute)):
+            container = target.value
+            if isinstance(container, ast.Subscript) and isinstance(container.slice, ast.Slice):
+                return
+            root = container
+            while isinstance(root, (ast.Subscript, ast.Attribute)):
+                root = root.value
+            if isinstance(root, ast.Name):
+                self.mutable.add(root.id)
+                self._record_assign(root.id, target)
         elif isinstance(target, (ast.Tuple, ast.List)):
             for elt in target.elts:
                 self._check_subscript_assign(elt)
