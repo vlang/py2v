@@ -62,7 +62,57 @@ fn parse_type_annotation(m map[string]json2.Any) ?string {
 // parse_ast parses a JSON AST string into a Module.
 pub fn parse_ast(json_str string) !Module {
 	raw := json2.decode[json2.Any](json_str)!
-	return parse_module(raw.as_map())
+	mut mod := parse_module(raw.as_map())!
+	mut words := map[string]bool{}
+	collect_source_words(raw, mut words)
+	mod.source_words = words.keys()
+	return mod
+}
+
+// collect_source_words adds each word of the decoded AST's keys and strings as py2v may emit
+// it: lowercased (a parameter `PY2V_IDX1` becomes `py2v_idx1`) and as to_symbol_ident spells
+// it for class constants (`_IDX1` and `éIDX1` become `idx1`). Decoded, so that a name the JSON
+// escapes (`éIDX1`) is seen as written.
+fn collect_source_words(node json2.Any, mut words map[string]bool) {
+	match node {
+		map[string]json2.Any {
+			for key, value in node {
+				add_source_words(key, mut words)
+				collect_source_words(value, mut words)
+			}
+		}
+		[]json2.Any {
+			for value in node {
+				collect_source_words(value, mut words)
+			}
+		}
+		string {
+			add_source_words(node, mut words)
+		}
+		else {}
+	}
+}
+
+// add_source_words adds each word of `text`, a run of ASCII letters, digits and `_`.
+fn add_source_words(text string, mut words map[string]bool) {
+	mut i := 0
+	for i < text.len {
+		if !is_word_byte(text[i]) {
+			i++
+			continue
+		}
+		start := i
+		for i < text.len && is_word_byte(text[i]) {
+			i++
+		}
+		word := text[start..i]
+		words[word.to_lower()] = true
+		words[to_symbol_ident(word)] = true
+	}
+}
+
+fn is_word_byte(c u8) bool {
+	return c.is_alnum() || c == `_`
 }
 
 // Safely read a nested JSON map field.

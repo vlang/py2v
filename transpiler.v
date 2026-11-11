@@ -198,6 +198,9 @@ pub fn (mut t VTranspiler) visit_module(node Module) string {
 	// Reset per-module state so repeated transpilation with the same instance
 	// does not leak global-declaration flags.
 	t.has_global_decl = false
+	for name in node.source_words {
+		t.tmp_gen.taken[name] = true
+	}
 
 	mut module_name := t.module_name
 	if module_name.len == 0 {
@@ -2058,9 +2061,222 @@ fn (mut t VTranspiler) handle_starred_unpack(elts []main.Expr, value_str string)
 
 // visit_aug_assign emits V code for an AugAssign statement.
 pub fn (mut t VTranspiler) visit_aug_assign(node AugAssign) string {
-	target := t.visit_expr(node.target)
-	val := t.visit_expr(node.value)
 	op_type := get_op_type(node.op)
+	// `**=` and `//=` become `target = f(target, val)`, which names the target twice. Python
+	// evaluates the target's indices once, in the order they are written, before the
+	// right-hand side. So when an index or slice bound is computed (`x[f()] **= 2`) or the
+	// right-hand side could run code (`x[i] **= g()`), every index and bound of a target that
+	// starts from a name is computed into a temp first, in that order: a name too, since a
+	// later call could change it, and a negative literal as `x.len - n`, since a later call
+	// could change the length. Non-negative literals stay inline. Reading the containers the
+	// indices select (`grid[i]` in `grid[f()][g()]`) still comes after all of them.
+	mut prelude := []string{}
+	target_node := if op_type in ['Pow', 'FloorDiv'] && can_hoist_indices(*node.target)
+		&& (has_computed_index(*node.target) || !t.runs_no_code(node.value)) {
+		t.index_once(*node.target, mut prelude)
+	} else {
+		*node.target
+	}
+	target := t.visit_expr(target_node)
+	val := t.visit_expr(node.value)
+	code := t.visit_aug_assign_once(node, op_type, target, val)
+	if prelude.len > 0 {
+		return prelude.join('\n') + '\n' + code
+	}
+	return code
+}
+
+// can_hoist_indices reports whether the subscripts and attributes of `target` start from a
+// name, with no slice step and no slice inside a tuple subscript. A call on the way cannot
+// move into a temp, and neither of those slices is emitted faithfully, so such a target is
+// left as it is.
+fn can_hoist_indices(target Expr) bool {
+	return match target {
+		Name { true }
+		Subscript { !blocks_hoisting(*target.slice) && can_hoist_indices(*target.value) }
+		Attribute { can_hoist_indices(*target.value) }
+		else { false }
+	}
+}
+
+// blocks_hoisting reports a slice with a step, or a tuple subscript holding a slice
+// (`a[i:j, k]`).
+fn blocks_hoisting(e Expr) bool {
+	return match e {
+		Slice { e.step != none }
+		Tuple { e.elts.any(it is Slice) }
+		else { false }
+	}
+}
+
+// has_computed_index reports whether some index or slice bound of `target` is neither a
+// name nor a literal.
+fn has_computed_index(target Expr) bool {
+	return match target {
+		Subscript {
+			slice := *target.slice
+			here := if slice is Slice {
+				!bound_is_plain(slice.lower) || !bound_is_plain(slice.upper)
+			} else {
+				!is_plain_index(slice)
+			}
+			here || has_computed_index(*target.value)
+		}
+		Attribute {
+			has_computed_index(*target.value)
+		}
+		else {
+			false
+		}
+	}
+}
+
+fn bound_is_plain(bound ?&Expr) bool {
+	if b := bound {
+		return is_plain_index(*b)
+	}
+	return true
+}
+
+// runs_no_code reports whether evaluating `e` cannot run code: a name, a literal, or an
+// operator on numbers, booleans or strings. An operator on anything else can call an
+// overload such as `__add__`.
+fn (mut t VTranspiler) runs_no_code(e Expr) bool {
+	return match e {
+		Name, Constant {
+			true
+		}
+		UnaryOp {
+			t.has_builtin_type(*e.operand) && t.runs_no_code(*e.operand)
+		}
+		BinOp {
+			t.has_builtin_type(*e.left) && t.has_builtin_type(*e.right)
+				&& t.runs_no_code(*e.left) && t.runs_no_code(*e.right)
+		}
+		else {
+			false
+		}
+	}
+}
+
+fn (mut t VTranspiler) has_builtin_type(e Expr) bool {
+	return t.infer_expr_type(e) in ['int', 'i8', 'i16', 'i64', 'u8', 'u16', 'u32', 'u64', 'f32',
+		'f64', 'bool', 'string']
+}
+
+// index_once returns `target` with every subscript index and slice bound that is not a
+// non-negative literal replaced by a temp, and appends each temp's declaration to `prelude`
+// in the order they are written. A negative literal in the subscript stored into is kept:
+// Python applies it again at the store (`x[-1] **= f()` stores into the last element after
+// f runs), while one in a container on the way is applied once, when that container is read.
+fn (mut t VTranspiler) index_once(target Expr, mut prelude []string) Expr {
+	return t.index_once_at(target, true, mut prelude)
+}
+
+fn (mut t VTranspiler) index_once_at(target Expr, stored bool, mut prelude []string) Expr {
+	match target {
+		Subscript {
+			value := t.index_once_at(*target.value, false, mut prelude)
+			mut slice := *target.slice
+			if slice is Slice {
+				slice = Expr(t.bounds_once(slice, value, mut prelude))
+			} else if slice !is Constant && !(stored && negative_literal(slice) != none) {
+				slice = t.hoist_index(slice, value, target.loc, mut prelude)
+			}
+			return Expr(Subscript{
+				...target
+				value: &value
+				slice: &slice
+			})
+		}
+		Attribute {
+			value := t.index_once_at(*target.value, false, mut prelude)
+			return Expr(Attribute{
+				...target
+				value: &value
+			})
+		}
+		else {
+			return target
+		}
+	}
+}
+
+// bounds_once returns `s` with each bound that is not a non-negative literal replaced by a
+// temp, the lower bound first, as Python evaluates them. Python applies the slice after
+// both bounds, so a negative literal bound counts from the end of the container as it is
+// then (`rows[-1:grow()]` sees the row `grow` appends): its `len - n` comes last.
+fn (mut t VTranspiler) bounds_once(s Slice, container Expr, mut prelude []string) Slice {
+	mut out := s
+	if lower := s.lower {
+		if *lower !is Constant && negative_literal(*lower) == none {
+			name := t.hoist_index(*lower, container, s.loc, mut prelude)
+			out.lower = &name
+		}
+	}
+	if upper := s.upper {
+		if *upper !is Constant && negative_literal(*upper) == none {
+			name := t.hoist_index(*upper, container, s.loc, mut prelude)
+			out.upper = &name
+		}
+	}
+	if lower := s.lower {
+		if negative_literal(*lower) != none {
+			name := t.hoist_index(*lower, container, s.loc, mut prelude)
+			out.lower = &name
+		}
+	}
+	if upper := s.upper {
+		if negative_literal(*upper) != none {
+			name := t.hoist_index(*upper, container, s.loc, mut prelude)
+			out.upper = &name
+		}
+	}
+	return out
+}
+
+// hoist_index declares a temp holding the index `e` of `container` in `prelude` and returns
+// the temp's name. A negative literal becomes `container.len - n`, as visit_subscript
+// writes it, so the length is read here rather than at the store.
+fn (mut t VTranspiler) hoist_index(e Expr, container Expr, loc Location, mut prelude []string) Expr {
+	tmp := t.new_tmp('idx')
+	value := if n := negative_literal(e) {
+		'${t.visit_expr(container)}.len - ${n}'
+	} else {
+		t.visit_expr(e)
+	}
+	prelude << '${tmp} := ${value}'
+	return Expr(Name{
+		id:  tmp
+		loc: loc
+	})
+}
+
+// negative_literal returns n for an index written `-n` with an integer literal n.
+fn negative_literal(e Expr) ?int {
+	if e is UnaryOp && e.op is USub && e.operand is Constant {
+		c := e.operand as Constant
+		if c.value is int {
+			return c.value as int
+		}
+	}
+	return none
+}
+
+// is_plain_index reports whether an index can be written twice without being evaluated
+// twice: a name, a literal or a negated literal (which visit_subscript turns into
+// `x.len - n`).
+fn is_plain_index(e Expr) bool {
+	return match e {
+		Name, Constant { true }
+		UnaryOp { e.operand is Constant }
+		else { false }
+	}
+}
+
+// visit_aug_assign_once emits an augmented assignment whose target and value are already
+// rendered, so that each is evaluated as written.
+fn (mut t VTranspiler) visit_aug_assign_once(node AugAssign, op_type string, target string, val string) string {
 	// FloorDiv: V / truncates toward zero, Python // floors toward -inf
 	if op_type == 'FloorDiv' {
 		t.add_using('math')
