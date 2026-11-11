@@ -34,7 +34,14 @@ Build & test (development)
 Checking generated code
 - `./py2v <file.py> --check` writes the module and runs `v -check` on it. It prints a  `module<TAB>errors<TAB>first_error` table on stdout, a summary on stderr, and exits 1 when any error is reported.
 - `./py2v --package <dir> -o <out> --check [--jobs N]` does the same for a whole tree.
-- Never validate generated code with `v -check <dir>` or `v -check <file>`: V only walks files reachable from what it is given, so a library tree passes silently and a single file cannot see its own module's siblings. `check.v` compiles each generated *module* through a synthetic entry point that imports it, which is the only form that resolves both cross-file and cross-module references.
+- Never validate a generated package with `v -check <dir>` or `v -check <file>`: V only walks
+  files reachable from what it is given, so a library tree passes silently and a single file
+  cannot see its own module's siblings. `check.v` compiles each generated *module* of a
+  package through a synthetic entry point that imports it, which is the only form that
+  resolves both cross-file and cross-module references.
+- A single-file transpilation has no generated siblings, so `--check` compiles that one file
+  directly (`check_v_file`): an entry point could not import a `main` module or a module
+  whose directory name is not its module name.
 - Corpus baseline: `v tests/corpus.vsh <root> --baseline <path> --update` records per-module error counts; the same command without `--update` diffs against it and exits 1 when any module regresses. `--baseline` is always explicit, so an external corpus is never written into this repository.
 - The only baselines in `tests/baseline/` are for the fixtures in `tests/cases/`. Do not add a baseline for a corpus that does not ship here; keep those under `/tmp` or wherever the corpus itself lives.
 - `--check` exits 1 for a corpus that has errors, which is expected for a large real-world tree. Use `v tests/corpus.vsh` rather than the exit status when measuring progress.

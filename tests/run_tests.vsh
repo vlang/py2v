@@ -170,6 +170,79 @@ for pkg in package_fixtures {
 	os.rmdir_all(out_dir) or { panic(err) }
 }
 
+// Single-file `--check` must compile the generated file: code that does not
+// compile fails, with and without -o, also when the output directory's name is
+// not the module's (`foo-bar/` holds `module foo_bar`); clean code passes, also
+// beside an unrelated broken .v file, which the check must not compile.
+check_root := os.join_path(os.temp_dir(), 'py2v_single_check_${os.getpid()}')
+for sub in ['foo-bar', 'clean', 'beside'] {
+	os.mkdir_all(os.join_path(check_root, sub)) or { panic(err) }
+}
+broken_py := os.join_path(check_root, 'broken.py')
+os.write_file(broken_py, 'def f() -> int:\n    return undefined_name_py2v\n') or { panic(err) }
+os.write_file(os.join_path(check_root, 'beside', 'unrelated.v'),
+	'module beside\n\nfn g() int {\n\treturn undefined_in_sibling\n}\n') or { panic(err) }
+hello_py := os.join_path(cases_dir, 'hello_world.py')
+single_checks := [
+	['broken (stdout)', broken_py, '', '1'],
+	['broken (-o)', broken_py, os.join_path(check_root, 'out.v'), '1'],
+	['broken (-o foo-bar/)', broken_py, os.join_path(check_root, 'foo-bar', 'out.v'), '1'],
+	['clean (-o)', hello_py, os.join_path(check_root, 'clean', 'hello.v'), '0'],
+	['clean beside a broken file', hello_py, os.join_path(check_root, 'beside', 'hello.v'), '0'],
+]
+for c in single_checks {
+	mut args := [py2v, c[1], '--check']
+	if c[2] != '' {
+		args << ['-o', c[2]]
+	}
+	res := os.exec(args)
+	name := 'single-file check: ${c[0]}'
+	ok := res.exit_code.str() == c[3] && (c[3] == '0' || res.output.contains('undefined_name_py2v'))
+	if ok {
+		report('PASS', name, '')
+		passed++
+	} else {
+		report('FAIL', name, ' (exit ${res.exit_code}, expected ${c[3]})')
+		println(excerpt_n(res.output, 20))
+		failed++
+		failures << fail_line('FAIL', name, '')
+	}
+}
+os.rmdir_all(check_root) or { panic(err) }
+
+// A compiler that exits non-zero without printing a V diagnostic must still fail
+// the check: here py2v itself stands in for V and refuses `-shared`. And a
+// compiler that prints more than a pipe holds must not hang it: `loud` prints
+// about 300 KB and exits 1.
+compiler_root := os.join_path(os.temp_dir(), 'py2v_check_compiler_${os.getpid()}')
+os.mkdir_all(compiler_root) or { panic(err) }
+loud_src := os.join_path(compiler_root, 'loud.v')
+os.write_file(loud_src, "fn main() {\n\tline := 'x'.repeat(200)\n\tfor _ in 0 .. 1500 {\n\t\tprintln(line)\n\t}\n\texit(1)\n}\n") or {
+	panic(err)
+}
+loud_bin := os.join_path(compiler_root, $if windows { 'loud.exe' } $else { 'loud' })
+loud_build := os.exec([@VEXE, '-o', loud_bin, loud_src])
+if loud_build.exit_code != 0 {
+	panic('could not build the loud compiler: ${loud_build.output}')
+}
+old_v := os.getenv('V')
+for c in [['fails closed without a diagnostic', py2v], ['drains a large output', loud_bin]] {
+	os.setenv('V', c[1], true)
+	res := os.exec([py2v, hello_py, '--check'])
+	name := 'single-file check: ${c[0]}'
+	if res.exit_code == 1 && res.output.contains('v -check exited with status') {
+		report('PASS', name, '')
+		passed++
+	} else {
+		report('FAIL', name, ' (exit ${res.exit_code})')
+		println(excerpt_n(res.output, 20))
+		failed++
+		failures << fail_line('FAIL', name, '')
+	}
+}
+os.setenv('V', old_v, true)
+os.rmdir_all(compiler_root) or { panic(err) }
+
 println('')
 println('----------------------------------------')
 println('Summary: ' + passed.str() + ' passed, ' + failed.str() +
