@@ -2,6 +2,75 @@ module main
 
 import os
 
+fn test_replace_comp_identifier() {
+	cases := [
+		['', 'r', ''],
+		['r', 'r', 'it'],
+		['r+r', 'r', 'it+it'],
+		['r', 'x', 'r'],
+		['r', '', 'r'],
+		['r rr r_tail tr r2 2r _r R r_', 'r', 'it rr r_tail tr r2 2r _r R r_'],
+		['type_ type__ type_2 xtype_ x.type_ type_.x', 'type_', 'it type__ type_2 xtype_ x.it it.x'],
+		['@fn + @fn_tail + fn + @type', '@fn', 'it + @fn_tail + fn + @type'],
+		["'@type=\${@type}' + @type", '@type', "'@type=\${it}' + it"],
+		['@match @match2 x.@match', '@match', 'it @match2 x.it'],
+		['@ r @r', 'r', '@ it @r'],
+		// A lowered getattr variable can occupy the same position as a literal field name.
+		['x.r + r.x + r.r()', 'r', 'x.it + it.x + it.it()'],
+		['r. r', 'r', 'it. it'],
+		["'r' + r", 'r', "'r' + it"],
+		['"r" + r', 'r', '"r" + it'],
+		["r'r \${r}' + r", 'r', "r'r \${r}' + it"],
+		["r'x' + r", 'r', "r'x' + it"],
+		['r"r \${r}" + r', 'r', 'r"r \${r}" + it'],
+		["r'r\\' + r", 'r', "r'r\\' + it"],
+		["'a\\'r' + r", 'r', "'a\\'r' + it"],
+		['"a\\"r" + r', 'r', '"a\\"r" + it'],
+		["'a\\\\' + r", 'r', "'a\\\\' + it"],
+		['`r` + r', 'r', '`r` + it'],
+		['`\\`` + r', 'r', '`\\`` + it'],
+		['`\${r}` + r', 'r', '`\${r}` + it'],
+		["'r=\${r}'", 'r', "'r=\${it}'"],
+		['"r=\${r}"', 'r', '"r=\${it}"'],
+		["'\\\${r}' + r", 'r', "'\\\${r}' + it"],
+		["'\${if r > 0 { r } else { 2 }}r' + r", 'r', "'\${if it > 0 { it } else { 2 }}r' + it"],
+		["'\${{'r': r}}' + r", 'r', "'\${{'r': it}}' + it"],
+		['\'\${"r=\${r}"}r=\${r}\'', 'r', '\'\${"r=\${it}"}r=\${it}\''],
+		["'\${r'r \${r}'}\${r}'", 'r', "'\${r'r \${r}'}\${it}'"],
+		["r + 'r", 'r', "it + 'r"],
+		["'r $", 'r', "'r $"],
+		["r + 'r\\", 'r', "it + 'r\\"],
+		["'r \${r", 'r', "'r \${it"],
+		['f(r) or { r }', 'r', 'f(it) or { it }'],
+		['r := r; { r }', 'r', 'it := it; { it }'],
+		// After a top-level colon an interpolation holds its format, not code.
+		["'\${7:d}' + d", 'd', "'\${7:d}' + it"],
+		["'\${x:x}' + x", 'x', "'\${it:x}' + it"],
+		["'\${f(x: x):>5}'", 'x', "'\${f(it: it):>5}'"],
+		["'\${{'x': x}[x]:x}'", 'x', "'\${{'x': it}[it]:x}'"],
+		["'\${x:x", 'x', "'\${it:it"],
+		// A colon that does not start a static format is code.
+		["'\${if v := get(r) { v } else { r }}' + r", 'r', "'\${if v := get(it) { v } else { it }}' + it"],
+		["'\${7:(r)}' + r", 'r', "'\${7:(it)}' + it"],
+		["'\${{'x':x}[x]}'", 'x', "'\${{'x':it}[it]}'"],
+		["'\${r:05.2f}\${f:>5}' + f", 'f', "'\${r:05.2f}\${it:>5}' + it"],
+		["'\${f('\${x}', x: x)}'", 'x', "'\${f('\${it}', it: it)}'"],
+	]
+	for c in cases {
+		assert replace_comp_identifier(c[0], c[1], 'it') == c[2], c[0]
+	}
+	assert replace_comp_identifier('n + n_max', 'n', 'subject') == 'subject + n_max'
+}
+
+fn test_is_comp_identifier() {
+	for name in ['r', 'r2', '_r', '2r', 'type_', '@fn', '@type', '@match', '@_x', '@2'] {
+		assert is_comp_identifier(name), name
+	}
+	for name in ['', '@', '@@fn', 'r.x', 'r x', '([a]).concat(a_part)', '(a, b)', "'r'"] {
+		assert !is_comp_identifier(name), name
+	}
+}
+
 fn find_repo_root(start string) !string {
 	mut dir := os.real_path(start)
 	for {

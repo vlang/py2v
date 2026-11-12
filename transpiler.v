@@ -6334,14 +6334,22 @@ fn (mut t VTranspiler) visit_generator_exp_impl(elt Expr, generators []Comprehen
 	for if_clause in generators[0].ifs {
 		mut filter_expr := t.visit_expr(if_clause)
 		// Replace target variable with 'it' for filter lambda
-		filter_expr = filter_expr.replace(target, 'it')
+		filter_expr = if is_comp_identifier(target) {
+			replace_comp_identifier(filter_expr, target, 'it')
+		} else {
+			filter_expr.replace(target, 'it')
+		}
 		result = '${as_receiver(result)}.filter(${filter_expr})'
 	}
 
 	// Apply map - need to use 'it' for the element reference
 	mut map_expr := t.visit_expr(elt)
 	// Replace target variable with 'it' for map lambda
-	map_expr = map_expr.replace(target, 'it')
+	map_expr = if is_comp_identifier(target) {
+		replace_comp_identifier(map_expr, target, 'it')
+	} else {
+		map_expr.replace(target, 'it')
+	}
 	result = '${as_receiver(result)}.map(${map_expr})'
 
 	return result

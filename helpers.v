@@ -588,6 +588,88 @@ pub fn bool_to_python_str(expr_str string) string {
 	return "if ${expr_str} { 'True' } else { 'False' }"
 }
 
+fn is_comp_identifier(name string) bool {
+	start := if name.starts_with('@') { 1 } else { 0 }
+	return name.len > start && name[start..].bytes().all(it.is_letter() || it.is_digit() || it == `_`)
+}
+
+// replace_comp_identifier puts replacement in place of target where target is a
+// whole identifier in code, leaving the text of string literals intact.
+fn replace_comp_identifier(code string, target string, replacement string) string {
+	mut out := strings.new_builder(code.len)
+	// Zero is outer code, positive values count interpolation braces.
+	// Negative values hold a quote byte, with 128 added for a raw string.
+	mut modes := [0]
+	mut i := 0
+	for i < code.len {
+		c := code[i]
+		last := modes.len - 1
+		mode := modes[last]
+		if mode < 0 {
+			quote := u8(-mode % 128)
+			raw := mode < -128
+			if c == `\\` && !raw {
+				end := int_min(i + 2, code.len)
+				out.write_string(code[i..end])
+				i = end
+				continue
+			}
+			if c == quote {
+				modes.pop()
+			} else if !raw && quote != `\`` && c == `$` && i + 1 < code.len && code[i + 1] == `{` {
+				modes << 1
+				out.write_string(code[i..i + 2])
+				i += 2
+				continue
+			}
+		} else if c == `r` && i + 1 < code.len && code[i + 1] in [`'`, `"`] {
+			modes << -(int(code[i + 1]) + 128)
+			out.write_string(code[i..i + 2])
+			i += 2
+			continue
+		} else if c in [`'`, `"`, `\``] {
+			modes << -int(c)
+		} else if c.is_letter() || c.is_digit() || c == `_` || c == `@` {
+			start := i
+			if c == `@` { i++ }
+			for i < code.len && (code[i].is_letter() || code[i].is_digit() || code[i] == `_`) {
+				i++
+			}
+			word := code[start..i]
+			out.write_string(if word == target {
+				replacement
+			} else {
+				word
+			})
+			continue
+		} else if mode > 0 {
+			if c == `{` {
+				modes[last]++
+			} else if c == `}` {
+				modes[last]--
+				if modes[last] == 0 { modes.pop() }
+			} else if c == `:` && mode == 1 {
+				// A static format ends the interpolation, as in ${n:05d}: flags, width and
+				// precision, then at most one type letter, which is not a name.
+				mut end := i + 1
+				for end < code.len && (code[end].is_digit() || code[end] in [`.`, `<`, `>`, `+`,
+					`-`, `#`]) {
+					end++
+				}
+				if end < code.len && code[end].is_letter() { end++ }
+				if end < code.len && code[end] == `}` {
+					out.write_string(code[i..end])
+					i = end
+					continue
+				}
+			}
+		}
+		out.write_u8(c)
+		i++
+	}
+	return out.str()
+}
+
 // strip_outer_parens removes a single pair of outer parentheses if they wrap the whole expression `s`.
 pub fn strip_outer_parens(s string) string {
 	if s.len < 2 || s[0] != `(` || s[s.len - 1] != `)` {
