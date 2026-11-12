@@ -33,7 +33,7 @@ fn variable_len() []int {
 }
 
 fn move(direction string, speed int) {
-	println(direction + ' ' + speed)
+	println(direction.str() + ' ' + speed.str())
 }
 
 fn main() {

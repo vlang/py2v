@@ -27,7 +27,7 @@ fn destructure(mut path Any, rows Any) {
 		name := py2v_item2[0]
 		path_ := py2v_item2[1]
 		value := py2v_item2[2]
-		println(name + ' ' + path_ + ' ' + value)
+		println(name.str() + ' ' + path_.str() + ' ' + value.str())
 	}
 }
 
