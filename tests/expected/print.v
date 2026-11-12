@@ -2,7 +2,7 @@ module main
 
 fn show() {
 	println('b')
-	println(2 + ' ' + 'b')
+	println((2).str() + ' ' + ('b').str())
 	a := 2.1
 	println(a)
 	b := 2.1

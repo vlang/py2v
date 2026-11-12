@@ -96,8 +96,7 @@ fn visit_print(mut t VTranspiler, node Call, args []string) (string, bool) {
 		if arg_node is Constant {
 			c := arg_node as Constant
 			if c.value is string {
-				// String literal - use as is (use processed arg_str)
-				// Do not append .str() — emit the processed argument expression directly.
+				// Keep the processed string literal for the final print expression.
 				parts << arg_str_proc
 				continue
 			}
@@ -106,7 +105,7 @@ fn visit_print(mut t VTranspiler, node Call, args []string) (string, bool) {
 				parts << bool_to_python_str(arg_str_proc)
 				continue
 			}
-			// Numeric constants: emit as-is (V prints numerics without needing .str())
+			// Keep constants for conversion when joining multiple arguments below.
 			parts << arg_str_proc
 			continue
 		}
@@ -180,8 +179,7 @@ fn visit_print(mut t VTranspiler, node Call, args []string) (string, bool) {
 			continue
 		}
 
-		// Non-string: emit expression as-is so printing relies on V's default
-		// formatting/printing behavior.
+		// Keep other expressions for the final print expression below.
 		parts << arg_str
 	}
 
@@ -190,7 +188,12 @@ fn visit_print(mut t VTranspiler, node Call, args []string) (string, bool) {
 	if parts.len == 1 {
 		println_code = 'println(${parts[0]})'
 	} else {
-		// Join with spaces using string interpolation
+		// Leave unsupported starred expansion unconverted.
+		for i, part in parts {
+			if node.args[i] !is Starred {
+				parts[i] = '(${part}).str()'
+			}
+		}
 		println_code = 'println(${parts.join(" + ' ' + ")})'
 	}
 	if trailing_comments.len > 0 {
