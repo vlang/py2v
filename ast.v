@@ -414,6 +414,10 @@ pub mut:
 	target &Expr
 	value  &Expr
 	loc    Location
+	// hoist marks a walrus that is the whole test of an `if` and that the
+	// frontend's conservative binding check approved; a target that an
+	// unannotated function or a lambda returns is excluded.
+	hoist bool
 }
 
 pub struct Starred {

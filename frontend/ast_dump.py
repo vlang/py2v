@@ -483,6 +483,100 @@ def _extract_docstring(tree: ast.Module) -> Optional[str]:
     return None
 
 
+def _binding_keys(scope: ast.AST, skip: Set[int], into_functions: bool = True) -> Set[str]:
+    """The names bound anywhere under `scope` (stores and deletes, parameters,
+    def and class names, imports, except-as, global and nonlocal, match
+    captures), as loose V spellings: lowercased with outer underscores
+    stripped, so names V would spell alike (`_tag`, `tag_`) collide. Nested
+    function bodies count unless `into_functions` is false; then only their
+    names, decorators and default values are scanned. `*` stands for a star
+    import."""
+    match_as = tuple(getattr(ast, n) for n in ("MatchAs", "MatchStar") if hasattr(ast, n))
+    match_mapping = getattr(ast, "MatchMapping", None)
+    funcs = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)
+    nodes: List[ast.AST] = []
+    stack: List[ast.AST] = [scope]
+    while stack:
+        n = stack.pop()
+        nodes.append(n)
+        if n is not scope and isinstance(n, funcs) and not into_functions:
+            # Its decorators and default values run in this scope.
+            stack.extend(getattr(n, "decorator_list", []))
+            stack.extend(n.args.defaults)
+            stack.extend(d for d in n.args.kw_defaults if d is not None)
+            continue
+        stack.extend(ast.iter_child_nodes(n))
+    names: List[str] = []
+    for n in nodes:
+        if id(n) in skip:
+            continue
+        if isinstance(n, ast.Name) and not isinstance(n.ctx, ast.Load):
+            names.append(n.id)
+        elif isinstance(n, ast.arg):
+            names.append(n.arg)
+        elif isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            names.append(n.name)
+        elif isinstance(n, ast.alias):
+            names.append(n.asname or n.name.split(".")[0])
+        elif isinstance(n, ast.ExceptHandler) and n.name:
+            names.append(n.name)
+        elif isinstance(n, (ast.Global, ast.Nonlocal)):
+            names.extend(n.names)
+        elif match_as and isinstance(n, match_as) and n.name:
+            names.append(n.name)
+        elif match_mapping is not None and isinstance(n, match_mapping) and n.rest:
+            names.append(n.rest)
+    return {x if x == "*" else x.lower().strip("_") for x in names}
+
+
+def _detect_walrus_hoists(tree: ast.Module):
+    """Set `_hoist` on each NamedExpr that is the whole test of an `if`: true
+    only when nothing else binds its name (in its outermost enclosing function,
+    nested functions included, and at module level, the `__main__` guard block
+    included since this runs before that block becomes a function; for a
+    module-level `if`, anywhere in the file), and no function there without a
+    return annotation, nor a lambda, returns the name.
+    The transpiler hoists only those; every other walrus keeps its old form."""
+    module_keys = _binding_keys(tree, set(), into_functions=False)
+
+    def check(test: ast.NamedExpr, fn: Optional[ast.AST]):
+        name = test.target.id
+        key = name.lower().strip("_")
+        skip = {id(test.target)}
+        if fn is None:
+            keys = _binding_keys(tree, skip)
+        else:
+            keys = _binding_keys(fn, skip) | module_keys
+        if key in keys or "*" in keys:
+            return False
+        # No function in that scope (the whole module for a module-level `if`)
+        # without a return annotation may return the name, nor any lambda.
+        for f in ast.walk(fn if fn is not None else tree):
+            if isinstance(f, ast.Lambda):
+                values = [f.body]
+            elif isinstance(f, (ast.FunctionDef, ast.AsyncFunctionDef)) and f.returns is None:
+                values = [r.value for r in ast.walk(f) if isinstance(r, ast.Return) and r.value is not None]
+            else:
+                continue
+            for v in values:
+                if any(isinstance(x, ast.Name) and x.id == name for x in ast.walk(v)):
+                    return False
+        return True
+
+    def walk(node: ast.AST, fn: Optional[ast.AST]):
+        for child in ast.iter_child_nodes(node):
+            # The scope is the outermost enclosing function: py2v emits a nested
+            # function that uses `nonlocal` inline, sharing the outer one's types.
+            is_fn = isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda))
+            inner = child if is_fn and fn is None else fn
+            if (isinstance(child, ast.If) and isinstance(child.test, ast.NamedExpr)
+                    and isinstance(child.test.target, ast.Name)):
+                child.test._hoist = check(child.test, fn)
+            walk(child, inner)
+
+    walk(tree, None)
+
+
 def _detect_nesting_levels(tree: ast.Module):
     """Set `level` attribute on For, While, If nodes."""
     def _walk(node, level):
@@ -1200,6 +1294,7 @@ def _node_to_dict(node: ast.AST, mutable_vars: Set[str],
     elif isinstance(node, ast.NamedExpr):
         result["target"] = _node_to_dict(node.target, mutable_vars, redefined, ctx)
         result["value"] = _node_to_dict(node.value, mutable_vars, redefined, ctx)
+        result["hoist"] = getattr(node, "_hoist", False)
 
     elif isinstance(node, ast.BinOp):
         result["left"] = _node_to_dict(node.left, mutable_vars, redefined, ctx)
@@ -1388,6 +1483,14 @@ def _gather_var_annotations(tree: ast.Module) -> Dict[str, str]:
                     ann[tgt] = 'string'
                 elif typ != '':
                     ann[tgt] = typ
+        elif (isinstance(node, ast.If) and isinstance(node.test, ast.NamedExpr)
+              and getattr(node.test, "_hoist", False)):
+            # A hoisted walrus binds its name like `x = value`.
+            typ = _infer_type_from_value(node.test.value)
+            if typ == 'str':
+                ann[node.test.target.id] = 'string'
+            elif typ != '':
+                ann[node.test.target.id] = typ
     return ann
 
 
@@ -1531,6 +1634,10 @@ def process_file(file_path: str) -> str:
         source = f.read()
 
     tree = ast.parse(source, filename=file_path)
+
+    # Mark the walrus `if` tests the transpiler may hoist, before the
+    # `__main__` guard becomes a function, so its block counts as module level
+    _detect_walrus_hoists(tree)
 
     # Rewrite __main__ guard
     tree = _rewrite_main_guard(tree)

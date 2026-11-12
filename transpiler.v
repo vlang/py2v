@@ -2979,10 +2979,31 @@ pub fn (mut t VTranspiler) visit_while(node While) string {
 
 // visit_if emits V code for an If statement.
 pub fn (mut t VTranspiler) visit_if(node If) string {
+	return t.visit_if_chain(node, false)
+}
+
+// visit_if_chain emits an if statement; is_elif is set for the `if` that
+// follows `} else ` in an elif chain.
+fn (mut t VTranspiler) visit_if_chain(node If, is_elif bool) string {
 	mut buf := []string{}
 
-	// Check for walrus operator in condition - hoist assignment before if
-	if has_walrus_in_compare(node.test) {
+	// A bare walrus as the whole condition (`if (ok := check(x)):`): hoist the
+	// assignment and test the name, as the comparison form below does. V has
+	// no assignment expression, so `if (ok := check(x)) {` does not parse.
+	// Only when the frontend marked it (nothing else binds the name, and an
+	// unannotated function doesn't return it). An elif test is emitted
+	// unchanged: a hoisted line would land after `} else`.
+	if node.test is NamedExpr && !is_elif && (node.test as NamedExpr).hoist {
+		ne := node.test as NamedExpr
+		target := t.visit_expr(ne.target)
+		// Record the name's type as visit_assign does for `name = value`.
+		inferred := t.infer_expr_type(ne.value)
+		if inferred.len > 0 {
+			t.var_types[(ne.target as Name).id] = inferred
+		}
+		buf << '${target} := ${t.visit_expr(ne.value)}'
+		buf << 'if ${target} {'
+	} else if has_walrus_in_compare(node.test) {
 		parts := t.extract_walrus_parts(node.test)
 		if parts.len == 2 {
 			buf << parts[0]
@@ -3001,7 +3022,7 @@ pub fn (mut t VTranspiler) visit_if(node If) string {
 		// Check if it's an elif
 		if node.orelse.len == 1 && node.orelse[0] is If {
 			else_if := node.orelse[0] as If
-			buf << '} else ${t.visit_if(else_if)}'
+			buf << '} else ${t.visit_if_chain(else_if, true)}'
 		} else {
 			buf << '} else {'
 			buf << t.visit_body_stmts(node.orelse, 1)

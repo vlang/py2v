@@ -1531,7 +1531,7 @@ fn parse_joined_str(m map[string]json2.Any) JoinedStr {
 
 // Parse NamedExpr
 fn parse_named_expr(m map[string]json2.Any) NamedExpr {
-	return NamedExpr{
+	mut ne := NamedExpr{
 		target: parse_expr(map_field(m, 'target')) or {
 			&Expr(Constant{
 				value: NoneValue{}
@@ -1544,6 +1544,8 @@ fn parse_named_expr(m map[string]json2.Any) NamedExpr {
 		}
 		loc:    parse_location(m)
 	}
+	ne.hoist = (m['hoist'] or { json2.Any(false) }).bool()
+	return ne
 }
 
 // Parse Starred
