@@ -610,7 +610,7 @@ pub fn strip_outer_parens(s string) string {
 }
 
 // convert_percent_format converts a Python-style % format `fmt_str` with `values` into V interpolation.
-pub fn convert_percent_format(fmt_str string, values []string) string {
+pub fn convert_percent_format(fmt_str string, values []string, value_types []string) string {
 	mut result := strings.new_builder(fmt_str.len * 2)
 	result.write_u8(`'`)
 	mut val_idx := 0
@@ -673,7 +673,8 @@ pub fn convert_percent_format(fmt_str string, values []string) string {
 			}
 
 			if val_idx < values.len {
-				value := values[val_idx]
+				mut value := values[val_idx]
+				value_type := value_types[val_idx]
 				val_idx++
 
 				w := width.str()
@@ -690,6 +691,9 @@ pub fn convert_percent_format(fmt_str string, values []string) string {
 						}
 					}
 					`d`, `i` {
+						if value_type in ['f64', 'f32', 'bool'] {
+							value = 'i64(${value})'
+						}
 						if zero_pad && w.len > 0 {
 							v_fmt.write_string(':0${effective_w}')
 						} else if effective_w.len > 0 {
