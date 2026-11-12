@@ -4740,6 +4740,7 @@ pub fn (mut t VTranspiler) visit_call(node Call) string {
 
 									// Resolve base expression
 									mut base_expr := ''
+									mut base_node := Expr(Name{ id: base })
 									if base.len > 0 {
 										// numeric positional
 										mut parsed := 0
@@ -4754,6 +4755,7 @@ pub fn (mut t VTranspiler) visit_call(node Call) string {
 										if ok2 && base.len > 0 {
 											if parsed < arg_exprs.len {
 												base_expr = arg_exprs[parsed]
+												base_node = node.args[parsed]
 											} else if parsed < node.args.len {
 												base_expr = t.visit_expr(node.args[parsed])
 											}
@@ -4763,6 +4765,7 @@ pub fn (mut t VTranspiler) visit_call(node Call) string {
 												if arg := kw.arg {
 													if arg == base {
 														base_expr = t.visit_expr(kw.value)
+														base_node = kw.value
 														break
 													}
 												}
@@ -4779,7 +4782,11 @@ pub fn (mut t VTranspiler) visit_call(node Call) string {
 											if opn == 'attr' {
 												p := operands[idx2]
 												base_expr = '${base_expr}.${escape_identifier(p)}'
+												previous := base_node
+												base_node = Expr(Attribute{ value: &previous, attr: p })
 											} else if opn == 'index' {
+												base_type := t.infer_expr_type(base_node)
+												is_array := base_type.starts_with('[]') || base_type == 'array'
 												idxs := operands[idx2].trim_space()
 												// quoted string index
 												if idxs.len > 0
@@ -4791,9 +4798,9 @@ pub fn (mut t VTranspiler) visit_call(node Call) string {
 													}
 													lit := "'${escape_string(inner)}'"
 													base_expr = '${base_expr}[${lit}]'
-												} else if idxs.len > 0 {
+												} else if idxs.len > 0 || (!is_array && operands[idx2].len > 0) {
 													mut all_digits := true
-													for cch in idxs.bytes() {
+													for cch in operands[idx2].bytes() {
 														if cch < `0` || cch > `9` {
 															all_digits = false
 															break
@@ -4801,10 +4808,17 @@ pub fn (mut t VTranspiler) visit_call(node Call) string {
 													}
 													if all_digits {
 														base_expr = '${base_expr}[${idxs}]'
-													} else {
+													} else if is_array {
 														base_expr = '${base_expr}[${escape_keyword(idxs)}]'
+													} else {
+														base_expr = '${base_expr}[${v_string_literal(operands[idx2])}]'
 													}
 												}
+												previous := base_node
+												base_node = Expr(Subscript{
+													value: &previous
+													slice: &Expr(Constant{ value: 0 })
+												})
 											}
 										}
 										expr = base_expr
