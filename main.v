@@ -436,6 +436,7 @@ fn translate_package(python_cmd string, ast_dump string, package_dir string, out
 			continue
 		}
 		parsed[abs_mod_dotted] = mod
+		registry.module_words[v_mod] << mod.source_words
 		if prev := written[rel_path_v] {
 			return error('output collision: ${rel} and ${prev} both map to ' +
 				'${rel_path_v}')

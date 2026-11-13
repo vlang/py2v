@@ -11,7 +11,7 @@ fn foo() {
 	c1_ := a + b
 	c2_ := a - b
 	c3_ := a * b
-	c4_ := a / b
+	c4_ := py2v_true_div1(a, b)
 	c5_ := -a
 	d := 2
 	e1_ := a + d
@@ -73,6 +73,13 @@ fn fadd1(x i8, y f64) Any {
 fn show() {
 	assert fadd1(6, 6) == 12
 	println('OK')
+}
+
+fn py2v_true_div1(a f64, b f64) f64 {
+	if b == 0 {
+		panic('division by zero')
+	}
+	return a / b
 }
 
 fn main() {
