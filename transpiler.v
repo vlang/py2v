@@ -12,6 +12,8 @@ mut:
 	extra_mut_vars      map[string]bool
 	func_defaults       map[string][]string
 	func_param_count    map[string]int
+	call_signatures     map[string]FunctionDef
+	call_before_def     map[string]bool
 	func_return_types   map[string]string
 	// Methods whose receiver must be `mut` in V, keyed ClassName_method.
 	mut_receiver_methods        map[string]bool
@@ -195,6 +197,54 @@ pub fn (t VTranspiler) emitted_fn_name(name string) string {
 // visit_module renders a whole Python module: constants, imports, structs and
 // functions, in the order V requires them.
 pub fn (mut t VTranspiler) visit_module(node Module) string {
+	mut bindings := map[string]int{}
+	mut calls := []BindingCall{}
+	count_call_bindings(node, mut bindings, mut calls, false)
+	mut signatures := map[string]FunctionDef{}
+	mut module_defs := map[string][]FunctionDef{}
+	for stmt in node.body {
+		if stmt is FunctionDef {
+			module_defs[stmt.name] << stmt
+			// In a project other files can call the function; this pass cannot see those calls.
+			if !t.emit_pub && bindings[stmt.name] == 1 && bindings['*'] == 0 && stmt.decorator_list.len == 0 {
+				signatures[stmt.name] = stmt
+			}
+		}
+	}
+	t.call_signatures = signatures
+	t.call_before_def = map[string]bool{}
+	mut rejected := false
+	for site in calls {
+		call := site.call
+		// Only calls by name to a top-level function of this file are checked below. A call by name to
+		// anything else (a class, a nested function, a lambda, an import) or any other call with
+		// keywords is emitted as before, and its error can cancel a bound call's.
+		if call.func is Name {
+			callee := (call.func as Name).id
+			if callee in call_dispatch_names {
+				// A dispatched name the file binds itself (a class Path, a def sum) is not the builtin.
+				if call.keywords.len > 0 || bindings[callee] > 0 {
+					rejected = true
+				}
+			} else if callee !in module_defs {
+				rejected = true
+			}
+		} else if call.keywords.len > 0 {
+			rejected = true
+		}
+		if call.func !is Name { continue }
+		for sig in module_defs[(call.func as Name).id] {
+			if !site.in_function && call.loc.lineno <= sig.loc.end_lineno {
+				t.call_before_def[call.loc.str()] = true
+			}
+			if call.keywords.len > 0 || (call.args.len < sig.args.posonlyargs.len + sig.args.args.len && sig.args.defaults.len > 0)
+				|| sig.args.kw_defaults.any(it != none) {
+				if _ := t.bind_module_call(call) {} else { rejected = true }
+			}
+		}
+	}
+	// A rejected call can cancel another wrong binding; preserve the entire module.
+	if rejected { t.call_signatures.clear() }
 	// Reset per-module state so repeated transpilation with the same instance
 	// does not leak global-declaration flags.
 	t.has_global_decl = false
@@ -1235,9 +1285,9 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 pub fn (mut t VTranspiler) visit_async_function_def(node AsyncFunctionDef) string {
 	// Convert to regular FunctionDef
 	returns := if r := node.returns {
-	  &r
+		&r
 	} else {
-	  none
+		none
 	}
 	fd := FunctionDef{
 		name:            node.name
@@ -4376,8 +4426,137 @@ fn join_conditions(parts []string, op string) string {
 	return out.join(' ${op} ')
 }
 
-// visit_call emits V code for function calls (Call).
-pub fn (mut t VTranspiler) visit_call(node Call) string {
+// Names the builtin dispatch handles on their original arguments.
+const call_dispatch_names = ['range', 'print', 'bool', 'int', 'float', 'str', 'len', 'min', 'max',
+	'abs', 'round', 'floor', 'pow', 'sum', 'sorted', 'map', 'filter', 'all', 'any', 'enumerate',
+	'zip', 'open', 'input', 'type', 'id', 'getattr', 'setattr', 'hasattr', 'isinstance', 'list',
+	'tuple', 'set', 'dict', 'divmod', 'ord', 'chr', 'reversed', 'Path']
+
+struct BindingCall {
+	call        Call
+	in_function bool
+}
+
+// Collect bindings and calls before emission, keeping definition-time expressions at module scope.
+fn count_call_bindings[T](node T, mut names map[string]int, mut calls []BindingCall, in_function bool) {
+	$if T is Call {
+		calls << BindingCall{node, in_function}
+	}
+	$if T is Name {
+		if node.ctx !is Load { names[node.id]++ }
+	} $else $if T is Arg {
+		names[node.arg]++
+	} $else $if T is FunctionDef || T is AsyncFunctionDef || T is ClassDef {
+		names[node.name]++
+	} $else $if T is Alias {
+		names[node.asname or { node.name.all_before('.') }]++
+	} $else $if T is ExceptHandler || T is MatchAs || T is MatchStar {
+		if name := node.name { names[name]++ }
+	} $else $if T is MatchMapping {
+		if name := node.rest { names[name]++ }
+	}
+	$if T is $option {
+		if value := node { count_call_bindings(value, mut names, mut calls, in_function) }
+	} $else $if T is $pointer {
+		count_call_bindings(*node, mut names, mut calls, in_function)
+	} $else $if T is $array {
+		for value in node { count_call_bindings(value, mut names, mut calls, in_function) }
+	} $else $if T is $sumtype {
+		$for variant in T.variants {
+			if node is variant { count_call_bindings(node, mut names, mut calls, in_function) }
+		}
+	} $else $if T is $struct {
+		$for field in T.fields {
+			mut body := in_function
+			$if T is FunctionDef || T is AsyncFunctionDef || T is Lambda {
+				if field.name == 'body' { body = true }
+			}
+			$if T is FunctionDef {
+				// The frontend turns `if __name__ == "__main__":` into `def main()`; its body still runs at module level.
+				if field.name == 'body' && node.name == 'main' && node.args.args.len == 0
+					&& node.returns == none {
+					body = in_function
+				}
+			}
+			count_call_bindings(node.$(field.name), mut names, mut calls, body)
+		}
+	}
+}
+
+fn call_literal_default(expr Expr) bool {
+	if expr is Constant {
+		return expr.value !is BytesValue && expr.value !is EllipsisValue
+	}
+	if expr is UnaryOp && expr.op is USub && expr.operand is Constant {
+		value := (expr.operand as Constant).value
+		return value is int || value is i64 || value is f64 || value is ComplexValue
+	}
+	return false
+}
+
+fn (t &VTranspiler) bind_module_call(node Call) ?Call {
+	if node.func !is Name { return none }
+	if t.call_before_def[node.loc.str()] { return none }
+	name := (node.func as Name).id
+	sig := t.call_signatures[name] or { return none }
+	if sig.args.posonlyargs.len > 0 || sig.args.vararg != none || sig.args.kwarg != none
+		|| node.args.len > sig.args.args.len || sig.is_generator {
+		return none
+	}
+	mut params := sig.args.args.clone()
+	params << sig.args.kwonlyargs
+	for param in params {
+		if param.arg in sig.mutable_vars || param.arg in ['self', 'cls'] { return none }
+	}
+	mut defaults := map[string]Expr{}
+	for i, expr in sig.args.defaults {
+		defaults[params[sig.args.args.len - sig.args.defaults.len + i].arg] = expr
+	}
+	for i, expr in sig.args.kw_defaults {
+		if value := expr { defaults[sig.args.kwonlyargs[i].arg] = value }
+	}
+	mut supplied := map[string]Expr{}
+	mut order := []string{}
+	for i, expr in node.args {
+		if expr is Starred { return none }
+		param := params[i].arg
+		supplied[param] = expr
+		order << param
+	}
+	for kw in node.keywords {
+		param := kw.arg or { return none }
+		if param !in params.map(it.arg) || param in supplied { return none }
+		supplied[param] = kw.value
+		order << param
+	}
+	mut reorder_safe := true
+	for expr in supplied.values() {
+		if !(expr is Constant || expr is Name
+			|| (expr is UnaryOp && expr.op is USub && expr.operand is Constant)) {
+			reorder_safe = false
+		}
+	}
+	mut bound := []Expr{}
+	mut position := 0
+	for param in params {
+		if expr := supplied[param.arg] {
+			if order[position] != param.arg && !reorder_safe {
+				return none
+			}
+			position++
+			bound << expr
+		} else {
+			expr := defaults[param.arg] or { return none }
+			if !call_literal_default(expr) { return none }
+			bound << expr
+		}
+	}
+	return Call{ ...node, args: bound, keywords: []Keyword{} }
+}
+
+// visit_call binds eligible module functions before rendering their arguments.
+pub fn (mut t VTranspiler) visit_call(original Call) string {
+	node := t.bind_module_call(original) or { original }
 	fname := t.visit_expr(node.func)
 
 	// Check if this function has mut parameters
@@ -4391,7 +4570,8 @@ pub fn (mut t VTranspiler) visit_call(node Call) string {
 		if i in mut_indices {
 			arg_str = 'mut ${arg_str}'
 		}
-		if arg is List && (arg as List).elts.len > 0 {
+		// Bound positional arguments keep their source slots; keywords must not gain list widening.
+		if i < original.args.len && arg is List && (arg as List).elts.len > 0 {
 			list_arg_slots << i
 		}
 		vargs << arg_str
