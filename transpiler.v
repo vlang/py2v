@@ -59,6 +59,9 @@ mut:
 	// loop_idents holds the iteration variables currently in scope. V forbids a
 	// nested loop from reusing one, so a collision forces a fresh name.
 	loop_idents map[string]bool
+	// loop_breaks has one entry per loop whose body is being emitted, innermost
+	// last, so a `break` knows whether it leaves a loop that has an `else`.
+	loop_breaks []LoopBreak
 	// scope_idents holds every V name bound so far in the function being
 	// emitted, its parameters included. V rejects a `for` variable that
 	// shadows any of them, not only an enclosing iteration variable, so Python's
@@ -626,7 +629,7 @@ pub fn (mut t VTranspiler) visit_stmt(stmt Stmt) string {
 		Nonlocal { return t.visit_nonlocal(stmt) }
 		ExprStmt { return t.visit_expr_stmt(stmt) }
 		Pass { return '// pass' }
-		Break { return 'break' }
+		Break { return t.visit_break() }
 		Continue { return 'continue' }
 		TypeAlias { return t.visit_type_alias(stmt) }
 		Match { return t.visit_match(stmt) }
@@ -2623,8 +2626,10 @@ pub fn (mut t VTranspiler) visit_for(node For) string {
 				for k, name in target_names {
 					buf << t.indent_code('${name} ${t.bind_op(name)} ${item}[${k}]', 2)
 				}
-				buf << t.visit_body_stmts(node.body, 2)
+				body, flag := t.visit_loop_body(node.body, 2, has_else)
+				buf << body
 				buf << '\t}'
+				t.emit_for_else(mut buf, node.orelse, flag)
 				return buf.join('\n')
 			}
 			target = target_names.join(', ')
@@ -2637,13 +2642,10 @@ pub fn (mut t VTranspiler) visit_for(node For) string {
 					if fname == 'enumerate' && target_names.len == 2 && call.args.len > 0 {
 						iter0 := t.visit_expr(call.args[0])
 						buf << 'for ${target_names[0]}, ${target_names[1]} in ${iter0} {'
-						buf << t.visit_body_stmts(node.body, 1)
+						body, flag := t.visit_loop_body(node.body, 1, has_else)
+						buf << body
 						buf << '}'
-						if has_else {
-							buf << 'if has_break != true {'
-							buf << t.visit_body_stmts(node.orelse, 1)
-							buf << '}'
-						}
+						t.emit_for_else(mut buf, node.orelse, flag)
 						return buf.join('\n')
 					}
 					// zip(a, b) => for i, x in a { y := b[i]; ... }
@@ -2653,13 +2655,10 @@ pub fn (mut t VTranspiler) visit_for(node For) string {
 						idx := t.new_tmp('zipi')
 						buf << 'for ${idx}, ${target_names[0]} in ${left} {'
 						buf << '\t${target_names[1]} ${t.bind_op(target_names[1])} ${right}[${idx}]'
-						buf << t.visit_body_stmts(node.body, 1)
+						body, flag := t.visit_loop_body(node.body, 1, has_else)
+						buf << body
 						buf << '}'
-						if has_else {
-							buf << 'if has_break != true {'
-							buf << t.visit_body_stmts(node.orelse, 1)
-							buf << '}'
-						}
+						t.emit_for_else(mut buf, node.orelse, flag)
 						return buf.join('\n')
 					}
 				}
@@ -2681,13 +2680,10 @@ pub fn (mut t VTranspiler) visit_for(node For) string {
 				// Detect if step is -1 and use i-- instead of i += -1
 				step_op := if step == '-1' { '${target}--' } else { '${target} += ${step}' }
 				buf << 'for ${target} := ${start}; ${target} < ${end}; ${step_op} {'
-				buf << t.visit_body_stmts(node.body, 1)
+				body, flag := t.visit_loop_body(node.body, 1, has_else)
+				buf << body
 				buf << '}'
-				if has_else {
-					buf << 'if has_break != true {'
-					buf << t.visit_body_stmts(node.orelse, 1)
-					buf << '}'
-				}
+				t.emit_for_else(mut buf, node.orelse, flag)
 				return buf.join('\n')
 			} else if fname == 'range' && call.args.len == 2 {
 				start := t.visit_expr(call.args[0])
@@ -2718,16 +2714,62 @@ pub fn (mut t VTranspiler) visit_for(node For) string {
 
 	// Emit for loop
 	buf << 'for ${target} in ${for_expr} {'
-	buf << t.visit_body_stmts(node.body, 1)
+	body, flag := t.visit_loop_body(node.body, 1, has_else)
+	buf << body
 	buf << '}'
-
-	if has_else {
-		buf << 'if has_break != true {'
-		buf << t.visit_body_stmts(node.orelse, 1)
-		buf << '}'
-	}
+	t.emit_for_else(mut buf, node.orelse, flag)
 
 	return buf.join('\n')
+}
+
+// LoopBreak is one loop whose body is being emitted. A loop with an `else`
+// gets a flag the first time one of its own `break`s is emitted; a nested
+// loop has its own entry, so its breaks never set the flag.
+struct LoopBreak {
+mut:
+	has_else bool
+	flag     string
+}
+
+// visit_loop_body emits a loop body and returns it with the name of the flag
+// its `break`s set, or '' when the loop has no else or no break of its own.
+fn (mut t VTranspiler) visit_loop_body(stmts []Stmt, level int, has_else bool) (string, string) {
+	t.loop_breaks << LoopBreak{
+		has_else: has_else
+	}
+	body := t.visit_body_stmts(stmts, level)
+	flag := t.loop_breaks.last().flag
+	t.loop_breaks.delete_last()
+	return body, flag
+}
+
+// visit_break emits a `break`, setting the innermost loop's flag first when
+// that loop has an else the break must skip.
+fn (mut t VTranspiler) visit_break() string {
+	if !t.loop_breaks.last().has_else {
+		return 'break'
+	}
+	i := t.loop_breaks.len - 1
+	if t.loop_breaks[i].flag == '' {
+		t.loop_breaks[i].flag = t.new_tmp('broke')
+	}
+	return '${t.loop_breaks[i].flag} = true\nbreak'
+}
+
+// emit_for_else emits the else of a for loop after its body. buf[0] holds the
+// flag declaration visit_for wrote; a loop without a break keeps it as is.
+fn (mut t VTranspiler) emit_for_else(mut buf []string, orelse []Stmt, flag string) {
+	if orelse.len == 0 {
+		return
+	}
+	if flag == '' {
+		buf << 'if has_break != true {'
+	} else {
+		buf[0] = 'mut ${flag} := false'
+		buf << 'if !${flag} {'
+	}
+	buf << t.visit_body_stmts(orelse, 1)
+	buf << '}'
 }
 
 // visit_async_for emits V code for an AsyncFor loop (converted to sync).
@@ -2756,7 +2798,8 @@ pub fn (mut t VTranspiler) visit_async_for(node AsyncFor) string {
 		all_args << ch
 		buf << 'go ${producer}(${all_args.join(', ')})'
 		buf << 'for ${target} in ${ch} {'
-		buf << t.visit_body_stmts(node.body, 1)
+		body, _ := t.visit_loop_body(node.body, 1, false)
+		buf << body
 		buf << '}'
 		if node.orelse.len > 0 {
 			buf << '// NOTE: async for/else lowered without break tracking'
@@ -2788,7 +2831,8 @@ pub fn (mut t VTranspiler) visit_while(node While) string {
 		c := node.test as Constant
 		if c.value is bool && (c.value as bool) == true {
 			buf << 'for {'
-			buf << t.visit_body_stmts(node.body, 1)
+			body, _ := t.visit_loop_body(node.body, 1, false)
+			buf << body
 			buf << '}'
 			return buf.join('\n')
 		}
@@ -2804,7 +2848,8 @@ pub fn (mut t VTranspiler) visit_while(node While) string {
 			buf << '\t\tbreak'
 			buf << '\t}'
 			buf << ''
-			buf << t.visit_body_stmts(node.body, 1)
+			body, _ := t.visit_loop_body(node.body, 1, false)
+			buf << body
 			buf << '}'
 			return buf.join('\n')
 		}
@@ -2812,8 +2857,20 @@ pub fn (mut t VTranspiler) visit_while(node While) string {
 
 	test := t.visit_expr(node.test)
 	buf << 'for ${test} {'
-	buf << t.visit_body_stmts(node.body, 1)
+	body, flag := t.visit_loop_body(node.body, 1, node.orelse.len > 0)
+	buf << body
 	buf << '}'
+	if node.orelse.len > 0 {
+		if flag == '' {
+			// Nothing leaves the loop early, so the else always runs.
+			buf << t.visit_body_stmts(node.orelse, 0)
+		} else {
+			buf.insert(0, 'mut ${flag} := false')
+			buf << 'if !${flag} {'
+			buf << t.visit_body_stmts(node.orelse, 1)
+			buf << '}'
+		}
+	}
 
 	return buf.join('\n')
 }
