@@ -400,17 +400,17 @@ fn parse_class_def(m map[string]json2.Any) ClassDef {
 	}
 	mut declarations := map[string]string{}
 	if raw_decls := m['declarations'] {
-		raw_map := raw_decls.as_map()
-		for key, val in raw_map {
-			declarations[key] = val.str()
+		for pair in raw_decls.as_array() {
+			decl := pair.as_array()
+			declarations[decl[0].str()] = decl[1].str()
 		}
 	}
 	mut class_defaults := map[string]Expr{}
 	if raw_defaults := m['class_defaults'] {
-		raw_map := raw_defaults.as_map()
-		for key, val in raw_map {
-			if expr := parse_expr(val.as_map()) {
-				class_defaults[key] = expr
+		for pair in raw_defaults.as_array() {
+			default := pair.as_array()
+			if expr := parse_expr(default[1].as_map()) {
+				class_defaults[default[0].str()] = expr
 			}
 		}
 	}
