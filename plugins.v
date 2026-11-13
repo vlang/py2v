@@ -348,9 +348,46 @@ fn visit_pow(args []string) (string, bool, string) {
 	return 'math.pow(${args[0]}, ${args[1]})', true, 'math'
 }
 
+// sum_start_has_no_call reports whether a start is built only from names, constants and operators.
+fn sum_start_has_no_call(e Expr) bool {
+	return match e {
+		Constant, Name { true }
+		UnaryOp { sum_start_has_no_call(*e.operand) }
+		BinOp { sum_start_has_no_call(*e.left) && sum_start_has_no_call(*e.right) }
+		else { false }
+	}
+}
+
 // Handle sum() call
-fn visit_sum(args []string) (string, bool, string) {
-	return 'arrays.sum(${args[0]}) or { 0 }', true, 'arrays'
+fn visit_sum(mut t VTranspiler, node Call, args []string) (string, bool, string) {
+	total := 'arrays.sum(${args[0]}) or { 0 }'
+	// sum(xs, start) and sum(xs, start=start): with floats on either side, a fold seeded with
+	// the start, which adds in Python's order; with ints on both, where the order cannot
+	// matter, the start added to the total. Any other start is dropped as before.
+	mut starts := []Expr{}
+	if node.args.len == 2 && node.keywords.len == 0 {
+		starts << node.args[1]
+	} else if node.args.len == 1 && node.keywords.len == 1
+		&& (node.keywords[0].arg or { '' }) == 'start' {
+		starts << node.keywords[0].value
+	}
+	if starts.len == 1 && sum_start_has_no_call(starts[0]) {
+		start := starts[0]
+		// -s has the type of s
+		typed := if start is UnaryOp && start.op is USub { *start.operand } else { start }
+		start_type := t.infer_expr_type(typed)
+		elem_type := t.infer_iter_elem_type(node.args[0])
+		if start_type == 'f64' || (start_type in ['int', 'i64'] && elem_type == 'f64') {
+			// an f64 seed, so that an int start does not make the fold an int one
+			return 'arrays.fold(${args[0]}, f64(${args[1]}), |acc, x| acc + x)', true, 'arrays'
+		}
+		if start_type in ['int', 'i64'] && elem_type == 'int' {
+			// not an int seed: V may hold floats in a list whose first element is an int
+			added := if start is BinOp { '(${args[1]})' } else { args[1] }
+			return '(${total}) + ${added}', true, 'arrays'
+		}
+	}
+	return total, true, 'arrays'
 }
 
 // Handle sorted() call
@@ -688,7 +725,7 @@ fn dispatch_builtin_impl(mut t VTranspiler, fname string, node Call, args []stri
 			return DispatchResult{code, handled, using}
 		}
 		'sum' {
-			code, handled, using := visit_sum(args)
+			code, handled, using := visit_sum(mut t, node, args)
 			return DispatchResult{code, handled, using}
 		}
 		'sorted' {
