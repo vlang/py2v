@@ -90,10 +90,16 @@ fn main() {
 	if package_root != '' {
 		ast_dump_dir := os.dir(ast_dump_path)
 		out_root := if output_file != '' { output_file } else { 'out' }
-		translate_package(python_cmd, os.join_path(ast_dump_dir, 'ast_dump.py'),
+		skipped := translate_package(python_cmd, os.join_path(ast_dump_dir, 'ast_dump.py'),
 			package_root, out_root) or {
 			eprintln('error: ${err}')
 			exit(1)
+		}
+		if skipped.len > 0 {
+			eprintln('Skipped ${skipped.len} file(s) that could not be translated:')
+			for s in skipped {
+				eprintln('  ${s}')
+			}
 		}
 		if do_check {
 			modules := check_module_names(out_root)!
@@ -115,6 +121,9 @@ fn main() {
 					exit(1)
 				}
 			}
+		}
+		if skipped.len > 0 {
+			exit(1)
 		}
 		return
 	}
@@ -363,8 +372,9 @@ fn find_python_files(root string) ![]string {
 }
 
 // translate_package transpiles a Python package tree into a multi-module V
-// project rooted at out_root.
-fn translate_package(python_cmd string, ast_dump string, package_dir string, out_root string) ! {
+// project rooted at out_root. A file the frontend cannot translate does not
+// stop the others: it is left out and returned as `path: reason`.
+fn translate_package(python_cmd string, ast_dump string, package_dir string, out_root string) ![]string {
 	abs_root := os.abs_path(package_dir)
 	if !os.exists(abs_root) {
 		return error('package directory not found: ${abs_root}')
@@ -386,6 +396,7 @@ fn translate_package(python_cmd string, ast_dump string, package_dir string, out
 	mut parsed := map[string]Module{}
 	// Emitted output paths, so two files can never be written over each other.
 	mut written := map[string]string{}
+	mut skipped := []string{}
 	for file in files {
 		rel := rel_path(abs_root, file)
 		rel_pkg := py_pkg_dotted(rel)
@@ -396,10 +407,22 @@ fn translate_package(python_cmd string, ast_dump string, package_dir string, out
 		if abs_mod_dotted == '' {
 			return error('cannot name module for ${rel}')
 		}
-		mod := run_frontend(python_cmd, ast_dump, file)!
-		parsed[abs_mod_dotted] = mod
 		v_mod := v_module_for_pkg(pkg_dotted)
 		rel_path_v := v_relpath_for(v_mod, rel)
+		mod := run_frontend(python_cmd, ast_dump, file) or {
+			// The reason is one line: the exception of a Python traceback, else the first line.
+			lines := err.msg().trim_space().split_into_lines()
+			reason := if err.msg().contains('Traceback') { lines[lines.len - 1] } else { lines[0] }
+			skipped << '${rel}: ${reason}'
+			// What an earlier run wrote for this file is stale now; nothing of this run is
+			// written before the second pass, so this can only remove an old file.
+			stale := os.join_path(out_root, rel_path_v)
+			if os.is_file(stale) {
+				os.rm(stale) or { return error('cannot remove the stale ${stale}: ${err}') }
+			}
+			continue
+		}
+		parsed[abs_mod_dotted] = mod
 		if prev := written[rel_path_v] {
 			return error('output collision: ${rel} and ${prev} both map to ' +
 				'${rel_path_v}')
@@ -473,6 +496,7 @@ fn translate_package(python_cmd string, ast_dump string, package_dir string, out
 		count++
 	}
 	eprintln('Transpiled ${count} modules into ${out_root}')
+	return skipped
 }
 
 // rel_path returns `path` expressed relative to `base`, using forward slashes.
