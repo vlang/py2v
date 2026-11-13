@@ -120,10 +120,10 @@ fn main() {
 	}
 
 	// Run Python frontend to get JSON AST
-	result := os.exec_opt([python_cmd, ast_dump_path, input_file]) or { exit(1) }
-	if result.exit_code != 0 {
+	// exec_opt returns an error that holds the frontend's output when it exits non-zero.
+	result := os.exec_opt([python_cmd, ast_dump_path, input_file]) or {
 		eprintln('Error running Python frontend:')
-		eprintln(result.output)
+		eprintln(err.msg().trim_space())
 		exit(1)
 	}
 

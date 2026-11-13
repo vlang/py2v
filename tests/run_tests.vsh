@@ -243,6 +243,28 @@ for c in [['fails closed without a diagnostic', py2v], ['drains a large output',
 os.setenv('V', old_v, true)
 os.rmdir_all(compiler_root) or { panic(err) }
 
+// When the Python frontend fails, py2v must say why: a file with a syntax error
+// and a file that does not exist both print the frontend's message and exit 1.
+frontend_root := os.join_path(os.temp_dir(), 'py2v_frontend_errors_${os.getpid()}')
+os.mkdir_all(frontend_root) or { panic(err) }
+syntax_py := os.join_path(frontend_root, 'syntax.py')
+os.write_file(syntax_py, 'def f(:\n    pass\n') or { panic(err) }
+for c in [['a syntax error', syntax_py, 'SyntaxError'],
+	['a missing file', os.join_path(frontend_root, 'missing.py'), 'does not exist']] {
+	res := os.exec([py2v, c[1]])
+	name := 'frontend error: ${c[0]}'
+	if res.exit_code == 1 && res.output.contains(c[2]) {
+		report('PASS', name, '')
+		passed++
+	} else {
+		report('FAIL', name, ' (exit ${res.exit_code})')
+		println(excerpt_n(res.output, 20))
+		failed++
+		failures << fail_line('FAIL', name, '')
+	}
+}
+os.rmdir_all(frontend_root) or { panic(err) }
+
 println('')
 println('----------------------------------------')
 println('Summary: ' + passed.str() + ' passed, ' + failed.str() +
