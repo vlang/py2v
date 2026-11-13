@@ -263,6 +263,47 @@ for c in [['a syntax error', syntax_py, 'SyntaxError'],
 		failures << fail_line('FAIL', name, '')
 	}
 }
+// In a package, a file the frontend cannot translate must not stop the others: the good
+// module is written, the bad file is named, and the run still exits 1.
+partial_pkg := os.join_path(frontend_root, 'pkg')
+partial_out := os.join_path(frontend_root, 'out')
+os.mkdir_all(partial_pkg) or { panic(err) }
+os.write_file(os.join_path(partial_pkg, '__init__.py'), '') or { panic(err) }
+os.write_file(os.join_path(partial_pkg, 'good.py'), 'def g() -> int:\n    return 1\n') or { panic(err) }
+os.write_file(os.join_path(partial_pkg, 'bad.py'), 'def f(:\n    pass\n') or { panic(err) }
+partial := os.exec([py2v, '--package', partial_pkg, '-o', partial_out])
+partial_name := 'package: a file the frontend refuses is skipped'
+if partial.exit_code == 1 && os.exists(os.join_path(partial_out, 'py_pkg', 'good.v'))
+	&& partial.output.contains('bad.py: ') && partial.output.contains('SyntaxError') {
+	report('PASS', partial_name, '')
+	passed++
+} else {
+	report('FAIL', partial_name, ' (exit ${partial.exit_code})')
+	println(excerpt_n(partial.output, 20))
+	failed++
+	failures << fail_line('FAIL', partial_name, '')
+}
+// A second run in which a file that used to translate is refused must not leave its old
+// output behind for `--check` to compile.
+os.write_file(os.join_path(partial_pkg, 'bad.py'), 'def old() -> int:\n    return 99\n') or {
+	panic(err)
+}
+stale_out := os.join_path(frontend_root, 'out2')
+first_run := os.exec([py2v, '--package', partial_pkg, '-o', stale_out])
+os.write_file(os.join_path(partial_pkg, 'bad.py'), 'def f(:\n    pass\n') or { panic(err) }
+second_run := os.exec([py2v, '--package', partial_pkg, '-o', stale_out])
+stale_name := 'package: the old output of a skipped file is removed'
+if first_run.exit_code == 0 && second_run.exit_code == 1
+	&& os.exists(os.join_path(stale_out, 'py_pkg', 'good.v'))
+	&& !os.exists(os.join_path(stale_out, 'py_pkg', 'bad.v')) {
+	report('PASS', stale_name, '')
+	passed++
+} else {
+	report('FAIL', stale_name, ' (exit ${first_run.exit_code}, then ${second_run.exit_code})')
+	println(excerpt_n(second_run.output, 20))
+	failed++
+	failures << fail_line('FAIL', stale_name, '')
+}
 os.rmdir_all(frontend_root) or { panic(err) }
 
 println('')
