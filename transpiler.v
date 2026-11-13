@@ -4215,15 +4215,18 @@ pub fn (mut t VTranspiler) visit_binop(node BinOp) string {
 			if c.value is string {
 				fmt_str := c.value as string
 				mut values := []string{}
+				mut value_types := []string{}
 				if node.right is Tuple {
 					tup := node.right as Tuple
 					for elt in tup.elts {
 						values << t.visit_expr(elt)
+						value_types << t.infer_expr_type(elt)
 					}
 				} else {
 					values << right
+					value_types << t.infer_expr_type(node.right)
 				}
-				return convert_percent_format(fmt_str, values)
+				return convert_percent_format(fmt_str, values, value_types)
 			}
 		}
 	}
