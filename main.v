@@ -3,7 +3,20 @@ module main
 import os
 import strconv
 
+// The transpiler and the JSON decoder walk the AST by recursion: about 70 nested blocks or 200
+// levels of one expression overflow the main thread's stack. The work runs on a thread with a
+// larger one instead (V's generated C takes the size of its threads' stacks from this macro).
+// 64 MiB is twice the smallest size tested to be enough: an `elif` chain of 250 branches, close
+// to the longest the decoder's nesting limit lets through, translates with 32 MiB and overflows
+// with 16.
+#flag -DV_THREAD_STACK_SIZE=67108864
+
 fn main() {
+	work := spawn run()
+	work.wait()
+}
+
+fn run() {
 	args := os.args[1..]
 
 	if args.len == 0 {
@@ -102,7 +115,7 @@ fn main() {
 			}
 		}
 		if do_check {
-			modules := check_module_names(out_root)!
+			modules := check_module_names(out_root) or { panic(err) }
 			if modules.len == 0 {
 				eprintln('check: no generated V modules under ${out_root}')
 				exit(1)
