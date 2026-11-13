@@ -1050,8 +1050,12 @@ def _node_to_dict(node: ast.AST, mutable_vars: Set[str],
         result["keywords"] = [_keyword_to_dict(kw, mutable_vars, redefined, ctx) for kw in node.keywords]
         result["body"] = [_node_to_dict(n, mutable_vars, redefined, body_ctx) for n in node.body]
         result["decorator_list"] = [_node_to_dict(d, mutable_vars, redefined, ctx) for d in node.decorator_list]
-        result["declarations"] = declarations
-        result["class_defaults"] = _extract_class_defaults(node, mutable_vars, redefined, ctx)
+        # Lists of [name, value] pairs, not objects keyed by the field name: V's json2 reads a
+        # "_type" key as a sum type tag, so a field named `_type` would make the file undecodable.
+        result["declarations"] = [[name, typ] for name, typ in declarations.items()]
+        result["class_defaults"] = [
+            [name, default] for name, default
+            in _extract_class_defaults(node, mutable_vars, redefined, ctx).items()]
         result["is_protocol"] = _is_protocol_class(node)
         result["type_params"] = _extract_generic_type_params(node)
         # Extract class-level docstring
