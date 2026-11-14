@@ -24,6 +24,7 @@ import ast
 import json
 import sys
 import os
+import unicodedata
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -774,6 +775,126 @@ def _extract_generic_type_params(node: ast.ClassDef) -> List[str]:
                 if isinstance(s, ast.Tuple):
                     return [e.id for e in s.elts if isinstance(e, ast.Name)]
     return []
+
+
+def _is_v_generic_name(name: str) -> bool:
+    return len(name) == 1 and "A" <= name <= "Z"
+
+
+def _shorten_generic_names(tree: ast.Module) -> None:
+    """Give long generic parameter names one capital letter each.
+
+    V only accepts a single capital letter as a generic parameter, so
+    `class Queue(Generic[QueueType])` cannot become `struct Queue[QueueType]`.
+    A name in a `Generic[...]` base that is not one capital letter gets a
+    letter that appears nowhere in the module as an identifier. Every
+    `ast.Name` of that spelling is renamed, and so is a string annotation that
+    is exactly the name.
+
+    A name is left alone when the module also binds the spelling some other
+    way (a parameter, a variable, a function, a class, an attribute, two
+    imports, ...), since nothing else is rewritten. A module with more names
+    than free letters keeps the remaining names as they are.
+    """
+    long_names: List[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef):
+            for name in _extract_generic_type_params(node):
+                if not _is_v_generic_name(name) and name not in long_names:
+                    long_names.append(name)
+    if not long_names:
+        return
+
+    # The one binding a type parameter may have: `Name = TypeVar(...)`.
+    typevar_targets = set()
+    typevar_names = set()
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Assign) and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name)
+                and isinstance(node.value, ast.Call)
+                and isinstance(node.value.func, (ast.Name, ast.Attribute))):
+            func = node.value.func
+            if (func.id if isinstance(func, ast.Name) else func.attr) == "TypeVar":
+                typevar_targets.add(id(node.targets[0]))
+                typevar_names.add(node.targets[0].id)
+
+    # Every identifier the tree spells outside a Name being read, and every
+    # Name, so a chosen letter is new and a name bound otherwise is known.
+    taken = set()
+    bound_otherwise = set()
+    imported = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name):
+            taken.add(node.id)
+            if not isinstance(node.ctx, ast.Load) and id(node) not in typevar_targets:
+                bound_otherwise.add(node.id)
+            continue
+        if isinstance(node, ast.Constant):
+            continue
+        for _, value in ast.iter_fields(node):
+            for item in value if isinstance(value, list) else [value]:
+                if isinstance(item, str):
+                    taken.add(item)
+                    # An imported type parameter is still only a type parameter,
+                    # unless the spelling is imported twice or is also assigned
+                    # a TypeVar here.
+                    if not isinstance(node, ast.alias):
+                        bound_otherwise.add(item)
+        if isinstance(node, ast.alias):
+            local = (node.asname or node.name).split(".")[0]
+            if local in imported or local in typevar_names:
+                bound_otherwise.add(local)
+            imported.add(local)
+            taken.add(local)
+
+    letters = "TUVWXYZABCDEFGHIJKLMNOPQRS"
+    renamed: Dict[str, str] = {}
+    for name in long_names:
+        if name in bound_otherwise:
+            continue
+        initial = name.lstrip("_")[:1].upper()
+        for letter in initial + letters:
+            if _is_v_generic_name(letter) and letter not in taken:
+                renamed[name] = letter
+                taken.add(letter)
+                break
+    if not renamed:
+        return
+
+    def rename_in_strings(part: Optional[ast.AST]) -> None:
+        if part is None:
+            return
+        if isinstance(part, ast.Constant):
+            # Only a string that is the name and nothing else: a longer
+            # forward reference would need parsing.
+            # Python spells identifiers in NFKC; a string keeps what was typed.
+            if isinstance(part.value, str):
+                spelled = unicodedata.normalize("NFKC", part.value)
+                if spelled in renamed:
+                    part.value = renamed[spelled]
+            return
+        if isinstance(part, ast.Subscript) and isinstance(part.value, (ast.Name, ast.Attribute)):
+            base = part.value.id if isinstance(part.value, ast.Name) else part.value.attr
+            # The strings of Literal[...] are values, and only the first item
+            # of Annotated[...] is a type.
+            if base == "Literal":
+                return
+            if base == "Annotated":
+                if isinstance(part.slice, ast.Tuple) and part.slice.elts:
+                    rename_in_strings(part.slice.elts[0])
+                return
+        for child in ast.iter_child_nodes(part):
+            rename_in_strings(child)
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and node.id in renamed:
+            node.id = renamed[node.id]
+        elif isinstance(node, ast.arg):
+            rename_in_strings(node.annotation)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            rename_in_strings(node.returns)
+        elif isinstance(node, ast.AnnAssign):
+            rename_in_strings(node.annotation)
 
 
 def _detect_class_methods(tree: ast.Module):
@@ -1638,6 +1759,8 @@ def process_file(file_path: str) -> str:
     # Mark the walrus `if` tests the transpiler may hoist, before the
     # `__main__` guard becomes a function, so its block counts as module level
     _detect_walrus_hoists(tree)
+    # V generic parameters are one capital letter
+    _shorten_generic_names(tree)
 
     # Rewrite __main__ guard
     tree = _rewrite_main_guard(tree)
