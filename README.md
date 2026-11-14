@@ -4,7 +4,7 @@ A Python to V transpiler. Converts Python source code to the [V programming lang
 
 ## Requirements
 
-- [V compiler](https://vlang.io/)
+- [V compiler](https://vlang.io/), built from its current master. py2v follows V's master, and the 0.5.2 release is too old to build it. `v up` updates a V installed from source or from a release zip; a V from a package manager may have `v up` disabled, and then needs installing from source.
 - Python 3.8+
 
 ## Building
