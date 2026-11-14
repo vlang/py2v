@@ -41,6 +41,8 @@ pub mut:
 	// package is merged into one module per subpackage, so every file of that
 	// module would otherwise redeclare it.
 	any_declared_in map[string]bool
+	// py2v_format_declared_in does the same for the f-string format helper.
+	py2v_format_declared_in map[string]bool
 }
 
 // new_module_registry creates an empty registry.
