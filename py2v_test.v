@@ -439,3 +439,126 @@ fn test_code_prec_reads_the_top_level_operator_of_emitted_code() {
 	assert as_receiver('+x') == '(+x)'
 	assert as_receiver('s.trim_space()') == 's.trim_space()'
 }
+
+fn test_helper_name_avoids_taken_words_and_is_chosen_once() {
+	mut r := new_module_registry()
+	// The first free name, chosen once per module and kind
+	assert r.helper_name('main', 'true_div', []) == 'py2v_true_div1'
+	assert r.helper_name('main', 'true_div', ['py2v_true_div1']) == 'py2v_true_div1'
+	// A word of the file being translated
+	assert r.helper_name('a', 'true_div', ['x', 'py2v_true_div1']) == 'py2v_true_div2'
+	// A word of any file of the module, with or without one of this file
+	r.module_words['b'] << ['py2v_true_div1', 'py2v_true_div3']
+	assert r.helper_name('b', 'true_div', ['py2v_true_div2']) == 'py2v_true_div4'
+	// Another helper of the same module, and no one else's
+	r.helper_names['c.other'] = 'py2v_true_div1'
+	r.helper_names['d.other'] = 'py2v_true_div2'
+	assert r.helper_name('c', 'true_div', []) == 'py2v_true_div2'
+}
+
+fn test_nonzero_int_literal_and_division_operand_type() {
+	mut t := new_transpiler()
+	two := Expr(Constant{
+		value: 2
+	})
+	zero := Expr(Constant{
+		value: 0
+	})
+	half := Expr(Constant{
+		value: 0.5
+	})
+	minus_two := Expr(UnaryOp{
+		op:      USub{}
+		operand: &two
+	})
+	minus_zero := Expr(UnaryOp{
+		op:      USub{}
+		operand: &zero
+	})
+	not_two := Expr(UnaryOp{
+		op:      Not{}
+		operand: &two
+	})
+	name := Expr(Name{
+		id: 'n'
+	})
+	assert is_nonzero_int_literal(two)
+	assert is_nonzero_int_literal(minus_two)
+	assert !is_nonzero_int_literal(zero)
+	assert !is_nonzero_int_literal(Expr(Constant{
+		value: i64(0)
+	}))
+	assert is_nonzero_int_literal(Expr(Constant{
+		value: i64(5000000000)
+	}))
+	assert !is_nonzero_int_literal(minus_zero)
+	assert !is_nonzero_int_literal(half)
+	assert !is_nonzero_int_literal(not_two)
+	assert !is_nonzero_int_literal(name)
+	assert is_v_int_type(t.division_operand_type(two, t.infer_expr_type(two)))
+	assert is_v_int_type(t.division_operand_type(minus_two, t.infer_expr_type(minus_two)))
+	assert !is_v_int_type(t.division_operand_type(half, t.infer_expr_type(half)))
+	assert !is_v_int_type(t.division_operand_type(name, t.infer_expr_type(name)))
+	t.var_types['n'] = 'i64'
+	assert is_v_int_type(t.division_operand_type(name, t.infer_expr_type(name)))
+	t.var_types['n'] = 'f64'
+	assert !is_v_int_type(t.division_operand_type(name, t.infer_expr_type(name)))
+	t.var_types['n'] = 'string'
+	assert !is_v_int_type(t.division_operand_type(name, t.infer_expr_type(name)))
+}
+
+fn test_runtime_helper_name_and_declaration() {
+	assert runtime_helper_declaration('true_div', 'h').contains('fn h(a f64, b f64) f64 {')
+	mut t := new_transpiler()
+	assert t.runtime_helper('true_div') == 'py2v_true_div1'
+	assert t.runtime_helper('true_div') == 'py2v_true_div1'
+	assert t.helpers_used == ['true_div']
+	// The next module this transpiler emits starts without it
+	t.module_name = 'other'
+	assert !t.visit_module(Module{}).contains('py2v_true_div')
+}
+
+fn test_as_f64_argument_converts_what_v_does_not() {
+	mut t := new_transpiler()
+	name := Expr(Name{
+		id: 'n'
+	})
+	minus := Expr(UnaryOp{
+		op:      USub{}
+		operand: &name
+	})
+	t.var_types['n'] = 'int'
+	assert as_f64_argument(t.division_operand_type(name, t.infer_expr_type(name)), 'n') == 'n'
+	assert as_f64_argument(t.division_operand_type(minus, t.infer_expr_type(minus)), '-n') == '-n'
+	t.var_types['n'] = 'i64'
+	assert as_f64_argument(t.division_operand_type(name, t.infer_expr_type(name)), 'n') == 'f64(n)'
+	assert as_f64_argument(t.division_operand_type(minus, t.infer_expr_type(minus)), '-n') == 'f64(-n)'
+}
+
+fn test_a_division_is_a_float_only_when_both_operands_are_ints() {
+	mut t := new_transpiler()
+	t.var_types['n'] = 'int'
+	n := Expr(Name{
+		id: 'n'
+	})
+	u := Expr(Name{
+		id: 'u'
+	})
+	minus_n := Expr(UnaryOp{
+		op:      USub{}
+		operand: &n
+	})
+	inverted_n := Expr(UnaryOp{
+		op:      Invert{}
+		operand: &n
+	})
+	assert t.infer_expr_type(Expr(BinOp{ left: &n, op: Div{}, right: &n })) == 'f64'
+	assert t.infer_expr_type(Expr(BinOp{ left: &minus_n, op: Div{}, right: &inverted_n })) == 'f64'
+	assert t.infer_expr_type(Expr(BinOp{ left: &n, op: Div{}, right: &u })) == ''
+	assert t.infer_expr_type(Expr(BinOp{ left: &u, op: Div{}, right: &n })) == ''
+	assert t.infer_expr_type(Expr(BinOp{ left: &n, op: Mult{}, right: &n })) != 'f64'
+	// A lambda parameter named like an int variable is not that variable
+	t.lambda_params['n'] = 1
+	assert t.infer_expr_type(Expr(BinOp{ left: &n, op: Div{}, right: &n })) != 'f64'
+	assert t.infer_expr_type(Expr(BinOp{ left: &minus_n, op: Div{}, right: &n })) != 'f64'
+}

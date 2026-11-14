@@ -43,6 +43,14 @@ pub mut:
 	any_declared_in map[string]bool
 	// py2v_format_declared_in does the same for the f-string format helper.
 	py2v_format_declared_in map[string]bool
+	// module_words lists, per V module, the source words of every file merged into it.
+	module_words map[string][]string
+	// helper_names maps `module.kind` to the name of a run-time helper function, and
+	// helper_declared records the ones already emitted: a helper is declared once per
+	// V module, in the first file that needs it. A registry therefore serves one set of
+	// files that is compiled together.
+	helper_names    map[string]string
+	helper_declared map[string]bool
 }
 
 // new_module_registry creates an empty registry.
@@ -53,6 +61,30 @@ pub fn new_module_registry() ModuleRegistry {
 		output_root:     ''
 		any_declared_in: map[string]bool{}
 	}
+}
+
+// helper_name returns the name of the run-time helper `kind` in `module_name`. The name
+// avoids the words of every source file of that module and the module's other helpers.
+fn (mut r ModuleRegistry) helper_name(module_name string, kind string, source_words []string) string {
+	key := '${module_name}.${kind}'
+	if name := r.helper_names[key] {
+		return name
+	}
+	mut gen := new_tmp_var_gen()
+	for word in r.module_words[module_name] {
+		gen.taken[word] = true
+	}
+	for word in source_words {
+		gen.taken[word] = true
+	}
+	for other, name in r.helper_names {
+		if other.all_before_last('.') == module_name {
+			gen.taken[name] = true
+		}
+	}
+	name := gen.next(kind)
+	r.helper_names[key] = name
+	return name
 }
 
 // add_module registers one discovered module under a Python import path.

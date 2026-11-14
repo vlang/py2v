@@ -40,6 +40,15 @@ mut:
 	known_classes       map[string][]string
 	// Module name for emitted code
 	module_name string
+	// source_words are the current module's; helpers_used lists the run-time helper
+	// kinds this module asked for.
+	source_words []string
+	helpers_used []string
+	// helper_requests counts the calls to run-time helpers emitted so far.
+	helper_requests int
+	// lambda_params counts, by name, the parameters of the lambdas being emitted. Such a
+	// name can carry the type of an outer variable it shadows.
+	lambda_params map[string]int
 	// current_return_count is the arity of the enclosing function's V return
 	// tuple, or 0 when it returns a single value.
 	current_return_count int
@@ -258,6 +267,8 @@ pub fn (mut t VTranspiler) visit_module(node Module) string {
 	// Reset per-module state so repeated transpilation with the same instance
 	// does not leak global-declaration flags.
 	t.has_global_decl = false
+	t.source_words = node.source_words
+	t.helpers_used = []
 	for name in node.source_words {
 		t.tmp_gen.taken[name] = true
 	}
@@ -469,6 +480,14 @@ pub fn (mut t VTranspiler) visit_module(node Module) string {
 		t.registry.py2v_format_declared_in[t.module_name] = true
 		func_decls << py2v_format_helper
 	}
+	// A run-time helper is declared in the first file of a V module that asks for it.
+	for kind in t.helpers_used {
+		key := '${t.module_name}.${kind}'
+		if !t.registry.helper_declared[key] {
+			t.registry.helper_declared[key] = true
+			func_decls << runtime_helper_declaration(kind, t.runtime_helper_name(kind))
+		}
+	}
 	if func_decls.len > 0 {
 		parts << func_decls.join('\n\n')
 	}
@@ -477,6 +496,78 @@ pub fn (mut t VTranspiler) visit_module(node Module) string {
 	}
 
 	return parts.join('\n\n') + '\n'
+}
+
+// runtime_helper_name returns the name of the run-time helper `kind` in the current module.
+fn (mut t VTranspiler) runtime_helper_name(kind string) string {
+	return t.registry.helper_name(t.module_name, kind, t.source_words)
+}
+
+// runtime_helper asks for the run-time helper `kind` and returns its name.
+fn (mut t VTranspiler) runtime_helper(kind string) string {
+	t.helper_requests++
+	if kind !in t.helpers_used {
+		t.helpers_used << kind
+	}
+	return t.runtime_helper_name(kind)
+}
+
+// runtime_helper_declaration returns the V source of the run-time helper `kind`.
+fn runtime_helper_declaration(kind string, name string) string {
+	return match kind {
+		'true_div' {
+			'fn ${name}(a f64, b f64) f64 {\n' + '\tif b == 0 {\n' +
+				"\t\tpanic('division by zero')\n" + '\t}\n' + '\treturn a / b\n' + '}'
+		}
+		else {
+			panic('py2v has no run-time helper ${kind}')
+		}
+	}
+}
+
+// division_operand_type returns the type of `expr` as an operand of `/`: `inferred`, the
+// type py2v already has for it, or else the type under a unary operator. A lambda
+// parameter has none.
+fn (mut t VTranspiler) division_operand_type(expr Expr, inferred string) string {
+	if expr is Name && t.lambda_params[expr.id] > 0 {
+		return ''
+	}
+	if inferred == '' && expr is UnaryOp {
+		return t.division_operand_type(expr.operand, t.infer_expr_type(expr.operand))
+	}
+	return inferred
+}
+
+// is_v_int_type reports whether `typ` names a V integer type.
+fn is_v_int_type(typ string) bool {
+	return typ in ['int', 'i8', 'i16', 'i32', 'i64', 'u8', 'u16', 'u32', 'u64']
+}
+
+// as_f64_argument returns `code`, an integer of type `typ`, as V accepts it for an f64
+// parameter: V converts an `int` by itself and no other integer type.
+fn as_f64_argument(typ string, code string) string {
+	return if typ == 'int' { code } else { 'f64(${code})' }
+}
+
+// is_nonzero_int_literal reports whether `expr` is an int literal other than 0, with or
+// without a sign.
+fn is_nonzero_int_literal(expr Expr) bool {
+	return match expr {
+		Constant {
+			v := expr.value
+			match v {
+				int { v != 0 }
+				i64 { v != 0 }
+				else { false }
+			}
+		}
+		UnaryOp {
+			(expr.op is USub || expr.op is UAdd) && is_nonzero_int_literal(expr.operand)
+		}
+		else {
+			false
+		}
+	}
 }
 
 // add_using registers an import usage required by generated code.
@@ -4322,6 +4413,16 @@ pub fn (mut t VTranspiler) visit_binop(node BinOp) string {
 		if right_ann == '' {
 			right_ann = t.infer_expr_type(node.right)
 		}
+		// Python's / on two ints is true division; V's is integer division. A divisor
+		// that can be zero goes through a helper, which stops as V's integer division does.
+		left_type := t.division_operand_type(node.left, left_ann)
+		right_type := t.division_operand_type(node.right, right_ann)
+		if is_v_int_type(left_type) && is_v_int_type(right_type) {
+			if is_nonzero_int_literal(node.right) {
+				return 'f64(${left}) ${op} ${paren_right(right, v_prec(op))}'
+			}
+			return '${t.runtime_helper('true_div')}(${as_f64_argument(left_type, left)}, ${as_f64_argument(right_type, right)})'
+		}
 		// If either operand is float, ensure both are float
 		if left_ann == 'int' && (right_ann == 'f64' || right_ann == 'float') {
 			return 'f64(${left}) ${op} ${paren_right(right, v_prec(op))}'
@@ -6182,12 +6283,20 @@ pub fn (mut t VTranspiler) visit_lambda(node Lambda) string {
 
 	// Try to infer types from the body expression
 	// If body uses arithmetic, use int; otherwise use generic default
+	for arg in node.args.args {
+		t.lambda_params[arg.arg]++
+	}
+	requests_before := t.helper_requests
 	body := t.visit_expr(node.body)
+	for arg in node.args.args {
+		t.lambda_params[arg.arg]--
+	}
 	stripped_body := strip_outer_parens(body)
 
 	// Check if body contains arithmetic operations
+	// A division emitted as a call to the true-division helper is still arithmetic
 	body_has_arithmetic := body.contains(' + ') || body.contains(' - ') || body.contains(' * ')
-		|| body.contains(' / ')
+		|| body.contains(' / ') || t.helper_requests > requests_before
 
 	lambda_type := if body_has_arithmetic { 'int' } else { 'string' }
 
@@ -7534,6 +7643,11 @@ fn (mut t VTranspiler) infer_expr_type(expr Expr) string {
 			right_type := t.infer_expr_type(expr.right)
 			if right_type == 'string' {
 				return 'string'
+			}
+			// True division of two ints gives a float
+			if expr.op is Div && is_v_int_type(t.division_operand_type(expr.left, left_type))
+				&& is_v_int_type(t.division_operand_type(expr.right, right_type)) {
+				return 'f64'
 			}
 			// Numeric type promotion for typed parameters
 			if left_type != '' && right_type != '' {
