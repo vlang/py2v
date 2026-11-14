@@ -255,6 +255,10 @@ pub mut:
 	keywords     []Keyword
 	loc          Location
 	v_annotation ?string
+	// subject_class is set on an isinstance() call whose first argument is a
+	// parameter of the enclosing function annotated with a builtin class a V
+	// type stands for; it names that class (int, float, str, bool, list, dict).
+	subject_class string
 }
 
 pub struct Keyword {

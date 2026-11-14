@@ -530,6 +530,120 @@ def _binding_keys(scope: ast.AST, skip: Set[int], into_functions: bool = True) -
     return {x if x == "*" else x.lower().strip("_") for x in names}
 
 
+def _mark_isinstance_subjects(tree: ast.Module) -> None:
+    """Set `_subject_class` on each `isinstance(name, ...)` call whose `name`
+    is a parameter of the function the call is in, annotated with one of the
+    builtin classes a V type stands for: `int`, `float`, `str`, `bool`, `list`
+    or `dict`, or `List`/`Dict` from `typing`, subscripted or not. The value is
+    that class name, and the backend decides the call from it.
+
+    The parameter must be bound nowhere else in the function: not assigned,
+    not a loop, comprehension, `with`, `except`, walrus or `del` target, not a
+    parameter of a nested function or lambda, not a `def`, `class`, import,
+    `global`, `nonlocal` or match capture. Not marked either: a parameter
+    whose default is `None`, positional-only parameters, `*args` and
+    `**kwargs`, and a call in the function's own default values, decorators
+    or annotations (those see the scope outside).
+    Nothing is marked in a module that binds one of the six class names or
+    `isinstance` in any way, or has a star import. Module-level code is never
+    marked."""
+    fn_types = (ast.FunctionDef, ast.AsyncFunctionDef)
+    builtin_names = ("int", "float", "str", "bool", "list", "dict", "isinstance")
+
+    def bound_names(node: ast.AST) -> List[str]:
+        """The names `node` itself binds, however it binds them."""
+        if isinstance(node, ast.Name):
+            return [] if isinstance(node.ctx, ast.Load) else [node.id]
+        if isinstance(node, ast.arg):
+            return [node.arg]
+        if isinstance(node, fn_types + (ast.ClassDef,)):
+            return [node.name]
+        if isinstance(node, ast.alias):
+            return [(node.asname or node.name).split(".")[0]]
+        if isinstance(node, (ast.Global, ast.Nonlocal)):
+            return list(node.names)
+        if isinstance(node, ast.ExceptHandler):
+            return [node.name] if node.name else []
+        if type(node).__name__ in ("MatchAs", "MatchStar"):
+            return [node.name] if node.name else []
+        if type(node).__name__ == "MatchMapping":
+            return [node.rest] if node.rest else []
+        return []
+
+    # `List` and `Dict` count only as imported from typing, under their own
+    # names, and `typing.List` only through `import typing`.
+    typing_modules = set()
+    typing_classes = set()
+    for node in ast.walk(tree):
+        if any(name in builtin_names for name in bound_names(node)):
+            return
+        if isinstance(node, ast.ImportFrom):
+            if any(a.name == "*" for a in node.names):
+                return
+            if node.module == "typing" and node.level == 0:
+                typing_classes.update(a.name for a in node.names
+                                      if a.name in ("List", "Dict") and a.asname is None)
+        elif isinstance(node, ast.Import):
+            typing_modules.update(a.asname or a.name for a in node.names if a.name == "typing")
+    module_names = [name for node in ast.walk(tree) for name in bound_names(node)]
+    for name in list(typing_classes) + list(typing_modules):
+        # Bound once, by that import.
+        if module_names.count(name) != 1:
+            typing_classes.discard(name)
+            typing_modules.discard(name)
+
+    def annotation_class(annotation: Optional[ast.AST]) -> str:
+        base = annotation.value if isinstance(annotation, ast.Subscript) else annotation
+        if isinstance(base, ast.Name):
+            if base.id in ("int", "float", "str", "bool", "list", "dict"):
+                return base.id
+            if base.id in typing_classes:
+                return base.id.lower()
+        elif (isinstance(base, ast.Attribute) and base.attr in ("List", "Dict")
+              and isinstance(base.value, ast.Name) and base.value.id in typing_modules):
+            return base.attr.lower()
+        return ""
+
+    def subject_class(fn: ast.AST, name: str) -> str:
+        args = fn.args
+        positional = args.posonlyargs + args.args
+        defaults = dict(zip([a.arg for a in positional[len(positional) - len(args.defaults):]],
+                            args.defaults))
+        defaults.update({a.arg: d for a, d in zip(args.kwonlyargs, args.kw_defaults) if d is not None})
+        param = next((a for a in args.args + args.kwonlyargs if a.arg == name), None)
+        if param is None:
+            return ""
+        default = defaults.get(name)
+        if isinstance(default, ast.Constant) and default.value is None:
+            return ""
+        for node in ast.walk(fn):
+            if node is not fn and node is not param and name in bound_names(node):
+                return ""
+        return annotation_class(param.annotation)
+
+    def mark(node: ast.AST, fn: Optional[ast.AST]) -> None:
+        if (fn is not None and isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name) and node.func.id == "isinstance"
+                and len(node.args) == 2 and not node.keywords
+                and isinstance(node.args[0], ast.Name)):
+            node._subject_class = subject_class(fn, node.args[0].id)
+
+    def visit(node: ast.AST, fn: Optional[ast.AST]) -> None:
+        if isinstance(node, fn_types):
+            # Only the body runs with the parameters bound: defaults,
+            # decorators and annotations belong to the scope outside.
+            for part in node.decorator_list + [node.args] + ([node.returns] if node.returns else []):
+                visit(part, fn)
+            for statement in node.body:
+                visit(statement, node)
+        else:
+            mark(node, fn)
+            for child in ast.iter_child_nodes(node):
+                visit(child, fn)
+
+    visit(tree, None)
+
+
 def _detect_walrus_hoists(tree: ast.Module):
     """Set `_hoist` on each NamedExpr that is the whole test of an `if`: true
     only when nothing else binds its name (in its outermost enclosing function,
@@ -1489,6 +1603,8 @@ def _node_to_dict(node: ast.AST, mutable_vars: Set[str],
         result["func"] = _node_to_dict(node.func, mutable_vars, redefined, ctx)
         result["args"] = [_node_to_dict(a, mutable_vars, redefined, ctx) for a in node.args]
         result["keywords"] = [_keyword_to_dict(kw, mutable_vars, redefined, ctx) for kw in node.keywords]
+        if getattr(node, "_subject_class", ""):
+            result["subject_class"] = node._subject_class
         # Attach v_annotation for calls when the callee is a top-level function
         # with an explicit return annotation discovered during pre-scan.
         if isinstance(node.func, ast.Name):
@@ -1761,6 +1877,9 @@ def process_file(file_path: str) -> str:
     _detect_walrus_hoists(tree)
     # V generic parameters are one capital letter
     _shorten_generic_names(tree)
+
+    # isinstance() on a parameter whose annotation settles the answer
+    _mark_isinstance_subjects(tree)
 
     # Rewrite __main__ guard
     tree = _rewrite_main_guard(tree)

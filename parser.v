@@ -1178,15 +1178,16 @@ fn parse_call(m map[string]json2.Any) Call {
 		}
 	}
 	return Call{
-		func:         parse_expr(map_field(m, 'func')) or {
+		subject_class: (m['subject_class'] or { json2.Any('') }).str()
+		func:          parse_expr(map_field(m, 'func')) or {
 			&Expr(Constant{
 				value: NoneValue{}
 			})
 		}
-		args:         args
-		keywords:     keywords
-		loc:          parse_location(m)
-		v_annotation: parse_type_annotation(m) or { '' }
+		args:          args
+		keywords:      keywords
+		loc:           parse_location(m)
+		v_annotation:  parse_type_annotation(m) or { '' }
 	}
 }
 
