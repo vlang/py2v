@@ -90,3 +90,10 @@ jobs:
             echo "Tests failed."
             exit 1
           fi
+
+      # Translate four pinned open-source projects and check that py2v still
+      # writes, and V still parses, at least as many files as recorded in
+      # tests/corpus_projects.tsv. The larger projects run in corpus.yml.
+      - name: Real projects (pinned)
+        if: ${{ runner.os == 'Linux' && steps.build.outcome == 'success' }}
+        run: v tests/corpus_projects.vsh --tier pr

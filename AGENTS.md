@@ -43,7 +43,8 @@ Checking generated code
   directly (`check_v_file`): an entry point could not import a `main` module or a module
   whose directory name is not its module name.
 - Corpus baseline: `v tests/corpus.vsh <root> --baseline <path> --update` records per-module error counts; the same command without `--update` diffs against it and exits 1 when any module regresses. `--baseline` is always explicit, so an external corpus is never written into this repository.
-- The only baselines in `tests/baseline/` are for the fixtures in `tests/cases/`. Do not add a baseline for a corpus that does not ship here; keep those under `/tmp` or wherever the corpus itself lives.
+- The only baselines in `tests/baseline/` are for the fixtures in `tests/cases/`. Do not add a per-module baseline for a corpus that does not ship here; keep those under `/tmp` or wherever the corpus itself lives.
+- Real projects: `v tests/corpus_projects.vsh` clones the projects listed in `tests/corpus_projects.tsv` at their pinned commits, translates each and fails when fewer files are written, or fewer parse (`v -check-syntax`), than the two minimums in its row. Only the table lives here, never the projects or per-module baselines. `--tier pr` (four small projects) runs in the Linux job of `ci.yml` once the tests before it have passed; `--tier nightly` (the large ones) runs in `corpus.yml`. When a fix raises a count, raise the minimum in the same pull request; when a count drops, fix the cause instead of lowering it.
 - `--check` exits 1 for a corpus that has errors, which is expected for a large real-world tree. Use `v tests/corpus.vsh` rather than the exit status when measuring progress.
 
 Generated project layout (`--package`)

@@ -16,6 +16,7 @@ py2v
 
 tests/run_tests
 tests/corpus
+tests/corpus_projects
 *.v3cc.*
 **/__pycache__/
 *.pyc

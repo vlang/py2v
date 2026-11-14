@@ -1,0 +1,30 @@
+name: Real projects
+
+# The large rows of tests/corpus_projects.tsv (yt-dlp, textual, sympy,
+# TheAlgorithms/Python). ci.yml checks the small ones in its Linux job once
+# the tests before that step have passed.
+on:
+  schedule:
+    - cron: '17 4 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  corpus:
+    runs-on: ubuntu-latest
+    # 31 and 50 minutes in two runs on a hosted runner, most of that for sympy.
+    timeout-minutes: 120
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup V
+        uses: vlang/setup-v@v1.7
+
+      - name: Build
+        run: v .
+
+      - name: Real projects (pinned, large)
+        run: v tests/corpus_projects.vsh --tier nightly
