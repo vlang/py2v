@@ -1,0 +1,14 @@
+# One project per row; cells are separated by tabs. The script clones `url` at `commit`, translates `package`
+# and fails when fewer files are written or parse than the two minimums. Raise a minimum when a fix earns it.
+# tier: pr runs in the Linux job of ci.yml once the tests before it have passed, nightly in corpus.yml.
+# The minimums were measured on the CI runner (Python 3.14): py2v's frontend parses with the installed Python,
+# so a project that uses newer syntax gives fewer files there (six of TheAlgorithms' files need Python 3.15).
+name	url	commit	package	tier	min_translated	min_parsing
+python-chess	https://github.com/niklasf/python-chess	0c6bdaccfcb3b09cdbe94b0f81e948cb2a356015	chess	pr	8	1
+black	https://github.com/psf/black	cf3e0938971fc5cd0d71e7b696e86a6fb953332a	src	pr	40	34
+rich	https://github.com/Textualize/rich	3a109ccdffe5b2d0e30684a304fbd388e99ce57b	rich	pr	100	66
+mpmath	https://github.com/mpmath/mpmath	d266b7522d38d3894466a33ff302e89ad57030ef	mpmath	pr	54	38
+textual	https://github.com/Textualize/textual	5e5b7ef58b8c5572c13a3ff9027d756623661495	src/textual	nightly	247	169
+yt-dlp	https://github.com/yt-dlp/yt-dlp	412e7f0a4b0588fe884a02b344ac66a06538475b	yt_dlp	nightly	1043	923
+TheAlgorithms	https://github.com/TheAlgorithms/Python	30507bbe41397065728167fb09aa820f9fce8dc7	.	nightly	1575	1485
+sympy	https://github.com/sympy/sympy	e4797f44f5fe4af0566514227eb371131aaf8e48	sympy	nightly	880	597
