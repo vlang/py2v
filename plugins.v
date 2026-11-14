@@ -556,6 +556,40 @@ fn visit_hasattr(args []string) (string, bool) {
 	return '', false
 }
 
+// isinstance_of_known_type decides `isinstance(name, cls)` while translating,
+// when the frontend found `name` to be a parameter annotated with one of the
+// builtin classes `int`, `float`, `str`, `bool`, `list` or `dict`, and `cls`
+// is one of those six or a tuple of them. V's `is` only works on sum types
+// and interfaces, and a V parameter of such a type cannot hold anything else,
+// so the answer is a constant. As in Python, a bool is also an int.
+fn isinstance_of_known_type(node Call) ?string {
+	if node.subject_class == '' || node.args.len != 2 {
+		return none
+	}
+	classes := match node.args[1] {
+		Name { [node.args[1]] }
+		Tuple { (node.args[1] as Tuple).elts }
+		else { return none }
+	}
+	if classes.len == 0 {
+		return none
+	}
+	mut result := false
+	for cls in classes {
+		if cls !is Name {
+			return none
+		}
+		name := (cls as Name).id
+		if name !in ['int', 'float', 'str', 'bool', 'list', 'dict'] {
+			return none
+		}
+		if name == node.subject_class || (name == 'int' && node.subject_class == 'bool') {
+			result = true
+		}
+	}
+	return result.str()
+}
+
 // Handle isinstance() call
 fn visit_isinstance(args []string) (string, bool) {
 	types_arg := args[1]
@@ -818,6 +852,9 @@ fn dispatch_builtin_impl(mut t VTranspiler, fname string, node Call, args []stri
 			return DispatchResult{code, handled, ''}
 		}
 		'isinstance' {
+			if known := isinstance_of_known_type(node) {
+				return DispatchResult{known, true, ''}
+			}
 			code, handled := visit_isinstance(args)
 			return DispatchResult{code, handled, ''}
 		}
