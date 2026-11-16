@@ -2926,6 +2926,11 @@ const v_value_param_types = ['int', 'i8', 'i16', 'i32', 'i64', 'u8', 'u16', 'u32
 
 // zero_value_for returns a V zero-value expression for the named type.
 pub fn (t VTranspiler) zero_value_for(typ string) string {
+	if typ.starts_with('&') && typ.contains('.') {
+		// a reference to a runtime object (a connection, a cursor) that is assigned before
+		// it is used: its struct has reference fields and no empty form
+		return '${typ}(unsafe { nil })'
+	}
 	return zero_value_for_type(typ)
 }
 
@@ -5607,6 +5612,13 @@ fn propagated_call(code string) string {
 	return '${name}_py${code[open..]}!'
 }
 
+// runtime_dispatched_methods are the methods of str, list, dict and set that a value of
+// unknown type is most often asked for.
+const runtime_dispatched_methods = ['get', 'items', 'keys', 'values', 'setdefault', 'update', 'pop',
+	'copy', 'append', 'extend', 'insert', 'remove', 'sort', 'reverse', 'index', 'count', 'add',
+	'discard', 'strip', 'lstrip', 'rstrip', 'lower', 'upper', 'title', 'split', 'splitlines',
+	'startswith', 'endswith', 'replace', 'find', 'encode', 'decode', 'isdigit']
+
 // without_opt takes the `.opt()` that ends the text of a runtime call giving a
 // `pyrt.Maybe`, so that the error handling of the call itself can be rewritten.
 fn without_opt(code string) (string, bool) {
@@ -5853,6 +5865,23 @@ pub fn (mut t VTranspiler) visit_call(original Call) string {
 				if ok {
 					return res
 				}
+			}
+		}
+
+		// A method of a builtin type on a name this file declares as `Any` (a parameter of
+		// a class the file does not see, an item of a dict of values): the runtime finds
+		// the method from what the value is. The frontend does this where it knows the
+		// value is of unknown type; this is for the names only the backend typed.
+		if method in runtime_dispatched_methods && node.keywords.len == 0
+			&& attr_node.value is Name && !node.args.any(it is Starred) {
+			recv_name := (attr_node.value as Name).id
+			if (t.var_types[recv_name] or { '' }) == 'Any' {
+				t.add_using('pyrt')
+				mut call_args := [obj, "'${method}'"]
+				for arg in vargs {
+					call_args << if arg.starts_with('pyrt.') { arg } else { 'pyrt.box(${arg})' }
+				}
+				return 'pyrt.invoke(${call_args.join(', ')})'
 			}
 		}
 
