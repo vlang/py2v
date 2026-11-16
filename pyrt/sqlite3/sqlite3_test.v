@@ -246,3 +246,22 @@ fn test_sqlite_constraint_message_excludes_driver_metadata() {
     }
     assert false, 'expected UNIQUE constraint failure'
 }
+
+// CPython returns float infinities for SQLite REAL values outside finite range.
+// SQLite's printf calls these 'Inf' and '-Inf', which json.loads cannot parse.
+fn test_sqlite_real_infinities_are_floats() {
+    conn := connect(':memory:') or { panic(err.msg()) }
+    defer { conn.close() or {} }
+    pos_cur := conn.execute('SELECT 1e999') or { panic(err.msg()) }
+    pos_row := pos_cur.fetchone() or { panic('missing positive infinity') }
+    positive := pos_row.get(0)
+    // python: repr(__import__('sqlite3').connect(':memory:').execute('SELECT 1e999').fetchone()[0]) == 'inf'
+    assert positive is f64
+    assert pyrt.repr(positive) == 'inf'
+    neg_cur := conn.execute('SELECT -1e999') or { panic(err.msg()) }
+    neg_row := neg_cur.fetchone() or { panic('missing negative infinity') }
+    negative := neg_row.get(0)
+    // python: repr(__import__('sqlite3').connect(':memory:').execute('SELECT -1e999').fetchone()[0]) == '-inf'
+    assert negative is f64
+    assert pyrt.repr(negative) == '-inf'
+}

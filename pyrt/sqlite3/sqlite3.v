@@ -1,6 +1,7 @@
 module sqlite3
 
 import db.sqlite
+import math
 import pyrt
 import pyrt.json as pyjson
 
@@ -590,6 +591,10 @@ fn row_from_typed(values []string, names []string) Row {
         else if type_name == 'integer' {
             cells << (pyjson.loads(text) or { pyrt.Value(text) })
         } else if type_name == 'real' {
+            // SQLite's printf uses Inf/-Inf, but JSON has no infinity literal.
+            // Keep the REAL storage class instead of returning a string.
+            if text == 'Inf' { cells << pyrt.Value(math.inf(1)); continue }
+            if text == '-Inf' { cells << pyrt.Value(math.inf(-1)); continue }
             // SQLite printf('%.17g',1.0) yields '1'. Keep Python float.
             mut number := text
             if !number.contains('.') && !number.contains('e') && !number.contains('E') {
