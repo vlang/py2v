@@ -21,14 +21,14 @@ fn main() {
 	println(f64(a) / 2)
 	println(f64(7) / 2)
 	println(f64(a) / -2)
-	println(py2v_true_div1(-a, b))
-	println(py2v_true_div1(~a, b))
+	println(py2v_true_div1(f64(-a), b))
+	println(py2v_true_div1(f64(~a), b))
 	println(py2v_true_div1(f64(a + 1), b))
 	println(py2v_true_div1(a, f64(b + 1)))
 	println(py2v_true_div1(a, b) / f64(b))
 	println(math.floor(py2v_true_div1(a, b) / 1))
 	println(math.pow(2, py2v_true_div1(a, b)))
-	println(py2v_true_div1([1, 2, 3].len, b))
+	println(py2v_true_div1(f64([1, 2, 3].len), b))
 	println(py2v_true_div1(f64(math.powi(b, 3)), a))
 	half := py2v_true_div1(a, b)
 	println(half + 1)
@@ -41,7 +41,7 @@ fn main() {
 	}
 	println(int(share(8, 2)))
 	whole := fn () int {
-		return int(py2v_true_div1([1, 2, 3, 4].len, [5].len))
+		return int(py2v_true_div1(f64([1, 2, 3, 4].len), f64([5].len)))
 	}
 	println(whole())
 	println(f64(a) / 1 / f64(1) / f64(1) / f64(1) / f64(1) / f64(1) / f64(1) / f64(1) / f64(1) / f64(1) / f64(1) / f64(1) / f64(1) / f64(1) / f64(1) / f64(1) / f64(1) / f64(1) / f64(1) / f64(1) / f64(1) / f64(1) / f64(1) / f64(1) / f64(1) / f64(1) / f64(1) / f64(1) / f64(1) / f64(1) / f64(1) / f64(1))

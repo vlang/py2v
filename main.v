@@ -313,14 +313,37 @@ fn format_v_code(code string) string {
 
 // run_frontend invokes the Python frontend for one source file and returns the
 // parsed module.
-fn run_frontend(python_cmd string, ast_dump string, src string) !Module {
-	res := os.exec_opt([python_cmd, ast_dump, src]) or {
+// run_frontend parses one Python file. With `summaries` (the file `--summaries` wrote for
+// the package at `root`), the frontend also knows what the package's other files export.
+fn run_frontend(python_cmd string, ast_dump string, src string, summaries string, root string) !Module {
+	mut cmd := [python_cmd, ast_dump, src]
+	if summaries != '' {
+		cmd << ['--externals', summaries, '--root', root]
+	}
+	res := os.exec_opt(cmd) or {
 		return error('could not run frontend: ${err}')
 	}
 	if res.exit_code != 0 {
 		return error('frontend failed for ${src}:\n${res.output}')
 	}
 	return parse_ast(res.output)!
+}
+
+// copy_runtime copies the runtime library (`pyrt`, found beside the frontend directory)
+// into `out_root/pyrt`, without its tests. A missing runtime is an error the caller reports.
+fn copy_runtime(frontend_dir string, out_root string) ! {
+	source := os.join_path(os.dir(frontend_dir), 'pyrt')
+	if !os.is_dir(source) {
+		return error('no pyrt directory beside ${frontend_dir}')
+	}
+	for file in os.walk_ext(source, '.v') {
+		if file.ends_with('_test.v') {
+			continue
+		}
+		target := os.join_path(out_root, 'pyrt', file[source.len + 1..])
+		os.mkdir_all(os.dir(target))!
+		os.cp(file, target)!
+	}
 }
 
 // collect_module_symbols returns the top-level names a module defines. These are
@@ -401,6 +424,17 @@ fn translate_package(python_cmd string, ast_dump string, package_dir string, out
 	// inside it; when it merely contains packages it does not.
 	root_is_package := os.exists(os.join_path(abs_root, '__init__.py'))
 
+	// What each file exports to the others (types of its functions, classes and module
+	// variables), so that a call into another file has a known result. A package the
+	// frontend cannot summarize is translated file by file, as before.
+	mut summaries := os.join_path(os.vtmp_dir(), 'py2v_summaries_${os.getpid()}.json')
+	os.exec_opt([python_cmd, ast_dump, '--summaries', abs_root, summaries]) or { summaries = '' }
+	defer {
+		if summaries != '' {
+			os.rm(summaries) or {}
+		}
+	}
+
 	// Pass 1: parse every module and record its symbols, so that cross-module
 	// references can be resolved during pass 2.
 	mut registry := new_module_registry()
@@ -422,7 +456,7 @@ fn translate_package(python_cmd string, ast_dump string, package_dir string, out
 		}
 		v_mod := v_module_for_pkg(pkg_dotted)
 		rel_path_v := v_relpath_for(v_mod, rel)
-		mod := run_frontend(python_cmd, ast_dump, file) or {
+		mod := run_frontend(python_cmd, ast_dump, file, summaries, abs_root) or {
 			// The reason is one line: the exception of a Python traceback, else the first line.
 			lines := err.msg().trim_space().split_into_lines()
 			reason := if err.msg().contains('Traceback') { lines[lines.len - 1] } else { lines[0] }
@@ -479,6 +513,7 @@ fn translate_package(python_cmd string, ast_dump string, package_dir string, out
 		}
 	}
 
+	register_init_constructors(parsed, mut registry)
 	dupes := registry.collisions()
 	if dupes.len > 0 {
 		mut keys := dupes.keys()
@@ -493,9 +528,16 @@ fn translate_package(python_cmd string, ast_dump string, package_dir string, out
 	mut count := 0
 	mut dotted_keys := parsed.keys()
 	dotted_keys.sort()
+	// A class named Sequence, Iterable or Mapping anywhere in the package keeps that
+	// name from being mapped to an array or map in every module of it.
+	mut abc_scan := new_transpiler()
+	for key in dotted_keys {
+		abc_scan.prescan_abc_names(parsed[key]!.body)
+	}
 	for key in dotted_keys {
 		info := registry.lookup(key)
 		mut t := new_transpiler()
+		t.module_classes = abc_scan.module_classes.clone()
 		t.emit_pub = true
 		t.registry = registry
 		t.current_dotted = key
@@ -509,6 +551,8 @@ fn translate_package(python_cmd string, ast_dump string, package_dir string, out
 		os.write_file(out_path, formatted) or { return err }
 		count++
 	}
+	// Generated code imports the runtime as `pyrt`: it goes beside the modules.
+	copy_runtime(os.dir(ast_dump), out_root) or { eprintln('warning: runtime not copied: ${err}') }
 	eprintln('Transpiled ${count} modules into ${out_root}')
 	return skipped
 }

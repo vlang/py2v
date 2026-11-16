@@ -5,7 +5,7 @@ fn test_python(iterations int) {
 	mut total := f64(0)
 	array_length := 1000
 	array := []int{len: array_length, init: index}.map(it)
-	println(('iterations').str() + ' ' + iterations.str())
+	println('iterations ${iterations}')
 	for iteration < iterations {
 		mut innerloop := 0
 		for innerloop < 100 {

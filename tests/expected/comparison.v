@@ -3,7 +3,7 @@ module main
 fn compare_with_integer_variable() {
 	i := 0
 	mut s := 1
-	if i {
+	if i != 0 {
 		s = 2
 	} else {
 		s = 3
@@ -14,7 +14,7 @@ fn compare_with_integer_variable() {
 fn use_zero_for_comparison() {
 	i := 0
 	mut s := 1
-	if 0 {
+	if 0 != 0 {
 		s = 2
 	} else {
 		s = 3

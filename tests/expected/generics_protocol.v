@@ -9,11 +9,11 @@ fn (mut self Stack[T]) init() {
 	self.items = []T{}
 }
 
-fn (self Stack[T]) push(item T) {
+fn (mut self Stack[T]) push(item T) {
 	self.items << item
 }
 
-fn (self Stack[T]) pop() T {
+fn (mut self Stack[T]) pop() T {
 	return self.items.pop()
 }
 
@@ -21,16 +21,20 @@ fn (self Stack[T]) is_empty() bool {
 	return self.items.len == 0
 }
 
-interface Sized {
-	__len__() int
+pub fn py2v_new_stack[T]() Stack[T] {
+	mut py2v_instance := Stack[T]{}
+	py2v_instance.init()
+	return py2v_instance
 }
 
-fn first(stack Stack[T]) T {
+interface Sized {}
+
+fn first[T](mut stack Stack[T]) T {
 	return stack.pop()
 }
 
 fn main() {
-	s := Stack{}
+	mut s := py2v_new_stack()
 	s.push(1)
 	s.push(2)
 	println(s.pop())

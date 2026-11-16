@@ -10,11 +10,7 @@ fn main_func() {
 		println(c)
 	}
 	unsorted := [3, 1, 4, 1, 5]
-	for x in (fn (a []Any) []Any {
-		mut b := a.clone()
-		b.sort()
-		return b
-	}(unsorted)) {
+	for x in unsorted.sorted(a > b) {
 		println(x)
 	}
 }

@@ -12,3 +12,9 @@ fn (mut self BaseOptions) init() {
 	self.names = none
 	self.count = none
 }
+
+pub fn py2v_new_base_options() BaseOptions {
+	mut py2v_instance := BaseOptions{}
+	py2v_instance.init()
+	return py2v_instance
+}

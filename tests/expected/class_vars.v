@@ -17,7 +17,7 @@ pub struct ProxyType {
 
 fn main() {
 	c := Config{}
-	println(c.debug)
+	println(if c.debug { 'True' } else { 'False' })
 	println(c.max_retries)
 	println(c.name)
 	println(c.ratio)

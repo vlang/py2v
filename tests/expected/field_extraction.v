@@ -1,12 +1,10 @@
 module main
 
-type Any = bool | int | i64 | f64 | string | []u8
-
 // Slots - Fields declared only through __slots__.
 pub struct Slots {
 pub mut:
-	name_ Any
-	size  Any
+	name_ string
+	size  int
 }
 
 fn (mut self Slots) init(name_ string) {
@@ -19,6 +17,12 @@ fn (mut self Slots) bump(name_ string) string {
 	return self.name_
 }
 
+pub fn py2v_new_slots(name_ string) Slots {
+	mut py2v_instance := Slots{}
+	py2v_instance.init(name_)
+	return py2v_instance
+}
+
 pub struct Base {
 pub mut:
 	value string
@@ -26,6 +30,12 @@ pub mut:
 
 fn (mut self Base) init(value string) {
 	self.value = value
+}
+
+pub fn py2v_new_base(value string) Base {
+	mut py2v_instance := Base{}
+	py2v_instance.init(value)
+	return py2v_instance
 }
 
 // Derived - Declares no fields of its own; the constructor delegates upward.
@@ -39,6 +49,12 @@ fn (mut self Derived) init(value string) {
 
 fn (self Derived) label() string {
 	return self.value
+}
+
+pub fn py2v_new_derived(value string) Derived {
+	mut py2v_instance := Derived{}
+	py2v_instance.init(value)
+	return py2v_instance
 }
 
 // LateAssignment - A slot declared before the annotation that types it.
@@ -56,13 +72,15 @@ fn (mut self LateAssignment) add(by int) int {
 	return self.count
 }
 
+pub fn py2v_new_late_assignment() LateAssignment {
+	mut py2v_instance := LateAssignment{}
+	py2v_instance.init()
+	return py2v_instance
+}
+
 fn use() int {
-	s := Slots{
-		name_: 'a'
-	}
-	d := Derived{
-		Base: Base{ value: 'b' }
-	}
-	l := LateAssignment{}
+	s := py2v_new_slots('a')
+	d := py2v_new_derived('b')
+	mut l := py2v_new_late_assignment()
 	return s.size + l.add(1) + d.label().len
 }

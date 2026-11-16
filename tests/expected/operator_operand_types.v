@@ -18,9 +18,13 @@ fn (self Version) == (other Version) bool {
 }
 
 fn (self Version) + (other Version) Version {
-	return Version{
-		major: self.major + other.major
-	}
+	return py2v_new_version(self.major + other.major)
+}
+
+pub fn py2v_new_version(major int) Version {
+	mut py2v_instance := Version{}
+	py2v_instance.init(major)
+	return py2v_instance
 }
 
 fn compare(a Version, b Version) bool {

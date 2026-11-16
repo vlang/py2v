@@ -1,22 +1,24 @@
 module main
 
 import os
+import pyrt.pathlib
+import pyrt
 
 fn main() {
-	p := 'data.txt'
-	content := os.read_file(p) or { '' }
-	os.write_file(p, 'hello world')!
-	exists := os.exists(p)
-	is_f := os.is_file(p)
-	is_d := os.is_dir(p)
-	name := os.file_name(p)
-	parent := os.dir(p)
-	sub := os.join_path(os.dir(p), 'subdir', 'out.txt')
-	os.mkdir_all('newdir')!
-	os.rm(p)!
-	for f in os.ls('.') or { [] } {
+	p := pathlib.new_path('data.txt')
+	content := p.read_text() or { pyrt.fail(err) }
+	p.write_text('hello world') or { pyrt.fail(err) }
+	exists := p.exists()
+	is_f := p.is_file()
+	is_d := p.is_dir()
+	name := p.name()
+	parent := p.parent()
+	sub := p.parent().joinpath('subdir').joinpath('out.txt')
+	pathlib.new_path('newdir').mkdir(parents: true, exist_ok: true) or { pyrt.fail(err) }
+	p.unlink() or { pyrt.fail(err) }
+	for f in pathlib.new_path('.').iterdir() or { pyrt.fail(err) } {
 		println(f)
 	}
-	files := os.glob(os.join_path('.', '*.txt')) or { [] }
+	files := pathlib.new_path('.').glob('*.txt') or { pyrt.fail(err) }
 	println(files)
 }

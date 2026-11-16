@@ -1,10 +1,8 @@
 module main
 
-type Any = bool | int | i64 | f64 | string | []u8
-
-fn make_counter() fn () Any {
+fn make_counter() fn () int {
 	mut count := 0
-	increment := fn [mut count] () Any {
+	increment := fn [mut count] () int {
 		count += 1
 		return count
 	}

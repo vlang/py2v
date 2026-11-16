@@ -13,6 +13,12 @@ fn (self Box[I]) get() I {
 	return self.item
 }
 
+pub fn py2v_new_box[I](item I) Box[I] {
+	mut py2v_instance := Box[I]{}
+	py2v_instance.init(item)
+	return py2v_instance
+}
+
 pub struct Pair[K, V] {
 pub mut:
 	key   &K
@@ -32,6 +38,12 @@ fn (self Pair[K, V]) second() V {
 	return self.value
 }
 
+pub fn py2v_new_pair[K, V](key K, value V) Pair[K, V] {
+	mut py2v_instance := Pair[K, V]{}
+	py2v_instance.init(key, value)
+	return py2v_instance
+}
+
 pub struct Holder[U, T] {
 pub mut:
 	inner &U
@@ -47,20 +59,18 @@ fn (self Holder[U, T]) unwrap() U {
 	return self.inner
 }
 
+pub fn py2v_new_holder[U, T](inner U, other T) Holder[U, T] {
+	mut py2v_instance := Holder[U, T]{}
+	py2v_instance.init(inner, other)
+	return py2v_instance
+}
+
 fn main() {
-	b := Box{
-		item: 7
-	}
+	b := py2v_new_box(7)
 	println(b.get())
-	p := Pair{
-		key:   'a'
-		value: 1
-	}
+	p := py2v_new_pair('a', 1)
 	println(p.first())
 	println(p.second())
-	h := Holder{
-		inner: 'in'
-		other: 3
-	}
+	h := py2v_new_holder('in', 3)
 	println(h.unwrap())
 }

@@ -15,18 +15,23 @@ Enrichments beyond standard ast.parse():
   - level (nesting depth) on For/While/If
   - docstring_comment on Module
   - __main__ guard rewritten to main() function
+  - condition_walrus_names and lower_condition_walrus for enclosing-scope lowering
 
 Usage:
     python frontend/ast_dump.py <source.py>
 """
 
 import ast
+import copy
 import json
 import sys
 import os
 import unicodedata
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set, Tuple
+
+import infer
+import symbols
 
 
 @dataclass
@@ -41,6 +46,56 @@ class AnalysisContext:
     slots_by_class: Dict[str, ast.expr] = field(default_factory=dict)
     field_types: Dict[str, str] = field(default_factory=dict)
     class_field_types: Dict[str, Dict[str, str]] = field(default_factory=dict)
+    # Lexical bindings of the file (symbols.analyze), or None when it could not be resolved.
+    table: Optional[symbols.SymbolTable] = None
+    # Types of the file (infer.run), or None when they could not be inferred.
+    facts: Optional[Any] = None
+
+    def scalar_annotation(self, node: ast.AST) -> str:
+        """`int`, `float`, `string` or `bool` when that is the type of the expression (the
+        type the code shows, else the one its annotations declare), else an empty string."""
+        if self.facts is None:
+            return ""
+        type_id = getattr(node, "_assumed", None)
+        if type_id is None:
+            type_id = getattr(node, "_type", None)
+        if type_id is None:
+            return ""
+        kind = self.facts.types[type_id]["k"]
+        if kind == "list":
+            # a list of str or of bool, where the element type is exact
+            elem = self.facts.types[type_id].get("elem")
+            inner = self.facts.types[elem]["k"] if isinstance(elem, int) else ""
+            return {"str": "[]string", "bool": "[]bool"}.get(inner, "")
+        if kind == "int" and self._holds_declared_float(node):
+            # `x: float` called with 1 holds an int in Python, but V declares it f64
+            return ""
+        return {"int": "int", "float": "float", "str": "string", "bool": "bool"}.get(kind, "")
+
+    def _holds_declared_float(self, node: ast.AST) -> bool:
+        for part in ast.walk(node):
+            binding_id = getattr(part, "_binding", None) if isinstance(part, ast.Name) else None
+            if binding_id is None or binding_id >= len(self.facts.bindings):
+                continue
+            declared = self.facts.bindings[binding_id].get("declared")
+            if declared is not None and self.facts.types[declared]["k"] == "float":
+                return True
+        return False
+
+    def owned_names(self, scope_node: ast.AST) -> Set[str]:
+        """Names the scope that `scope_node` opens binds itself: its parameters and locals."""
+        scope_id = getattr(scope_node, "_scope_id", None)
+        if self.table is None or scope_id is None:
+            return set()
+        return {b.name for b in self.table.bindings if b.scope == scope_id}
+
+    def rebound_parameters(self, scope_node: ast.AST) -> Set[str]:
+        """Parameters of the function that its body binds again (`n -= 1`, `x = lo`)."""
+        scope_id = getattr(scope_node, "_scope_id", None)
+        if self.table is None or scope_id is None:
+            return set()
+        return {b.name for b in self.table.bindings
+                if b.scope == scope_id and b.is_param and b.rebound}
 
     @staticmethod
     def empty() -> "AnalysisContext":
@@ -54,6 +109,13 @@ class AnalysisContext:
 
 class ScopeTracker(ast.NodeVisitor):
     """Track variable assignments per scope to detect mutability and redefinitions."""
+
+    # Names of methods, of classes in the file being processed, that change `self`.
+    mutating_methods: Set[str] = set()
+    # For each function of the file that changes a parameter in place: the positions of
+    # those parameters. The backend passes them with `mut`, so the caller's variable
+    # needs `mut` too.
+    mutating_functions: Dict[str, Set[int]] = {}
 
     def __init__(self):
         self.scopes: List[Dict[str, List[ast.AST]]] = [{}]
@@ -81,6 +143,9 @@ class ScopeTracker(ast.NodeVisitor):
 
     def visit_AnnAssign(self, node: ast.AnnAssign):
         if node.target:
+            if node.value is not None:
+                # `self.x: T = v` stores into self as `self.x = v` does
+                self._check_subscript_assign(node.target)
             for name in _extract_names(node.target):
                 self._record_assign(name, node)
         self.generic_visit(node)
@@ -95,12 +160,51 @@ class ScopeTracker(ast.NodeVisitor):
         """Detect mutating method calls like x.append(), x.insert(), etc."""
         _MUTATING_METHODS = {
             'append', 'insert', 'remove', 'extend',
+            'sort', 'reverse', 'pop', 'clear',
         }
+        # A method of a class in this file that changes its object changes the caller's
+        # variable too: `c.add(1)` needs `mut c` as `c.total += 1` does.
         if (isinstance(node.func, ast.Attribute)
-                and node.func.attr in _MUTATING_METHODS
+                and (node.func.attr in _MUTATING_METHODS
+                     or node.func.attr in self.mutating_methods)
                 and isinstance(node.func.value, ast.Name)):
             self.mutable.add(node.func.value.id)
             self._record_assign(node.func.value.id, node)
+        # `self.items.append(x)` and `self.items.pop()` change self through its field.
+        elif (isinstance(node.func, ast.Attribute)
+                and (node.func.attr in _MUTATING_METHODS or node.func.attr == 'pop')
+                and isinstance(node.func.value, ast.Attribute)
+                and isinstance(node.func.value.value, ast.Name)
+                and node.func.value.value.id == 'self'):
+            self.mutable.add('self')
+            self._record_assign('self', node)
+        # `groups[key].append(x)` changes `groups` through its element.
+        elif (isinstance(node.func, ast.Attribute)
+                and node.func.attr in _MUTATING_METHODS
+                and isinstance(node.func.value, ast.Subscript)):
+            root = node.func.value
+            while isinstance(root, ast.Subscript):
+                root = root.value
+            if isinstance(root, ast.Attribute) and isinstance(root.value, ast.Name) \
+                    and root.value.id == 'self':
+                root = root.value
+            if isinstance(root, ast.Name):
+                self.mutable.add(root.id)
+                self._record_assign(root.id, node)
+        # `random.shuffle(xs)` reorders xs in place.
+        if ((isinstance(node.func, ast.Attribute) and node.func.attr == 'shuffle'
+                and isinstance(node.func.value, ast.Name) and node.func.value.id == 'random')
+                or getattr(node.func, '_math_member', '') == 'random.shuffle') \
+                and node.args and isinstance(node.args[0], ast.Name):
+            self.mutable.add(node.args[0].id)
+            self._record_assign(node.args[0].id, node)
+        # `f(xs)` where f changes that parameter in place: `xs` is passed with `mut`.
+        if isinstance(node.func, ast.Name) and node.func.id in self.mutating_functions \
+                and not any(isinstance(arg, ast.Starred) for arg in node.args):
+            for index in self.mutating_functions[node.func.id]:
+                if index < len(node.args) and isinstance(node.args[index], ast.Name):
+                    self.mutable.add(node.args[index].id)
+                    self._record_assign(node.args[index].id, node)
         self.generic_visit(node)
 
     def visit_Delete(self, node: ast.Delete):
@@ -344,6 +448,8 @@ def _infer_return_type(node: ast.FunctionDef) -> str:
             nested_function_types[stmt.name] = _infer_nested_function_type(stmt)
 
     _collect_local_assignment_types_from_stmts(node.body, local_types, local_dict_value_types)
+    for name, typ in getattr(node, "_condition_walrus_hints", {}).items():
+        local_types.setdefault(name, typ)
 
     return_types: Set[str] = set()
     saw_none_return = False
@@ -474,6 +580,237 @@ def _rename_calls(node: ast.AST, old_name: str, new_name: str):
             child.func.id = new_name
 
 
+def _plan_condition_walruses(tree: ast.Module):
+    """Select broken if conditions without changing already working lowering.
+
+    Only the operators handled by the backend's statement lowering are selected.
+    Names belong to the surrounding module or function, not to a generated block.
+    Literal type hints are limited to selected locals with no other bindings.
+    """
+    nested_expressions = (ast.Lambda, ast.ListComp, ast.SetComp,
+                          ast.DictComp, ast.GeneratorExp)
+    function_scopes = (ast.FunctionDef, ast.AsyncFunctionDef)
+    nested_scopes = function_scopes + (ast.ClassDef, ast.Lambda)
+    try_nodes = (ast.Try, getattr(ast, "TryStar", ast.Try))
+    external_names: Set[str] = set()
+
+    def contains(expr):
+        if isinstance(expr, ast.NamedExpr):
+            return True
+        if isinstance(expr, nested_expressions):
+            return False
+        return any(contains(child) for child in ast.iter_child_nodes(expr))
+
+    def supported(expr):
+        if not contains(expr):
+            return True
+        if not isinstance(expr, (ast.NamedExpr, ast.UnaryOp, ast.BinOp,
+                                 ast.BoolOp, ast.Compare)):
+            return False
+        if isinstance(expr, ast.NamedExpr):
+            if not isinstance(expr.target, ast.Name):
+                return False
+        return all(supported(child) for child in ast.iter_child_nodes(expr))
+
+    def emitted_walrus(expr):
+        # The existing comparison visitor ignores links after the first one.
+        if isinstance(expr, ast.Compare):
+            return (emitted_walrus(expr.left)
+                    or any(emitted_walrus(c) for c in expr.comparators[:1]))
+        if isinstance(expr, ast.NamedExpr):
+            return True
+        if isinstance(expr, nested_expressions):
+            return False
+        return any(emitted_walrus(child) for child in ast.iter_child_nodes(expr))
+
+    def legacy_left(test):
+        return isinstance(test, ast.Compare) and isinstance(test.left, ast.NamedExpr)
+
+    def select(node, bound, is_elif):
+        if not emitted_walrus(node.test) or not supported(node.test):
+            return False
+        names = []
+        targets(node.test, names)
+        if external_names.intersection(names):
+            return False
+        if legacy_left(node.test):
+            named = node.test.left
+            if not emitted_walrus(named.value) and not emitted_walrus(node.test.comparators[0]):
+                return is_elif or named.target.id in bound
+        return True
+
+    def targets(expr, names):
+        if isinstance(expr, nested_expressions):
+            return
+        if isinstance(expr, ast.NamedExpr) and expr.target.id not in names:
+            names.append(expr.target.id)
+        for child in ast.iter_child_nodes(expr):
+            targets(child, names)
+
+    def assignment_binds(node):
+        value = node.value
+        if isinstance(value, ast.Call):
+            if isinstance(value.func, (ast.Name, ast.Attribute)):
+                name = value.func.id if isinstance(value.func, ast.Name) else value.func.attr
+                if name == "TypeVar":
+                    return False
+            if (len(node.targets) == 1 and isinstance(node.targets[0], ast.Name)
+                    and isinstance(value.func, ast.Name) and value.func.id == "namedtuple"):
+                return False
+        if isinstance(value, ast.Subscript) and isinstance(value.value, (ast.Name, ast.Attribute)):
+            name = value.value.id if isinstance(value.value, ast.Name) else value.value.attr
+            if name == "Literal":
+                return False
+        return not (len(node.targets) == 1 and isinstance(node.targets[0], ast.Name)
+                    and node.targets[0].id == "__all__" and isinstance(value, ast.List))
+
+    blocks = {}
+    scope_of = {}
+
+    def note_blocks(scope):
+        compound = (ast.If, ast.For, ast.AsyncFor, ast.While, ast.With, ast.AsyncWith) + try_nodes
+        if hasattr(ast, "Match"):
+            compound += (ast.Match,)
+
+        def walk(node, block):
+            for child in ast.iter_child_nodes(node):
+                if isinstance(child, nested_scopes):
+                    continue
+                if isinstance(child, ast.If):
+                    blocks[id(child)] = block
+                    scope_of[id(child)] = scope
+                walk(child, child if isinstance(child, compound) else block)
+
+        walk(scope, None)
+
+    def hoists_alone(node):
+        """True when the backend hoists this bare walrus on its own line and
+        that is enough: the target is not `_`, and nothing reads it outside the
+        block the hoisted line lands in. Otherwise the name is declared at the
+        top of the scope like every other walrus in a condition."""
+        test = node.test
+        if not (isinstance(test, ast.NamedExpr) and getattr(test, "_hoist", False)):
+            return False
+        name = test.target.id
+        if name == "_":
+            return False
+        block = blocks.get(id(node))
+        if block is None:
+            return True
+        inside = {id(n) for n in ast.walk(block)}
+        return not any(isinstance(n, ast.Name) and n.id == name and isinstance(n.ctx, ast.Load)
+                       and id(n) not in inside for n in ast.walk(scope_of[id(node)]))
+
+    def scan(body, bound, names, is_elif=False):
+        for node in body:
+            if isinstance(node, ast.If):
+                hoisted = not is_elif and hoists_alone(node)
+                if not hoisted and select(node, bound, is_elif):
+                    node._lower_condition_walrus = True
+                    targets(node.test, names)
+                scan(node.body, set(bound), names)
+                elif_tail = len(node.orelse) == 1 and isinstance(node.orelse[0], ast.If)
+                scan(node.orelse, set(bound), names, elif_tail)
+                if legacy_left(node.test):
+                    bound.update(_extract_names(node.test.left.target))
+            elif isinstance(node, (ast.For, ast.AsyncFor)):
+                scan(node.body, bound | set(_extract_names(node.target)), names)
+                scan(node.orelse, set(bound), names)
+            elif isinstance(node, ast.While):
+                scan(node.body, set(bound), names)
+                infinite = isinstance(node.test, ast.Constant) and node.test.value is True
+                if not infinite and not legacy_left(node.test):
+                    scan(node.orelse, set(bound), names)
+            elif isinstance(node, (ast.With, ast.AsyncWith)):
+                inner = set(bound)
+                for item in node.items:
+                    if item.optional_vars is not None:
+                        inner.update(_extract_names(item.optional_vars))
+                scan(node.body, inner, names)
+            elif isinstance(node, try_nodes):
+                # The backend emits finally as a defer before the try body.
+                # Except handlers and try/else have no generated statement body.
+                scan(node.finalbody, set(bound), names)
+                scan(node.body, bound, names)
+            elif hasattr(ast, "Match") and isinstance(node, ast.Match):
+                for arm in node.cases:
+                    scan(arm.body, set(bound), names)
+            elif isinstance(node, ast.Assign) and assignment_binds(node):
+                for target in node.targets:
+                    bound.update(_extract_names(target))
+            elif isinstance(node, ast.AnnAssign):
+                bound.update(_extract_names(node.target))
+
+    def literal_hints(scope, names, parameters):
+        hints = {}
+        conflicts = set(parameters)
+
+        def visit(node):
+            if isinstance(node, ast.NamedExpr):
+                name = node.target.id
+                typ = _infer_type_from_value(node.value) if isinstance(node.value, ast.Constant) else ""
+                if typ not in ("bool", "int", "float", "str") or hints.get(name, typ) != typ:
+                    conflicts.add(name)
+                else:
+                    hints[name] = typ
+                visit(node.value)
+                return
+            if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
+                conflicts.add(node.id)
+            if isinstance(node, (ast.Import, ast.ImportFrom)):
+                conflicts.update(a.asname or a.name.split(".")[0] for a in node.names)
+                if any(a.name == "*" for a in node.names):
+                    conflicts.update(names)
+            if isinstance(node, (ast.Global, ast.Nonlocal)):
+                conflicts.update(node.names)
+            if isinstance(node, (ast.ExceptHandler,) + function_scopes + (ast.ClassDef,)):
+                if node.name:
+                    conflicts.add(node.name)
+            if isinstance(node, function_scopes):
+                for declaration in ast.walk(node):
+                    if isinstance(declaration, (ast.Global, ast.Nonlocal)):
+                        conflicts.update(declaration.names)
+            if type(node).__name__ in ("MatchAs", "MatchStar") and node.name:
+                conflicts.add(node.name)
+            if type(node).__name__ == "MatchMapping" and node.rest:
+                conflicts.add(node.rest)
+            for field_name, value in ast.iter_fields(node):
+                if isinstance(node, nested_scopes) and field_name == "body":
+                    continue
+                children = value if isinstance(value, list) else [value]
+                for child in children:
+                    if isinstance(child, ast.AST):
+                        visit(child)
+
+        for statement in scope.body:
+            visit(statement)
+        return {name: hints[name] for name in names if name in hints and name not in conflicts}
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.If):
+            node._lower_condition_walrus = False
+    scopes = [tree] + [node for node in ast.walk(tree) if isinstance(node, function_scopes)]
+    for scope in scopes:
+        external_names = set()
+        pending = list(scope.body)
+        while pending:
+            node = pending.pop()
+            if isinstance(node, (ast.Global, ast.Nonlocal)):
+                external_names.update(node.names)
+            elif not isinstance(node, nested_scopes):
+                pending.extend(ast.iter_child_nodes(node))
+        parameters = []
+        if isinstance(scope, function_scopes):
+            parameters = [arg.arg for arg in _all_args(scope.args)]
+            parameters += [arg.arg for arg in (scope.args.vararg, scope.args.kwarg) if arg is not None]
+        names = []
+        note_blocks(scope)
+        scan(scope.body, set(parameters), names)
+        scope._condition_walrus_names = names
+        scope._condition_walrus_hints = (literal_hints(scope, names, parameters)
+                                         if isinstance(scope, function_scopes) else {})
+
+
 def _extract_docstring(tree: ast.Module) -> Optional[str]:
     """Extract module-level docstring."""
     if (tree.body
@@ -540,7 +877,20 @@ def _mark_isinstance_subjects(tree: ast.Module) -> None:
     The parameter must be bound nowhere else in the function: not assigned,
     not a loop, comprehension, `with`, `except`, walrus or `del` target, not a
     parameter of a nested function or lambda, not a `def`, `class`, import,
-    `global`, `nonlocal` or match capture. Not marked either: a parameter
+    `global`, `nonlocal` or match capture; except that every other binding may
+    lie in a statement of the function's body after the one holding the call
+    (a call not inside a lambda or generator expression): those statements run
+    in order, once, so the call still sees the argument.
+    A second-argument class may also be `tuple`, `set` or `bytes`, and so may
+    the annotation.
+
+    Also marked: `isinstance(x, ...)` where `x` is the target of a `for` loop
+    or comprehension over such a parameter (bound nowhere else at all)
+    annotated `list[C]` with C one of the plain classes, the call is in the
+    loop's body or the comprehension, and `x` is bound nowhere else in the
+    function except by other such loops of the same class C (for a
+    comprehension: nowhere else in the comprehension).
+    Not marked either: a parameter
     whose default is `None`, positional-only parameters, `*args` and
     `**kwargs`, and a call in the function's own default values, decorators
     or annotations (those see the scope outside).
@@ -548,7 +898,9 @@ def _mark_isinstance_subjects(tree: ast.Module) -> None:
     `isinstance` in any way, or has a star import. Module-level code is never
     marked."""
     fn_types = (ast.FunctionDef, ast.AsyncFunctionDef)
-    builtin_names = ("int", "float", "str", "bool", "list", "dict", "isinstance")
+    plain_classes = ("int", "float", "str", "bool", "list", "dict", "tuple", "set", "bytes")
+    builtin_names = plain_classes + ("isinstance",)
+    comprehensions = (ast.ListComp, ast.SetComp, ast.GeneratorExp, ast.DictComp)
 
     def bound_names(node: ast.AST) -> List[str]:
         """The names `node` itself binds, however it binds them."""
@@ -595,7 +947,7 @@ def _mark_isinstance_subjects(tree: ast.Module) -> None:
     def annotation_class(annotation: Optional[ast.AST]) -> str:
         base = annotation.value if isinstance(annotation, ast.Subscript) else annotation
         if isinstance(base, ast.Name):
-            if base.id in ("int", "float", "str", "bool", "list", "dict"):
+            if base.id in plain_classes:
                 return base.id
             if base.id in typing_classes:
                 return base.id.lower()
@@ -604,7 +956,60 @@ def _mark_isinstance_subjects(tree: ast.Module) -> None:
             return base.attr.lower()
         return ""
 
-    def subject_class(fn: ast.AST, name: str) -> str:
+    def element_class(annotation: Optional[ast.AST]) -> str:
+        """C for an annotation `list[C]` or `List[C]`, C a plain class."""
+        if (isinstance(annotation, ast.Subscript) and annotation_class(annotation) == "list"
+                and isinstance(annotation.slice, ast.Name)
+                and annotation.slice.id in plain_classes):
+            return annotation.slice.id
+        return ""
+
+    def count_bindings(root: ast.AST, name: str) -> int:
+        return sum(bound_names(node).count(name) for node in ast.walk(root))
+
+    def loop_subject_class(fn: ast.AST, call: ast.Call) -> str:
+        """The class of a `for` or comprehension target iterating a parameter
+        annotated `list[C]`, for a call inside that loop."""
+        name = call.args[0].id
+
+        def iterated(iterable: ast.AST) -> str:
+            # A slice of a list holds elements of the list.
+            if isinstance(iterable, ast.Subscript) and isinstance(iterable.slice, ast.Slice):
+                iterable = iterable.value
+            if not isinstance(iterable, ast.Name) or iterable.id == name:
+                return ""
+            param = next((a for a in fn.args.args + fn.args.kwonlyargs if a.arg == iterable.id), None)
+            if param is None or not subject_class(fn, iterable.id, None):
+                return ""
+            return element_class(param.annotation)
+
+        def holds(root: ast.AST) -> bool:
+            return any(node is call for node in ast.walk(root))
+
+        for node in ast.walk(fn):
+            if isinstance(node, comprehensions) and holds(node):
+                # The innermost comprehension binding the name is the one the call reads.
+                inner = [c for c in ast.walk(node) if c is not node
+                         and isinstance(c, comprehensions) and holds(c)
+                         and count_bindings(c, name)]
+                if inner or count_bindings(node, name) != 1:
+                    continue
+                for generator in node.generators:
+                    if isinstance(generator.target, ast.Name) and generator.target.id == name:
+                        if count_bindings(node, getattr(generator.iter, "id", "")):
+                            return ""
+                        return iterated(generator.iter)
+        # Every binding of the name is a `for` target over such a parameter,
+        # all of one class, and the call is in the body of one of the loops.
+        loops = [node for node in ast.walk(fn) if isinstance(node, ast.For)
+                 and isinstance(node.target, ast.Name) and node.target.id == name]
+        classes = {iterated(loop.iter) for loop in loops}
+        if (count_bindings(fn, name) != len(loops) or len(classes) != 1
+                or not any(holds(s) for loop in loops for s in loop.body)):
+            return ""
+        return classes.pop()
+
+    def subject_class(fn: ast.AST, name: str, call: Optional[ast.AST]) -> str:
         args = fn.args
         positional = args.posonlyargs + args.args
         defaults = dict(zip([a.arg for a in positional[len(positional) - len(args.defaults):]],
@@ -616,8 +1021,21 @@ def _mark_isinstance_subjects(tree: ast.Module) -> None:
         default = defaults.get(name)
         if isinstance(default, ast.Constant) and default.value is None:
             return ""
+        # Statements of the body after the one holding the call may rebind it.
+        later: List[ast.stmt] = []
+        if call is not None:
+            for i, statement in enumerate(fn.body):
+                if any(node is call for node in ast.walk(statement)):
+                    # A lambda or generator expression may run the call later.
+                    lazy = any(isinstance(part, (ast.Lambda, ast.GeneratorExp))
+                               and any(node is call for node in ast.walk(part))
+                               for part in ast.walk(statement))
+                    later = [] if lazy else fn.body[i + 1:]
+                    break
+        allowed = {id(node) for statement in later for node in ast.walk(statement)}
         for node in ast.walk(fn):
-            if node is not fn and node is not param and name in bound_names(node):
+            if (node is not fn and node is not param and id(node) not in allowed
+                    and name in bound_names(node)):
                 return ""
         return annotation_class(param.annotation)
 
@@ -626,7 +1044,8 @@ def _mark_isinstance_subjects(tree: ast.Module) -> None:
                 and isinstance(node.func, ast.Name) and node.func.id == "isinstance"
                 and len(node.args) == 2 and not node.keywords
                 and isinstance(node.args[0], ast.Name)):
-            node._subject_class = subject_class(fn, node.args[0].id)
+            node._subject_class = (subject_class(fn, node.args[0].id, node)
+                                   or loop_subject_class(fn, node))
 
     def visit(node: ast.AST, fn: Optional[ast.AST]) -> None:
         if isinstance(node, fn_types):
@@ -1033,13 +1452,170 @@ _dunder_class_attrs = frozenset({
 
 def _class_field_types(tree: ast.AST, slots: Dict[str, ast.expr]
                        ) -> Dict[str, Dict[str, str]]:
-    """Map each class name to its declared field types, for base-class lookup."""
+    """Collect declarations and the types established by an initializer.
+
+    The latter are needed before allocating the empty value passed to init.
+    Only classes with a written, non-forwarding initializer acquire new field
+    types. In particular, classes without an initializer keep their old layout.
+    """
     result: Dict[str, Dict[str, str]] = {}
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ClassDef):
+    classes = [node for node in ast.walk(tree) if isinstance(node, ast.ClassDef)]
+    methods = {
+        node.name: {method.name: _annotation_to_str(method.returns)
+                    for method in node.body
+                    if isinstance(method, (ast.FunctionDef, ast.AsyncFunctionDef))}
+        for node in classes
+    }
+    for node in classes:
+        declarations = _extract_class_declarations(node, slots)
+        result[node.name] = {n: t for n, t in declarations.items() if t}
+    # A local class may be declared after the initializer that constructs it.
+    # This only adds known types; cycles without a known type stay unresolved.
+    for _ in range(len(classes) + 1):
+        changed = False
+        for node in classes:
             declarations = _extract_class_declarations(node, slots)
-            result[node.name] = {n: t for n, t in declarations.items() if t}
+            inferred = _initializer_field_types(node, declarations, result, methods)
+            node._initializer_field_types = inferred
+            known = {name: typ for name, typ in declarations.items() if typ}
+            known.update(inferred)
+            if result[node.name] != known:
+                result[node.name] = known
+                changed = True
+        if not changed:
+            break
     return result
+
+
+def _forwarding_initializer(method: ast.FunctionDef) -> bool:
+    """Recognize the old field-order path whose printed values must not change."""
+    parameters = list(method.args.posonlyargs) + list(method.args.args)
+    if (not parameters or parameters[0].arg != "self"
+            or method.args.vararg or method.args.kwarg or method.args.kwonlyargs):
+        return False
+    assigned: List[str] = []
+    for stmt in method.body:
+        if isinstance(stmt, ast.Pass):
+            continue
+        if (isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Constant)
+                and isinstance(stmt.value.value, str)):
+            continue
+        if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1:
+            target, value = stmt.targets[0], stmt.value
+        elif isinstance(stmt, ast.AnnAssign):
+            target, value = stmt.target, stmt.value
+        else:
+            return False
+        if (not isinstance(target, ast.Attribute)
+                or not isinstance(target.value, ast.Name)
+                or target.value.id != "self" or not isinstance(value, ast.Name)
+                or target.attr != value.id):
+            return False
+        assigned.append(target.attr)
+    return assigned == [arg.arg for arg in parameters[1:]]
+
+
+def _initializer_field_types(node: ast.ClassDef, declarations: Dict[str, str],
+                             classes: Dict[str, Dict[str, str]],
+                             methods: Dict[str, Dict[str, str]]) -> Dict[str, str]:
+    """Infer only fields written by init, without guessing an unknown value type.
+
+    Explicit field annotations win. All assignments to an inferred field must
+    agree; an unknown or conflicting assignment leaves that field unresolved.
+    Forwarding initializers retain their old field types, including Any, so an
+    existing successful program keeps the same observable representation.
+    """
+    initializer = next((method for method in node.body
+                        if isinstance(method, (ast.FunctionDef, ast.AsyncFunctionDef))
+                        and method.name == "__init__"), None)
+    if initializer is None or _forwarding_initializer(initializer):
+        node._unresolved_init_fields = []
+        return {}
+    fields = dict(_inherited_field_types(node.name, classes,
+                                        [b.id for b in node.bases if isinstance(b, ast.Name)]))
+    fields.update(classes.get(node.name, {}))
+    candidates: Dict[str, Set[str]] = {}
+    local_types = {arg.arg: _annotation_to_str(arg.annotation) or fields.get(arg.arg, "")
+                   for arg in _all_args(initializer.args)}
+    local_types["self"] = node.name
+
+    def canonical(typ: str) -> str:
+        return {"string": "str", "f64": "float"}.get(typ, typ)
+
+    def value_type(value: Optional[ast.AST], local: Dict[str, str]) -> str:
+        if isinstance(value, ast.Constant):
+            return _infer_type_from_value(value)
+        if isinstance(value, ast.Name):
+            return canonical(local.get(value.id, ""))
+        if isinstance(value, ast.Attribute):
+            owner = value_type(value.value, local)
+            owner_fields = fields if owner == node.name else classes.get(owner, {})
+            return canonical(owner_fields.get(value.attr, ""))
+        if isinstance(value, ast.Call):
+            if isinstance(value.func, ast.Name) and value.func.id in classes:
+                return value.func.id
+            if isinstance(value.func, ast.Attribute):
+                owner = value_type(value.func.value, local)
+                typ = methods.get(owner, {}).get(value.func.attr, "")
+                return canonical(typ) if typ not in ("None", "Any") else ""
+        if isinstance(value, ast.BinOp):
+            left, right = value_type(value.left, local), value_type(value.right, local)
+            if (left in ("int", "float") and right in ("int", "float")
+                    and isinstance(value.op, (ast.Add, ast.Sub, ast.Mult, ast.Div,
+                                              ast.FloorDiv, ast.Mod))):
+                return "float" if "float" in (left, right) or isinstance(value.op, ast.Div) else "int"
+            if left == right == "str" and isinstance(value.op, ast.Add):
+                return "str"
+        if isinstance(value, ast.UnaryOp):
+            if isinstance(value.op, ast.Not):
+                return "bool"
+            typ = value_type(value.operand, local)
+            if typ in ("int", "float") and isinstance(value.op, (ast.UAdd, ast.USub)):
+                return typ
+        if isinstance(value, ast.Compare):
+            return "bool"
+        if isinstance(value, ast.IfExp):
+            left, right = value_type(value.body, local), value_type(value.orelse, local)
+            return left if left == right else ""
+        return ""
+
+    def scan(body: List[ast.stmt], local: Dict[str, str]) -> Dict[str, str]:
+        for stmt in body:
+            target, typ = None, ""
+            if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1:
+                target, typ = stmt.targets[0], value_type(stmt.value, local)
+            elif isinstance(stmt, ast.AnnAssign):
+                target, typ = stmt.target, _annotation_to_str(stmt.annotation)
+            if isinstance(target, ast.Name):
+                local[target.id] = typ
+            elif (isinstance(target, ast.Attribute)
+                  and isinstance(target.value, ast.Name) and target.value.id == "self"):
+                candidates.setdefault(target.attr, set()).add(canonical(typ))
+                if typ and not declarations.get(target.attr):
+                    fields[target.attr] = typ
+            elif isinstance(stmt, (ast.If, ast.For, ast.While, ast.Try, ast.With)):
+                # Branch-local values cannot supply a type after the branch
+                # unless every path agrees. Field assignments are collected
+                # from every path, including exception handlers.
+                branches = [scan(stmt.body, dict(local))]
+                if hasattr(stmt, "orelse"):
+                    branches.append(scan(stmt.orelse, dict(local)))
+                if isinstance(stmt, ast.Try):
+                    branches.extend(scan(handler.body, dict(local)) for handler in stmt.handlers)
+                    branches.append(scan(stmt.finalbody, dict(local)))
+                for name in set().union(*(set(branch) for branch in branches)):
+                    types = {branch.get(name, "") for branch in branches}
+                    local[name] = types.pop() if len(types) == 1 else ""
+        return local
+
+    scan(initializer.body, local_types)
+    inferred = {name: next(iter(types)) for name, types in candidates.items()
+                if not declarations.get(name) and len(types) == 1 and "" not in types
+                and "Any" not in types}
+    init_fields = dict(_self_attribute_targets(initializer.body))
+    node._unresolved_init_fields = [name for name in init_fields
+                                    if not declarations.get(name) and name not in inferred]
+    return inferred
 
 
 def _inherited_field_types(class_name: str, known: Dict[str, Dict[str, str]],
@@ -1243,6 +1819,24 @@ def _annotation_to_str(node: Optional[ast.AST]) -> str:
     return ""
 
 
+def _unparse_expr(node: ast.AST) -> str:
+    """Render annotation-like syntax on Python 3.8, which lacks ast.unparse."""
+    unparse = getattr(ast, "unparse", None)
+    if unparse is not None:
+        return unparse(node)
+    if isinstance(node, ast.Index):
+        return _unparse_expr(node.value)
+    if isinstance(node, ast.Subscript):
+        return f"{_unparse_expr(node.value)}[{_unparse_expr(node.slice)}]"
+    if isinstance(node, ast.Tuple):
+        return ", ".join(_unparse_expr(e) for e in node.elts)
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
+        return f"{_unparse_expr(node.left)} | {_unparse_expr(node.right)}"
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return repr(node.value)
+    return _annotation_to_str(node)
+
+
 # ---------------------------------------------------------------------------
 # AST to JSON serializer
 # ---------------------------------------------------------------------------
@@ -1272,6 +1866,8 @@ def _node_to_dict(node: ast.AST, mutable_vars: Set[str],
 
     # Handle specific node types
     if isinstance(node, ast.Module):
+        result["condition_walrus_names"] = getattr(node, "_condition_walrus_names", [])
+        result["module_consts"] = getattr(node, "_module_consts", [])
         result["body"] = [_node_to_dict(n, mutable_vars, redefined, ctx) for n in node.body]
         docstring = _extract_docstring(node)
         if docstring:
@@ -1279,16 +1875,19 @@ def _node_to_dict(node: ast.AST, mutable_vars: Set[str],
 
     elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
         result["name"] = node.name
+        result["condition_walrus_names"] = getattr(node, "_condition_walrus_names", [])
 
         # Compute mutable vars within this function FIRST
         tracker = ScopeTracker()
         tracker.visit(node)
-        func_mutable = tracker.mutable
+        func_mutable = tracker.mutable | ctx.rebound_parameters(node)
         result["mutable_vars"] = sorted(func_mutable)
 
         # Build a local var_annotation map including parameter annotations so
         # Name nodes inside the function body can get v_annotation hints.
-        local_ann = dict(var_annotations)
+        # A name this function binds itself is not the module variable of the same name.
+        owned = ctx.owned_names(node)
+        local_ann = {k: v for k, v in var_annotations.items() if k not in owned}
         # Positional and keyword args
         for a in list(node.args.posonlyargs) + list(node.args.args) + list(node.args.kwonlyargs):
             if a.annotation is not None and isinstance(a, ast.arg):
@@ -1336,6 +1935,11 @@ def _node_to_dict(node: ast.AST, mutable_vars: Set[str],
                     elif typ != '':
                         local_ann[tgt] = typ
 
+        for name, typ in getattr(node, "_condition_walrus_hints", {}).items():
+            # This local shadows a module name just as a plain assignment does.
+            # The planner excludes parameters and every other local binding.
+            local_ann[name] = _normalize_inferred_type_name(typ)
+
         # `def __init__(self, x): self.x = x` against an annotated field gives
         # the parameter the field's type. Without it the field is typed but the
         # assignment that fills it is not, which V rejects.
@@ -1351,7 +1955,8 @@ def _node_to_dict(node: ast.AST, mutable_vars: Set[str],
 
         result["body"] = [_node_to_dict(n, func_mutable, redefined,
                                         AnalysisContext(local_ann, ctx.func_ret_annotations,
-                                                        ctx.slots_by_class, ctx.field_types)) for n in node.body]
+                                                        ctx.slots_by_class, ctx.field_types,
+                                                        table=ctx.table, facts=ctx.facts)) for n in node.body]
         result["decorator_list"] = [_node_to_dict(d, mutable_vars, redefined, ctx) for d in node.decorator_list]
         result["returns"] = _node_to_dict(node.returns, mutable_vars, redefined, ctx) if node.returns else None
         result["type_comment"] = getattr(node, "type_comment", None)
@@ -1367,13 +1972,14 @@ def _node_to_dict(node: ast.AST, mutable_vars: Set[str],
 
     elif isinstance(node, ast.ClassDef):
         declarations = _extract_class_declarations(node, ctx.slots_by_class)
+        declarations.update(getattr(node, "_initializer_field_types", {}))
         own_types = {name: typ for name, typ in declarations.items() if typ}
         base_names = [b.id for b in node.bases if isinstance(b, ast.Name)]
         field_types = dict(_inherited_field_types(node.name, ctx.class_field_types,
                                                   base_names))
         field_types.update(own_types)
         body_ctx = AnalysisContext(ctx.var_annotations, ctx.func_ret_annotations,
-                                   ctx.slots_by_class, field_types)
+                                   ctx.slots_by_class, field_types, table=ctx.table, facts=ctx.facts)
         result["name"] = node.name
         result["bases"] = [_node_to_dict(b, mutable_vars, redefined, ctx) for b in node.bases]
         result["keywords"] = [_keyword_to_dict(kw, mutable_vars, redefined, ctx) for kw in node.keywords]
@@ -1385,6 +1991,7 @@ def _node_to_dict(node: ast.AST, mutable_vars: Set[str],
         result["class_defaults"] = [
             [name, default] for name, default
             in _extract_class_defaults(node, mutable_vars, redefined, ctx).items()]
+        result["unresolved_init_fields"] = getattr(node, "_unresolved_init_fields", [])
         result["is_protocol"] = _is_protocol_class(node)
         result["type_params"] = _extract_generic_type_params(node)
         # Extract class-level docstring
@@ -1464,6 +2071,7 @@ def _node_to_dict(node: ast.AST, mutable_vars: Set[str],
         result["level"] = getattr(node, "_level", 0)
 
     elif isinstance(node, ast.If):
+        result["lower_condition_walrus"] = getattr(node, "_lower_condition_walrus", False)
         result["test"] = _node_to_dict(node.test, mutable_vars, redefined, ctx)
         result["body"] = [_node_to_dict(n, mutable_vars, redefined, ctx) for n in node.body]
         result["orelse"] = [_node_to_dict(n, mutable_vars, redefined, ctx) for n in node.orelse]
@@ -1560,7 +2168,7 @@ def _node_to_dict(node: ast.AST, mutable_vars: Set[str],
             # Provide a source fallback when available (Python 3.9+ ast.unparse)
             if hasattr(ast, "unparse"):
                 try:
-                    result["body_src"] = ast.unparse(node.body)
+                    result["body_src"] = _unparse_expr(node.body)
                 except Exception:
                     pass
 
@@ -1605,6 +2213,8 @@ def _node_to_dict(node: ast.AST, mutable_vars: Set[str],
         result["keywords"] = [_keyword_to_dict(kw, mutable_vars, redefined, ctx) for kw in node.keywords]
         if getattr(node, "_subject_class", ""):
             result["subject_class"] = node._subject_class
+        if getattr(node, "_api", ""):
+            result["api"] = node._api
         # Attach v_annotation for calls when the callee is a top-level function
         # with an explicit return annotation discovered during pre-scan.
         if isinstance(node.func, ast.Name):
@@ -1642,6 +2252,8 @@ def _node_to_dict(node: ast.AST, mutable_vars: Set[str],
         result["value"] = _node_to_dict(node.value, mutable_vars, redefined, ctx)
         result["attr"] = node.attr
         result["ctx"] = {"node_type": type(node.ctx).__name__}
+        if getattr(node, "_api", ""):
+            result["api"] = node._api
 
     elif isinstance(node, ast.Subscript):
         result["value"] = _node_to_dict(node.value, mutable_vars, redefined, ctx)
@@ -1654,10 +2266,18 @@ def _node_to_dict(node: ast.AST, mutable_vars: Set[str],
 
     elif isinstance(node, ast.Name):
         # Python module dunders with a direct V spelling are renamed here so
-        # that every reference site agrees. V has no `__file__` ambient value.
-        result["id"] = _DUNDER_NAME_MAP.get(node.id, node.id)
+        # that every reference site agrees. A read of `__file__` is V's `@FILE`,
+        # the path of the source file as a compile-time string.
+        if node.id == "__file__" and isinstance(node.ctx, ast.Load):
+            result["id"] = "@FILE"
+        else:
+            result["id"] = _DUNDER_NAME_MAP.get(node.id, node.id)
         result["ctx"] = {"node_type": type(node.ctx).__name__}
         result["is_mutable"] = node.id in mutable_vars
+        if getattr(node, "_math_member", ""):
+            result["math_member"] = node._math_member
+        if getattr(node, "_api", ""):
+            result["api"] = node._api
         # Attach simple v_annotation if we discovered one during pre-scan
         if node.id in var_annotations:
             result["v_annotation"] = var_annotations[node.id]
@@ -1670,6 +2290,13 @@ def _node_to_dict(node: ast.AST, mutable_vars: Set[str],
         result["lower"] = _node_to_dict(node.lower, mutable_vars, redefined, ctx) if node.lower else None
         result["upper"] = _node_to_dict(node.upper, mutable_vars, redefined, ctx) if node.upper else None
         result["step"] = _node_to_dict(node.step, mutable_vars, redefined, ctx) if node.step else None
+
+    # The backend reads `v_annotation` on an expression as its type. Where the passes above
+    # did not set one, the inferred scalar type fills it in.
+    if isinstance(node, ast.expr) and "v_annotation" not in result:
+        scalar = ctx.scalar_annotation(node)
+        if scalar:
+            result["v_annotation"] = scalar
 
     return result
 
@@ -1865,7 +2492,1753 @@ def _comprehension_to_dict(comp: ast.comprehension, mutable_vars: Set[str],
 # Main entry point
 # ---------------------------------------------------------------------------
 
-def process_file(file_path: str) -> str:
+def _mutating_method_names(tree: ast.Module) -> Set[str]:
+    """Names of the methods that change their object: they store into `self` (an attribute,
+    an element, a mutating list call) or call such a method on `self`."""
+    methods = [fn for cls in ast.walk(tree) if isinstance(cls, ast.ClassDef)
+               for fn in cls.body if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef))
+               and fn.args.args and fn.args.args[0].arg == "self" and fn.name != "__init__"]
+    names: Set[str] = set()
+    ScopeTracker.mutating_methods = set()
+    while True:
+        found = set()
+        for fn in methods:
+            tracker = ScopeTracker()
+            tracker.visit(fn)
+            if "self" in tracker.mutable:
+                found.add(fn.name)
+        if found == names:
+            return names
+        names = found
+        ScopeTracker.mutating_methods = names
+
+
+def _mutating_function_params(tree: ast.Module,
+                              table: Optional[symbols.SymbolTable]) -> Dict[str, Set[int]]:
+    """For each function outside a class: the positions of the parameters the backend
+    declares `mut`, which are those the body changes, except a rebound number, string or
+    bool (copied inside the function). Calls between such functions carry the fact on."""
+    class_level = {id(fn) for cls in ast.walk(tree) if isinstance(cls, ast.ClassDef)
+                   for fn in cls.body}
+    functions = [fn for fn in ast.walk(tree)
+                 if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef))
+                 and id(fn) not in class_level]
+    ctx = AnalysisContext(table=table)
+    found: Dict[str, Set[int]] = {}
+    ScopeTracker.mutating_functions = {}
+    while True:
+        current: Dict[str, Set[int]] = {}
+        for fn in functions:
+            tracker = ScopeTracker()
+            tracker.visit(fn)
+            changed = tracker.mutable | ctx.rebound_parameters(fn)
+            for index, arg in enumerate(fn.args.args):
+                value_type = (isinstance(arg.annotation, ast.Name)
+                              and arg.annotation.id in ("int", "float", "str", "bool"))
+                if arg.arg in changed and not value_type:
+                    current.setdefault(fn.name, set()).add(index)
+        if current == found:
+            return found
+        found = current
+        ScopeTracker.mutating_functions = found
+
+
+def _resolve_bindings(tree: ast.Module) -> Optional[symbols.SymbolTable]:
+    """Resolve lexical bindings on the final scope structure of the tree. A file the resolver
+    cannot handle is translated without binding facts, as before the resolver existed."""
+    try:
+        return symbols.analyze(tree)
+    except Exception as exc:  # pragma: no cover - reported, never fatal
+        print(f"py2v: bindings not resolved: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return None
+
+
+def _mark_math_members(tree: ast.Module, table: Optional[symbols.SymbolTable]) -> None:
+    """Set `_math_member` on each read of a name bound by a module-level
+    `from math import name [as other]` and bound nowhere else: the member's
+    name in `math`. The backend spells it as a member of V's math module."""
+    if table is None:
+        return
+    rebound = {b.id for b in table.bindings if b.rebound or b.kind != "import"}
+    members: Dict[int, str] = {}
+    for statement in tree.body:
+        if isinstance(statement, ast.ImportFrom) and statement.module == "math" and statement.level == 0:
+            for alias in statement.names:
+                binding = getattr(alias, "_binding", None)
+                if binding is not None and binding not in rebound:
+                    members[binding] = alias.name
+        # `from random import name` rides along, spelled `random.name`.
+        if isinstance(statement, ast.ImportFrom) and statement.module == "random" and statement.level == 0:
+            for alias in statement.names:
+                binding = getattr(alias, "_binding", None)
+                if binding is not None and binding not in rebound:
+                    members[binding] = "random." + alias.name
+    if not members:
+        return
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
+            member = members.get(getattr(node, "_binding", None))
+            if member:
+                node._math_member = member
+
+
+def _annotation_for_type(types: List[Dict[str, Any]], type_id: int) -> Optional[str]:
+    """The Python annotation that spells a fully known inferred type, or None."""
+    entry = types[type_id]
+    kind = entry["k"]
+    if kind in ("int", "float", "str", "bool"):
+        return kind
+    if kind == "list":
+        elem = _annotation_for_type(types, entry["elem"])
+        return f"list[{elem}]" if elem else None
+    if kind == "dict":
+        key = _annotation_for_type(types, entry["key"])
+        value = _annotation_for_type(types, entry["value"])
+        return f"dict[{key}, {value}]" if key in ("str", "int") and value else None
+    return None
+
+
+def _is_empty_container(node: ast.expr) -> bool:
+    if isinstance(node, ast.List):
+        return not node.elts
+    if isinstance(node, ast.Dict):
+        return not node.keys
+    return (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+            and node.func.id in ("list", "dict") and not node.args and not node.keywords
+            and getattr(node.func, "_binding", None) is None)
+
+
+@dataclass
+class ProjectFacts:
+    """What the other files of the project export: summaries from `--summaries`, and this
+    file's own dotted name among them."""
+    externals: Dict[str, Any] = field(default_factory=dict)
+    module_name: Optional[str] = None
+    is_package: bool = False
+
+
+def _project_files(root: str) -> List[Tuple[str, str, bool]]:
+    """Every Python file under root with its dotted module name, named as inference names
+    them, so a summary and the file it describes agree."""
+    directory = infer.Path(root).resolve()
+    skipped = ("__pycache__", ".venv", "venv", ".git", "node_modules")
+    found = []
+    for path in sorted(directory.rglob("*.py"), key=lambda p: p.as_posix()):
+        if path.is_symlink() or not path.is_file():
+            continue
+        if any(part in skipped for part in path.relative_to(directory).parts):
+            continue
+        name, is_package = infer._project_module(directory, path)
+        found.append((str(path), name, is_package))
+    return found
+
+
+def write_summaries(root: str, out_path: str) -> None:
+    """Summarize every module under root for the other modules (at most three rounds, as
+    a summary can depend on another), and write {module name: summary} as JSON. A module
+    is also listed under its name with and without the root directory's name in front,
+    since a project spells its own imports either way."""
+    parsed = []
+    for path, name, is_package in _project_files(root):
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                tree = ast.parse(handle.read(), filename=path)
+            parsed.append((name, is_package, tree, symbols.analyze(tree)))
+        except Exception:
+            continue  # the per-file run reports what is wrong with this file
+    summaries: Dict[str, Any] = {}
+    for _ in range(3):
+        upcoming: Dict[str, Any] = {}
+        for name, is_package, tree, table in parsed:
+            try:
+                infer.run(tree, table, externals=summaries, module_name=name,
+                          is_package=is_package)
+                upcoming[name] = infer.summarize(tree, table, module_name=name,
+                                                 is_package=is_package)
+            except Exception:
+                continue
+        settled = json.dumps(upcoming, sort_keys=True) == json.dumps(summaries, sort_keys=True)
+        summaries = upcoming
+        if settled:
+            break
+    prefix = os.path.basename(os.path.abspath(root)) + "."
+    for name in list(summaries):
+        other = name[len(prefix):] if name.startswith(prefix) else prefix + name
+        summaries.setdefault(other, summaries[name])
+    with open(out_path, "w", encoding="utf-8") as handle:
+        json.dump(summaries, handle)
+
+
+def _load_project_facts(externals_path: str, root: str, file_path: str) -> ProjectFacts:
+    with open(externals_path, "r", encoding="utf-8") as handle:
+        externals = json.load(handle)
+    directory = infer.Path(root).resolve()
+    name, is_package = infer._project_module(directory, infer.Path(file_path).resolve())
+    return ProjectFacts(externals, name, is_package)
+
+
+def _infer_types(tree: ast.Module, table: Optional[symbols.SymbolTable],
+                 project: Optional[ProjectFacts] = None) -> Optional[infer.TypeFacts]:
+    """The types the code shows, or None for a file inference cannot handle; such a file
+    is translated without them, as before inference existed."""
+    if table is None:
+        return None
+    # Inference clears `_api` before it runs. The marks set by `_mark_runtime_api` are the
+    # ones the backend knows how to emit, so they are kept across the run.
+    marks = [(node, node._api) for node in ast.walk(tree) if getattr(node, "_api", "")]
+    try:
+        return _run_inference(tree, table, project)
+    finally:
+        for node, mark in marks:
+            node._api = mark
+
+
+def _run_inference(tree: ast.Module, table: symbols.SymbolTable,
+                   project: Optional[ProjectFacts] = None) -> Optional[infer.TypeFacts]:
+    try:
+        if project is not None:
+            return infer.run(tree, table, externals=project.externals,
+                             module_name=project.module_name, is_package=project.is_package)
+        return infer.run(tree, table)
+    except Exception as exc:  # pragma: no cover - reported, never fatal
+        print(f"py2v: types not inferred: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return None
+
+
+_SIZED_KINDS = ("list", "dict", "set", "tuple", "tuple_of", "bytes")
+
+
+def _truth_kind(node: ast.expr, facts: infer.TypeFacts) -> str:
+    """The kind of a tested value: the type the code shows, else the one its annotations
+    declare (inference's assumed layer)."""
+    type_id = getattr(node, "_assumed", None)
+    if type_id is None:
+        type_id = getattr(node, "_type", None)
+    return facts.types[type_id]["k"] if type_id is not None else "unknown"
+
+
+def _choose_boolop_values(tree: ast.Module, facts: Optional[infer.TypeFacts]) -> None:
+    """`a or b` and `a and b` used for their value, not as a condition, become the choice
+    Python makes: `a if a else b` and `b if a else a` (`name = given or "default"`). V's
+    `||` and `&&` take and give bool only. Done when every operand has the same known
+    str, int, float or list type and each one but the last is a plain name or an attribute
+    of one, so that reading it twice is safe; `_state_truth_tests` then states the test."""
+    if facts is None:
+        return
+    tested = set()
+
+    def mark(node: ast.expr) -> None:
+        if isinstance(node, ast.BoolOp):
+            tested.add(id(node))
+            for value in node.values:
+                mark(value)
+        elif isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
+            mark(node.operand)
+
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.If, ast.While, ast.IfExp, ast.Assert)):
+            mark(node.test)
+        elif isinstance(node, ast.comprehension):
+            for condition in node.ifs:
+                mark(condition)
+        elif isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
+            mark(node.operand)
+
+    def spelled(node: ast.expr) -> Optional[str]:
+        type_id = getattr(node, "_assumed", None)
+        if type_id is None:
+            type_id = getattr(node, "_type", None)
+        if type_id is None or facts.types[type_id]["k"] not in ("str", "int", "float", "list"):
+            return None
+        return _annotation_for_type(facts.types, type_id)
+
+    def plain(node: ast.expr) -> bool:
+        return isinstance(node, ast.Name) or (
+            isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name))
+
+    class Choose(ast.NodeTransformer):
+        def visit_BoolOp(self, node: ast.BoolOp) -> ast.AST:
+            self.generic_visit(node)
+            if id(node) in tested:
+                return node
+            kinds = {spelled(value) for value in node.values}
+            if len(kinds) != 1 or None in kinds or not all(plain(v) for v in node.values[:-1]):
+                return node
+            result = node.values[-1]
+            for value in reversed(node.values[:-1]):
+                again = copy.deepcopy(value)
+                if isinstance(node.op, ast.Or):
+                    result = ast.IfExp(test=value, body=again, orelse=result)
+                else:
+                    result = ast.IfExp(test=value, body=result, orelse=again)
+                ast.copy_location(result, node)
+                for name in ("_type", "_assumed"):
+                    if hasattr(value, name):
+                        setattr(result, name, getattr(value, name))
+            return result
+
+    try:
+        Choose().visit(tree)
+    except RecursionError:
+        pass
+
+
+def _state_truth_tests(tree: ast.Module, table: Optional[symbols.SymbolTable],
+                       facts: Optional[infer.TypeFacts]) -> None:
+    """Write the test Python makes when a str, number or container is used as a condition:
+    `if name:` becomes `if name != "":`, `if not items:` becomes `if not len(items) > 0:`.
+    V conditions are bool only. A value of unknown type is left as written."""
+    if table is None or facts is None:
+        return
+    len_is_builtin = not any(b.name == "len" for b in table.bindings)
+    # Classes whose instances can be false: they define their own truth or length.
+    falsy_classes = {cls.name for cls in ast.walk(tree) if isinstance(cls, ast.ClassDef)
+                     and any(isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef))
+                             and m.name in ("__bool__", "__len__") for m in cls.body)}
+
+    def optional_instance(node: ast.expr) -> bool:
+        """Whether the value is None or an instance of a class of this file that is always
+        true: then its truth is `is not None`."""
+        type_id = getattr(node, "_assumed", None)
+        if type_id is None:
+            type_id = getattr(node, "_type", None)
+        if type_id is None or facts.types[type_id]["k"] != "union":
+            return False
+        members = [facts.types[m] for m in facts.types[type_id]["members"]]
+        others = [m for m in members if m["k"] != "none"]
+        return (len(members) == 2 and len(others) == 1 and others[0]["k"] == "instance"
+                and others[0].get("class_binding") is not None
+                and others[0].get("name") not in falsy_classes)
+
+    def reference(node: ast.AST) -> bool:
+        # a name or a chain of attributes of one: reading it twice reads the same value
+        while isinstance(node, ast.Attribute):
+            node = node.value
+        return isinstance(node, ast.Name)
+
+    # Fields a class of this file declares in its body as `Optional[T]` or `T | None`
+    # with a plain T, by the class's binding: a dataclass states its fields there.
+    plain_names = {"str": "str", "int": "int", "float": "float", "bool": "bool",
+                   "list": "list", "dict": "dict", "set": "set", "List": "list",
+                   "Dict": "dict", "Set": "set"}
+    optional_fields: Dict[Tuple[int, str], str] = {}
+    for cls in ast.walk(tree):
+        if not isinstance(cls, ast.ClassDef) or getattr(cls, "_binding", None) is None:
+            continue
+        for stmt in cls.body:
+            if not (isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name)):
+                continue
+            text = _unparse_expr(stmt.annotation).replace("typing.", "")
+            inner = ""
+            if text.startswith("Optional[") and text.endswith("]"):
+                inner = text[9:-1]
+            elif text.endswith(" | None"):
+                inner = text[:-7]
+            elif text.startswith("None | "):
+                inner = text[7:]
+            head = inner.split("[", 1)[0]
+            if head in plain_names and "|" not in inner:
+                optional_fields[(cls._binding, stmt.target.id)] = plain_names[head]
+
+    def declared_optional_field(node: ast.expr) -> str:
+        if not isinstance(node, ast.Attribute):
+            return ""
+        owner = getattr(node.value, "_assumed", None)
+        if owner is None:
+            owner = getattr(node.value, "_type", None)
+        if owner is None or facts.types[owner]["k"] != "instance":
+            return ""
+        kind = optional_fields.get((facts.types[owner].get("class_binding"), node.attr), "")
+        return kind if kind in ("str", "int", "float", "bool") or len_is_builtin else ""
+
+    def optional_plain(node: ast.expr) -> str:
+        """The kind of the other member when the value is None or one plain type (str, int,
+        float, bool or a sized container) and is a plain reference; else an empty string."""
+        if not reference(node):
+            return ""
+        # Either layer may show it: where a branch looks unreachable to the annotated
+        # layer, the evidence layer still has the declared union.
+        for layer in ("_assumed", "_type"):
+            type_id = getattr(node, layer, None)
+            if type_id is None or facts.types[type_id]["k"] != "union":
+                continue
+            members = [facts.types[m] for m in facts.types[type_id]["members"]]
+            others = [m["k"] for m in members if m["k"] != "none"]
+            if len(members) != 2 or len(others) != 1:
+                return ""
+            kind = others[0]
+            if kind in ("str", "int", "float", "bool") or (kind in _SIZED_KINDS and len_is_builtin):
+                return kind
+            return ""
+        return declared_optional_field(node)
+
+    def stated(node: ast.expr) -> ast.expr:
+        if isinstance(node, ast.BoolOp):
+            node.values = [stated(v) for v in node.values]
+            return node
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
+            node.operand = stated(node.operand)
+            return node
+        plain = optional_plain(node)
+        if plain:
+            # `value` that may be None or a str, number or container: not None, and then
+            # the test of that type. V narrows the option within the one condition.
+            present = ast.Compare(left=node, ops=[ast.IsNot()],
+                                  comparators=[ast.Constant(value=None)])
+            again = copy.deepcopy(node)
+            if plain == "str":
+                rest: ast.expr = ast.Compare(left=again, ops=[ast.NotEq()],
+                                             comparators=[ast.Constant(value="")])
+            elif plain in ("int", "float"):
+                rest = ast.Compare(left=again, ops=[ast.NotEq()],
+                                   comparators=[ast.Constant(value=0 if plain == "int" else 0.0)])
+            elif plain == "bool":
+                rest = again
+            else:
+                size = ast.Call(func=ast.Name(id="len", ctx=ast.Load()), args=[again], keywords=[])
+                rest = ast.Compare(left=size, ops=[ast.Gt()], comparators=[ast.Constant(value=0)])
+            both = ast.BoolOp(op=ast.And(), values=[present, rest])
+            for part in ast.walk(both):
+                if not hasattr(part, "lineno"):
+                    ast.copy_location(part, node)
+            return both
+        kind = _truth_kind(node, facts)
+        if optional_instance(node):
+            new: ast.expr = ast.Compare(left=node, ops=[ast.IsNot()],
+                                        comparators=[ast.Constant(value=None)])
+        elif kind == "str":
+            new = ast.Compare(left=node, ops=[ast.NotEq()],
+                              comparators=[ast.Constant(value="")])
+        elif kind == "int":
+            new = ast.Compare(left=node, ops=[ast.NotEq()], comparators=[ast.Constant(value=0)])
+        elif kind == "float":
+            new = ast.Compare(left=node, ops=[ast.NotEq()],
+                              comparators=[ast.Constant(value=0.0)])
+        elif kind in _SIZED_KINDS and len_is_builtin:
+            size = ast.Call(func=ast.Name(id="len", ctx=ast.Load()), args=[node], keywords=[])
+            new = ast.Compare(left=size, ops=[ast.Gt()], comparators=[ast.Constant(value=0)])
+        else:
+            return node
+        for part in ast.walk(new):
+            if part is not node and not hasattr(part, "lineno"):
+                ast.copy_location(part, node)
+        return new
+
+    def has_walrus(node: ast.expr) -> bool:
+        return any(isinstance(n, ast.NamedExpr) for n in ast.walk(node))
+
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.If, ast.While, ast.IfExp, ast.Assert)):
+            if not has_walrus(node.test):
+                node.test = stated(node.test)
+        elif isinstance(node, ast.comprehension):
+            node.ifs = [c if has_walrus(c) else stated(c) for c in node.ifs]
+        elif isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
+            # `not value` tests its operand wherever it stands
+            if not has_walrus(node.operand):
+                node.operand = stated(node.operand)
+
+
+def _iterate_string_characters(tree: ast.Module, facts: Optional[infer.TypeFacts]) -> None:
+    """A loop or comprehension over a str visits its characters as strs. V iterates a string
+    by byte, so the iterable becomes `s.split("")`, which the backend emits as it stands and
+    which in V is the list of the string's characters. (Python itself refuses an empty
+    separator; the form exists only between this pass and the backend.)"""
+    if facts is None:
+        return
+
+    def characters(iterable: ast.expr) -> ast.expr:
+        if _truth_kind(iterable, facts) != "str":
+            return iterable
+        new = ast.Call(func=ast.Attribute(value=iterable, attr="split", ctx=ast.Load()),
+                       args=[ast.Constant(value="")], keywords=[])
+        for part in ast.walk(new):
+            if part is not iterable and not hasattr(part, "lineno"):
+                ast.copy_location(part, iterable)
+        return new
+
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.For, ast.AsyncFor, ast.comprehension)):
+            node.iter = characters(node.iter)
+
+
+def _state_module_name(tree: ast.Module, module_name: Optional[str]) -> None:
+    """`__name__` read as a value is the module's name: its dotted name inside a project,
+    `"__main__"` for a file translated on its own (it is the program). The
+    `if __name__ == "__main__":` guard was rewritten before this."""
+    name = module_name or "__main__"
+
+    class Name(ast.NodeTransformer):
+        def visit_Name(self, node: ast.Name) -> ast.AST:
+            if node.id == "__name__" and isinstance(node.ctx, ast.Load):
+                return ast.copy_location(ast.Constant(value=name), node)
+            return node
+
+    if not any(isinstance(n, ast.Name) and n.id == "__name__" and isinstance(n.ctx, ast.Store)
+               for n in ast.walk(tree)):
+        Name().visit(tree)
+
+
+def _lower_dataclass_fields(tree: ast.Module) -> None:
+    """A class attribute declared with `dataclasses.field(...)` gets the default the call
+    describes: `field(default=v)` is `v`, `field(default_factory=list)` (or `dict`, `set`) is
+    the empty container the declared type already starts as, `field(default_factory=lambda: e)` is `e`, and any other factory
+    `f` is `f()`. V gives every instance its own value of a field default, as the factory
+    does. A `field(...)` with neither keeps no default. Only where `field` is imported
+    from `dataclasses` and not bound again at module level."""
+    names: Set[str] = set()
+    positional: Set[str] = set()
+    modules: Set[str] = set()
+    for stmt in tree.body:
+        if isinstance(stmt, ast.ImportFrom) and stmt.module == "dataclasses" and stmt.level == 0:
+            names.update(a.asname or a.name for a in stmt.names if a.name == "field")
+        elif isinstance(stmt, ast.ImportFrom) and stmt.module == "pydantic" and stmt.level == 0:
+            # pydantic's `Field(default, ...)`: the default is kept, the validation
+            # keywords (`ge`, `max_length`, `description`) have no V counterpart here
+            positional.update(a.asname or a.name for a in stmt.names if a.name == "Field")
+        elif isinstance(stmt, ast.Import):
+            modules.update(a.asname or a.name for a in stmt.names if a.name == "dataclasses")
+    for stmt in tree.body:
+        bound = []
+        if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            bound = [stmt.name]
+        elif isinstance(stmt, ast.Assign):
+            bound = [t.id for t in stmt.targets if isinstance(t, ast.Name)]
+        names.difference_update(bound)
+        positional.difference_update(bound)
+        modules.difference_update(bound)
+    if not names and not modules and not positional:
+        return
+
+    def is_field(call: ast.AST) -> bool:
+        if not isinstance(call, ast.Call):
+            return False
+        if isinstance(call.func, ast.Name) and call.func.id in positional:
+            return len(call.args) <= 1 and not any(isinstance(a, ast.Starred) for a in call.args)
+        if call.args:
+            return False
+        if isinstance(call.func, ast.Name):
+            return call.func.id in names
+        return (isinstance(call.func, ast.Attribute) and call.func.attr == "field"
+                and isinstance(call.func.value, ast.Name) and call.func.value.id in modules)
+
+    for cls in ast.walk(tree):
+        if not isinstance(cls, ast.ClassDef):
+            continue
+        for stmt in cls.body:
+            if not (isinstance(stmt, ast.AnnAssign) and stmt.value is not None and is_field(stmt.value)):
+                continue
+            keywords = {k.arg: k.value for k in stmt.value.keywords if k.arg is not None}
+            value: Optional[ast.expr] = None
+            first = stmt.value.args[0] if stmt.value.args else None
+            if first is not None and not (isinstance(first, ast.Constant) and first.value is Ellipsis):
+                value = first  # `Field(0.5, ...)`; `Field(...)` marks a required field
+            elif "default" in keywords:
+                value = keywords["default"]
+            elif "default_factory" in keywords:
+                factory = keywords["default_factory"]
+                if isinstance(factory, ast.Name) and factory.id in ("list", "dict", "set"):
+                    # V's zero value of the declared type is the empty container
+                    value = None
+                elif isinstance(factory, ast.Lambda) and not (
+                        factory.args.args or factory.args.vararg or factory.args.kwarg
+                        or factory.args.kwonlyargs or factory.args.posonlyargs):
+                    value = factory.body
+                else:
+                    value = ast.Call(func=factory, args=[], keywords=[])
+            if value is not None:
+                for part in ast.walk(value):
+                    if not hasattr(part, "lineno"):
+                        ast.copy_location(part, stmt.value)
+            stmt.value = value
+
+
+def _drop_doctest_runs(tree: ast.Module) -> None:
+    """`doctest.testmod()` runs the examples in docstrings, which a translation does not
+    carry: the call is left out."""
+    names = {"testmod"} if any(
+        isinstance(n, ast.ImportFrom) and n.module == "doctest"
+        and any(a.name == "testmod" and a.asname is None for a in n.names)
+        for n in ast.walk(tree)) else set()
+
+    def is_run(stmt: ast.stmt) -> bool:
+        if not (isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call)):
+            return False
+        func = stmt.value.func
+        if isinstance(func, ast.Name):
+            return func.id in names
+        return (isinstance(func, ast.Attribute) and func.attr == "testmod"
+                and isinstance(func.value, ast.Name) and func.value.id == "doctest")
+
+    for node in ast.walk(tree):
+        for field_name in ("body", "orelse", "finalbody"):
+            block = getattr(node, field_name, None)
+            if isinstance(block, list) and any(isinstance(s, ast.stmt) and is_run(s) for s in block):
+                kept = [s for s in block if not (isinstance(s, ast.stmt) and is_run(s))]
+                block[:] = kept or [ast.copy_location(ast.Pass(), block[0])]
+
+
+def _runtime_call(name: str, args: List[ast.expr], like: ast.AST) -> ast.expr:
+    """`pyrt.<name>(args)`, the runtime's form of an operation on a value of unknown type."""
+    if (name == "box" and len(args) == 1 and isinstance(args[0], ast.Constant)
+            and args[0].value is None):
+        # None has no V type to box: it is the runtime's own None
+        none = ast.Attribute(value=ast.Name(id="pyrt", ctx=ast.Load()), attr="none_",
+                             ctx=ast.Load())
+        for part in ast.walk(none):
+            ast.copy_location(part, like)
+        none._dynamic = True
+        return none
+    if name == "box" and len(args) == 1 and (
+            isinstance(args[0], ast.List) and not args[0].elts
+            or isinstance(args[0], ast.Dict) and not args[0].keys):
+        # An empty display has no element type for V to box: the runtime makes it.
+        name = "empty_list" if isinstance(args[0], ast.List) else "empty_dict"
+        args = []
+    call = ast.Call(func=ast.Attribute(value=ast.Name(id="pyrt", ctx=ast.Load()), attr=name,
+                                       ctx=ast.Load()), args=args, keywords=[])
+    for part in ast.walk(call):
+        if not hasattr(part, "lineno"):
+            ast.copy_location(part, like)
+    call._dynamic = True
+    return call
+
+
+def _annotate_parameters_from_calls(tree: ast.Module, table: Optional[symbols.SymbolTable],
+                                    facts: Optional[infer.TypeFacts]) -> None:
+    """In a file translated on its own every call of its functions is in the file, so a
+    parameter without an annotation takes the type its calls give it, when that is one
+    plain type (`def biggest(xs)` called with `[3, 9, 4]` becomes `xs: list[int]`). A
+    function that is also used as a value is left alone: such a call is not visible."""
+    if table is None or facts is None:
+        return
+    used_as_value = set()
+    called = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+            called.add(id(node.func))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load) and id(node) not in called:
+            used_as_value.add(getattr(node, "_binding", None))
+    known = {b["id"]: b.get("inferred") for b in facts.bindings}
+    for fn in ast.walk(tree):
+        if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if fn.decorator_list or getattr(fn, "_binding", None) in used_as_value:
+            continue
+        positional = fn.args.posonlyargs + fn.args.args
+        for position, arg in enumerate(positional + fn.args.kwonlyargs):
+            if arg.annotation is not None or (position == 0 and arg.arg in ("self", "cls")):
+                continue
+            type_id = known.get(getattr(arg, "_binding", None))
+            if type_id is None:
+                continue
+            text = _annotation_for_type(facts.types, type_id)
+            if text:
+                arg.annotation = _annotation_node(text, arg)
+
+
+def _annotate_returns(tree: ast.Module, facts: Optional[infer.TypeFacts]) -> None:
+    """A function without a return annotation takes the return type its body shows, when
+    that is one plain type."""
+    if facts is None:
+        return
+    returns = {f["scope"]: f.get("ret_inferred") for f in facts.functions}
+    for fn in ast.walk(tree):
+        if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)) or fn.returns is not None:
+            continue
+        if fn.decorator_list or _is_generator(fn):
+            continue
+        type_id = returns.get(getattr(fn, "_scope_id", None))
+        if type_id is None:
+            continue
+        text = _annotation_for_type(facts.types, type_id)
+        if text:
+            fn.returns = _annotation_node(text, fn)
+
+
+def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable],
+                          facts: Optional[infer.TypeFacts],
+                          any_lists: Optional[set] = None) -> None:
+    """Operations on a value whose type the code does not show go through the runtime.
+
+    A parameter with no annotation, and whatever is computed from one, is emitted as the
+    runtime's value (`Any`). V has no indexing, iteration, truth or equality for it, so
+    `xs[0]` becomes `pyrt.item_at(xs, 0)`, `for x in xs` visits `pyrt.elements(xs)`, a
+    truth test is `pyrt.truth(x)`, `a == b` is `pyrt.eq(a, b)`, `len(x)` is
+    `pyrt.length(x)`, and an operand of known type beside a dynamic one is boxed.
+
+    `any_lists` are the names declared as a list of runtime values: their items and the
+    variable of a loop over one are dynamic, and a list or tuple appended to one is boxed
+    (V's `<<` would add its elements instead)."""
+    if table is None or facts is None:
+        return
+    if any(b.name == "pyrt" for b in table.bindings):
+        return
+    any_lists = any_lists or set()
+
+    # Functions of this file declared as returning a list with no element type
+    any_list_functions = set()
+    for fn in ast.walk(tree):
+        if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)) and fn.returns is not None:
+            text = _unparse_expr(fn.returns).replace("typing.", "")
+            if text in ("list", "List", "list[Any]", "List[Any]"):
+                any_list_functions.add(getattr(fn, "_binding", None))
+    any_list_functions.discard(None)
+
+    def any_list(node: ast.AST) -> bool:
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+            return getattr(node.func, "_binding", None) in any_list_functions
+        return getattr(node, "_any_list", False) or (
+            isinstance(node, ast.Name) and getattr(node, "_binding", None) in any_lists)
+    # The bindings the backend declares as `Any`: parameters with no annotation (the
+    # receiver and the parameters of `__init__`, which the backend types from the fields,
+    # are not among them), then every local that is only ever given a dynamic value.
+    dynamic_bindings = set()
+    dynamic_returning = set()
+    for fn in ast.walk(tree):
+        if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)) or fn.name == "__init__":
+            continue
+        positional = fn.args.posonlyargs + fn.args.args
+        for position, arg in enumerate(positional + fn.args.kwonlyargs):
+            untyped = arg.annotation is None or _unparse_expr(arg.annotation) in (
+                "Any", "object", "typing.Any")
+            if untyped and not (position == 0 and arg.arg in ("self", "cls")):
+                binding_id = getattr(arg, "_binding", None)
+                if binding_id is not None:
+                    dynamic_bindings.add(binding_id)
+
+    # Functions of this file with no return annotation that return a value: the backend
+    # declares their result as `Any`. Their parameters, by position, for call sites.
+    dynamic_functions: Dict[int, List[bool]] = {}
+    for fn in ast.walk(tree):
+        if not isinstance(fn, ast.FunctionDef) or fn.name == "__init__" or fn.decorator_list:
+            continue
+        binding_id = getattr(fn, "_binding", None)
+        if binding_id is None or table.bindings[binding_id].rebound:
+            continue
+        if table.scopes[table.bindings[binding_id].scope].kind != "module":
+            continue
+        if fn.args.vararg or fn.args.kwarg or fn.args.kwonlyargs or fn.args.posonlyargs:
+            continue
+        # Where the older return inference names a type, the backend declares that type.
+        returns_value = (fn.returns is None and not _is_void_function(fn)
+                         and not _is_generator(fn) and _infer_return_type(fn) == "")
+        flags = [getattr(a, "_binding", None) in dynamic_bindings for a in fn.args.args]
+        if returns_value or any(flags):
+            dynamic_functions[binding_id] = flags
+            if returns_value:
+                dynamic_returning.add(binding_id)
+
+    # A dict declared with values of no stated type (`dict`, `dict[str, Any]`): what a
+    # subscript of it gives is a runtime value. Functions of this file returning one,
+    # parameters declared as one, and names only ever given one.
+    any_dict_texts = ("dict", "Dict", "dict[str, Any]", "Dict[str, Any]", "dict[str, object]")
+
+    def any_dict_annotation(annotation: Optional[ast.AST]) -> bool:
+        return annotation is not None and _unparse_expr(annotation).replace("typing.", "") in any_dict_texts
+
+    any_dict_functions = set()
+    any_dict_bindings = set()
+    for fn in ast.walk(tree):
+        if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if any_dict_annotation(fn.returns):
+                any_dict_functions.add(getattr(fn, "_binding", None))
+            for a in fn.args.posonlyargs + fn.args.args + fn.args.kwonlyargs:
+                binding_id = getattr(a, "_binding", None)
+                if (any_dict_annotation(a.annotation) and binding_id is not None
+                        and not table.bindings[binding_id].rebound):
+                    any_dict_bindings.add(binding_id)
+    any_dict_functions.discard(None)
+
+    def any_dict(node: ast.AST) -> bool:
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+            return getattr(node.func, "_binding", None) in any_dict_functions
+        return isinstance(node, ast.Name) and getattr(node, "_binding", None) in any_dict_bindings
+
+    def dynamic(node: ast.AST) -> bool:
+        if getattr(node, "_dynamic", False):
+            return True
+        if isinstance(node, ast.Name):
+            return getattr(node, "_binding", None) in dynamic_bindings
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+            return getattr(node.func, "_binding", None) in dynamic_returning
+        if isinstance(node, ast.Subscript) and not isinstance(node.slice, ast.Slice):
+            return dynamic(node.value) or any_list(node.value) or any_dict(node.value)
+        if isinstance(node, ast.BinOp) and isinstance(
+                node.op, (ast.Add, ast.Sub, ast.Mult, ast.Div, ast.Mod)):
+            return dynamic(node.left) or dynamic(node.right)
+        return False
+
+    for node in ast.walk(tree):
+        if (isinstance(node, (ast.For, ast.comprehension)) and any_list(node.iter)
+                and isinstance(node.target, ast.Name)):
+            binding_id = getattr(node.target, "_binding", None)
+            if binding_id is not None and len(table.bindings[binding_id].sites) == 1:
+                dynamic_bindings.add(binding_id)
+
+    # A local is dynamic when each of its bindings is a plain assignment of a dynamic value.
+    assigned: Dict[int, List[ast.expr]] = {}
+    other_sites = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+            binding_id = getattr(node.targets[0], "_binding", None)
+            if binding_id is not None:
+                assigned.setdefault(binding_id, []).append(node.value)
+    for binding in table.bindings:
+        plain = len(assigned.get(binding.id, []))
+        if binding.is_param or len(binding.sites) != plain:
+            other_sites.add(binding.id)
+    any_dict_bindings |= {b for b, values in assigned.items()
+                          if b not in other_sites and all(any_dict(v) for v in values)}
+    while True:
+        grown = {b for b, values in assigned.items()
+                 if b not in dynamic_bindings and b not in other_sites
+                 and all(dynamic(v) for v in values)}
+        if not grown:
+            break
+        dynamic_bindings |= grown
+
+    def known(node: ast.AST) -> bool:
+        type_id = getattr(node, "_assumed", None)
+        if type_id is None:
+            type_id = getattr(node, "_type", None)
+        return type_id is not None and facts.types[type_id]["k"] in (
+            "int", "float", "str", "bool", "list", "none")
+
+    def boxed(node: ast.expr) -> ast.expr:
+        return _runtime_call("box", [node], node) if known(node) else node
+
+    def container(node: ast.AST) -> bool:
+        type_id = getattr(node, "_assumed", None)
+        if type_id is None:
+            type_id = getattr(node, "_type", None)
+        return type_id is not None and facts.types[type_id]["k"] == "list"
+
+    def sequence(node: ast.AST) -> bool:
+        type_id = getattr(node, "_assumed", None)
+        if type_id is None:
+            type_id = getattr(node, "_type", None)
+        return isinstance(node, (ast.List, ast.Tuple, ast.ListComp)) or (
+            type_id is not None and facts.types[type_id]["k"] in ("list", "tuple", "tuple_of"))
+
+    class Lower(ast.NodeTransformer):
+        def visit_Subscript(self, node: ast.Subscript) -> ast.AST:
+            self.generic_visit(node)
+            if (isinstance(node.ctx, ast.Load) and dynamic(node.value)
+                    and not isinstance(node.slice, ast.Slice)):
+                return _runtime_call("item_at", [node.value, boxed(node.slice)], node)
+            return node
+
+        def visit_BinOp(self, node: ast.BinOp) -> ast.AST:
+            was_dynamic = dynamic(node)
+            self.generic_visit(node)
+            if isinstance(node.op, (ast.Add, ast.Sub, ast.Mult, ast.Div, ast.Mod)):
+                if dynamic(node.left) and known(node.right):
+                    node.right = boxed(node.right)
+                    node._dynamic = True
+                elif dynamic(node.right) and known(node.left):
+                    node.left = boxed(node.left)
+                    node._dynamic = True
+            if was_dynamic:
+                node._dynamic = True
+            return node
+
+        def visit_Compare(self, node: ast.Compare) -> ast.AST:
+            self.generic_visit(node)
+            if len(node.ops) != 1:
+                return node
+            left, right = node.left, node.comparators[0]
+            if not (dynamic(left) or dynamic(right)):
+                return node
+            if isinstance(node.ops[0], (ast.Eq, ast.NotEq)):
+                call = _runtime_call("eq", [boxed(left), boxed(right)], node)
+                if isinstance(node.ops[0], ast.NotEq):
+                    return ast.copy_location(ast.UnaryOp(op=ast.Not(), operand=call), node)
+                return call
+            if isinstance(node.ops[0], (ast.Lt, ast.LtE, ast.Gt, ast.GtE)):
+                node.left = boxed(left)
+                node.comparators = [boxed(right)]
+            return node
+
+        def visit_Call(self, node: ast.Call) -> ast.AST:
+            self.generic_visit(node)
+            if isinstance(node.func, ast.Name) and not node.keywords:
+                flags = dynamic_functions.get(getattr(node.func, "_binding", None))
+                if flags is not None and len(node.args) <= len(flags):
+                    # A list or dict has no automatic conversion to the runtime value
+                    node.args = [boxed(a) if flags[i] and container(a) else a
+                                 for i, a in enumerate(node.args)]
+                if (node.func.id == "print" and getattr(node.func, "_binding", None) is None):
+                    node.args = [_runtime_call("str", [a], a) if dynamic(a) else a
+                                 for a in node.args]
+                    node.args = [_runtime_call("str", [_runtime_call("box", [a], a)], a)
+                                 if any_list(a) else a for a in node.args]
+            if (isinstance(node.func, ast.Attribute) and node.func.attr == "append"
+                    and any_list(node.func.value) and len(node.args) == 1
+                    and not node.keywords and sequence(node.args[0])
+                    and not dynamic(node.args[0])):
+                node.args = [_runtime_call("box", [node.args[0]], node.args[0])]
+            if (isinstance(node.func, ast.Name) and node.func.id == "len"
+                    and getattr(node.func, "_binding", None) is None
+                    and len(node.args) == 1 and not node.keywords and dynamic(node.args[0])):
+                return _runtime_call("length", [node.args[0]], node)
+            if (isinstance(node.func, ast.Name) and node.func.id == "str"
+                    and getattr(node.func, "_binding", None) is None
+                    and len(node.args) == 1 and not node.keywords and dynamic(node.args[0])):
+                # `str(x)` of a runtime value is Python's text of it, not V's
+                return _runtime_call("str", [node.args[0]], node)
+            return node
+
+        def visit_For(self, node: ast.For) -> ast.AST:
+            self.generic_visit(node)
+            if dynamic(node.iter) and not getattr(node.iter, "_dynamic", False):
+                node.iter = _runtime_call("elements", [node.iter], node.iter)
+            return node
+
+    def truth(node: ast.expr) -> ast.expr:
+        if isinstance(node, ast.BoolOp):
+            node.values = [truth(v) for v in node.values]
+            return node
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
+            node.operand = truth(node.operand)
+            return node
+        if isinstance(node, (ast.Name, ast.Subscript)) and dynamic(node):
+            return _runtime_call("truth", [node], node)
+        return node
+
+    # Truth tests first: they look at names and subscripts as written.
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.If, ast.While, ast.IfExp, ast.Assert)):
+            if not any(isinstance(n, ast.NamedExpr) for n in ast.walk(node.test)):
+                node.test = truth(node.test)
+    try:
+        Lower().visit(tree)
+    except RecursionError:
+        # An expression nested hundreds deep (a sum of 400 terms): left as written.
+        pass
+
+    # A value of unknown type returned from a function declared as returning a plain type
+    # is converted there, with Python's TypeError if it is something else.
+    converters = {"int": "to_int", "float": "to_float", "str": "to_str", "bool": "to_bool"}
+
+    def own_returns(fn: ast.AST) -> List[ast.Return]:
+        found: List[ast.Return] = []
+        pending = list(ast.iter_child_nodes(fn))
+        while pending:
+            node = pending.pop()
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)):
+                continue
+            if isinstance(node, ast.Return):
+                found.append(node)
+            pending.extend(ast.iter_child_nodes(node))
+        return found
+
+    for fn in ast.walk(tree):
+        if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)) or fn.returns is None:
+            continue
+        convert = converters.get(_unparse_expr(fn.returns), "")
+        if not convert:
+            continue
+        for ret in own_returns(fn):
+            if ret.value is not None and getattr(ret.value, "_dynamic", False):
+                ret.value = _runtime_call(convert, [ret.value], ret.value)
+                ret.value._dynamic = False
+
+
+def _constant_display(node: ast.AST, constants: set) -> bool:
+    """Whether a value is built only from literals and names of module constants."""
+    if isinstance(node, ast.Constant):
+        return not isinstance(node.value, (bytes, complex)) and node.value is not Ellipsis
+    if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
+        return bool(node.elts) and all(_constant_display(e, constants) for e in node.elts)
+    if isinstance(node, ast.Dict):
+        return bool(node.keys) and all(
+            k is not None and _constant_display(k, constants) for k in node.keys) and all(
+            _constant_display(v, constants) for v in node.values)
+    if isinstance(node, ast.UnaryOp):
+        return _constant_display(node.operand, constants)
+    if isinstance(node, ast.BinOp):
+        return _constant_display(node.left, constants) and _constant_display(node.right, constants)
+    if isinstance(node, ast.Name):
+        return getattr(node, "_binding", None) in constants or node.id == "__name__"
+    if isinstance(node, ast.Call) and getattr(node, "_api", "") and not node.keywords:
+        # a runtime library object made once from constants: `logging.getLogger(__name__)`
+        return all(_constant_display(a, constants) for a in node.args)
+    return False
+
+
+def _v_spelling(name: str) -> str:
+    return name.strip("_").lower()
+
+
+def _mark_module_constants(tree: ast.Module, table: Optional[symbols.SymbolTable]) -> None:
+    """Name the module-level values that functions read, so they become V constants.
+
+    A V function cannot see a local of `main`. A name bound once at module level to a
+    literal value, and read inside a function, is declared as a module constant instead.
+    A name that another scope also binds stays where it was: V refuses a local that
+    repeats a constant's name.
+    """
+    if table is None:
+        return
+    read_in_function: set = set()
+    for fn in ast.walk(tree):
+        if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            for node in ast.walk(fn):
+                if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
+                    read_in_function.add(getattr(node, "_binding", None))
+    spellings: Dict[str, int] = {}
+    for b in table.bindings:
+        key = _v_spelling(b.name)
+        spellings[key] = spellings.get(key, 0) + 1
+    constants: set = set()
+    names: List[str] = []
+    for stmt in tree.body:
+        if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1:
+            target, value = stmt.targets[0], stmt.value
+        elif isinstance(stmt, ast.AnnAssign) and stmt.value is not None:
+            target, value = stmt.target, stmt.value
+        else:
+            continue
+        if not isinstance(target, ast.Name):
+            continue
+        binding_id = getattr(target, "_binding", None)
+        if binding_id is None or binding_id not in read_in_function:
+            continue
+        b = table.bindings[binding_id]
+        if b.scope != 0 or b.rebound or b.declared_global or spellings.get(_v_spelling(b.name), 0) != 1:
+            continue
+        if not _constant_display(value, constants):
+            continue
+        constants.add(binding_id)
+        names.append(target.id)
+    tree._module_consts = names
+
+
+def _box_mixed_displays(tree: ast.Module, table: Optional[symbols.SymbolTable],
+                        facts: Optional[infer.TypeFacts]) -> None:
+    """A list or dict display whose values are not all of one type holds runtime values:
+    `["a", 1.5, 2]` becomes a list of `pyrt.box(...)` of each, as a V array has one element
+    type (vk:mixed-array-needs-a-sum-type). A display of one type is left as written."""
+    if table is None or facts is None or any(b.name == "pyrt" for b in table.bindings):
+        return
+
+    def kind(node: ast.expr) -> str:
+        type_id = getattr(node, "_assumed", None)
+        if type_id is None:
+            type_id = getattr(node, "_type", None)
+        if type_id is None:
+            return "?"
+        entry = facts.types[type_id]
+        # The kind alone: two lists count as one type here, whatever their elements (an
+        # empty list beside a list of ints, or lists of mixed numbers, are left to V).
+        return entry["k"] if entry["k"] not in ("unknown", "dynamic", "union") else "?"
+
+    def mixed(values: List[ast.expr]) -> bool:
+        if len(values) < 2 or any(isinstance(v, ast.Starred) or v is None for v in values):
+            return False
+        kinds = {kind(v) for v in values}
+        if "?" in kinds:
+            return False
+        if kinds <= {"int", "float"} or kinds <= {"int", "bool"}:
+            return False  # the backend has its own handling of mixed numbers
+        return len(kinds) > 1
+
+    def display(node: ast.AST) -> bool:
+        if isinstance(node, ast.Dict):
+            return all(k is not None for k in node.keys)
+        return (isinstance(node, ast.List) and isinstance(node.ctx, ast.Load)
+                and not any(isinstance(e, ast.Starred) for e in node.elts))
+
+    def deep(node: ast.expr) -> ast.expr:
+        # A display inside a boxed display is boxed at every level: the runtime value of
+        # a dict holds runtime values, not V maps.
+        if getattr(node, "_dynamic", False):
+            return node
+        if display(node):
+            if isinstance(node, ast.Dict):
+                node.values = [deep(v) for v in node.values]
+            else:
+                node.elts = [deep(e) for e in node.elts]  # type: ignore[attr-defined]
+        return _runtime_call("box", [node], node)
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.List) and isinstance(node.ctx, ast.Load) and mixed(node.elts):
+            node.elts = [deep(e) for e in node.elts]
+        elif isinstance(node, ast.Dict) and all(k is not None for k in node.keys):
+            if mixed(node.values):
+                node.values = [deep(v) for v in node.values]
+            elif (len({kind(v) for v in node.values}) > 1
+                  and any(display(v) for v in node.values)):
+                # Values of unknown type beside a nested display: the dict holds runtime
+                # values, which V makes of a plain value by itself but not of a map or array.
+                node.values = [deep(v) if display(v) else v for v in node.values]
+
+
+_RUNTIME_API: Optional[Dict[str, Dict[str, Any]]] = None
+# Modules whose calls are resolved here. The others in the manifest (json, pathlib, os,
+# sys, time, re) still have their own lowering in the backend.
+_RUNTIME_API_MODULES = ("datetime", "sqlite3", "pathlib", "logging", "argparse", "subprocess",
+                        "hashlib", "uuid", "shutil", "tempfile", "base64", "secrets",
+                        "mcp")
+# The classes of those modules that have a V type (runtime_class_types in the backend).
+_RUNTIME_API_CLASS_SET: Optional[frozenset] = None
+
+
+def _runtime_classes() -> frozenset:
+    """The classes of the enabled runtime modules, by Python name: every manifest entry
+    that states a V type, and every class named as the receiver of a method or property."""
+    global _RUNTIME_API_CLASS_SET
+    if _RUNTIME_API_CLASS_SET is None:
+        found = set()
+        for name, entry in _runtime_api().items():
+            if name.split(".")[0] not in _RUNTIME_API_MODULES:
+                continue
+            if entry.get("v_type") and entry.get("kind") in ("class", "constructor"):
+                found.add(name)
+            receiver = entry.get("receiver")
+            if receiver and entry.get("kind") in ("method", "property"):
+                found.add(receiver)
+        _RUNTIME_API_CLASS_SET = frozenset(found)
+    return _RUNTIME_API_CLASS_SET
+
+
+def _runtime_api() -> Dict[str, Dict[str, Any]]:
+    """The runtime library's manifest (pyrt/api.json beside the frontend), by Python name."""
+    global _RUNTIME_API
+    if _RUNTIME_API is None:
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "pyrt", "api.json")
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                _RUNTIME_API = {e["python"]: e for e in json.load(handle)}
+        except (OSError, ValueError):
+            _RUNTIME_API = {}
+    return _RUNTIME_API
+
+
+def _annotate_database_parameters(tree: ast.Module, table: symbols.SymbolTable,
+                                  api: Dict[str, Dict[str, Any]]) -> bool:
+    """A parameter with no annotation (or annotated `Any` or `object`) that is only used as
+    a database connection, or only as a cursor, is annotated as one. The evidence is the methods called on it: every one must be
+    a method of the class, and at least one must belong to that class alone (`commit`,
+    `cursor`, `rollback`, `executescript` for a connection; `fetchone`, `fetchall`,
+    `fetchmany` for a cursor). A parameter on which only `execute` is called is a connection
+    when the result of the call is fetched from or iterated, which a cursor's own `execute`
+    result also allows, so there the parameter's name decides (`conn`, `db`; `cur`).
+    Returns whether any parameter was annotated."""
+    methods = {cls: {name.rsplit(".", 1)[1] for name, e in api.items()
+                     if name.startswith(cls + ".") and e.get("kind") == "method"}
+               for cls in ("sqlite3.Connection", "sqlite3.Cursor")}
+    if not all(methods.values()):
+        return False
+    own = {"sqlite3.Connection": methods["sqlite3.Connection"] - methods["sqlite3.Cursor"],
+           "sqlite3.Cursor": methods["sqlite3.Cursor"] - methods["sqlite3.Connection"]}
+    found = False
+    for fn in ast.walk(tree):
+        if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        params = {getattr(a, "_binding", None): a
+                  for a in fn.args.posonlyargs + fn.args.args + fn.args.kwonlyargs
+                  if a.arg not in ("self", "cls") and (
+                      a.annotation is None
+                      # `Any` and `object` say nothing about the value either
+                      or _unparse_expr(a.annotation) in ("Any", "object", "typing.Any"))}
+        params.pop(None, None)
+        if not params:
+            continue
+        called: Dict[int, Set[str]] = {b: set() for b in params}
+        other: Set[int] = set()
+        callees = set()
+        for node in ast.walk(fn):
+            if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                    and isinstance(node.func.value, ast.Name)):
+                binding_id = getattr(node.func.value, "_binding", None)
+                if binding_id in called:
+                    called[binding_id].add(node.func.attr)
+                    callees.add(id(node.func.value))
+        for node in ast.walk(fn):
+            if isinstance(node, ast.Name) and id(node) not in callees:
+                binding_id = getattr(node, "_binding", None)
+                if binding_id in called and isinstance(node.ctx, ast.Store):
+                    other.add(binding_id)  # rebound: not one object
+        for binding_id, names in called.items():
+            if not names or binding_id in other or table.bindings[binding_id].rebound:
+                continue
+            fits = [cls for cls in methods if names <= methods[cls]]
+            chosen = ""
+            if len(fits) == 1:
+                chosen = fits[0]
+            elif len(fits) == 2:
+                proven = [cls for cls in fits if names & own[cls]]
+                word = params[binding_id].arg.lower()
+                if len(proven) == 1:
+                    chosen = proven[0]
+                elif "conn" in word or word in ("db", "database"):
+                    chosen = "sqlite3.Connection"
+                elif word.startswith("cur"):
+                    chosen = "sqlite3.Cursor"
+            if chosen:
+                arg = params[binding_id]
+                arg.annotation = ast.Name(id=chosen.rsplit(".", 1)[1], ctx=ast.Load())
+                ast.copy_location(arg.annotation, arg)
+                arg.annotation._api = chosen
+                found = True
+    return found
+
+
+def _mark_runtime_api(tree: ast.Module, table: Optional[symbols.SymbolTable]) -> None:
+    """Set `_api` on a call or attribute that reaches the runtime library through the
+    file's imports: `datetime.now(...)` after `from datetime import datetime` is
+    `datetime.datetime.now`, `timedelta(days=1)` is `datetime.timedelta`, and
+    `timezone.utc` is `datetime.timezone.utc`. Only names bound once, by an import.
+    (Type inference takes this over when it reads the manifest itself.)"""
+    api = _runtime_api()
+    if table is None or not api:
+        return
+    imported: Dict[int, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                binding_id = getattr(alias, "_binding", None)
+                if binding_id is not None and alias.name.split(".")[0] in _RUNTIME_API_MODULES + ("os",):
+                    # `import a.b` binds `a`; `import a.b as c` binds the whole path
+                    imported[binding_id] = alias.name if alias.asname else alias.name.split(".")[0]
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            if node.module.split(".")[0] not in _RUNTIME_API_MODULES + ("os",):
+                continue
+            for alias in node.names:
+                binding_id = getattr(alias, "_binding", None)
+                if binding_id is not None and alias.name != "*":
+                    imported[binding_id] = node.module + "." + alias.name
+    imported = {b: q for b, q in imported.items() if not table.bindings[b].rebound}
+    ducked = _annotate_database_parameters(tree, table, api)
+    if not imported and not ducked:
+        return
+
+    def qualified(node: ast.AST) -> str:
+        if isinstance(node, ast.Name):
+            return imported.get(getattr(node, "_binding", None), "")
+        if isinstance(node, ast.Attribute):
+            base = qualified(node.value)
+            return base + "." + node.attr if base else ""
+        return ""
+
+    # A runtime class named in an annotation
+    def mark_annotation(annotation: Optional[ast.AST]) -> None:
+        if annotation is None:
+            return
+        for part in ast.walk(annotation):
+            if isinstance(part, (ast.Name, ast.Attribute)):
+                name = qualified(part)
+                if name in _runtime_classes():
+                    part._api = name
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.arg):
+            mark_annotation(node.annotation)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            mark_annotation(node.returns)
+        elif isinstance(node, ast.AnnAssign):
+            mark_annotation(node.annotation)
+
+    def standard_stream(node: ast.AST) -> str:
+        # `sys.stdout` or `sys.stderr`, where `sys` is the module
+        if (isinstance(node, ast.Attribute) and node.attr in ("stdout", "stderr")
+                and isinstance(node.value, ast.Name) and node.value.id == "sys"):
+            binding_id = getattr(node.value, "_binding", None)
+            if binding_id is None or table.bindings[binding_id].kind == "import":
+                return node.attr
+        return ""
+
+    callees = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            callees.add(id(node.func))
+            name = qualified(node.func)
+            if name.startswith("logging."):
+                # the logging runtime names a standard stream by its name
+                for kw in node.keywords:
+                    if standard_stream(kw.value):
+                        kw.value = ast.copy_location(ast.Constant(value=standard_stream(kw.value)), kw.value)
+                node.args = [ast.copy_location(ast.Constant(value=standard_stream(a)), a)
+                             if standard_stream(a) else a for a in node.args]
+            if name.startswith("os.") and not (
+                    name == "os.getcwd" or name == "os.environ.get" and len(node.args) == 2
+                    and not node.keywords):
+                # The rest of `os` is still lowered by the backend.
+                continue
+            if api.get(name, {}).get("kind") in ("function", "constructor"):
+                node._api = name
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute) and id(node) not in callees:
+            name = qualified(node)
+            if api.get(name, {}).get("kind") == "constant" and not name.startswith("os."):
+                node._api = name
+
+    # Methods and properties of runtime objects: the class of a value is known where it
+    # comes from a marked call, an annotation, or a name every binding of which gives it
+    # the same class.
+    def class_of(type_text: str) -> str:
+        parts = [p.strip() for p in type_text.split("|") if p.strip() != "None"]
+        return parts[0] if len(parts) == 1 and "[" not in parts[0] else ""
+
+    def element_of(type_text: str) -> str:
+        text = type_text.strip()
+        for head in ("list[", "Iterable[", "Iterator[", "Sequence["):
+            if text.startswith(head) and text.endswith("]"):
+                return text[len(head):-1]
+        return ""
+
+    binding_types: Dict[int, str] = {}
+    def annotated(annotation: Optional[ast.AST]) -> str:
+        """The runtime class an annotation names, or `list[C]` for a list of one."""
+        if annotation is None:
+            return ""
+        direct = getattr(annotation, "_api", "")
+        if direct:
+            return direct
+        if (isinstance(annotation, ast.Subscript) and isinstance(annotation.value, ast.Name)
+                and annotation.value.id in ("list", "List", "Sequence", "Iterable")):
+            inner = getattr(annotation.slice, "_api", "")
+            return "list[" + inner + "]" if inner else ""
+        return ""
+
+    declared_returns = {getattr(fn, "_binding", None): annotated(fn.returns)
+                        for fn in ast.walk(tree)
+                        if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef))
+                        and annotated(fn.returns)}
+
+    def type_of(node: ast.AST) -> str:
+        if isinstance(node, ast.Call):
+            marked = getattr(node, "_api", "")
+            if marked:
+                return api[marked].get("returns") or "" if marked in api else ""
+            if isinstance(node.func, ast.Attribute):
+                cls = class_of(type_of(node.func.value))
+                entry = api.get(cls + "." + node.func.attr) if cls in _runtime_classes() else None
+                if entry and entry["kind"] == "method":
+                    node._api = cls + "." + node.func.attr
+                    return entry.get("returns") or ""
+            if isinstance(node.func, ast.Name):
+                # A function of this file annotated as returning a runtime class
+                return declared_returns.get(getattr(node.func, "_binding", None), "")
+            return ""
+        if isinstance(node, ast.Name):
+            return binding_types.get(getattr(node, "_binding", None), "")
+        if isinstance(node, ast.Subscript) and not isinstance(node.slice, ast.Slice):
+            # one element of a list of runtime objects
+            return element_of(type_of(node.value))
+        if isinstance(node, ast.List) and node.elts:
+            # a display whose elements are all of one runtime class
+            classes = {class_of(type_of(e)) for e in node.elts}
+            only = next(iter(classes)) if len(classes) == 1 else ""
+            return "list[" + only + "]" if only in _runtime_classes() else ""
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
+            # `path / "name"` is a path
+            return "pathlib.Path" if class_of(type_of(node.left)) == "pathlib.Path" else ""
+        if isinstance(node, ast.Attribute):
+            cls = class_of(type_of(node.value))
+            entry = api.get(cls + "." + node.attr) if cls in _runtime_classes() else None
+            if entry and entry["kind"] == "property" and id(node) not in callees:
+                node._api = cls + "." + node.attr
+                return entry.get("returns") or ""
+        return ""
+
+    for _ in range(4):
+        seen: Dict[int, Set[str]] = {}
+
+        def bind(target: ast.AST, type_text: str) -> None:
+            binding_id = getattr(target, "_binding", None) if isinstance(target, ast.Name) else None
+            if binding_id is not None:
+                seen.setdefault(binding_id, set()).add(type_text)
+
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign) and len(node.targets) == 1:
+                bind(node.targets[0], type_of(node.value))
+            elif isinstance(node, ast.AnnAssign) and node.value is not None:
+                bind(node.target, getattr(node.annotation, "_api", "") or type_of(node.value))
+            elif isinstance(node, ast.arg):
+                binding_id = getattr(node, "_binding", None)
+                if binding_id is not None:
+                    seen.setdefault(binding_id, set()).add(annotated(node.annotation))
+            elif isinstance(node, (ast.With, ast.AsyncWith)):
+                for item in node.items:
+                    if item.optional_vars is not None:
+                        bind(item.optional_vars, type_of(item.context_expr))
+            elif isinstance(node, (ast.For, ast.AsyncFor, ast.comprehension)):
+                bind(node.target, element_of(type_of(node.iter)))
+        settled = {b: next(iter(ts)) for b, ts in seen.items()
+                   if len(ts) == 1 and next(iter(ts)) and len(table.bindings[b].sites) <= 1
+                   or (len(ts) == 1 and next(iter(ts)) and not table.bindings[b].is_param
+                       and not table.bindings[b].declared_global)}
+        if settled == binding_types:
+            break
+        binding_types = settled
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Call, ast.Attribute)):
+            type_of(node)
+
+    # `row[0]` and `row["name"]` on a database row are its `get` and `by_name`
+    class RowIndex(ast.NodeTransformer):
+        def visit_Subscript(self, node: ast.Subscript) -> ast.AST:
+            self.generic_visit(node)
+            if not isinstance(node.ctx, ast.Load) or class_of(type_of(node.value)) != "sqlite3.Row":
+                return node
+            key = node.slice
+            if isinstance(key, ast.Constant) and isinstance(key.value, str):
+                method = "by_name"
+            elif isinstance(key, ast.Slice):
+                return node
+            else:
+                method = "__getitem__"
+            if isinstance(node.value, ast.Name) and "None" in type_of(node.value):
+                # a name that may hold None: the backend unwraps it where it is indexed
+                node.value._api = "sqlite3.must_row"
+            call = ast.Call(func=ast.Attribute(value=node.value, attr="get", ctx=ast.Load()),
+                            args=[key], keywords=[])
+            ast.copy_location(call, node)
+            ast.copy_location(call.func, node)
+            call._api = "sqlite3.Row." + method
+            call._dynamic = True
+            return call
+
+    RowIndex().visit(tree)
+
+    # subprocess. `stdout` and `stderr` of a finished process are str when the call asked
+    # for text, bytes otherwise, None when not captured. Where every `subprocess.run` of
+    # the file asks for text they are read as text; elsewhere as runtime values.
+    runs = [n for n in ast.walk(tree) if isinstance(n, ast.Call)
+            and getattr(n, "_api", "") in ("subprocess.run", "subprocess.Popen", "subprocess.check_output")]
+
+    def asks_for_text(call: ast.Call) -> bool:
+        for kw in call.keywords:
+            if kw.arg in ("text", "universal_newlines") and isinstance(kw.value, ast.Constant) and kw.value.value is True:
+                return True
+            if kw.arg == "encoding":
+                return True
+        return False
+
+    all_text = bool(runs) and all(asks_for_text(c) for c in runs)
+
+    class ProcessText(ast.NodeTransformer):
+        def visit_Attribute(self, node: ast.Attribute) -> ast.AST:
+            self.generic_visit(node)
+            if getattr(node, "_api", "") not in ("subprocess.CompletedProcess.stdout",
+                                                "subprocess.CompletedProcess.stderr"):
+                return node
+            if not all_text:
+                node._dynamic = True
+                return node
+            call = ast.Call(func=ast.Attribute(value=node.value, attr=node.attr + "_text", ctx=ast.Load()),
+                            args=[], keywords=[])
+            ast.copy_location(call, node)
+            ast.copy_location(call.func, node)
+            call._api = node._api + "_text"
+            call._api_returns = "str"
+            return call
+
+    if runs:
+        ProcessText().visit(tree)
+
+    # argparse. Each `add_argument` of the file says what an attribute of the parsed
+    # namespace holds: its name (dest) and whether it is a str, an int, a float, a bool, a
+    # list of str, or something that may be None (then it is read as a runtime value).
+    dests: Dict[str, Set[str]] = {}
+
+    def constant_text(node: Optional[ast.AST]) -> Optional[str]:
+        return node.value if isinstance(node, ast.Constant) and isinstance(node.value, str) else None
+
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call) and getattr(node, "_api", "").endswith(".add_argument")):
+            continue
+        names = [constant_text(a) for a in node.args]
+        if not names or any(n is None for n in names):
+            node._api = ""  # computed option names: left to the older lowering
+            continue
+        keywords = {k.arg: k.value for k in node.keywords if k.arg is not None}
+        longs = [n for n in names if n.startswith("--")]
+        dest = constant_text(keywords.get("dest")) or (
+            longs[0][2:] if longs else names[0].lstrip("-")).replace("-", "_")
+        positional = not names[0].startswith("-")
+        action = constant_text(keywords.get("action")) or "store"
+        nargs = keywords.get("nargs")
+        declared = keywords.get("type")
+        default = keywords.get("default")
+        has_default = default is not None and not (
+            isinstance(default, ast.Constant) and default.value is None)
+        required = isinstance(keywords.get("required"), ast.Constant) and keywords["required"].value is True
+        if action in ("store_true", "store_false"):
+            kind = "bool"
+        elif action == "count":
+            kind = "int" if has_default else "value"
+        elif action == "append" or (nargs is not None and constant_text(nargs) != "?"):
+            always = has_default or (positional and constant_text(nargs) in ("+", None)) or required
+            kind = "strings" if always and (declared is None or _unparse_expr(declared) == "str") else "value"
+        elif not (has_default or required or (positional and nargs is None)):
+            kind = "value"  # None when the option is absent
+        elif declared is None or _unparse_expr(declared) == "str":
+            kind = "str"
+        elif _unparse_expr(declared) in ("int", "float"):
+            kind = _unparse_expr(declared)
+        else:
+            kind = "value"
+        dests.setdefault(dest, set()).add(kind)
+        # the option strings as one list, and the values the runtime takes as runtime values
+        packed = ast.List(elts=list(node.args), ctx=ast.Load())
+        ast.copy_location(packed, node)
+        node.args = [packed]
+        for kw in node.keywords:
+            if kw.arg in ("default", "const"):
+                kw.value = _runtime_call("box", [kw.value], kw.value)
+            elif kw.arg == "choices" and isinstance(kw.value, (ast.List, ast.Tuple)):
+                kw.value = ast.copy_location(ast.List(
+                    elts=[_runtime_call("box", [e], e) for e in kw.value.elts], ctx=ast.Load()), kw.value)
+
+    accessors = {"str": "get_str", "int": "get_int", "float": "get_float", "bool": "get_bool",
+                 "strings": "get_strings", "value": "require"}
+
+    class NamespaceAttribute(ast.NodeTransformer):
+        def visit_Attribute(self, node: ast.Attribute) -> ast.AST:
+            is_namespace = (isinstance(node.ctx, ast.Load) and id(node) not in callees
+                            and class_of(type_of(node.value)) == "argparse.Namespace")
+            self.generic_visit(node)
+            if not is_namespace:
+                return node
+            kinds = dests.get(node.attr, set())
+            kind = next(iter(kinds)) if len(kinds) == 1 else "value"
+            call = ast.Call(func=ast.Attribute(value=node.value, attr=accessors[kind], ctx=ast.Load()),
+                            args=[ast.Constant(value=node.attr)], keywords=[])
+            for part in ast.walk(call):
+                if not hasattr(part, "lineno"):
+                    ast.copy_location(part, node)
+            call._api = "argparse.Namespace." + accessors[kind]
+            if kind == "value":
+                call._dynamic = True
+                return call
+            call._api_returns = {"strings": ""}.get(kind, kind)
+            if kind != "int":
+                return call
+            # the runtime's integers are 64-bit values of their own type
+            whole = ast.Call(func=ast.Name(id="int", ctx=ast.Load()), args=[call], keywords=[])
+            ast.copy_location(whole, node)
+            ast.copy_location(whole.func, node)
+            return whole
+
+    if dests:
+        NamespaceAttribute().visit(tree)
+
+    # `path / part` is `path.joinpath(part)`; a part that is itself a path joins as its text
+    class PathJoin(ast.NodeTransformer):
+        def visit_BinOp(self, node: ast.BinOp) -> ast.AST:
+            is_join = isinstance(node.op, ast.Div) and type_of(node) == "pathlib.Path"
+            right_is_path = is_join and class_of(type_of(node.right)) == "pathlib.Path"
+            self.generic_visit(node)
+            if not is_join:
+                return node
+            part = node.right
+            if right_is_path:
+                part = ast.Call(func=ast.Name(id="str", ctx=ast.Load()), args=[part], keywords=[])
+                ast.copy_location(part, node.right)
+                ast.copy_location(part.func, node.right)
+                part._api = "pathlib.Path.__str__"
+            call = ast.Call(func=ast.Attribute(value=node.left, attr="joinpath", ctx=ast.Load()),
+                            args=[part], keywords=[])
+            ast.copy_location(call, node)
+            ast.copy_location(call.func, node)
+            call._api = "pathlib.Path.joinpath"
+            return call
+
+    PathJoin().visit(tree)
+    for node in ast.walk(tree):
+        marked = getattr(node, "_api", "")
+        if marked in api and isinstance(node, (ast.Call, ast.Attribute)):
+            node._api_returns = api[marked].get("returns") or ""
+
+
+def _mark_isinstance_inferred(tree: ast.Module, table: Optional[symbols.SymbolTable],
+                              facts: Optional[infer.TypeFacts]) -> None:
+    """Set `_subject_class` on `isinstance(name, ...)` when every value the code gives the
+    name has one of the six plain types. `_mark_isinstance_subjects` covers annotated
+    parameters; this covers the names whose type the code itself shows."""
+    if table is None or facts is None:
+        return
+    plain = ("int", "float", "str", "bool", "list", "dict")
+    if any(b.name in plain + ("isinstance",) for b in table.bindings):
+        return
+    inferred = {b["id"]: b.get("inferred") for b in facts.bindings}
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                and node.func.id == "isinstance" and len(node.args) == 2
+                and not node.keywords and isinstance(node.args[0], ast.Name)):
+            continue
+        if getattr(node, "_subject_class", ""):
+            continue
+        type_id = inferred.get(getattr(node.args[0], "_binding", None))
+        if type_id is None:
+            continue
+        kind = facts.types[type_id]["k"]
+        if kind in plain:
+            node._subject_class = kind
+
+
+def _annotation_node(text: str, like: ast.AST) -> ast.expr:
+    annotation = ast.parse(text, mode="eval").body
+    for part in ast.walk(annotation):
+        ast.copy_location(part, like)
+    return annotation
+
+
+def _parameterize_bare_containers(tree: ast.Module, table: Optional[symbols.SymbolTable],
+                                  facts: Optional[infer.TypeFacts]) -> None:
+    """Give a parameter annotated with a bare `list` or `dict` the element types the code
+    shows for it (`xs: list` called with `[1, 2]` becomes `xs: list[int]`)."""
+    if table is None or facts is None:
+        return
+    known = {b["id"]: b.get("inferred") for b in facts.bindings}
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.arg) and isinstance(node.annotation, ast.Name)
+                and node.annotation.id in ("list", "dict", "List", "Dict")):
+            continue
+        type_id = known.get(getattr(node, "_binding", None))
+        if type_id is None:
+            continue
+        text = _annotation_for_type(facts.types, type_id)
+        if text and text.lower().startswith(node.annotation.id.lower() + "["):
+            node.annotation = _annotation_node(text, node.annotation)
+    # The same for a return annotated with a bare `list` or `dict`.
+    returns = {f["scope"]: f.get("ret_inferred") for f in facts.functions}
+    for node in ast.walk(tree):
+        if not (isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and isinstance(node.returns, ast.Name)
+                and node.returns.id in ("list", "dict", "List", "Dict")):
+            continue
+        type_id = returns.get(getattr(node, "_scope_id", None))
+        if type_id is None:
+            continue
+        text = _annotation_for_type(facts.types, type_id)
+        if text and text.lower().startswith(node.returns.id.lower() + "["):
+            node.returns = _annotation_node(text, node.returns)
+
+
+def _empty_field_annotations(tree: ast.Module, facts: infer.TypeFacts) -> Dict[int, str]:
+    """For each `self.attr = []` or `self.attr = {}` in a method of a class without bases,
+    the annotation that spells the field's type when inference knows all of it and the
+    class does not declare the field itself. Keyed by id() of the assignment."""
+    by_class = {c["binding"]: c for c in facts.classes}
+    found: Dict[int, str] = {}
+    first_set = set()
+
+    def statements(node: ast.AST):
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, ast.ClassDef):
+                continue
+            yield child
+            yield from statements(child)
+
+    for cls in ast.walk(tree):
+        if not isinstance(cls, ast.ClassDef) or cls.bases or cls.keywords:
+            continue
+        fact = by_class.get(getattr(cls, "_binding", None))
+        if fact is None:
+            continue
+        declared = fact.get("fields_declared", {})
+        known = fact.get("fields_assumed", fact["fields"])
+        for method in cls.body:
+            if not isinstance(method, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            if method.decorator_list or not method.args.args:
+                continue
+            receiver = method.args.args[0].arg
+            for stmt in statements(method):
+                if not (isinstance(stmt, ast.Assign) and len(stmt.targets) == 1):
+                    continue
+                target = stmt.targets[0]
+                if not (isinstance(target, ast.Attribute) and isinstance(target.value, ast.Name)
+                        and target.value.id == receiver):
+                    continue
+                if target.attr in declared or target.attr not in known:
+                    continue
+                # Any other value: only where the field is first set, in `__init__`.
+                if not _is_empty_container(stmt.value):
+                    if method.name != "__init__" or (id(cls), target.attr) in first_set:
+                        continue
+                    first_set.add((id(cls), target.attr))
+                text = _annotation_for_type(facts.types, known[target.attr])
+                if text is None and isinstance(stmt.value, ast.List) and not stmt.value.elts:
+                    # Elements not of one known type: runtime values. The uses of the field
+                    # are marked for `_lower_dynamic_values`.
+                    text = "list[Any]"
+                    for use in ast.walk(cls):
+                        if (isinstance(use, ast.Attribute) and use.attr == target.attr
+                                and isinstance(use.value, ast.Name) and use.value.id == receiver):
+                            use._any_list = True
+                if text is not None:
+                    found[id(stmt)] = text
+    return found
+
+
+def _declare_inferred_containers(tree: ast.Module, table: Optional[symbols.SymbolTable],
+                                 facts: Optional[infer.TypeFacts]) -> set:
+    """Give `x = []` and `x = {}` the element types that the writes to `x` show.
+
+    The first assignment of a name to an empty list or dict becomes the annotated
+    assignment `x: list[T] = []` when inference knows the whole type, so the backend
+    declares it as it does an annotated one. Nothing else about the name changes.
+    A list whose elements are not of one known type is declared `list[Any]`, a list of
+    runtime values; the bindings declared so are returned."""
+    if facts is None:
+        return set()
+    inferred = {b["id"]: b for b in facts.bindings}
+    field_text = _empty_field_annotations(tree, facts)
+    any_lists: set = set()
+
+    def annotated(stmt: ast.stmt) -> ast.stmt:
+        if id(stmt) in field_text:
+            annotation = _annotation_node(field_text[id(stmt)], stmt)
+            new = ast.AnnAssign(target=stmt.targets[0], annotation=annotation,
+                                value=stmt.value, simple=0)
+            return ast.copy_location(new, stmt)
+        if not (isinstance(stmt, ast.Assign) and len(stmt.targets) == 1
+                and isinstance(stmt.targets[0], ast.Name)
+                and _is_empty_container(stmt.value)):
+            return stmt
+        target = stmt.targets[0]
+        binding_id = getattr(target, "_binding", None)
+        fact = inferred.get(binding_id)
+        if fact is None or fact.get("declared") is not None:
+            return stmt
+        known = fact.get("assumed", fact.get("inferred"))
+        binding = table.bindings[binding_id]
+        first = binding.sites[0]
+        if (first[0], first[1]) != (target.lineno, target.col_offset):
+            return stmt
+        if binding.declared_global or binding.declared_nonlocal:
+            return stmt
+        text = _annotation_for_type(facts.types, known) if known is not None else None
+        if text is None:
+            # The elements are not of one known type: runtime values.
+            if isinstance(stmt.value, ast.Dict) or (
+                    isinstance(stmt.value, ast.Call) and stmt.value.func.id == "dict"):
+                return stmt  # the backend declares an empty dict itself
+            text = "list[Any]"
+            any_lists.add(binding_id)
+        annotation = ast.parse(text, mode="eval").body
+        new = ast.AnnAssign(target=target, annotation=annotation, value=stmt.value, simple=1)
+        ast.copy_location(new, stmt)
+        for part in ast.walk(annotation):
+            ast.copy_location(part, stmt)
+        return new
+
+    for node in ast.walk(tree):
+        for field_name in ("body", "orelse", "finalbody"):
+            block = getattr(node, field_name, None)
+            if isinstance(block, list):
+                block[:] = [annotated(s) if isinstance(s, ast.stmt) else s for s in block]
+    return any_lists
+
+
+def process_file(file_path: str, project: Optional[ProjectFacts] = None) -> str:
     """Parse, analyze, and return enriched JSON AST."""
     with open(file_path, "r", encoding="utf-8") as f:
         source = f.read()
@@ -1883,6 +4256,29 @@ def process_file(file_path: str) -> str:
 
     # Rewrite __main__ guard
     tree = _rewrite_main_guard(tree)
+    _plan_condition_walruses(tree)
+
+    _drop_doctest_runs(tree)
+    _lower_dataclass_fields(tree)
+    _state_module_name(tree, project.module_name if project is not None else None)
+
+    # Lexical bindings on the final scope structure, then the types the code shows
+    table = _resolve_bindings(tree)
+    _mark_math_members(tree, table)
+    _mark_runtime_api(tree, table)
+    facts = _infer_types(tree, table, project)
+    any_lists = _declare_inferred_containers(tree, table, facts)
+    _choose_boolop_values(tree, facts)
+    _state_truth_tests(tree, table, facts)
+    _mark_isinstance_inferred(tree, table, facts)
+    _iterate_string_characters(tree, facts)
+    if project is None:
+        _annotate_parameters_from_calls(tree, table, facts)
+    _annotate_returns(tree, facts)
+    _lower_dynamic_values(tree, table, facts, any_lists)
+    _box_mixed_displays(tree, table, facts)
+    _parameterize_bare_containers(tree, table, facts)
+    _mark_module_constants(tree, table)
 
     # Detect class methods
     _detect_class_methods(tree)
@@ -1891,6 +4287,8 @@ def process_file(file_path: str) -> str:
     _detect_nesting_levels(tree)
 
     # Track mutability
+    ScopeTracker.mutating_methods = _mutating_method_names(tree)
+    ScopeTracker.mutating_functions = _mutating_function_params(tree, table)
     tracker = ScopeTracker()
     tracker.visit(tree)
     mutable_vars = tracker.mutable
@@ -1904,6 +4302,8 @@ def process_file(file_path: str) -> str:
         var_annotations=_gather_var_annotations(tree),
         func_ret_annotations=_gather_func_return_annotations(tree),
         slots_by_class=_collect_slots_by_class(tree),
+        table=table,
+        facts=facts,
     )
     ctx.class_field_types = _class_field_types(tree, ctx.slots_by_class)
 
@@ -1968,17 +4368,31 @@ def _match_case_to_dict(case, mutable_vars, redefined, ctx):
 
 
 def main():
-    if len(sys.argv) != 2:
-        print("Usage: python frontend/ast_dump.py <source.py>", file=sys.stderr)
+    usage = ("Usage: python frontend/ast_dump.py <source.py> [--externals SUMMARIES.json "
+             "--root ROOT]\n       python frontend/ast_dump.py --summaries ROOT OUT.json")
+    args = sys.argv[1:]
+    if len(args) == 3 and args[0] == "--summaries":
+        write_summaries(args[1], args[2])
+        return
+    if not (len(args) == 1 or (len(args) == 5 and args[1] == "--externals"
+                               and args[3] == "--root")):
+        print(usage, file=sys.stderr)
         sys.exit(1)
 
-    file_path = sys.argv[1]
+    file_path = args[0]
     if not os.path.isfile(file_path):
         print(f"Error: File '{file_path}' does not exist.", file=sys.stderr)
         sys.exit(1)
 
+    project = None
+    if len(args) == 5:
+        try:
+            project = _load_project_facts(args[2], args[4], file_path)
+        except Exception as exc:
+            print(f"py2v: project facts not read: {type(exc).__name__}: {exc}", file=sys.stderr)
+
     try:
-        print(process_file(file_path))
+        print(process_file(file_path, project))
     except SyntaxError as e:
         print(f"SyntaxError in '{file_path}': {e}", file=sys.stderr)
         sys.exit(1)

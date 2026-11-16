@@ -1,9 +1,35 @@
 module main
 
+import pyrt
+
 // TODO(py2v): no V equivalent for import ctypes
 // Provide one in python_to_v_import (types.v) or port the module.
 
-type Any = bool | int | i64 | f64 | string | []u8
+type Any = pyrt.Value
+
+fn (a Any) + (b Any) Any {
+	return pyrt.add(a, b) or { panic(err) }
+}
+
+fn (a Any) - (b Any) Any {
+	return pyrt.sub(a, b) or { panic(err) }
+}
+
+fn (a Any) * (b Any) Any {
+	return pyrt.mul(a, b) or { panic(err) }
+}
+
+fn (a Any) / (b Any) Any {
+	return pyrt.truediv(a, b) or { panic(err) }
+}
+
+fn (a Any) % (b Any) Any {
+	return pyrt.mod(a, b) or { panic(err) }
+}
+
+fn (a Any) < (b Any) bool {
+	return pyrt.lt(a, b) or { panic(err) }
+}
 
 fn foo() {
 	a := 10
@@ -66,7 +92,7 @@ fn mul(x i8, y i8) Any {
 	return x * y
 }
 
-fn fadd1(x i8, y f64) Any {
+fn fadd1(x i8, y f64) f64 {
 	return x + y
 }
 

@@ -21,9 +21,32 @@ fn visit_range(args []string) (string, bool) {
 
 // Handle print() call
 fn visit_print(mut t VTranspiler, node Call, args []string) (string, bool) {
-	if args.len == 0 {
-		return "println('')", true
+	// `sep` and `end` are honored when they are string constants: each is kept as the V
+	// literal of its text. Any other value (and `file`, `flush`) leaves the defaults.
+	mut sep := "' '"
+	mut end := ''
+	mut newline := true
+	for kw in node.keywords {
+		name := kw.arg or { continue }
+		if name !in ['sep', 'end'] || kw.value !is Constant {
+			continue
+		}
+		value := (kw.value as Constant).value
+		if value is string {
+			if name == 'sep' {
+				sep = t.visit_expr(kw.value)
+			} else {
+				newline = value == '\n'
+				end = t.visit_expr(kw.value)
+			}
+		}
 	}
+	if node.args.len == 0 {
+		return if newline { "println('')" } else { 'print(${end})' }, true
+	}
+	// A separator literal in double quotes holds a single quote and is never pasted.
+	sep_text := if sep.len >= 2 && sep.starts_with("'") { sep[1..sep.len - 1] } else { '' }
+	sep_pastes := sep.starts_with("'")
 
 	// Check if all arguments are string constants - can be combined
 	mut all_string_literals := true
@@ -37,19 +60,20 @@ fn visit_print(mut t VTranspiler, node Call, args []string) (string, bool) {
 				arg_str := args[i]
 				if arg_str.len >= 2 && arg_str.starts_with("'") && arg_str.ends_with("'") {
 					string_parts << arg_str[1..arg_str.len - 1]
-				} else {
-					string_parts << arg_str
+					continue
 				}
-				continue
+				// A literal emitted with double quotes holds a single quote; it cannot
+				// be pasted between single quotes, so the general path prints it.
 			}
 		}
 		all_string_literals = false
 		break
 	}
 
-	if all_string_literals && string_parts.len > 0 {
-		// Combine string literals with spaces
-		return "println('${string_parts.join(' ')}')", true
+	if all_string_literals && string_parts.len > 0 && sep_pastes {
+		// Combine string literals with the separator
+		joined := "'${string_parts.join(sep_text)}'"
+		return print_with_end(joined, true, newline, end), true
 	}
 
 	// Fall back to converting each part
@@ -186,7 +210,11 @@ fn visit_print(mut t VTranspiler, node Call, args []string) (string, bool) {
 	// Build final println with any trailing comments collected from .format fallbacks
 	mut println_code := ''
 	if parts.len == 1 {
-		println_code = 'println(${parts[0]})'
+		is_text := node.args[0] is Constant && (node.args[0] as Constant).value is string
+		println_code = print_with_end(parts[0], is_text, newline, end)
+	} else if joined := interpolated_print(node, parts, sep_text, sep_pastes) {
+		// one string with each value interpolated: `println('hello ${name}')`
+		println_code = print_with_end(joined, true, newline, end)
 	} else {
 		// Leave unsupported starred expansion unconverted.
 		for i, part in parts {
@@ -194,12 +222,62 @@ fn visit_print(mut t VTranspiler, node Call, args []string) (string, bool) {
 				parts[i] = '(${part}).str()'
 			}
 		}
-		println_code = 'println(${parts.join(" + ' ' + ")})'
+		glue := if sep == "''" { ' + ' } else { ' + ${sep} + ' }
+		println_code = print_with_end(parts.join(glue), true, newline, end)
 	}
 	if trailing_comments.len > 0 {
 		println_code = '${println_code} ${trailing_comments.join(' ')}'
 	}
 	return println_code, true
+}
+
+// interpolated_print joins the parts of a `print` into one V string literal, the text of
+// each string constant pasted and every other value as `${value}`, which prints what
+// `.str()` gives. It declines (none) when a part cannot stand inside a literal: code that
+// holds a quote or spans lines, a constant with a `$`, a quote or a backslash, a starred
+// argument, or a separator that is not a plain single-quoted text.
+fn interpolated_print(node Call, parts []string, sep_text string, sep_pastes bool) ?string {
+	if !sep_pastes || sep_text.contains_any('$\\') {
+		return none
+	}
+	mut pieces := []string{}
+	for i, part in parts {
+		arg := node.args[i]
+		if arg is Starred {
+			return none
+		}
+		is_text := arg is Constant && (arg as Constant).value is string
+		if is_text {
+			if part.len < 2 || !part.starts_with("'") || !part.ends_with("'") {
+				return none
+			}
+			inner := part[1..part.len - 1]
+			if inner.contains_any("$\\'") {
+				return none
+			}
+			pieces << inner
+			continue
+		}
+		if part.contains_any('\'"\n{}') {
+			return none
+		}
+		pieces << '\${' + part + '}'
+	}
+	return "'" + pieces.join(sep_text) + "'"
+}
+
+// print_with_end emits the call that prints `code`: `println` when the line ends with a
+// newline, else `print` with the V literal `end` appended (nothing for an empty one).
+// `is_text` says `code` is already a string; any other value is converted before `+`.
+fn print_with_end(code string, is_text bool, newline bool, end string) string {
+	if newline {
+		return 'println(${code})'
+	}
+	if end == "''" {
+		return 'print(${code})'
+	}
+	text := if is_text { code } else { '(${code}).str()' }
+	return 'print(${text} + ${end})'
 }
 
 // Handle bool() call
@@ -244,6 +322,10 @@ fn visit_int(node Call, args []string) (string, bool) {
 		}
 		ann := get_v_annotation(node.args[0])
 		if ann == 'string' {
+			// One character of a string is a byte in V (vk:string-index-is-a-byte)
+			if node.args[0] is Subscript && (node.args[0] as Subscript).slice !is Slice {
+				return '${args[0]}.ascii_str().int()', true
+			}
 			return '${as_receiver(args[0])}.int()', true
 		}
 	}
@@ -277,11 +359,15 @@ fn visit_str(args []string) (string, bool) {
 		return "''", true
 	}
 	arg := args[0]
-	// Simple identifiers don't need parens — emit identifier or parenthesised expression
-	if arg.len > 0 && is_simple_identifier(arg) {
-		return '${arg}', true
+	// A string literal is its own text; anything else is converted, which V's
+	// `.str()` also accepts on a string.
+	if arg.len > 1 && arg[0] in [`'`, `"`] && arg[arg.len - 1] == arg[0] {
+		return arg, true
 	}
-	return '(${arg})', true
+	if arg.len > 0 && is_simple_identifier(arg) {
+		return '${arg}.str()', true
+	}
+	return '(${arg}).str()', true
 }
 
 fn is_simple_identifier(s string) bool {
@@ -395,6 +481,174 @@ fn visit_sorted(args []string) (string, bool) {
 	return '(fn (a []Any) []Any { mut b := a.clone(); b.sort(); return b }(${args[0]}))', true
 }
 
+// The element and key types `<` orders in V as in Python.
+const sort_scalar_types = ['int', 'i64', 'f64', 'string']
+
+// sort_less returns the body of the `less(lhs, rhs)` function that orders elements of
+// type `elem` as the `key` and `reverse` keywords of `sorted()` or `list.sort()` ask, and
+// whether a key was given. None when a keyword is not one py2v knows: `reverse` must be a
+// bool constant, and `key` one of `len`, `abs`, `str.lower`, `str.upper`, a function with
+// a known scalar result, or a lambda of its own parameter alone with a scalar result.
+// With `reverse` the operands are swapped, which keeps equal elements in their original
+// order under a stable sort, as Python does.
+fn sort_less(mut t VTranspiler, node Call, elem string) ?(string, bool) {
+	mut reverse := false
+	mut lhs := 'lhs'
+	mut rhs := 'rhs'
+	mut has_key := false
+	for kw in node.keywords {
+		name := kw.arg or { return none }
+		if name == 'reverse' {
+			if kw.value !is Constant {
+				return none
+			}
+			value := (kw.value as Constant).value
+			if value is bool {
+				reverse = value
+			} else {
+				return none
+			}
+		} else if name == 'key' {
+			key := kw.value
+			if key is Constant && (key as Constant).value is NoneValue {
+				continue
+			}
+			lhs = sort_key_call(mut t, key, elem, 'lhs')?
+			rhs = sort_key_call(mut t, key, elem, 'rhs')?
+			has_key = true
+		} else {
+			return none
+		}
+	}
+	if !has_key && elem !in sort_scalar_types {
+		return none
+	}
+	return if reverse { '${rhs} < ${lhs}' } else { '${lhs} < ${rhs}' }, has_key
+}
+
+// sort_key_call returns the V code of the sort key `key` applied to `operand`, an
+// element of type `elem`, or none.
+fn sort_key_call(mut t VTranspiler, key Expr, elem string, operand string) ?string {
+	match key {
+		Name {
+			if key.id == 'len' && (elem == 'string' || elem.starts_with('[]')) {
+				return '${operand}.len'
+			}
+			if key.id == 'abs' && elem in ['int', 'i64', 'f64'] {
+				t.add_using('math')
+				return 'math.abs(${operand})'
+			}
+			if t.func_return_types[key.id] in sort_scalar_types {
+				return '${t.visit_expr(key)}(${operand})'
+			}
+		}
+		Attribute {
+			if elem == 'string' && key.value is Name && (key.value as Name).id == 'str' {
+				if key.attr == 'lower' {
+					return '${operand}.to_lower()'
+				}
+				if key.attr == 'upper' {
+					return '${operand}.to_upper()'
+				}
+			}
+		}
+		Lambda {
+			if key.args.args.len != 1 || !expr_reads_only(*key.body, key.args.args[0].arg) {
+				return none
+			}
+			// The body is emitted with the parameter spelled as the operand. The key must
+			// be a scalar; the type of a field (`lambda x: x.attr`) is not known here and
+			// is taken to be one.
+			param := key.args.args[0].arg
+			orig_var_types := t.var_types.clone()
+			outer_rename := t.renamed_idents[param] or { '' }
+			t.var_types[param] = elem
+			t.var_types[operand] = elem
+			t.renamed_idents[param] = operand
+			result := t.infer_expr_type(*key.body)
+			body := t.visit_expr(*key.body)
+			t.var_types = orig_var_types.clone()
+			if outer_rename == '' {
+				t.renamed_idents.delete(param)
+			} else {
+				t.renamed_idents[param] = outer_rename
+			}
+			if result in sort_scalar_types || (result == '' && *key.body is Attribute) {
+				return cmp_operand(body)
+			}
+		}
+		else {}
+	}
+	return none
+}
+
+// expr_reads_only reports an expression built from the name `param`, constants, attributes,
+// subscripts, arithmetic and `len`/`abs` alone: a V function literal can hold it without
+// capturing anything.
+fn expr_reads_only(e Expr, param string) bool {
+	return match e {
+		Name {
+			e.id == param
+		}
+		Constant {
+			true
+		}
+		Attribute {
+			expr_reads_only(*e.value, param)
+		}
+		Subscript {
+			expr_reads_only(*e.value, param) && expr_reads_only(*e.slice, param)
+		}
+		UnaryOp {
+			expr_reads_only(*e.operand, param)
+		}
+		BinOp {
+			expr_reads_only(*e.left, param) && expr_reads_only(*e.right, param)
+		}
+		Call {
+			e.func is Name && (e.func as Name).id in ['len', 'abs'] && e.keywords.len == 0
+				&& e.args.all(expr_reads_only(it, param))
+		}
+		else {
+			false
+		}
+	}
+}
+
+// visit_sorted_keywords emits `sorted(xs, key=..., reverse=...)` for a list of known
+// element type or a str. Without a key the elements are scalars and V's `.sorted(a > b)`
+// orders them; with a key `arrays.stable_sort` (a merge sort) keeps the order of elements
+// with equal keys, as Python's sort does. None when sort_less has no answer.
+fn visit_sorted_keywords(mut t VTranspiler, node Call, args []string) ?string {
+	if node.args.len != 1 {
+		return none
+	}
+	mut arg_type := t.infer_expr_type(node.args[0])
+	if arg_type == '' {
+		arg_type = get_v_annotation(node.args[0])
+	}
+	mut receiver := as_receiver(args[0])
+	mut elem := ''
+	if arg_type == 'string' {
+		receiver = "${receiver}.split('')"
+		elem = 'string'
+	} else if arg_type.starts_with('[]') && !arg_type.contains('Any') {
+		elem = arg_type[2..]
+	} else {
+		return none
+	}
+	less, has_key := sort_less(mut t, node, elem)?
+	if !has_key {
+		return if less == 'lhs < rhs' {
+			'${receiver}.sorted()'
+		} else {
+			'${receiver}.sorted(a > b)'
+		}
+	}
+	t.add_using('arrays')
+	return '(fn (a []${elem}) []${elem} { mut b := a.clone(); arrays.stable_sort(mut b, fn (lhs ${elem}, rhs ${elem}) bool { return ${less} }); return b }(${receiver}))'
+}
+
 // Handle map() call (not V's map data structure)
 fn visit_map_builtin(args []string) (string, bool) {
 	if args.len < 2 {
@@ -402,6 +656,72 @@ fn visit_map_builtin(args []string) (string, bool) {
 	}
 	// map(func, iterable) -> iterable.map(func)
 	return '${as_receiver(args[1])}.map(${args[0]})', true
+}
+
+// map_conversion translates `map(int, xs)`, `map(float, xs)` and
+// `map(str, xs)`, where the builtin class is used as a function, to V's
+// `xs.map(...)` with the conversion of one element `it`, chosen by the
+// element type of `xs`. The result of a `split` is a list of strings, and a
+// string is iterated by its characters. None when the element type is not
+// known or has no exact conversion (`str` of a float or a bool is spelled
+// differently in Python and V).
+fn map_conversion(mut t VTranspiler, node Call, args []string) ?string {
+	if node.args.len != 2 || args.len != 2 || node.args[0] !is Name {
+		return none
+	}
+	iterable := node.args[1]
+	mut iter_type := get_v_annotation(iterable)
+	if iter_type != 'string' && !iter_type.starts_with('[]') {
+		iter_type = t.infer_expr_type(iterable)
+	}
+	if iterable is Call {
+		if iterable.func is Attribute {
+			if (iterable.func as Attribute).attr in ['split', 'rsplit', 'splitlines'] {
+				iter_type = '[]string'
+			}
+		}
+	}
+	mut receiver := as_receiver(args[1])
+	if iter_type == 'string' {
+		receiver = "${receiver}.split('')"
+		iter_type = '[]string'
+	}
+	if !iter_type.starts_with('[]') {
+		return none
+	}
+	conversion := map_element_conversion((node.args[0] as Name).id, iter_type[2..]) or {
+		return none
+	}
+	return '${receiver}.map(${conversion})'
+}
+
+fn map_element_conversion(class string, elem string) ?string {
+	is_int := elem in ['int', 'i64']
+	match class {
+		'int' {
+			if elem == 'string' {
+				return 'it.int()'
+			}
+			if is_int || elem == 'f64' || elem == 'bool' {
+				return 'int(it)'
+			}
+		}
+		'float' {
+			if elem == 'string' {
+				return 'it.f64()'
+			}
+			if is_int || elem == 'f64' {
+				return 'f64(it)'
+			}
+		}
+		'str' {
+			if is_int || elem == 'string' {
+				return 'it.str()'
+			}
+		}
+		else {}
+	}
+	return none
 }
 
 // Handle filter() call
@@ -524,11 +844,33 @@ fn visit_id(args []string) (string, bool) {
 	return 'ptr_str(${args[0]})', true
 }
 
+// literal_attr_name returns the attribute a `getattr`, `setattr` or `hasattr`
+// names when its name argument is a string literal that spells an identifier,
+// and none for a name computed at run time (a variable, an f-string with
+// fields), which no V field access can express.
+fn literal_attr_name(arg string) ?string {
+	if arg.len < 3 || arg[0] !in [`'`, `"`] || arg[arg.len - 1] != arg[0] {
+		return none
+	}
+	name := arg[1..arg.len - 1]
+	if name[0].is_digit() {
+		return none
+	}
+	for c in name {
+		if !(c.is_letter() || c.is_digit() || c == `_`) {
+			return none
+		}
+	}
+	return name
+}
+
 // Handle getattr(obj, name) / getattr(obj, name, default)
 fn visit_getattr(args []string) (string, bool) {
 	if args.len >= 2 {
-		// Strip quotes from attribute name if it's a string literal
-		attr := args[1].trim('\'"')
+		attr := literal_attr_name(args[1]) or {
+			// A call to a function that does not exist: the gap shows at type checking.
+			return 'py2v_unsupported_getattr_by_computed_name(${args.join(', ')})', true
+		}
 		if args.len >= 3 {
 			return '${as_receiver(args[0])}.${attr} or { ${args[2]} }', true
 		}
@@ -540,7 +882,9 @@ fn visit_getattr(args []string) (string, bool) {
 // Handle setattr(obj, name, value)
 fn visit_setattr(args []string) (string, bool) {
 	if args.len >= 3 {
-		attr := args[1].trim('\'"')
+		attr := literal_attr_name(args[1]) or {
+			return 'py2v_unsupported_setattr_by_computed_name(${args.join(', ')})', true
+		}
 		return '${as_receiver(args[0])}.${attr} = ${args[2]}', true
 	}
 	return '', false
@@ -549,7 +893,9 @@ fn visit_setattr(args []string) (string, bool) {
 // Handle hasattr(obj, name)
 fn visit_hasattr(args []string) (string, bool) {
 	if args.len >= 2 {
-		attr := args[1].trim('\'"')
+		attr := literal_attr_name(args[1]) or {
+			return 'py2v_unsupported_hasattr_by_computed_name(${args.join(', ')})', true
+		}
 		// V structs always have their fields; use compile-time check approximation
 		return '(typeof(${as_receiver(args[0])}.${attr}).name != "")', true
 	}
@@ -580,7 +926,7 @@ fn isinstance_of_known_type(node Call) ?string {
 			return none
 		}
 		name := (cls as Name).id
-		if name !in ['int', 'float', 'str', 'bool', 'list', 'dict'] {
+		if name !in ['int', 'float', 'str', 'bool', 'list', 'dict', 'tuple', 'set', 'bytes'] {
 			return none
 		}
 		if name == node.subject_class || (name == 'int' && node.subject_class == 'bool') {
@@ -763,6 +1109,33 @@ fn dispatch_builtin_impl(mut t VTranspiler, fname string, node Call, args []stri
 			return DispatchResult{code, handled, using}
 		}
 		'sorted' {
+			// A list of known scalar element type, or a str, sorts with V's own
+			// `.sorted()`, which keeps the element type; the fallback below is `[]Any`.
+			if node.args.len == 1 && node.keywords.len == 0 {
+				mut arg_type := t.infer_expr_type(node.args[0])
+				if arg_type == '' {
+					// what the frontend's inference found for the expression
+					arg_type = get_v_annotation(node.args[0])
+				}
+				first := node.args[0]
+				if arg_type == '' && first is GeneratorExp {
+					// a generator of strings is emitted as an array of strings
+					if get_v_annotation(first.elt) == 'string' {
+						arg_type = '[]string'
+					}
+				}
+				if arg_type in ['[]int', '[]i64', '[]f64', '[]string'] {
+					return DispatchResult{'${as_receiver(args[0])}.sorted()', true, ''}
+				}
+				if arg_type == 'string' {
+					return DispatchResult{"${as_receiver(args[0])}.split('').sorted()", true, ''}
+				}
+			}
+			if node.keywords.len > 0 {
+				if ordered := visit_sorted_keywords(mut t, node, args) {
+					return DispatchResult{ordered, true, ''}
+				}
+			}
 			code, handled := visit_sorted(args)
 			return DispatchResult{code, handled, ''}
 		}
@@ -782,6 +1155,9 @@ fn dispatch_builtin_impl(mut t VTranspiler, fname string, node Call, args []stri
 					closure := build_typed_lambda_closure(mut t, lam, iter_expr)
 					iter_code := as_receiver(args[1])
 					return DispatchResult{'${iter_code}.map(${closure})', true, ''}
+				}
+				if converted := map_conversion(mut t, node, args) {
+					return DispatchResult{converted, true, ''}
 				}
 			}
 			code, handled := visit_map_builtin(args)
@@ -867,6 +1243,25 @@ fn dispatch_builtin_impl(mut t VTranspiler, fname string, node Call, args []stri
 			return DispatchResult{code, handled, ''}
 		}
 		'set' {
+			// `set(xs)` of a list, a tuple or a str holds each value once, in order of
+			// first occurrence. A set literal or comprehension already does. An argument
+			// of unknown type is passed through as before.
+			if node.args.len == 1 && node.keywords.len == 0 {
+				arg := node.args[0]
+				mut arg_type := t.infer_expr_type(arg)
+				if arg_type == '' {
+					arg_type = get_v_annotation(arg)
+				}
+				if arg is Set || arg is SetComp {
+					return DispatchResult{args[0], true, ''}
+				}
+				if arg_type == 'string' {
+					return DispatchResult{"${t.runtime_helper('distinct')}(${as_receiver(args[0])}.split(''))", true, ''}
+				}
+				if arg_type.starts_with('[]') || arg is List || arg is Tuple || arg is ListComp {
+					return DispatchResult{'${t.runtime_helper('distinct')}(${args[0]})', true, ''}
+				}
+			}
 			code, handled := visit_set_fn(args)
 			return DispatchResult{code, handled, ''}
 		}
@@ -889,6 +1284,12 @@ fn dispatch_builtin_impl(mut t VTranspiler, fname string, node Call, args []stri
 		'chr' {
 			code, handled := visit_chr(args)
 			return DispatchResult{code, handled, ''}
+		}
+		'bin' {
+			if args.len != 1 {
+				return DispatchResult{'', false, ''}
+			}
+			return DispatchResult{'${t.runtime_helper('bin')}(i64(${args[0]}))', true, 'strconv'}
 		}
 		'reversed' {
 			code, handled := visit_reversed(args)
@@ -1076,6 +1477,66 @@ pub fn dispatch_re_func(mut t VTranspiler, fname string, args []string) (string,
 			return '', false
 		}
 	}
+}
+
+// dispatch_random_func maps a call into Python's random module to V's rand module.
+// V's ranges exclude the upper end, so `randint(a, b)`, which includes b, asks for b + 1.
+// The V functions return a result; a failure (an empty range or list) stops the program
+// as Python's exception would.
+pub fn dispatch_random_func(mut t VTranspiler, fname string, args []string) (string, bool) {
+	code := match fname['random.'.len..] {
+		'random' {
+			if args.len != 0 {
+				return '', false
+			}
+			'rand.f64()'
+		}
+		'randint' {
+			if args.len != 2 {
+				return '', false
+			}
+			upper := if code_prec(args[1]) == atom_prec { args[1] } else { '(${args[1]})' }
+			'(rand.int_in_range(${args[0]}, ${upper} + 1) or { panic(err) })'
+		}
+		'randrange' {
+			if args.len == 1 {
+				'(rand.intn(${args[0]}) or { panic(err) })'
+			} else if args.len == 2 {
+				'(rand.int_in_range(${args[0]}, ${args[1]}) or { panic(err) })'
+			} else {
+				return '', false
+			}
+		}
+		'uniform' {
+			if args.len != 2 {
+				return '', false
+			}
+			'(rand.f64_in_range(${args[0]}, ${args[1]}) or { panic(err) })'
+		}
+		'choice' {
+			if args.len != 1 {
+				return '', false
+			}
+			'(rand.element(${args[0]}) or { panic(err) })'
+		}
+		'sample' {
+			if args.len != 2 {
+				return '', false
+			}
+			'(rand.choose(${args[0]}, ${args[1]}) or { panic(err) })'
+		}
+		'shuffle' {
+			if args.len != 1 {
+				return '', false
+			}
+			'rand.shuffle(mut ${args[0]}) or { panic(err) }'
+		}
+		else {
+			return '', false
+		}
+	}
+	t.add_using('rand')
+	return code, true
 }
 
 // dispatch_itertools_func translates Python `itertools` function calls to V equivalents.

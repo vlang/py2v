@@ -1,8 +1,34 @@
 module main
 
-type Any = bool | int | i64 | f64 | string | []u8
+import pyrt
 
-fn describe(point Any) Any {
+type Any = pyrt.Value
+
+fn (a Any) + (b Any) Any {
+	return pyrt.add(a, b) or { panic(err) }
+}
+
+fn (a Any) - (b Any) Any {
+	return pyrt.sub(a, b) or { panic(err) }
+}
+
+fn (a Any) * (b Any) Any {
+	return pyrt.mul(a, b) or { panic(err) }
+}
+
+fn (a Any) / (b Any) Any {
+	return pyrt.truediv(a, b) or { panic(err) }
+}
+
+fn (a Any) % (b Any) Any {
+	return pyrt.mod(a, b) or { panic(err) }
+}
+
+fn (a Any) < (b Any) bool {
+	return pyrt.lt(a, b) or { panic(err) }
+}
+
+fn describe(point []int) string {
 	if point.len == 2 && point[0] == 0 && point[1] == 0 {
 		return 'origin'
 	} else if point.len == 2 && point[1] == 0 {
@@ -20,7 +46,7 @@ fn describe(point Any) Any {
 	}
 }
 
-fn parse_command(command map[string]Any) string {
+fn parse_command(command map[string]string) string {
 	if 'action' in command && command['action'] == 'quit' {
 		return 'quitting'
 	} else if 'action' in command && command['action'] == 'move' && 'direction' in command {
@@ -46,10 +72,10 @@ fn check_guard(n int) string {
 }
 
 fn main() {
-	println(describe([0, 0].map(Any(it))))
-	println(describe([3, 0].map(Any(it))))
-	println(describe([1, 2].map(Any(it))))
-	println(parse_command(map[string]Any{
+	println(describe([0, 0]))
+	println(describe([3, 0]))
+	println(describe([1, 2]))
+	println(parse_command(map[string]string{
 		'action': 'quit'
 	}))
 	println(check_guard(-5))

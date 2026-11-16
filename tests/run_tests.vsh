@@ -64,11 +64,22 @@ fn excerpt_n(text string, n int) string {
 	return lines[..limit].join('\n')
 }
 
+// run_generated separates compiler diagnostics from the program's output.
+fn run_generated(source string) os.Result {
+	bin := source + $if windows { '.exe' } $else { '.bin' }
+	build := os.exec([@VEXE, '-o', bin, source])
+	if build.exit_code != 0 {
+		return build
+	}
+	return os.exec([bin])
+}
+
 const script_dir = os.dir(os.abs_path(@FILE))
 const project_dir = os.dir(script_dir)
 const cases_dir = os.join_path(script_dir, 'cases')
 const expected_dir = os.join_path(script_dir, 'expected')
-const package_fixtures = ['pkg_imports', 'pkg_lib_main', 'pkg_multi', 'pkg_multi2', 'pkg_true_div']
+const package_fixtures = ['pkg_imports', 'pkg_lib_main', 'pkg_multi', 'pkg_multi2', 'pkg_true_div',
+	'pkg_init_execution', 'pkg_private_names']
 
 mut py2v := resolve_py2v()
 
@@ -140,6 +151,70 @@ for entry in case_names {
 	}
 }
 
+// Initializers must run, rather than merely putting positional arguments into
+// fields. Compare actual program output, including constructor calls in init.
+init_root := os.join_path(os.temp_dir(), 'py2v_init_${os.getpid()}')
+os.mkdir_all(init_root) or { panic(err) }
+init_source := os.join_path(cases_dir, 'init_execution.py')
+init_translation := os.exec([py2v, init_source])
+init_v := os.join_path(init_root, 'main.v')
+os.write_file(init_v, init_translation.output) or { panic(err) }
+init_expected := os.read_file(os.join_path(script_dir, 'baseline', 'init_execution.out')) or {
+	panic(err)
+}
+init_v_run := run_generated(init_v)
+python := $if windows { 'python' } $else { 'python3' }
+init_py_run := os.exec([python, '-B', init_source])
+init_name := 'initializers: single-file execution'
+if init_translation.exit_code == 0 && init_v_run.exit_code == 0 && init_py_run.exit_code == 0
+	&& init_v_run.output.replace('\r', '') == init_expected
+	&& init_py_run.output.replace('\r', '') == init_expected {
+	report('PASS', init_name, '')
+	passed++
+} else {
+	report('FAIL', init_name, '')
+	println(excerpt_n(init_v_run.output, 20))
+	println(excerpt_n(init_py_run.output, 20))
+	failed++
+	failures << fail_line('FAIL', init_name, '')
+}
+literal_name := 'initializers: classes without init keep literals'
+if init_translation.output.contains('p := Plain{}')
+	&& init_translation.output.contains('inherited := PlainChild{\n\t\tBase: Base{ value: 11 }\n\t}') {
+	report('PASS', literal_name, '')
+	passed++
+} else {
+	report('FAIL', literal_name, '')
+	failed++
+	failures << fail_line('FAIL', literal_name, '')
+}
+os.rmdir_all(init_root) or { panic(err) }
+
+// An initializer that cannot start from a valid zero struct must fail visibly.
+// Keep these negative cases out of the generated-code expectation loop.
+init_errors := os.join_path(os.temp_dir(), 'py2v_init_errors_${os.getpid()}', 'main')
+os.mkdir_all(init_errors) or { panic(err) }
+for c in [['required_reference', 'Parent', 'child']] {
+	source := os.join_path(cases_dir, 'init_errors', c[0] + '.py')
+	generated := os.join_path(init_errors, c[0] + '.v')
+	res := os.exec([py2v, source, '--check', '-o', generated])
+	compiler := os.exec([@VEXE, '-check', generated])
+	diagnostic := compiler.output.to_lower()
+	name := 'initializers: reject ${c[0]}'
+	if res.exit_code != 0 && compiler.exit_code != 0 && diagnostic.contains(c[1].to_lower())
+		&& diagnostic.contains(c[2]) {
+		report('PASS', name, '')
+		passed++
+	} else {
+		report('FAIL', name, ' (exit ${res.exit_code})')
+		println(excerpt_n(res.output, 20))
+		println(excerpt_n(compiler.output, 20))
+		failed++
+		failures << fail_line('FAIL', name, '')
+	}
+}
+os.rmdir_all(os.dir(init_errors)) or { panic(err) }
+
 // Multi-module package fixtures: a Python package must transpile to a V
 // project whose cross-module references resolve and which `v -check` accepts.
 //
@@ -166,9 +241,60 @@ for pkg in package_fixtures {
 	} else {
 		report('PASS', pkg, ' (multi-module)')
 		passed++
+		if pkg == 'pkg_init_execution' {
+			entry := os.join_path(out_dir, 'constructor_main.v')
+			os.write_file(entry,
+				'module main\n\nimport py_pkg_init_execution\n\nfn main() {\n\tpy_pkg_init_execution.run()\n}\n') or {
+				panic(err)
+			}
+			expected := os.read_file(os.join_path(script_dir, 'baseline', 'pkg_init_execution.out')) or {
+				panic(err)
+			}
+			v_run := run_generated(entry)
+			py_run := os.exec([python, '-B', '-c',
+				'import sys; sys.path.insert(0, sys.argv[1]); from pkg_init_execution.use import run; run()',
+				cases_dir])
+			name := 'initializers: package execution'
+			if v_run.exit_code == 0 && py_run.exit_code == 0
+				&& v_run.output.replace('\r', '') == expected
+				&& py_run.output.replace('\r', '') == expected {
+				report('PASS', name, '')
+				passed++
+			} else {
+				report('FAIL', name, '')
+				println(excerpt_n(v_run.output, 20))
+				println(excerpt_n(py_run.output, 20))
+				failed++
+				failures << fail_line('FAIL', name, '')
+			}
+		}
 	}
 	os.rmdir_all(out_dir) or { panic(err) }
 }
+
+// Unknown external classes retain the complete previous emission, even when
+// that emission does not compile. They are outside the scanned package.
+external_out := os.join_path(os.temp_dir(), 'py2v_init_external_${os.getpid()}')
+external := os.exec([py2v, '--package', os.join_path(cases_dir, 'pkg_init_external'), '-o',
+	external_out])
+external_code := os.read_file(os.join_path(external_out, 'py_pkg_init_external', 'use.v')) or {
+	''
+}
+external_expected := os.read_file(os.join_path(script_dir, 'baseline', 'pkg_init_external.v.txt')) or {
+	panic(err)
+}
+external_name := 'initializers: unknown external class is unchanged'
+if external.exit_code == 0 && external_code.replace('\r', '') == external_expected {
+	report('PASS', external_name, '')
+	passed++
+} else {
+	report('FAIL', external_name, '')
+	println(excerpt_n(external.output, 20))
+	println(excerpt_n(external_code, 20))
+	failed++
+	failures << fail_line('FAIL', external_name, '')
+}
+os.rmdir_all(external_out) or { panic(err) }
 
 // Single-file `--check` must compile the generated file: code that does not
 // compile fails, with and without -o, also when the output directory's name is
