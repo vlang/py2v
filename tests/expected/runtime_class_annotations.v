@@ -8,8 +8,12 @@ fn shift(when datetime.Datetime, by datetime.Timedelta) datetime.Datetime {
 	return when
 }
 
+fn open_db_py(path string) !&sqlite3.Connection {
+	return sqlite3.connect(path)!
+}
+
 fn open_db(path string) &sqlite3.Connection {
-	return sqlite3.connect(path) or { pyrt.fail(err) }
+	return open_db_py(path) or { pyrt.fail(err) }
 }
 
 fn label(when datetime.Datetime) string {

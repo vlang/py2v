@@ -79,6 +79,8 @@ mut:
 	emit_pub       bool
 	registry       ModuleRegistry
 	current_dotted string
+	// fn_returns_result: the function being emitted returns a V result (`!T`).
+	fn_returns_result bool
 	// current_stem is this file's stem, used to disambiguate a Python `main`
 	// when several files of one V module define one.
 	current_stem string
@@ -1176,6 +1178,11 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 	t.local_idents = map[string]string{}
 	saved_current_class := t.current_class_name
 	saved_classmethod := t.current_classmethod
+	saved_returns_result := t.fn_returns_result
+	t.fn_returns_result = node.raises && !node.is_class_method
+	defer {
+		t.fn_returns_result = saved_returns_result
+	}
 	t.current_classmethod = node.is_class_method && node.decorator_kind == 'classmethod'
 	saved_init_aliases := t.init_import_aliases.clone()
 	saved_init_captures := t.init_capture_locals.clone()
@@ -1538,7 +1545,31 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 	}
 	body := body_lines.join('\n')
 
-	func_code := '${dunder_comment}${signature.join(' ')} {\n${body}\n}'
+	mut func_code := '${dunder_comment}${signature.join(' ')} {\n${body}\n}'
+	if node.raises && !node.is_class_method {
+		// The fallible body under `<name>_py`, and the old name as the wrapper that ends
+		// the program on an error, for every caller that does not propagate.
+		params := '${emit_name}${generic_list}(${args_strs.join(', ')})'
+		at := signature.index(params)
+		if at >= 0 {
+			head := signature[..at].join(' ')
+			ret := signature[at + 1..].join(' ')
+			mut forwarded := []string{}
+			for arg in args_strs {
+				words := arg.split(' ')
+				forwarded << if words[0] == 'mut' && words.len > 1 {
+					'mut ${words[1]}'
+				} else {
+					words[0]
+				}
+			}
+			call := '${emit_name}_py(${forwarded.join(', ')}) or { pyrt.fail(err) }'
+			wrapper_body := if ret == '' { call } else { 'return ${call}' }
+			t.add_using('pyrt')
+			func_code = '${dunder_comment}${head} ${emit_name}_py${generic_list}(${args_strs.join(', ')}) !${ret} {\n${body}\n}\n\n' +
+				'${head} ${params} ${ret} {\n\t${wrapper_body}\n}'
+		}
+	}
 
 	// Emit comments for unsupported decorators (@functools.wraps, @lru_cache, etc.)
 	mut decorator_comments := []string{}
@@ -3561,6 +3592,26 @@ pub fn (mut t VTranspiler) visit_async_with(node AsyncWith) string {
 
 // visit_raise emits V code for a Raise statement.
 pub fn (mut t VTranspiler) visit_raise(node Raise) string {
+	if node.mode == 'reraise' {
+		// a bare `raise` in a handler: the error that handler's try caught goes on
+		t.add_using('pyrt')
+		return if t.fn_returns_result {
+			'return py2v_raised_${node.guard}'
+		} else {
+			'pyrt.fail(py2v_raised_${node.guard})'
+		}
+	}
+	if node.mode in ['result', 'guard'] {
+		if made := t.raised_error(node) {
+			t.add_using('pyrt')
+			if node.mode == 'guard' {
+				return 'py2v_err_${node.guard} = ${made}\nbreak py2v_try_${node.guard}'
+			}
+			if t.fn_returns_result {
+				return 'return ${made}'
+			}
+		}
+	}
 	if exc := node.exc {
 		mut msg := ''
 		if exc is Call {
@@ -3586,6 +3637,44 @@ pub fn (mut t VTranspiler) visit_raise(node Raise) string {
 	return "panic('re-raise')"
 }
 
+// raised_error is the V error value of `raise C(args)` or `raise C`: the runtime's
+// exception of that class with its arguments as runtime values, and for a class of the
+// translated file its bases, so that handlers naming a base take it.
+fn (mut t VTranspiler) raised_error(node Raise) ?string {
+	exc := node.exc or { return none }
+	mut class_name := ''
+	mut args := []string{}
+	mut text := ''
+	if exc is Call {
+		func := exc.func
+		if func is Name {
+			class_name = func.id
+		}
+		for arg in exc.args {
+			code := t.visit_expr(arg)
+			if exc.args.len == 1 && code.starts_with("'") {
+				text = code
+			}
+			args << if code.starts_with('pyrt.') { code } else { 'pyrt.box(${code})' }
+		}
+	} else if exc is Name {
+		class_name = exc.id
+	}
+	if class_name == '' {
+		return none
+	}
+	if text != '' && node.bases.len == 0 {
+		// the usual form: one message
+		return "pyrt.raise('${class_name}', ${text})"
+	}
+	list := if args.len == 0 { '[]pyrt.Value{}' } else { '[${args.join(', ')}]' }
+	if node.bases.len > 0 {
+		bases := node.bases.map("'${it}'").join(', ')
+		return "IError(pyrt.exception_of('${class_name}', [${bases}], ${list}))"
+	}
+	return "IError(pyrt.exception('${class_name}', ${list}))"
+}
+
 // visit_try emits V code for a Try statement.
 // V uses Result types and `or {}` blocks instead of exceptions; we emit the
 // try body as-is and each except handler inside an `// except` comment header
@@ -3605,6 +3694,9 @@ pub fn (mut t VTranspiler) visit_raise(node Raise) string {
 // cleanly onto `defer`, so it keeps its code. `else` is dropped because it is
 // unreachable once no exception can be observed.
 pub fn (mut t VTranspiler) visit_try(node Try) string {
+	if node.guard > 0 {
+		return t.visit_guarded_try(node)
+	}
 	mut buf := []string{}
 
 	// V refuses a `defer` inside a `defer`. Inside one, the cleanup of an inner
@@ -3643,6 +3735,89 @@ pub fn (mut t VTranspiler) visit_try(node Try) string {
 	for handler in node.handlers {
 		buf << t.describe_except_handler(handler)
 	}
+	return buf.join('\n')
+}
+
+// visit_guarded_try emits a `try` with handlers and no `finally` whose body the frontend
+// planned: the body runs in a one-shot labeled loop that the first failing call leaves
+// (see guarded_call); after it, the first handler whose classes match the error runs,
+// or the `else` block when nothing failed. An error no handler takes is returned from a
+// function that returns a result, and ends the program elsewhere.
+fn (mut t VTranspiler) visit_guarded_try(node Try) string {
+	n := node.guard
+	t.add_using('pyrt')
+	mut buf := []string{}
+	buf << 'mut py2v_err_${n} := ?IError(none)'
+	buf << 'py2v_try_${n}: for {'
+	for stmt in node.body {
+		buf << t.indent_code(t.visit_stmt(stmt), 1)
+	}
+	mut leaves := false
+	if node.body.len > 0 {
+		last := node.body.last()
+		if last is Return {
+			leaves = true
+		} else if last is Raise {
+			// a guarded `raise` has left the loop already
+			leaves = last.mode == 'guard' && last.guard == n
+		}
+	}
+	if !leaves {
+		buf << '\tbreak'
+	}
+	buf << '}'
+	head_at := buf.len
+	buf << ''
+	mut chain := []string{}
+	mut takes_all := false
+	for handler in node.handlers {
+		mut body := []string{}
+		for stmt in handler.body {
+			body << t.indent_code(t.visit_stmt(stmt), 1)
+		}
+		name := handler.name or { '' }
+		if handler.classes.len == 0 {
+			// a bare `except:` takes every error
+			takes_all = true
+			chain << '{\n${body.join('\n')}\n}'
+			break
+		}
+		classes := handler.classes.map("'${it}'").join(', ')
+		head := if name != '' {
+			'if ${escape_local_decl(name)} := pyrt.caught(py2v_raised_${n}, ${classes}) '
+		} else {
+			'if pyrt.caught(py2v_raised_${n}, ${classes}) != none '
+		}
+		chain << '${head}{\n${body.join('\n')}\n}'
+	}
+	if !takes_all {
+		escape := if t.fn_returns_result {
+			'return py2v_raised_${n}'
+		} else {
+			'pyrt.fail(py2v_raised_${n})'
+		}
+		chain << '{\n\t${escape}\n}'
+	}
+	chain_code := chain.join(' else ')
+	// a bare `except:` that does not pass the error on never names it
+	buf[head_at] = if chain_code.contains('py2v_raised_${n}') {
+		'if py2v_raised_${n} := py2v_err_${n} {'
+	} else {
+		'if py2v_err_${n} != none {'
+	}
+	buf << t.indent_code(chain_code, 1)
+	if node.orelse.len > 0 {
+		buf << '} else {'
+		for stmt in node.orelse {
+			buf << t.indent_code(t.visit_stmt(stmt), 1)
+		}
+	} else if node.body.len > 0 && node.body.last() is Return {
+		// The body always returns, so nothing follows a try that did not fail; V cannot
+		// see that through the loop and asks for a return after it.
+		buf << '} else {'
+		buf << '\tpyrt.unreachable()'
+	}
+	buf << '}'
 	return buf.join('\n')
 }
 
@@ -5402,8 +5577,55 @@ fn (t &VTranspiler) bind_module_call(node Call) ?Call {
 	return Call{ ...node, args: bound, keywords: []Keyword{} }
 }
 
+// guarded_call turns the text of a call that ends the program on an error into one that
+// hands the error to the handlers of `try` number `n` and leaves the try body.
+fn guarded_call(code string, n int) string {
+	leave := ' or {\n\tpy2v_err_${n} = err\n\tbreak py2v_try_${n}\n}'
+	passed := propagated_call(code)
+	if passed.ends_with('!') && passed != code {
+		return passed[..passed.len - 1] + leave
+	}
+	return code
+}
+
+// propagated_call turns the text of a call that ends the program on an error into one
+// that passes the error on: `f(x) or { pyrt.fail(err) }` becomes `f(x)!`, and a call of a
+// function of this file `g(x)` becomes `g_py(x)!` (the frontend marks only calls of
+// functions it made fallible). Any other text is returned as it is.
+fn propagated_call(code string) string {
+	suffix := ' or { pyrt.fail(err) }'
+	if code.starts_with('(') && code.ends_with(suffix + ')') {
+		return code[1..code.len - suffix.len - 1] + '!'
+	}
+	if code.ends_with(suffix) {
+		return code[..code.len - suffix.len] + '!'
+	}
+	open := code.index('(') or { return code }
+	name := code[..open]
+	if name.len == 0 || !code.ends_with(')') || name.contains_any(' .\n{}[]=') {
+		return code
+	}
+	return '${name}_py${code[open..]}!'
+}
+
 // visit_call binds eligible module functions before rendering their arguments.
 pub fn (mut t VTranspiler) visit_call(original Call) string {
+	if original.guard > 0 {
+		// a call that can fail, in the body of a `try` whose handlers take the error
+		code := t.visit_call(Call{
+			...original
+			guard: 0
+		})
+		return guarded_call(code, original.guard)
+	}
+	if original.propagate {
+		// a call that can fail, in straight-line code of a function returning a result
+		code := t.visit_call(Call{
+			...original
+			propagate: false
+		})
+		return propagated_call(code)
+	}
 	if original.api != '' {
 		if code := t.runtime_api_call(original) {
 			return code
@@ -9416,10 +9638,11 @@ fn (mut t VTranspiler) hoist_in_stmt(stmt Stmt, mut out []string) Stmt {
 			mut handlers := []ExceptHandler{}
 			for h in s.handlers {
 				handlers << ExceptHandler{
-					typ:  h.typ
-					name: h.name
-					body: t.hoist_block_fns(h.body, mut out)
-					loc:  h.loc
+					typ:     h.typ
+					classes: h.classes
+					name:    h.name
+					body:    t.hoist_block_fns(h.body, mut out)
+					loc:     h.loc
 				}
 			}
 			return Stmt(Try{
@@ -9427,6 +9650,7 @@ fn (mut t VTranspiler) hoist_in_stmt(stmt Stmt, mut out []string) Stmt {
 				handlers:           handlers
 				orelse:             t.hoist_block_fns(s.orelse, mut out)
 				finalbody:          t.hoist_block_fns(s.finalbody, mut out)
+				guard:              s.guard
 				loc:                s.loc
 				is_exception_group: s.is_exception_group
 			})
@@ -9482,10 +9706,11 @@ pub fn (mut t VTranspiler) hoist_module_fns(stmts []Stmt, mut out []string) []St
 				mut handlers := []ExceptHandler{}
 				for h in s.handlers {
 					handlers << ExceptHandler{
-						typ:  h.typ
-						name: h.name
-						body: t.hoist_in_stmt_list(h.body, mut out)
-						loc:  h.loc
+						typ:     h.typ
+						classes: h.classes
+						name:    h.name
+						body:    t.hoist_in_stmt_list(h.body, mut out)
+						loc:     h.loc
 					}
 				}
 				result << Stmt(Try{
@@ -9493,6 +9718,7 @@ pub fn (mut t VTranspiler) hoist_module_fns(stmts []Stmt, mut out []string) []St
 					handlers:           handlers
 					orelse:             t.hoist_in_stmt_list(s.orelse, mut out)
 					finalbody:          t.hoist_in_stmt_list(s.finalbody, mut out)
+					guard:              s.guard
 					loc:                s.loc
 					is_exception_group: s.is_exception_group
 				})

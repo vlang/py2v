@@ -328,6 +328,7 @@ fn parse_function_def(m map[string]json2.Any) FunctionDef {
 		}
 	}
 	return FunctionDef{
+		raises:                 (m['raises'] or { json2.Any(false) }).bool()
 		name:                   m['name'] or { json2.Any('') }.str()
 		args:                   parse_arguments(m['args'] or { json2.Any(map[string]json2.Any{}) })
 		body:                   body
@@ -790,6 +791,9 @@ fn parse_async_with(m map[string]json2.Any) AsyncWith {
 // Parse Raise
 fn parse_raise(m map[string]json2.Any) Raise {
 	return Raise{
+		mode:  (m['mode'] or { json2.Any('') }).str()
+		guard: (m['guard'] or { json2.Any(0) }).int()
+		bases: (m['bases'] or { json2.Any([]json2.Any{}) }).as_array().map(it.str())
 		exc:   parse_optional_expr(m['exc'] or { json2.Any(json2.Null{}) })
 		cause: parse_optional_expr(m['cause'] or { json2.Any(json2.Null{}) })
 		loc:   parse_location(m)
@@ -829,6 +833,7 @@ fn parse_try(m map[string]json2.Any) Try {
 		}
 	}
 	return Try{
+		guard:     (m['guard'] or { json2.Any(0) }).int()
 		body:      body
 		handlers:  handlers
 		orelse:    orelse
@@ -847,10 +852,11 @@ fn parse_except_handler(m map[string]json2.Any) ExceptHandler {
 		}
 	}
 	return ExceptHandler{
-		typ:  parse_optional_expr(m['type'] or { json2.Any(json2.Null{}) })
-		name: parse_optional_string(m['name'] or { json2.Any(json2.Null{}) })
-		body: body
-		loc:  parse_location(m)
+		classes: (m['classes'] or { json2.Any([]json2.Any{}) }).as_array().map(it.str())
+		typ:     parse_optional_expr(m['type'] or { json2.Any(json2.Null{}) })
+		name:    parse_optional_string(m['name'] or { json2.Any(json2.Null{}) })
+		body:    body
+		loc:     parse_location(m)
 	}
 }
 
@@ -1194,6 +1200,8 @@ fn parse_call(m map[string]json2.Any) Call {
 	return Call{
 		subject_class: (m['subject_class'] or { json2.Any('') }).str()
 		api:           (m['api'] or { json2.Any('') }).str()
+		propagate:     (m['propagate'] or { json2.Any(false) }).bool()
+		guard:         (m['guard'] or { json2.Any(0) }).int()
 		func:          parse_expr(map_field(m, 'func')) or {
 			&Expr(Constant{
 				value: NoneValue{}

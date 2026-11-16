@@ -13,13 +13,14 @@ fn pure_finally() int {
 }
 
 fn nested_finally() int {
+	mut x := 0
 	defer {
 		println('outer cleanup')
 	}
 	defer {
 		println('inner cleanup')
 	}
-	x := 10
+	x = 10
 	return x
 }
 
