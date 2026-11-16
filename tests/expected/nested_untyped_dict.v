@@ -52,10 +52,14 @@ fn schema(name string, count int) map[string]Any {
 	}
 }
 
-fn main_func() {
+fn main_func_py() ! {
 	s := schema('capsule', 2)
-	println(json.dumps(pyrt.box(s), sort_keys: true) or { panic(err) })
+	println(json.dumps(pyrt.box(s), sort_keys: true)!)
 	println(pyrt.str(pyrt.item_at(pyrt.item_at(s['properties'], pyrt.box('limit')), pyrt.box('default'))))
+}
+
+fn main_func() {
+	main_func_py() or { pyrt.fail(err) }
 }
 
 fn main() {

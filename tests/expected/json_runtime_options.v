@@ -29,14 +29,16 @@ fn (a Any) < (b Any) bool {
 	return pyrt.lt(a, b) or { panic(err) }
 }
 
-fn report(names []string, scores map[string]int) string {
+fn report_py(names []string, scores map[string]int) !string {
 	payload := {
 		'names': pyrt.box(names)
 		'count': pyrt.box(names.len)
 	}
-	return (json.dumps(pyrt.box(payload), indent: 2) or { panic(err) }) + (json.dumps(pyrt.box(scores),
-		sort_keys: true
-	) or { panic(err) }) + (json.dumps(pyrt.box(names)) or { panic(err) })
+	return json.dumps(pyrt.box(payload), indent: 2)! + json.dumps(pyrt.box(scores), sort_keys: true)! + json.dumps(pyrt.box(names))!
+}
+
+fn report(names []string, scores map[string]int) string {
+	return report_py(names, scores) or { pyrt.fail(err) }
 }
 
 fn main() {
@@ -44,7 +46,7 @@ fn main() {
 		'z': 1
 		'y': 2
 	}))
-	println(json.dumps(pyrt.box({
+	println((json.dumps(pyrt.box({
 		'a': [pyrt.box(1), pyrt.box(2.5), pyrt.none_, pyrt.box(true)]
-	}), separators: [',', ':']) or { panic(err) })
+	}), separators: [',', ':']) or { pyrt.fail(err) }))
 }

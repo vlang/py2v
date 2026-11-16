@@ -271,6 +271,11 @@ pub mut:
 	// api is the Python name of the runtime library entry this call resolved to
 	// (`datetime.datetime.now`), or empty.
 	api string
+	// propagate: the call can fail and stands in straight-line code of a function that
+	// returns a result, so its error is passed on with `!`.
+	propagate bool
+	// guard: the number of the enclosing `try` whose handlers take this call's error.
+	guard int
 }
 
 pub struct Keyword {
@@ -449,15 +454,17 @@ pub mut:
 // Statements
 pub struct FunctionDef {
 pub mut:
-	name                   string
-	args                   Arguments
-	body                   []Stmt
-	decorator_list         []Expr
-	returns                ?&Expr
-	type_comment           ?string
-	loc                    Location
-	is_generator           bool
-	is_void                bool
+	name           string
+	args           Arguments
+	body           []Stmt
+	decorator_list []Expr
+	returns        ?&Expr
+	type_comment   ?string
+	loc            Location
+	is_generator   bool
+	is_void        bool
+	// raises: the function returns a V result (`!T`); see the frontend's error plan.
+	raises                 bool
 	mutable_vars           []string
 	is_class_method        bool
 	class_name             string
@@ -636,6 +643,13 @@ pub mut:
 	exc   ?&Expr
 	cause ?&Expr
 	loc   Location
+	// mode: how the frontend planned the raise: `result` (return the error from a function
+	// that returns a result), `guard` (hand it to the handlers of try number `guard`),
+	// `reraise` (pass on the error that try's handler caught); empty: not planned.
+	mode  string
+	guard int
+	// bases: for a class of the translated file, its bases down to the builtin ones.
+	bases []string
 }
 
 pub struct Try {
@@ -646,6 +660,8 @@ pub mut:
 	finalbody          []Stmt
 	loc                Location
 	is_exception_group bool
+	// guard: a number when the frontend planned this `try` to run its handlers (0: not).
+	guard int
 }
 
 pub struct ExceptHandler {
@@ -654,6 +670,8 @@ pub mut:
 	name ?string
 	body []Stmt
 	loc  Location
+	// classes: the Python class names the handler takes, as the runtime knows them.
+	classes []string
 }
 
 pub struct Assert {

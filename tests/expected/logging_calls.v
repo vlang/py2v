@@ -4,8 +4,8 @@ import log
 import pyrt.logging
 import pyrt
 
-fn process() {
-	(logging.basic_config() or { pyrt.fail(err) })
+fn process_py() ! {
+	logging.basic_config()!
 	logging.info('starting')
 	logging.debug('x=42')
 	logging.warning('low memory')
@@ -13,6 +13,10 @@ fn process() {
 	logging.error_('failed')
 	logging.critical('shutdown')
 	logging.exception('caught error')
+}
+
+fn process() {
+	process_py() or { pyrt.fail(err) }
 }
 
 fn main() {

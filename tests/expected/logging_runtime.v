@@ -17,14 +17,18 @@ fn work(n int, name string) int {
 	return n * 2
 }
 
-fn main_func() {
-	(logging.basic_config(
+fn main_func_py() ! {
+	logging.basic_config(
 		level:  logging.info_level
 		format: '%(levelname)s %(name)s %(message)s'
 		stream: 'stdout'
-	) or { pyrt.fail(err) })
+	)!
 	println(work(3, 'alpha'))
 	logger.info('plain message')
+}
+
+fn main_func() {
+	main_func_py() or { pyrt.fail(err) }
 }
 
 fn main() {

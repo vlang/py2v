@@ -1961,6 +1961,8 @@ def _node_to_dict(node: ast.AST, mutable_vars: Set[str],
         result["returns"] = _node_to_dict(node.returns, mutable_vars, redefined, ctx) if node.returns else None
         result["type_comment"] = getattr(node, "type_comment", None)
         result["is_void"] = _is_void_function(node)
+        if getattr(node, "_raises", False):
+            result["raises"] = True
         result["is_generator"] = _is_generator(node)
         result["is_class_method"] = getattr(node, "_is_class_method", False)
         result["class_name"] = getattr(node, "_class_name", "")
@@ -2085,6 +2087,10 @@ def _node_to_dict(node: ast.AST, mutable_vars: Set[str],
     elif isinstance(node, ast.Raise):
         result["exc"] = _node_to_dict(node.exc, mutable_vars, redefined, ctx) if node.exc else None
         result["cause"] = _node_to_dict(node.cause, mutable_vars, redefined, ctx) if node.cause else None
+        if getattr(node, "_mode", ""):
+            result["mode"] = node._mode
+            result["guard"] = getattr(node, "_guard", 0)
+            result["bases"] = getattr(node, "_bases", None) or []
 
     elif hasattr(ast, "TryStar") and isinstance(node, ast.TryStar):
         result["body"] = [_node_to_dict(n, mutable_vars, redefined, ctx) for n in node.body]
@@ -2097,6 +2103,8 @@ def _node_to_dict(node: ast.AST, mutable_vars: Set[str],
         result["handlers"] = [_handler_to_dict(h, mutable_vars, redefined, ctx) for h in node.handlers]
         result["orelse"] = [_node_to_dict(n, mutable_vars, redefined, ctx) for n in node.orelse]
         result["finalbody"] = [_node_to_dict(n, mutable_vars, redefined, ctx) for n in node.finalbody]
+        if getattr(node, "_guard", 0):
+            result["guard"] = node._guard
 
     elif isinstance(node, ast.Assert):
         result["test"] = _node_to_dict(node.test, mutable_vars, redefined, ctx)
@@ -2215,6 +2223,10 @@ def _node_to_dict(node: ast.AST, mutable_vars: Set[str],
             result["subject_class"] = node._subject_class
         if getattr(node, "_api", ""):
             result["api"] = node._api
+        if getattr(node, "_propagate", False):
+            result["propagate"] = True
+        if getattr(node, "_guard", 0):
+            result["guard"] = node._guard
         # Attach v_annotation for calls when the callee is a top-level function
         # with an explicit return annotation discovered during pre-scan.
         if isinstance(node.func, ast.Name):
@@ -2454,6 +2466,8 @@ def _handler_to_dict(handler: ast.ExceptHandler, mutable_vars: Set[str],
         "name": handler.name,
         "body": [_node_to_dict(n, mutable_vars, redefined, ctx) for n in handler.body],
     }
+    if getattr(handler, "_classes", None) is not None:
+        result["classes"] = handler._classes
     for attr in ("lineno", "col_offset", "end_lineno", "end_col_offset"):
         if hasattr(handler, attr):
             val = getattr(handler, attr)
@@ -3472,6 +3486,259 @@ def _v_spelling(name: str) -> str:
     return name.strip("_").lower()
 
 
+def _plan_error_propagation(tree: ast.Module, table: Optional[symbols.SymbolTable]) -> None:
+    """Decide which functions return a V result, which calls pass their error on, and
+    which `try` statements run their handlers.
+
+    Stages 1 to 3 of the exception design, for straight-line code and `try` without
+    `finally`. A call "can fail" when the runtime manifest says so, or when it calls by
+    name a function of this file that this pass made fallible.
+
+    - Outside every `try`, in a module-level function (not a method, generator, decorated
+      function, or `main`): the function becomes fallible. The backend emits its body as
+      `<name>_py` returning a result, each such call with `!`, and keeps the old name as a
+      wrapper that ends the program on an error, for callers this pass does not see.
+    - Inside the body of a `try` that has handlers and no `finally`: the call is guarded.
+      The backend puts the body in a one-shot loop, leaves it at the first failing call,
+      and then runs the handler whose classes match (`pyrt.caught`), else the `else`
+      block. An error no handler takes is passed on where the function is fallible and
+      ends the program elsewhere. A `try` whose body has its own `break` or `continue`,
+      or no call that can fail, is left as it was.
+
+    Comprehensions, lambdas and nested functions are not looked into."""
+    if table is None:
+        return
+    api = _runtime_api()
+    candidates: Dict[int, ast.FunctionDef] = {}
+    # Preserve a source function when its generated result helper would collide.
+    existing_functions = {_v_spelling(s.name) for s in tree.body
+                          if isinstance(s, ast.FunctionDef)}
+    for stmt in tree.body:
+        if not isinstance(stmt, ast.FunctionDef) or stmt.name == "main" or stmt.decorator_list:
+            continue
+        if stmt.args.vararg or stmt.args.kwarg or _is_generator(stmt):
+            continue
+        if _v_spelling(stmt.name) + "_py" in existing_functions:
+            continue
+        binding_id = getattr(stmt, "_binding", None)
+        if binding_id is None or table.bindings[binding_id].rebound:
+            continue
+        candidates[binding_id] = stmt
+
+    closed = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef,
+              ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)
+    loops = (ast.For, ast.AsyncFor, ast.While)
+
+    def leaves_loop(stmts: List[ast.stmt]) -> bool:
+        """Whether the statements hold a `break` or `continue` of an enclosing loop."""
+        pending = list(stmts)
+        while pending:
+            node = pending.pop()
+            if isinstance(node, (ast.Break, ast.Continue)):
+                return True
+            if isinstance(node, closed) or isinstance(node, loops):
+                continue
+            pending.extend(ast.iter_child_nodes(node))
+        return False
+
+    def lowerable(node: ast.AST) -> bool:
+        return (isinstance(node, ast.Try) and bool(node.handlers) and not node.finalbody
+                and not leaves_loop(node.body))
+
+    builtin_exceptions = _builtin_exception_names()
+    local_classes = {c.name: [_unparse_expr(b) for b in c.bases]
+                     for c in tree.body if isinstance(c, ast.ClassDef)}
+
+    def exception_bases(name: str) -> Optional[List[str]]:
+        """The bases of a class of this file down to the builtin ones, or None when the
+        name is not an exception class this pass can vouch for."""
+        if name in builtin_exceptions:
+            return []
+        if name not in local_classes:
+            return None
+        chain: List[str] = []
+        pending = list(local_classes[name])
+        seen = {name}
+        while pending:
+            base = pending.pop(0)
+            if base in seen:
+                continue
+            seen.add(base)
+            if base in builtin_exceptions:
+                chain.append(base)
+            elif base in local_classes:
+                chain.append(base)
+                pending.extend(local_classes[base])
+            else:
+                return None
+        return chain if any(b in builtin_exceptions for b in chain) else None
+
+    def raised_class(node: ast.Raise) -> str:
+        """The class a `raise C(...)` or `raise C` names, when it is one this pass knows."""
+        exc = node.exc
+        if isinstance(exc, ast.Call) and not exc.keywords and not any(
+                isinstance(a, ast.Starred) for a in exc.args):
+            exc = exc.func
+        if isinstance(exc, ast.Name) and exception_bases(exc.id) is not None:
+            return exc.id
+        return ""
+
+    def calls_in(stmts: List[ast.stmt], into_try_bodies: bool) -> List[ast.AST]:
+        """The calls and `raise` statements of straight-line code. A lowerable `try`
+        contributes its handlers and `else` (they run as the function's own code); its
+        body only when asked."""
+        found: List[ast.AST] = []
+
+        def walk(node: ast.AST) -> None:
+            if isinstance(node, closed):
+                return
+            if isinstance(node, ast.Try) or type(node).__name__ == "TryStar":
+                if not lowerable(node):
+                    return
+                if into_try_bodies:
+                    for child in node.body:
+                        walk(child)
+                for handler in node.handlers:
+                    for child in handler.body:
+                        walk(child)
+                for child in node.orelse:
+                    walk(child)
+                return
+            if isinstance(node, (ast.Call, ast.Raise)):
+                found.append(node)
+            for child in ast.iter_child_nodes(node):
+                walk(child)
+
+        for stmt in stmts:
+            walk(stmt)
+        return found
+
+    def body_calls(node: ast.Try) -> List[ast.AST]:
+        """The calls and raises of a try body that belong to this `try` (not to one nested
+        in it)."""
+        found: List[ast.AST] = []
+
+        def walk(child: ast.AST) -> None:
+            if isinstance(child, closed) or isinstance(child, ast.Try) \
+                    or type(child).__name__ == "TryStar":
+                return
+            if isinstance(child, (ast.Call, ast.Raise)):
+                found.append(child)
+            for inner in ast.iter_child_nodes(child):
+                walk(inner)
+
+        for stmt in node.body:
+            walk(stmt)
+        return found
+
+    def handler_classes(handler: ast.ExceptHandler) -> Optional[List[str]]:
+        """The class names a handler takes, as the runtime knows them; [] for a bare
+        `except`; None when a class is not a plain name."""
+        if handler.type is None:
+            return []
+        parts = handler.type.elts if isinstance(handler.type, ast.Tuple) else [handler.type]
+        names: List[str] = []
+        for part in parts:
+            text = _unparse_expr(part)
+            if not all(piece.isidentifier() for piece in text.split(".")):
+                return None
+            names.append("JSONDecodeError" if text == "json.JSONDecodeError" else text)
+        return names
+
+    def takes_every_exception(node: ast.Try) -> bool:
+        for handler in node.handlers:
+            classes = handler_classes(handler)
+            if classes == [] or (classes and ("Exception" in classes or "BaseException" in classes)):
+                return True
+        return False
+
+    fallible: Set[int] = set()
+
+    def can_fail(call: ast.AST) -> bool:
+        if isinstance(call, ast.Raise):
+            # a bare `raise` is planned with the handler it stands in
+            return call.exc is not None and raised_class(call) != ""
+        entry = api.get(getattr(call, "_api", ""))
+        if entry and entry.get("raises"):
+            return True
+        return isinstance(call.func, ast.Name) and getattr(call.func, "_binding", None) in fallible
+
+    def tries_of(stmts: List[ast.stmt]) -> List[ast.Try]:
+        found: List[ast.Try] = []
+        pending = list(stmts)
+        while pending:
+            node = pending.pop()
+            if isinstance(node, closed):
+                continue
+            if lowerable(node):
+                found.append(node)
+            pending.extend(ast.iter_child_nodes(node))
+        return found
+
+    def needs_result(fn: ast.FunctionDef) -> bool:
+        if any(can_fail(c) for c in calls_in(fn.body, False)):
+            return True
+        # a guarded failure that no handler of its `try` is sure to take leaves the function
+        for t in tries_of(fn.body):
+            if not any(can_fail(c) for c in body_calls(t)):
+                continue
+            if not takes_every_exception(t):
+                return True
+            if any(isinstance(c, ast.Raise) and c.exc is None
+                   for h in t.handlers for c in calls_in(h.body, False)):
+                return True
+        return False
+
+    while True:
+        grown = {b for b, fn in candidates.items() if b not in fallible and needs_result(fn)}
+        if not grown:
+            break
+        fallible |= grown
+
+    counter = 0
+    for scope in [tree] + [n for n in ast.walk(tree)
+                           if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]:
+        own = scope.body
+        for node in tries_of(own):
+            guarded = [c for c in body_calls(node) if can_fail(c)]
+            classes = [handler_classes(h) for h in node.handlers]
+            if not guarded or any(c is None for c in classes):
+                continue
+            if getattr(node, "_guard", 0):
+                continue  # reached again through an enclosing scope's walk
+            counter += 1
+            node._guard = counter
+            for call in guarded:
+                call._guard = counter
+                if isinstance(call, ast.Raise):
+                    call._mode = "guard"
+                    call._bases = exception_bases(raised_class(call))
+            for handler, names in zip(node.handlers, classes):
+                handler._classes = names
+                # a bare `raise` in the handler's own code passes the caught error on
+                for inner in calls_in(handler.body, False):
+                    if isinstance(inner, ast.Raise) and inner.exc is None:
+                        inner._mode = "reraise"
+                        inner._guard = counter
+    for binding_id in fallible:
+        fn = candidates[binding_id]
+        fn._raises = True
+        for call in calls_in(fn.body, False):
+            if can_fail(call) and not getattr(call, "_guard", 0):
+                if isinstance(call, ast.Raise):
+                    call._mode = "result"
+                    call._bases = exception_bases(raised_class(call))
+                else:
+                    call._propagate = True
+
+
+def _builtin_exception_names() -> frozenset:
+    """The builtin exception classes, as Python itself lists them."""
+    import builtins
+    return frozenset(name for name, value in vars(builtins).items()
+                     if isinstance(value, type) and issubclass(value, BaseException))
+
+
 def _mark_module_constants(tree: ast.Module, table: Optional[symbols.SymbolTable]) -> None:
     """Name the module-level values that functions read, so they become V constants.
 
@@ -3580,7 +3847,7 @@ _RUNTIME_API: Optional[Dict[str, Dict[str, Any]]] = None
 # Modules whose calls are resolved here. The others in the manifest (json, pathlib, os,
 # sys, time, re) still have their own lowering in the backend.
 _RUNTIME_API_MODULES = ("datetime", "sqlite3", "pathlib", "logging", "argparse", "subprocess",
-                        "hashlib", "uuid", "shutil", "tempfile", "base64", "secrets",
+                        "hashlib", "uuid", "shutil", "tempfile", "base64", "secrets", "json",
                         "mcp")
 # The classes of those modules that have a V type (runtime_class_types in the backend).
 _RUNTIME_API_CLASS_SET: Optional[frozenset] = None
@@ -4054,6 +4321,9 @@ def _mark_runtime_api(tree: ast.Module, table: Optional[symbols.SymbolTable]) ->
         marked = getattr(node, "_api", "")
         if marked in api and isinstance(node, (ast.Call, ast.Attribute)):
             node._api_returns = api[marked].get("returns") or ""
+            if node._api_returns == "Any" and isinstance(node, ast.Call):
+                # what the runtime gives back as a value of no stated type (`json.loads`)
+                node._dynamic = True
 
 
 def _mark_isinstance_inferred(tree: ast.Module, table: Optional[symbols.SymbolTable],
@@ -4178,6 +4448,94 @@ def _empty_field_annotations(tree: ast.Module, facts: infer.TypeFacts) -> Dict[i
     return found
 
 
+def _declare_block_locals(tree: ast.Module, table: Optional[symbols.SymbolTable],
+                          facts: Optional[infer.TypeFacts]) -> None:
+    """Declare at the top of its function a local that Python first assigns inside a block
+    and uses outside it.
+
+    A Python local belongs to the whole function; a V variable belongs to the block that
+    declares it. `if c: label = "a"` / `else: label = "b"` / `return label` needs `label`
+    declared before the `if`. Where inference knows the local's whole type (int, float,
+    str, bool, or a list or dict of those), the function gets `label: str` as a first
+    statement, which the backend emits as a declaration with the type's zero value; the
+    assignments then assign. A local whose type is not fully known is left as it was."""
+    if table is None or facts is None:
+        return
+    known = {b["id"]: b for b in facts.bindings}
+    compound = (ast.If, ast.For, ast.AsyncFor, ast.While, ast.With, ast.AsyncWith, ast.Try)
+    for fn in ast.walk(tree):
+        if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        # each name occurrence of the function's own code, with the blocks around it
+        occurrences: Dict[int, List[Tuple[Tuple[int, ...], ast.Name, Optional[ast.stmt]]]] = {}
+
+        def walk(node: ast.AST, blocks: Tuple[int, ...], stmt: Optional[ast.stmt]) -> None:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef,
+                                 ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
+                return
+            if isinstance(node, ast.Name):
+                binding_id = getattr(node, "_binding", None)
+                if binding_id is not None:
+                    occurrences.setdefault(binding_id, []).append((blocks, node, stmt))
+                return
+            if isinstance(node, compound) or type(node).__name__ in ("Match", "TryStar"):
+                for field, value in ast.iter_fields(node):
+                    if isinstance(value, list) and value and isinstance(value[0], (ast.stmt, ast.ExceptHandler)) \
+                            or type(value).__name__ == "list" and field in ("cases",):
+                        for index, child in enumerate(value):
+                            inner = blocks + (hash((id(node), field, index if not isinstance(child, ast.stmt) else -1)),)
+                            walk(child, inner, child if isinstance(child, ast.stmt) else stmt)
+                    elif isinstance(value, ast.AST):
+                        walk(value, blocks, stmt)
+                    elif isinstance(value, list):
+                        for child in value:
+                            if isinstance(child, ast.AST):
+                                walk(child, blocks, stmt)
+                return
+            if isinstance(node, ast.ExceptHandler) or type(node).__name__ == "match_case":
+                for child in ast.iter_child_nodes(node):
+                    walk(child, blocks, child if isinstance(child, ast.stmt) else stmt)
+                return
+            for child in ast.iter_child_nodes(node):
+                walk(child, blocks, child if isinstance(child, ast.stmt) else stmt)
+
+        for stmt in fn.body:
+            walk(stmt, (), stmt)
+        declarations: List[ast.stmt] = []
+        for binding_id, found in occurrences.items():
+            binding = table.bindings[binding_id]
+            fact = known.get(binding_id)
+            if (fact is None or fact.get("declared") is not None or binding.is_param
+                    or binding.declared_global or binding.declared_nonlocal
+                    or table.scopes[binding.scope].kind != "function"
+                    or getattr(table.scopes[binding.scope], "_node", None) is not fn):
+                continue
+            found.sort(key=lambda o: (o[1].lineno, o[1].col_offset))
+            blocks, first, stmt = found[0]
+            if not blocks or not isinstance(first.ctx, ast.Store):
+                continue
+            if not (isinstance(stmt, ast.Assign) and len(stmt.targets) == 1 and stmt.targets[0] is first):
+                continue  # a loop variable, a `with` name, an unpacking: declared by their own form
+            if all(other[:len(blocks)] == blocks for other, _, _ in found):
+                continue  # never seen outside the block that first assigns it
+            type_id = fact.get("assumed", fact.get("inferred"))
+            text = _annotation_for_type(facts.types, type_id) if type_id is not None else None
+            if text is None:
+                continue
+            target = ast.Name(id=first.id, ctx=ast.Store())
+            target._binding = binding_id
+            declaration = ast.AnnAssign(target=target, annotation=_annotation_node(text, fn),
+                                        value=None, simple=1)
+            ast.copy_location(target, fn)
+            ast.copy_location(declaration, fn)
+            declarations.append(declaration)
+        if declarations:
+            at = 1 if (fn.body and isinstance(fn.body[0], ast.Expr)
+                       and isinstance(fn.body[0].value, ast.Constant)
+                       and isinstance(fn.body[0].value.value, str)) else 0
+            fn.body[at:at] = declarations
+
+
 def _declare_inferred_containers(tree: ast.Module, table: Optional[symbols.SymbolTable],
                                  facts: Optional[infer.TypeFacts]) -> set:
     """Give `x = []` and `x = {}` the element types that the writes to `x` show.
@@ -4268,6 +4626,7 @@ def process_file(file_path: str, project: Optional[ProjectFacts] = None) -> str:
     _mark_runtime_api(tree, table)
     facts = _infer_types(tree, table, project)
     any_lists = _declare_inferred_containers(tree, table, facts)
+    _declare_block_locals(tree, table, facts)
     _choose_boolop_values(tree, facts)
     _state_truth_tests(tree, table, facts)
     _mark_isinstance_inferred(tree, table, facts)
@@ -4279,6 +4638,7 @@ def process_file(file_path: str, project: Optional[ProjectFacts] = None) -> str:
     _box_mixed_displays(tree, table, facts)
     _parameterize_bare_containers(tree, table, facts)
     _mark_module_constants(tree, table)
+    _plan_error_propagation(tree, table)
 
     # Detect class methods
     _detect_class_methods(tree)

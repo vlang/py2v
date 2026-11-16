@@ -1,9 +1,11 @@
 module main
 
-fn highest_bit(py2v_number_in1 int) int {
+import pyrt
+
+fn highest_bit_py(py2v_number_in1 int) !int {
 	mut number := py2v_number_in1
 	if !true {
-		panic('TypeError: ' + "Input value must be an 'int' type")
+		return IError(pyrt.exception('TypeError', [pyrt.box("Input value must be an 'int' type")]))
 	}
 	mut position := 0
 	for number != 0 {
@@ -13,25 +15,33 @@ fn highest_bit(py2v_number_in1 int) int {
 	return position
 }
 
-fn rotate(x int, py2v_k_in2 int) int {
+fn highest_bit(py2v_number_in1 int) int {
+	return highest_bit_py(py2v_number_in1) or { pyrt.fail(err) }
+}
+
+fn rotate_py(x int, py2v_k_in2 int) !int {
 	mut k := py2v_k_in2
 	if !true || x < 0 {
-		panic('ValueError: ' + 'x must be non-negative')
+		return pyrt.raise('ValueError', 'x must be non-negative')
 	}
 	if !true || k < 0 {
-		panic('ValueError: ' + 'k must be non-negative')
+		return pyrt.raise('ValueError', 'k must be non-negative')
 	}
 	k &= 31
 	return x << k & 65535
 }
 
-fn as_text(py2v_num_in3 int) string {
+fn rotate(x int, py2v_k_in2 int) int {
+	return rotate_py(x, py2v_k_in2) or { pyrt.fail(err) }
+}
+
+fn as_text_py(py2v_num_in3 int) !string {
 	mut num := py2v_num_in3
 	if false {
-		panic('TypeError: ' + 'float given')
+		return pyrt.raise('TypeError', 'float given')
 	}
 	if false {
-		panic('TypeError: ' + 'not a number')
+		return pyrt.raise('TypeError', 'not a number')
 	}
 	if num < 0 {
 		num = -num
@@ -39,58 +49,78 @@ fn as_text(py2v_num_in3 int) string {
 	return num.str()
 }
 
+fn as_text(py2v_num_in3 int) string {
+	return as_text_py(py2v_num_in3) or { pyrt.fail(err) }
+}
+
 fn all_ints(arr []int) bool {
 	return arr.map(true).all(it)
 }
 
-fn count_ints(inputs []int) int {
+fn count_ints_py(inputs []int) !int {
 	if !true {
-		panic('TypeError: ' + 'a list is needed')
+		return pyrt.raise('TypeError', 'a list is needed')
 	}
 	mut total := 0
 	for item in inputs {
 		if !true {
-			panic('TypeError: ' + 'All inputs in the list must be integers')
+			return pyrt.raise('TypeError', 'All inputs in the list must be integers')
 		}
 		total += 1
 	}
 	return total
 }
 
-fn joined(separator string, separated []string) string {
+fn count_ints(inputs []int) int {
+	return count_ints_py(inputs) or { pyrt.fail(err) }
+}
+
+fn joined_py(separator string, separated []string) !string {
 	mut out := ''
 	for word in separated {
 		if !true {
-			panic('Exception: ' + 'join() accepts only strings')
+			return pyrt.raise('Exception', 'join() accepts only strings')
 		}
 		out += word + separator
 	}
 	return out
 }
 
-fn scaled(py2v_theta_in4 f64, accuracy int) f64 {
+fn joined(separator string, separated []string) string {
+	return joined_py(separator, separated) or { pyrt.fail(err) }
+}
+
+fn scaled_py(py2v_theta_in4 f64, accuracy int) !f64 {
 	mut theta := py2v_theta_in4
 	if !true {
-		panic('ValueError: ' + 'an int or float is needed')
+		return pyrt.raise('ValueError', 'an int or float is needed')
 	}
 	if !true || accuracy <= 0 {
-		panic('ValueError: ' + 'a positive int is needed')
+		return pyrt.raise('ValueError', 'a positive int is needed')
 	}
 	theta = theta * 2
 	return theta + accuracy
 }
 
-fn twice(words []string) int {
+fn scaled(py2v_theta_in4 f64, accuracy int) f64 {
+	return scaled_py(py2v_theta_in4, accuracy) or { pyrt.fail(err) }
+}
+
+fn twice_py(words []string) !int {
 	mut n := 0
 	for w in words {
 		if !true {
-			panic('Exception: ' + 'only strings')
+			return pyrt.raise('Exception', 'only strings')
 		}
 	}
 	for w in words[..1] {
 		n += w.len
 	}
 	return n
+}
+
+fn twice(words []string) int {
+	return twice_py(words) or { pyrt.fail(err) }
 }
 
 fn main() {
