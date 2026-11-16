@@ -30,9 +30,23 @@ pub:
     count int
 }
 
+// The pinned regex.pcre class parser splits on the first `]` without
+// respecting escaping or Python's special leading-literal `]` rule. It also
+// treats backslash escapes inside a class as literal bytes. For a standalone
+// bracket class with this leading member, use a small rune-aware matcher.
+// More complex patterns retain their existing regex route.
+struct LiteralCloseClass {
+    enabled bool
+    inverted bool
+    members []string
+    minimum int
+    maximum int // -1 means unlimited
+}
+
 pub struct Pattern {
     regex pcre.Regex
     captures CaptureProgram
+    close_class LiteralCloseClass
 pub:
     pattern string
     flags int
@@ -86,6 +100,23 @@ fn verbose_pattern(pattern string) string {
     mut in_comment := false
     for i < pattern.len {
         b := pattern[i]
+        // Python permits a literal ']' as the first class member (also after
+        // '^'), and an escaped ']' there. The supplied PCRE wrapper has
+        // rejected these leading forms in VERBOSE mode. Normalize BOTH to a
+        // hexadecimal escape without changing the class's meaning. This is
+        // only inside [...] -- a closing ']' elsewhere stays structural.
+        if in_class && class_first && b == 93 {
+            out = out + '\\x5d'
+            class_first = false
+            i = i + 1
+            continue
+        }
+        if in_class && class_first && b == 92 && i + 1 < pattern.len && pattern[i + 1] == 93 {
+            out = out + '\\x5d'
+            class_first = false
+            i = i + 2
+            continue
+        }
         if in_comment {
             if b == 10 || b == 13 { in_comment = false }
             i = i + 1
@@ -124,6 +155,99 @@ fn verbose_pattern(pattern string) string {
         i = i + 1
     }
     return out
+}
+
+// Recognize a whole pattern consisting of one bracket class containing a
+// literal leading ']' and an optional single-character quantifier. No ranges,
+// shorthand escapes, groups, flags changing case, or surrounding expressions
+// are silently approximated. The generic matcher handles those instead.
+fn parse_literal_close_class(pattern string, flags int) LiteralCloseClass {
+    if flags & (ignorecase | multiline | dotall) != 0 { return LiteralCloseClass{} }
+    if pattern.len < 3 || pattern[0] != 91 { return LiteralCloseClass{} }
+    mut i := 1
+    mut inverted := false
+    if i < pattern.len && pattern[i] == 94 {
+        inverted = true
+        i = i + 1
+    }
+    if i >= pattern.len { return LiteralCloseClass{} }
+    mut members := []string{}
+    if pattern[i] == 93 {
+        members << ']'
+        i = i + 1
+    } else if pattern[i] == 92 && i + 1 < pattern.len && pattern[i + 1] == 93 {
+        members << ']'
+        i = i + 2
+    } else {
+        return LiteralCloseClass{}
+    }
+    mut closed := false
+    for i < pattern.len {
+        if pattern[i] == 93 {
+            i = i + 1
+            closed = true
+            break
+        }
+        if pattern[i] == 45 { return LiteralCloseClass{} } // ranges need full parsing
+        if pattern[i] == 92 {
+            if i + 1 >= pattern.len { return LiteralCloseClass{} }
+            next := pattern[i + 1]
+            if next != 93 && next != 92 && next != 32 && next != 35 {
+                return LiteralCloseClass{}
+            }
+            members << pattern[i + 1 .. i + 2]
+            i = i + 2
+        } else {
+            end := next_codepoint(pattern, i)
+            members << pattern[i .. end]
+            i = end
+        }
+    }
+    if !closed { return LiteralCloseClass{} }
+    mut minimum := 1
+    mut maximum := 1
+    if i < pattern.len {
+        if pattern[i] == 43 { minimum = 1; maximum = -1 }
+        else if pattern[i] == 42 { minimum = 0; maximum = -1 }
+        else if pattern[i] == 63 { minimum = 0; maximum = 1 }
+        else { return LiteralCloseClass{} }
+        i = i + 1
+    }
+    if i != pattern.len { return LiteralCloseClass{} }
+    return LiteralCloseClass{enabled: true, inverted: inverted, members: members,
+        minimum: minimum, maximum: maximum}
+}
+
+fn (p Pattern) match_literal_close_class(text string, start int, anchored bool, full bool) ?Match {
+    mut begin := start
+    for begin <= text.len {
+        mut end := begin
+        mut matched := 0
+        for end < text.len && (p.close_class.maximum < 0 || matched < p.close_class.maximum) {
+            next := next_codepoint(text, end)
+            candidate := text[end .. next]
+            mut included := false
+            for member in p.close_class.members {
+                if member == candidate { included = true; break }
+            }
+            if included == p.close_class.inverted { break }
+            end = next
+            matched = matched + 1
+        }
+        if matched >= p.close_class.minimum && (!full || end == text.len) {
+            return Match{
+                values: [pyrt.Value(text[begin .. end])]
+                offsets: [Span{start: begin, end: end}]
+                count: 0
+                source: text
+                start_byte: begin
+                end_byte: end
+            }
+        }
+        if anchored || begin == text.len { break }
+        begin = next_codepoint(text, begin)
+    }
+    return none
 }
 
 struct GroupMetadata {
@@ -244,7 +368,8 @@ pub fn compile(pattern string, flags int) !Pattern {
         return pyrt.raise('NotImplementedError', 'capturing pattern uses syntax outside the supported capture-recovery grammar')
     }
     names := if recovery.supported { recovery.names } else { metadata.names }
-    return Pattern{regex: regex, captures: recovery, pattern: pattern, flags: flags, group_count: count, group_names: names}
+    close_class := parse_literal_close_class(pattern, flags)
+    return Pattern{regex: regex, captures: recovery, close_class: close_class, pattern: pattern, flags: flags, group_count: count, group_names: names}
 }
 
 // Indexes here are UTF-8 BYTES. Public spans convert them to Python's Unicode
@@ -286,12 +411,14 @@ fn make_match(p Pattern, raw pcre.Match, source string, from_byte int) Match {
 }
 
 pub fn (p Pattern) search(text string) ?Match {
+    if p.close_class.enabled { return p.match_literal_close_class(text, 0, false, false) }
     if p.captures.supported { return p.capture_search(text, 0, false, false, false) }
     original := p.regex.find(text) or { return none }
     return make_match(p, original, text, 0)
 }
 
 pub fn (p Pattern) match_(text string) ?Match {
+    if p.close_class.enabled { return p.match_literal_close_class(text, 0, true, false) }
     if p.captures.supported { return p.capture_search(text, 0, true, false, false) }
     original := p.regex.find(text) or { return none }
     result := make_match(p, original, text, 0)
@@ -300,6 +427,7 @@ pub fn (p Pattern) match_(text string) ?Match {
 }
 
 pub fn (p Pattern) fullmatch(text string) ?Match {
+    if p.close_class.enabled { return p.match_literal_close_class(text, 0, true, true) }
     if p.captures.supported { return p.capture_search(text, 0, true, true, false) }
     original := p.regex.fullmatch(text) or { return none }
     return make_match(p, original, text, 0)
@@ -309,6 +437,18 @@ pub fn (p Pattern) finditer(text string) []Match {
     mut result := []Match{}
     mut index := 0
     mut previous_empty := false
+    if p.close_class.enabled {
+        for index <= text.len {
+            m := p.match_literal_close_class(text, index, false, false) or { break }
+            result << m
+            index = m.end_byte
+            if m.start_byte == m.end_byte {
+                if index == text.len { break }
+                index = next_codepoint(text, index)
+            }
+        }
+        return result
+    }
     if p.captures.supported {
         for index <= text.len {
             m := p.capture_search(text, index, false, false, previous_empty) or { break }

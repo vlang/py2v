@@ -212,9 +212,9 @@ fn percent_star(value Value) !int {
 // mapping interpolation, or a single scalar. No formatting is evaluated by
 // logging until an enabled handler actually needs the rendered message.
 pub fn percent_format(template string, operand Value) !string {
-    mut arguments := [operand]
+    mut format_args := [operand]
     mut mapping := false
-    if operand is &Tuple { arguments = operand.items.clone() }
+    if operand is &Tuple { format_args = operand.items.clone() }
     if operand is &Dict { mapping = true }
     parts := utf8_parts(template)
     mut at := 0
@@ -241,19 +241,19 @@ pub fn percent_format(template string, operand Value) !string {
             if at >= parts.len { return raise('ValueError', 'incomplete format key') }
             mapped = getitem(operand, Value(key))!
             keyed = true
-            consumed = arguments.len
+            consumed = format_args.len
             at = at + 1
         }
         mut left := false
         mut zero := false
-        mut plus := false
+        mut plus_flag := false
         mut blank := false
         mut alternate := false
         for at < parts.len && parts[at] in ['-', '0', '+', ' ', '#'] {
             flag := parts[at]
             if flag == '-' { left = true }
             if flag == '0' { zero = true }
-            if flag == '+' { plus = true }
+            if flag == '+' { plus_flag = true }
             if flag == ' ' { blank = true }
             if flag == '#' { alternate = true }
             at = at + 1
@@ -264,8 +264,8 @@ pub fn percent_format(template string, operand Value) !string {
                 _ = percent_star(mapped)!
                 return raise('TypeError', 'not enough arguments for format string')
             }
-            if consumed >= arguments.len { return raise('TypeError', 'not enough arguments for format string') }
-            width = percent_star(arguments[consumed])!
+            if consumed >= format_args.len { return raise('TypeError', 'not enough arguments for format string') }
+            width = percent_star(format_args[consumed])!
             consumed = consumed + 1
             at = at + 1
             if width < 0 { left = true; width = -width }
@@ -282,8 +282,8 @@ pub fn percent_format(template string, operand Value) !string {
             precision = 0
             if at < parts.len && parts[at] == '*' {
                 if keyed { _ = percent_star(mapped)!; return raise('TypeError', 'not enough arguments for format string') }
-                if consumed >= arguments.len { return raise('TypeError', 'not enough arguments for format string') }
-                precision = percent_star(arguments[consumed])!
+                if consumed >= format_args.len { return raise('TypeError', 'not enough arguments for format string') }
+                precision = percent_star(format_args[consumed])!
                 if precision < 0 { precision = 0 }
                 consumed = consumed + 1
                 at = at + 1
@@ -300,13 +300,13 @@ pub fn percent_format(template string, operand Value) !string {
         if at >= parts.len { return raise('ValueError', 'incomplete format') }
         mut value := mapped
         if !keyed {
-            if consumed >= arguments.len { return raise('TypeError', 'not enough arguments for format string') }
-            value = arguments[consumed]
+            if consumed >= format_args.len { return raise('TypeError', 'not enough arguments for format string') }
+            value = format_args[consumed]
             consumed = consumed + 1
         }
-        out = out + percent_value(value, parts[at], width, precision, left, zero, plus, blank, alternate, at)!
+        out = out + percent_value(value, parts[at], width, precision, left, zero, plus_flag, blank, alternate, at)!
         at = at + 1
     }
-    if !mapping && consumed < arguments.len { return raise('TypeError', 'not all arguments converted during string formatting') }
+    if !mapping && consumed < format_args.len { return raise('TypeError', 'not all arguments converted during string formatting') }
     return out
 }

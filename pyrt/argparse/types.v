@@ -311,8 +311,7 @@ fn (p &ArgumentParser) output_text(s string) {
 }
 fn (p &ArgumentParser) diagnostic_text(s string) {
     unsafe { p.diagnostics = p.diagnostics + s }
-    // eprintln is the V builtin named in the user's Round 3 reserved-name
-    // list; no function called eprintln is defined by this runtime.
+    // eprintln is the V builtin; this runtime defines no function of that name.
     if p.settings.emit_output { eprintln(without_final_newline(s)) }
 }
 fn system_exit(code int) IError { return IError(pyrt.exception('SystemExit', [pyrt.Value(i64(code))])) }

@@ -3,7 +3,7 @@ module pysys
 fn test_system_compatibility_metadata() {
     // python: __import__('sys').maxsize == 9223372036854775807
     assert maxsize == i64(9223372036854775807)
-    // runtime: target Python release is configured for the user's CPython 3.15.
+    // runtime: the target Python release is CPython 3.15.
     version := version_info()
     assert version.major == 3 && version.minor == 15
     // runtime: default sys.platform is configured for macOS, override via PYRT_SYS_PLATFORM.

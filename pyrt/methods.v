@@ -379,9 +379,9 @@ fn str_method(source string, name string, args []Value) !Value {
     }
     if name == 'join' {
         arity(name, 'str', args, 1, 1)!
-        items := iter(args[0])!
+        joined_items := iter(args[0])!
         mut parts := []string{}
-        for i, item in items {
+        for i, item in joined_items {
             if item !is string { return raise('TypeError', 'sequence item ${i}: expected str instance, ${type_name(item)} found') }
             parts << item
         }
@@ -605,9 +605,9 @@ fn dict_has(d &Dict, key Value) !bool {
 }
 
 fn dict_copy(d &Dict) !&Dict {
-    copy := new_dict()
-    for k in d.keys { setitem(Value(copy), k, dict_get(d, k)!)! }
-    return copy
+    cloned_dict := new_dict()
+    for k in d.keys { setitem(Value(cloned_dict), k, dict_get(d, k)!)! }
+    return cloned_dict
 }
 
 fn dict_update(d &Dict, source Value) ! {
@@ -689,15 +689,15 @@ fn set_copy(s &Set) !&Set {
 fn set_operation(s &Set, args []Value, action string) !Value {
     mut result := new_set(s.items)!
     for input in args {
-        items := iter(input)!
+        candidates := iter(input)!
         if action == 'union' {
-            for item in items { result.add(item)! }
+            for item in candidates { result.add(item)! }
         } else if action == 'difference' {
-            for item in items { result.discard(item)! }
+            for item in candidates { result.discard(item)! }
         } else if action == 'intersection' {
             mut common := new_set([]Value{})!
             for item in result.items {
-                for candidate in items {
+                for candidate in candidates {
                     if eq(item, candidate) { common.add(item)!; break }
                 }
             }
@@ -789,21 +789,21 @@ fn utf8_valid(bytes []u8) bool {
     for i < bytes.len {
         b := int(bytes[i])
         if b < 128 { i = i + 1; continue }
-        mut length := 0
+        mut sequence_len := 0
         mut cp := 0
-        if b >= 194 && b <= 223 { length = 2; cp = b - 192 }
-        else if b >= 224 && b <= 239 { length = 3; cp = b - 224 }
-        else if b >= 240 && b <= 244 { length = 4; cp = b - 240 }
+        if b >= 194 && b <= 223 { sequence_len = 2; cp = b - 192 }
+        else if b >= 224 && b <= 239 { sequence_len = 3; cp = b - 224 }
+        else if b >= 240 && b <= 244 { sequence_len = 4; cp = b - 240 }
         else { return false }
-        if i + length > bytes.len { return false }
-        for j in 1 .. length {
+        if i + sequence_len > bytes.len { return false }
+        for j in 1 .. sequence_len {
             next := int(bytes[i + j])
             if next < 128 || next > 191 { return false }
             cp = cp * 64 + next - 128
         }
-        if (length == 2 && cp < 128) || (length == 3 && cp < 2048) || (length == 4 && cp < 65536) { return false }
+        if (sequence_len == 2 && cp < 128) || (sequence_len == 3 && cp < 2048) || (sequence_len == 4 && cp < 65536) { return false }
         if (cp >= 0xd800 && cp <= 0xdfff) || cp > 0x10ffff { return false }
-        i = i + length
+        i = i + sequence_len
     }
     return true
 }
@@ -832,13 +832,13 @@ fn bytes_to_text(bytes []u8, encoding string, errors string) !string {
         for i < bytes.len {
             b := int(bytes[i])
             if b < 128 { out = out + rune(b).str(); i = i + 1; continue }
-            mut length := 2
+            mut sequence_len := 2
             mut cp := b - 192
-            if b >= 224 && b < 240 { length = 3; cp = b - 224 }
-            if b >= 240 { length = 4; cp = b - 240 }
-            for j in 1 .. length { cp = cp * 64 + int(bytes[i + j]) - 128 }
+            if b >= 224 && b < 240 { sequence_len = 3; cp = b - 224 }
+            if b >= 240 { sequence_len = 4; cp = b - 240 }
+            for j in 1 .. sequence_len { cp = cp * 64 + int(bytes[i + j]) - 128 }
             out = out + rune(cp).str()
-            i = i + length
+            i = i + sequence_len
         }
         return out
     }

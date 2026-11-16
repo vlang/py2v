@@ -91,7 +91,7 @@ pub fn (mut d DefaultDict) setattr(name string, value pyrt.Value) ! {
 
 pub fn (d &DefaultDict) get_item(key pyrt.Value) !pyrt.Value {
     hash := pyrt.hash_key(key)!
-    if hash in d.backing.values { return d.backing.values[hash] }
+    if hash in d.backing.values { return d.backing.values[hash] or { return missing_key(key) } }
     if !d.uses_callback && d.factory_name == '' { return missing_key(key) }
     created := if d.uses_callback { d.factory_callback() } else { fresh_value(d.factory_name)! }
     pyrt.setitem(pyrt.Value(d.backing), key, created)!

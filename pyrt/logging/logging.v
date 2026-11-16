@@ -149,7 +149,7 @@ pub fn get_level_name(level int) string {
 
 pub fn (l &Logger) set_level(level int) { unsafe { l.level = level } }
 pub fn (l &Logger) get_effective_level() int {
-    mut node := l
+    mut node := unsafe { l }
     for {
         if node.level != 0 || node.name == 'root' { return node.level }
         node = parent_logger(node.name)
@@ -283,7 +283,7 @@ pub fn (h &Handler) emit(record LogRecord) ! {
 pub fn (h &Handler) close() {
     if h.closed { return }
     for entry in h.files {
-        mut slot := entry
+        mut slot := unsafe { entry }
         slot.file.close()
     }
     unsafe { h.closed = true; h.files = []&FileSlot{} }
@@ -299,7 +299,7 @@ pub fn (l &Logger) remove_handler(handler &Handler) {
     unsafe { l.handlers = kept.clone() }
 }
 pub fn (l &Logger) has_handlers() bool {
-    mut node := l
+    mut node := unsafe { l }
     for {
         if node.handlers.len > 0 { return true }
         if node.name == 'root' || !node.propagate { return false }
@@ -352,7 +352,7 @@ fn (l &Logger) dispatch(level int, message string, args []pyrt.Value, opts LogOp
         lineno: opts.lineno, func_name: opts.func_name, exception_text: exception_text(opts, default_exc),
         stack_text: if opts.stack_info { 'Stack (most recent call last):\n  <source stack unavailable>' } else { '' }}
     mut found := 0
-    mut node := l
+    mut node := unsafe { l }
     for {
         for handler in node.handlers {
             found = found + 1
