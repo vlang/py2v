@@ -10,8 +10,8 @@ fn show() {
 	c := Config{}
 	c.debug = true
 	val := c.debug
-	println(val)
-	println((typeof(c.level).name != ''))
+	println(if val { 'True' } else { 'False' })
+	println(if (typeof(c.level).name != '') { 'True' } else { 'False' })
 	name := c.missing or { 'default' }
 	println(name)
 }

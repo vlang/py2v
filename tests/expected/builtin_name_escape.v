@@ -1,11 +1,37 @@
 module main
 
-type Any = bool | int | i64 | f64 | string | []u8
+import pyrt
 
-fn make_pair(string_ Any, int_ Any) map[string]Any {
+type Any = pyrt.Value
+
+fn (a Any) + (b Any) Any {
+	return pyrt.add(a, b) or { panic(err) }
+}
+
+fn (a Any) - (b Any) Any {
+	return pyrt.sub(a, b) or { panic(err) }
+}
+
+fn (a Any) * (b Any) Any {
+	return pyrt.mul(a, b) or { panic(err) }
+}
+
+fn (a Any) / (b Any) Any {
+	return pyrt.truediv(a, b) or { panic(err) }
+}
+
+fn (a Any) % (b Any) Any {
+	return pyrt.mod(a, b) or { panic(err) }
+}
+
+fn (a Any) < (b Any) bool {
+	return pyrt.lt(a, b) or { panic(err) }
+}
+
+fn make_pair(string_ string, int_ int) map[string]Any {
 	return {
-		'name':  string_
-		'value': int_
+		'name':  pyrt.box(string_)
+		'value': pyrt.box(int_)
 	}
 }
 

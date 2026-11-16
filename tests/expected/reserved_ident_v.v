@@ -1,10 +1,8 @@
 module main
 
-type Any = bool | int | i64 | f64 | string | []u8
-
 pub struct Holder {
 pub mut:
-	v Any
+	v int
 }
 
 fn (mut self Holder) init(v_ int) {
@@ -16,10 +14,14 @@ fn (mut self Holder) bump(v_ int) int {
 	return self.v
 }
 
+pub fn py2v_new_holder(v_ int) Holder {
+	mut py2v_instance := Holder{}
+	py2v_instance.init(v_)
+	return py2v_instance
+}
+
 fn local_use() int {
-	v_ := Holder{
-		v: 1
-	}
+	mut v_ := py2v_new_holder(1)
 	return v_.v + v_.bump(2)
 }
 
@@ -39,11 +41,11 @@ fn exit_(x int) int {
 	return x - 1
 }
 
-fn malloc_(n int) list {
+fn malloc_(n int) []int {
 	return [0].repeat(n)
 }
 
-fn free_(p list) int {
+fn free_(p []int) int {
 	return p.len
 }
 

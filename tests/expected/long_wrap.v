@@ -1,8 +1,34 @@
 module main
 
-type Any = bool | int | i64 | f64 | string | []u8
+import pyrt
 
-fn build(a Any, b Any, c Any, d Any, e Any, f Any, g Any, h Any, i Any, j Any, k Any, l Any) Any {
+type Any = pyrt.Value
+
+fn (a Any) + (b Any) Any {
+	return pyrt.add(a, b) or { panic(err) }
+}
+
+fn (a Any) - (b Any) Any {
+	return pyrt.sub(a, b) or { panic(err) }
+}
+
+fn (a Any) * (b Any) Any {
+	return pyrt.mul(a, b) or { panic(err) }
+}
+
+fn (a Any) / (b Any) Any {
+	return pyrt.truediv(a, b) or { panic(err) }
+}
+
+fn (a Any) % (b Any) Any {
+	return pyrt.mod(a, b) or { panic(err) }
+}
+
+fn (a Any) < (b Any) bool {
+	return pyrt.lt(a, b) or { panic(err) }
+}
+
+fn build(a int, b int, c int, d int, e int, f int, g int, h int, i int, j int, k int, l int) Any {
 	items := [
 		'aaaaaaaaaa',
 		'bbbbbbbbbb',
@@ -25,6 +51,6 @@ fn build(a Any, b Any, c Any, d Any, e Any, f Any, g Any, h Any, i Any, j Any, k
 
 fn main() {
 	out := build(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12)
-	println(out[0][0])
-	println(out[1])
+	println(pyrt.str(pyrt.item_at(pyrt.item_at(out, pyrt.box(0)), pyrt.box(0))))
+	println(pyrt.str(pyrt.item_at(out, pyrt.box(1))))
 }

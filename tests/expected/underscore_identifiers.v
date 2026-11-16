@@ -15,6 +15,12 @@ fn (mut self Registry) bump(by_ int) int {
 	return self.count_
 }
 
+pub fn py2v_new_registry() Registry {
+	mut py2v_instance := Registry{}
+	py2v_instance.init()
+	return py2v_instance
+}
+
 pub struct Child {
 	Registry
 }

@@ -16,7 +16,7 @@ fn generator_with_type(ch chan int) {
 	}
 }
 
-fn generator_with_args(a int, b int, ch chan Any) {
+fn generator_with_args(a int, b int, ch chan i64) {
 	defer { ch.close() }
 	for i in []int{len: b - a, init: index + a} {
 		ch <- i * 2
@@ -40,7 +40,7 @@ fn generator_with_yield_from(ch chan int) {
 	ch <- 3
 }
 
-fn generator_with_condition(ch chan Any) {
+fn generator_with_condition(ch chan int) {
 	defer { ch.close() }
 	for i in []int{len: 10, init: index} {
 		if i % 2 == 0 {

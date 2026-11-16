@@ -16,6 +16,12 @@ pub const v_type_map = {
 	'c_uint8':  'u8'
 	'complex':  'complex128'
 	'dict':     'map[string]Any' // bare dict literal/type fallback
+	'Dict':     'map[string]Any'
+	'list':     '[]Any' // a bare `list` annotation says nothing about its elements
+	'List':     '[]Any'
+	'set':      '[]Any'
+	'Set':      '[]Any'
+	'object':   'Any'
 	'float':    'f64'
 	'i16':      'i16'
 	'i32':      'int'
@@ -30,17 +36,53 @@ pub const v_type_map = {
 	'u8':       'u8'
 }
 
+// math_member_names gives the V spelling of a name imported from Python's
+// math module, for the members V's math module has under the same meaning.
+pub const math_member_names = {
+	'pi':        'math.pi'
+	'e':         'math.e'
+	'tau':       'math.tau'
+	'inf':       'math.inf(1)'
+	'nan':       'math.nan()'
+	'sqrt':      'math.sqrt'
+	'sin':       'math.sin'
+	'cos':       'math.cos'
+	'tan':       'math.tan'
+	'asin':      'math.asin'
+	'acos':      'math.acos'
+	'atan':      'math.atan'
+	'atan2':     'math.atan2'
+	'sinh':      'math.sinh'
+	'cosh':      'math.cosh'
+	'tanh':      'math.tanh'
+	'exp':       'math.exp'
+	'log':       'math.log'
+	'log2':      'math.log2'
+	'log10':     'math.log10'
+	'hypot':     'math.hypot'
+	'radians':   'math.radians'
+	'degrees':   'math.degrees'
+	// Integer functions: visit_call rewrites the call itself to V's integer
+	// spelling, so the name only has to carry the module.
+	'gcd':       'math.gcd'
+	'isqrt':     'math.isqrt'
+	'factorial': 'math.factorial'
+}
+
 // V container type mapping
 pub const v_container_type_map = {
-	'Dict':     'map'
-	'List':     '[]'
-	'Optional': '?'
-	'Set':      '[]' // V doesn't have sets, use arrays
-	'Tuple':    '[]' // V doesn't have tuples, use arrays
-	'dict':     'map' // Python 3.9+ lowercase generic
-	'list':     '[]' // Python 3.9+ lowercase generic — parameterized form (see v_type_map for bare)
-	'set':      '[]' // Python 3.9+ lowercase generic
-	'tuple':    '[]' // Python 3.9+ lowercase generic
+	'Dict':            'map'
+	'Iterable':        '[]' // approximated by a V array
+	'List':            '[]'
+	'MutableSequence': '[]'
+	'Optional':        '?'
+	'Sequence':        '[]'
+	'Set':             '[]' // V doesn't have sets, use arrays
+	'Tuple':           '[]' // V doesn't have tuples, use arrays
+	'dict':            'map' // Python 3.9+ lowercase generic
+	'list':            '[]' // Python 3.9+ lowercase generic — parameterized form (see v_type_map for bare)
+	'set':             '[]' // Python 3.9+ lowercase generic
+	'tuple':           '[]' // Python 3.9+ lowercase generic
 }
 
 // V keywords that need escaping with @
@@ -168,29 +210,61 @@ pub fn op_to_symbol(op_type string) string {
 
 // map_type maps a Python type annotation string to a V type string.
 pub fn map_type(typename string) string {
+	return map_type_except(typename, []string{})
+}
+
+// map_type_except is map_type for a module that defines classes named in `classes`
+// (Sequence, Iterable or Mapping): an annotation of such a class keeps its name.
+pub fn map_type_except(typename string, classes []string) string {
 	if typename in v_type_map {
 		return v_type_map[typename]
 	}
-	// Check if it's a container type (uppercase or PEP 585 lowercase)
-	if typename.starts_with('List[') || typename.starts_with('list[') {
-		inner := typename[typename.index_u8(`[`) + 1..typename.len - 1]
-		return '[]${map_type(inner)}'
+	// A bare `Callable` gives no parameters and no result: it has no V spelling.
+	if typename == 'Callable' {
+		return 'Any'
 	}
-	if typename.starts_with('Dict[') || typename.starts_with('dict[') {
+	// A bare `MutableSequence` is a bare `list`.
+	if typename == 'MutableSequence' {
+		return v_type_map['list']
+	}
+	// PEP 604 written as text (a field annotation or a quoted one): `X | None`
+	// is an optional; any other union has no V spelling and becomes Any.
+	// The union is split outside brackets only: in `dict[str, int] | None` the
+	// members are the dict and None.
+	if typename.contains(' | ') && split_union_members(typename).len > 1 {
+		members := split_union_members(typename)
+		rest := members.filter(it != 'None' && it != 'none')
+		if rest.len == 1 && members.len == 2 {
+			return '?' + map_type(rest[0])
+		}
+		return 'Any'
+	}
+	if classes.any(typename.starts_with('${it}[')) {
+		return typename
+	}
+	// Check if it's a container type (uppercase or PEP 585 lowercase)
+	if typename.starts_with('List[') || typename.starts_with('list[')
+		|| typename.starts_with('Sequence[') || typename.starts_with('Iterable[')
+		|| typename.starts_with('MutableSequence[') {
+		inner := typename[typename.index_u8(`[`) + 1..typename.len - 1]
+		return '[]${map_type_except(inner, classes)}'
+	}
+	if typename.starts_with('Dict[') || typename.starts_with('dict[')
+		|| typename.starts_with('Mapping[') {
 		// Dict[K, V] / dict[K, V] -> map[K]V
 		inner := typename[typename.index_u8(`[`) + 1..typename.len - 1]
 		parts := split_type_args(inner)
 		if parts.len == 2 {
-			return 'map[${map_type(parts[0])}]${map_type(parts[1])}'
+			return 'map[${map_type_except(parts[0], classes)}]${map_type_except(parts[1], classes)}'
 		}
 	}
 	if typename.starts_with('Optional[') {
 		inner := typename[9..typename.len - 1]
-		return '?${map_type(inner)}'
+		return '?${map_type_except(inner, classes)}'
 	}
 	if typename.starts_with('Set[') || typename.starts_with('set[') {
 		inner := typename[typename.index_u8(`[`) + 1..typename.len - 1]
-		return '[]${map_type(inner)}' // V doesn't have sets
+		return '[]${map_type_except(inner, classes)}' // V doesn't have sets
 	}
 	if typename.starts_with('Tuple[') || typename.starts_with('tuple[') {
 		// Tuples become arrays in V
@@ -198,6 +272,27 @@ pub fn map_type(typename string) string {
 	}
 	// Unknown type, return as-is (might be a user-defined type)
 	return typename
+}
+
+// split_union_members splits a union written as text at each ` | ` that is not
+// inside brackets.
+fn split_union_members(s string) []string {
+	mut result := []string{}
+	mut depth := 0
+	mut start := 0
+	for i, c in s {
+		if c == `[` {
+			depth++
+		} else if c == `]` {
+			depth--
+		} else if c == `|` && depth == 0 && i > 0 && s[i - 1] == ` ` && i + 1 < s.len
+			&& s[i + 1] == ` ` {
+			result << s[start..i].trim_space()
+			start = i + 1
+		}
+	}
+	result << s[start..].trim_space()
+	return result
 }
 
 // split_type_args splits type arguments like "str, int" into ["str", "int"].
@@ -316,7 +411,9 @@ pub fn escape_identifier(name string) string {
 // `v.something` it sees, and the module stops resolving. Only bare locals are
 // affected: a struct field reached as `self.v` never looks like a module, so
 // fields keep escape_leading_underscore and stay consistent with their uses.
-const v_reserved_idents = ['v']!
+//
+// `char` is a V type name the compiler refuses as a variable or parameter name.
+const v_reserved_idents = ['v', 'sql', 'char']!
 
 // v_reserved_fn_names are Python names that V reserves for its own C-backed
 // intrinsics. A user `fn` declared under one of these names cannot be called at
@@ -368,15 +465,17 @@ pub fn escape_local_ident(name string) string {
 // Callers must not apply this to a name that denotes a type: a class keeps its
 // capitalisation so that references resolve to the declared struct.
 pub fn escape_local_decl(name string) string {
-	escaped := escape_identifier(name)
-	if escaped == '' {
-		return escaped
+	if name == '' {
+		return name
 	}
-	first := escaped[0]
+	// Lower first, then escape: `CONTINUE` must come out as `@continue`.
+	// A leading underscore does not change the case rule: `_MAX` is `max_`.
+	bare := name.trim_left('_')
+	first := if bare.len > 0 { bare[0] } else { name[0] }
 	if first >= `A` && first <= `Z` {
-		return escaped.to_lower()
+		return escape_identifier(name.to_lower())
 	}
-	return escaped
+	return escape_identifier(name)
 }
 
 // zero_value_for_type returns a V expression of zero value for `typ`.
@@ -467,13 +566,14 @@ pub const python_to_v_import = {
 	'copy':        ''
 	'csv':         '!// import csv: use V csv or manual parsing'
 	'dataclasses': ''
+	'datetime':    '' // imported on use, from the runtime's manifest
 	'enum':        ''
 	'functools':   'arrays'
 	'hashlib':     'crypto'
 	'http':        '!// import http: use V net.http'
 	'io':          'os'
 	'itertools':   'arrays'
-	'json':        'json'
+	'json':        'pyrt.json'
 	'logging':     'log'
 	'math':        'math'
 	'os':          'os'
@@ -485,7 +585,7 @@ pub const python_to_v_import = {
 	'requests':    '!// import requests: use V net.http'
 	'shutil':      'os'
 	'socket':      '!// import socket: use V net module'
-	'sqlite3':     'db.sqlite'
+	'sqlite3':     'pyrt.sqlite3'
 	'struct':      'encoding.binary'
 	'subprocess':  'os'
 	// errno/stat/signal/warnings are rewritten inline at the use site.

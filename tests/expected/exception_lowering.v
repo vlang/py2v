@@ -1,5 +1,7 @@
 module main
 
+import pyrt
+
 // TODO(py2v): no V mapping for KeyError.init
 // Each site below is stubbed with a zero value.
 
@@ -10,7 +12,31 @@ module main
 //   except OSError (1 stmt)
 //   except ValueError as e (1 stmt)
 
-type Any = bool | int | i64 | f64 | string | []u8
+type Any = pyrt.Value
+
+fn (a Any) + (b Any) Any {
+	return pyrt.add(a, b) or { panic(err) }
+}
+
+fn (a Any) - (b Any) Any {
+	return pyrt.sub(a, b) or { panic(err) }
+}
+
+fn (a Any) * (b Any) Any {
+	return pyrt.mul(a, b) or { panic(err) }
+}
+
+fn (a Any) / (b Any) Any {
+	return pyrt.truediv(a, b) or { panic(err) }
+}
+
+fn (a Any) % (b Any) Any {
+	return pyrt.mod(a, b) or { panic(err) }
+}
+
+fn (a Any) < (b Any) bool {
+	return pyrt.lt(a, b) or { panic(err) }
+}
 
 pub struct PortageException {
 pub mut:
@@ -19,6 +45,12 @@ pub mut:
 
 fn (mut self PortageException) init(value Any) {
 	self.value = value
+}
+
+pub fn py2v_new_portage_exception(value Any) PortageException {
+	mut py2v_instance := PortageException{}
+	py2v_instance.init(value)
+	return py2v_instance
 }
 
 // PortageKeyError - Mixes a builtin exception into a project hierarchy. V has no KeyError, so
@@ -31,6 +63,12 @@ pub struct PortageKeyError {
 fn (mut self PortageKeyError) init(value Any) {
 	_ = Any(0)
 	self.PortageException.init(value)
+}
+
+pub fn py2v_new_portage_key_error(value Any) PortageKeyError {
+	mut py2v_instance := PortageKeyError{}
+	py2v_instance.init(value)
+	return py2v_instance
 }
 
 fn try_finally_only() int {

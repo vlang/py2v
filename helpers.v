@@ -197,7 +197,7 @@ pub fn bytes_to_v_literal(data []u8) string {
 	mut parts := []string{}
 	for i, b in data {
 		if i == 0 {
-			parts << 'byte(0x${b:02x})'
+			parts << 'u8(0x${b:02x})'
 		} else {
 			parts << '0x${b:02x}'
 		}

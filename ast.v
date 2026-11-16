@@ -167,7 +167,10 @@ pub mut:
 	loc               Location
 	docstring_comment ?string
 	// source_words lists the words of the source as py2v may emit them; temps avoid them.
-	source_words []string
+	source_words           []string
+	condition_walrus_names []string
+	// module_consts names the module-level values that functions read.
+	module_consts []string
 }
 
 // Expressions
@@ -212,6 +215,12 @@ pub mut:
 	loc          Location
 	is_mutable   bool
 	v_annotation ?string
+	// math_member is set on a read of a name bound by `from math import ...`:
+	// the member's name in Python's math module.
+	math_member string
+	// api is the Python name of the runtime library class this name stands for in an
+	// annotation (`datetime.datetime`), or empty.
+	api string
 }
 
 pub struct BinOp {
@@ -259,6 +268,9 @@ pub mut:
 	// parameter of the enclosing function annotated with a builtin class a V
 	// type stands for; it names that class (int, float, str, bool, list, dict).
 	subject_class string
+	// api is the Python name of the runtime library entry this call resolved to
+	// (`datetime.datetime.now`), or empty.
+	api string
 }
 
 pub struct Keyword {
@@ -275,6 +287,9 @@ pub mut:
 	ctx          ExprContext
 	loc          Location
 	v_annotation ?string
+	// api is the Python name of the runtime library entry this attribute resolved to
+	// (`datetime.timezone.utc`), or empty.
+	api string
 }
 
 pub struct Subscript {
@@ -434,40 +449,42 @@ pub mut:
 // Statements
 pub struct FunctionDef {
 pub mut:
-	name            string
-	args            Arguments
-	body            []Stmt
-	decorator_list  []Expr
-	returns         ?&Expr
-	type_comment    ?string
-	loc             Location
-	is_generator    bool
-	is_void         bool
-	mutable_vars    []string
-	is_class_method bool
-	class_name      string
-	decorator_kind  string
-	dunder_op       string
-	v_annotation    string // Inferred return type (e.g., 'int', 'bool')
+	name                   string
+	args                   Arguments
+	body                   []Stmt
+	decorator_list         []Expr
+	returns                ?&Expr
+	type_comment           ?string
+	loc                    Location
+	is_generator           bool
+	is_void                bool
+	mutable_vars           []string
+	is_class_method        bool
+	class_name             string
+	decorator_kind         string
+	dunder_op              string
+	v_annotation           string // Inferred return type (e.g., 'int', 'bool')
+	condition_walrus_names []string
 }
 
 pub struct AsyncFunctionDef {
 pub mut:
-	name            string
-	args            Arguments
-	body            []Stmt
-	decorator_list  []Expr
-	returns         ?Expr
-	type_comment    ?string
-	loc             Location
-	is_generator    bool
-	is_void         bool
-	mutable_vars    []string
-	is_class_method bool
-	class_name      string
-	decorator_kind  string
-	dunder_op       string
-	v_annotation    string // Inferred return type (e.g., 'int', 'bool')
+	name                   string
+	args                   Arguments
+	body                   []Stmt
+	decorator_list         []Expr
+	returns                ?Expr
+	type_comment           ?string
+	loc                    Location
+	is_generator           bool
+	is_void                bool
+	mutable_vars           []string
+	is_class_method        bool
+	class_name             string
+	decorator_kind         string
+	dunder_op              string
+	v_annotation           string // Inferred return type (e.g., 'int', 'bool')
+	condition_walrus_names []string
 }
 
 pub struct Arguments {
@@ -494,17 +511,20 @@ pub mut:
 
 pub struct ClassDef {
 pub mut:
-	name              string
-	bases             []Expr
-	keywords          []Keyword
-	body              []Stmt
-	decorator_list    []Expr
-	loc               Location
-	declarations      map[string]string
-	class_defaults    map[string]Expr
-	docstring_comment ?string
-	is_protocol       bool
-	type_params       []string
+	name           string
+	bases          []Expr
+	keywords       []Keyword
+	body           []Stmt
+	decorator_list []Expr
+	loc            Location
+	declarations   map[string]string
+	// Unannotated fields written by a non-forwarding initializer whose value
+	// type could not be established before allocating the instance.
+	unresolved_init_fields []string
+	class_defaults         map[string]Expr
+	docstring_comment      ?string
+	is_protocol            bool
+	type_params            []string
 }
 
 pub struct Return {
@@ -581,11 +601,12 @@ pub mut:
 
 pub struct If {
 pub mut:
-	test   &Expr
-	body   []Stmt
-	orelse []Stmt
-	loc    Location
-	level  int
+	test                   &Expr
+	body                   []Stmt
+	orelse                 []Stmt
+	loc                    Location
+	level                  int
+	lower_condition_walrus bool
 }
 
 pub struct With {

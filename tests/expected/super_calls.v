@@ -1,6 +1,32 @@
 module main
 
-type Any = bool | int | i64 | f64 | string | []u8
+import pyrt
+
+type Any = pyrt.Value
+
+fn (a Any) + (b Any) Any {
+	return pyrt.add(a, b) or { panic(err) }
+}
+
+fn (a Any) - (b Any) Any {
+	return pyrt.sub(a, b) or { panic(err) }
+}
+
+fn (a Any) * (b Any) Any {
+	return pyrt.mul(a, b) or { panic(err) }
+}
+
+fn (a Any) / (b Any) Any {
+	return pyrt.truediv(a, b) or { panic(err) }
+}
+
+fn (a Any) % (b Any) Any {
+	return pyrt.mod(a, b) or { panic(err) }
+}
+
+fn (a Any) < (b Any) bool {
+	return pyrt.lt(a, b) or { panic(err) }
+}
 
 pub struct Base {
 pub mut:
@@ -11,8 +37,14 @@ fn (mut self Base) init(value string) {
 	self.value = value
 }
 
-fn (self Base) greet() Any {
+fn (self Base) greet() string {
 	return 'hi ${self.value}'
+}
+
+pub fn py2v_new_base(value string) Base {
+	mut py2v_instance := Base{}
+	py2v_instance.init(value)
+	return py2v_instance
 }
 
 pub struct Child {
@@ -27,15 +59,25 @@ fn (self Child) greet() Any {
 	return self.Base.greet()
 }
 
+pub fn py2v_new_child(value string) Child {
+	mut py2v_instance := Child{}
+	py2v_instance.init(value)
+	return py2v_instance
+}
+
 pub struct CustomError {
 }
 
 fn (mut self CustomError) init(msg Any) {
 }
 
+pub fn py2v_new_custom_error(msg Any) CustomError {
+	mut py2v_instance := CustomError{}
+	py2v_instance.init(msg)
+	return py2v_instance
+}
+
 fn main() {
-	c := Child{
-		Base: Base{ value: 'x' }
-	}
+	c := py2v_new_child('x')
 	println(c.greet())
 }

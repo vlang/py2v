@@ -138,9 +138,11 @@ fn parse_module(m map[string]json2.Any) !Module {
 		}
 	}
 	return Module{
-		body:              body
-		loc:               parse_location(m)
-		docstring_comment: docstring
+		body:                   body
+		loc:                    parse_location(m)
+		docstring_comment:      docstring
+		condition_walrus_names: (m['condition_walrus_names'] or { json2.Any([]json2.Any{}) }).as_array().map(it.str())
+		module_consts:          (m['module_consts'] or { json2.Any([]json2.Any{}) }).as_array().map(it.str())
 	}
 }
 
@@ -326,21 +328,22 @@ fn parse_function_def(m map[string]json2.Any) FunctionDef {
 		}
 	}
 	return FunctionDef{
-		name:            m['name'] or { json2.Any('') }.str()
-		args:            parse_arguments(m['args'] or { json2.Any(map[string]json2.Any{}) })
-		body:            body
-		decorator_list:  decorators
-		returns:         parse_optional_expr(m['returns'] or { json2.Any(json2.Null{}) })
-		type_comment:    parse_optional_string(m['type_comment'] or { json2.Any(json2.Null{}) })
-		loc:             parse_location(m)
-		is_generator:    m['is_generator'] or { json2.Any(false) }.bool()
-		is_void:         m['is_void'] or { json2.Any(false) }.bool()
-		mutable_vars:    mutable_vars
-		is_class_method: m['is_class_method'] or { json2.Any(false) }.bool()
-		class_name:      m['class_name'] or { json2.Any('') }.str()
-		decorator_kind:  m['decorator_kind'] or { json2.Any('') }.str()
-		dunder_op:       m['dunder_op'] or { json2.Any('') }.str()
-		v_annotation:    m['v_annotation'] or { json2.Any('') }.str()
+		name:                   m['name'] or { json2.Any('') }.str()
+		args:                   parse_arguments(m['args'] or { json2.Any(map[string]json2.Any{}) })
+		body:                   body
+		decorator_list:         decorators
+		returns:                parse_optional_expr(m['returns'] or { json2.Any(json2.Null{}) })
+		type_comment:           parse_optional_string(m['type_comment'] or { json2.Any(json2.Null{}) })
+		loc:                    parse_location(m)
+		is_generator:           m['is_generator'] or { json2.Any(false) }.bool()
+		is_void:                m['is_void'] or { json2.Any(false) }.bool()
+		mutable_vars:           mutable_vars
+		is_class_method:        m['is_class_method'] or { json2.Any(false) }.bool()
+		class_name:             m['class_name'] or { json2.Any('') }.str()
+		decorator_kind:         m['decorator_kind'] or { json2.Any('') }.str()
+		dunder_op:              m['dunder_op'] or { json2.Any('') }.str()
+		v_annotation:           m['v_annotation'] or { json2.Any('') }.str()
+		condition_walrus_names: (m['condition_walrus_names'] or { json2.Any([]json2.Any{}) }).as_array().map(it.str())
 	}
 }
 
@@ -348,21 +351,22 @@ fn parse_function_def(m map[string]json2.Any) FunctionDef {
 fn parse_async_function_def(m map[string]json2.Any) AsyncFunctionDef {
 	fd := parse_function_def(m)
 	return AsyncFunctionDef{
-		name:            fd.name
-		args:            fd.args
-		body:            fd.body
-		decorator_list:  fd.decorator_list
-		returns:         fd.returns
-		type_comment:    fd.type_comment
-		loc:             fd.loc
-		is_generator:    fd.is_generator
-		is_void:         fd.is_void
-		mutable_vars:    fd.mutable_vars
-		is_class_method: fd.is_class_method
-		class_name:      fd.class_name
-		decorator_kind:  fd.decorator_kind
-		dunder_op:       fd.dunder_op
-		v_annotation:    fd.v_annotation
+		name:                   fd.name
+		args:                   fd.args
+		body:                   fd.body
+		decorator_list:         fd.decorator_list
+		returns:                fd.returns
+		type_comment:           fd.type_comment
+		loc:                    fd.loc
+		is_generator:           fd.is_generator
+		is_void:                fd.is_void
+		mutable_vars:           fd.mutable_vars
+		is_class_method:        fd.is_class_method
+		class_name:             fd.class_name
+		decorator_kind:         fd.decorator_kind
+		dunder_op:              fd.dunder_op
+		v_annotation:           fd.v_annotation
+		condition_walrus_names: fd.condition_walrus_names
 	}
 }
 
@@ -406,6 +410,12 @@ fn parse_class_def(m map[string]json2.Any) ClassDef {
 		}
 	}
 	mut class_defaults := map[string]Expr{}
+	mut unresolved_init_fields := []string{}
+	if raw_fields := m['unresolved_init_fields'] {
+		for item in raw_fields.as_array() {
+			unresolved_init_fields << item.str()
+		}
+	}
 	if raw_defaults := m['class_defaults'] {
 		for pair in raw_defaults.as_array() {
 			default := pair.as_array()
@@ -428,17 +438,18 @@ fn parse_class_def(m map[string]json2.Any) ClassDef {
 		}
 	}
 	return ClassDef{
-		name:              m['name'] or { json2.Any('') }.str()
-		bases:             bases
-		keywords:          keywords
-		body:              body
-		decorator_list:    decorators
-		loc:               parse_location(m)
-		declarations:      declarations
-		class_defaults:    class_defaults
-		docstring_comment: docstring
-		is_protocol:       m['is_protocol'] or { json2.Any(false) }.bool()
-		type_params:       type_params
+		name:                   m['name'] or { json2.Any('') }.str()
+		bases:                  bases
+		keywords:               keywords
+		body:                   body
+		decorator_list:         decorators
+		loc:                    parse_location(m)
+		declarations:           declarations
+		unresolved_init_fields: unresolved_init_fields
+		class_defaults:         class_defaults
+		docstring_comment:      docstring
+		is_protocol:            m['is_protocol'] or { json2.Any(false) }.bool()
+		type_params:            type_params
 	}
 }
 
@@ -717,15 +728,16 @@ fn parse_if(m map[string]json2.Any) If {
 		}
 	}
 	return If{
-		test:   parse_expr(map_field(m, 'test')) or {
+		lower_condition_walrus: m['lower_condition_walrus'] or { json2.Any(false) }.bool()
+		test:                   parse_expr(map_field(m, 'test')) or {
 			&Expr(Constant{
 				value: NoneValue{}
 			})
 		}
-		body:   body
-		orelse: orelse
-		loc:    parse_location(m)
-		level:  m['level'] or { json2.Any(0) }.int()
+		body:                   body
+		orelse:                 orelse
+		loc:                    parse_location(m)
+		level:                  m['level'] or { json2.Any(0) }.int()
 	}
 }
 
@@ -1014,6 +1026,8 @@ fn parse_name(m map[string]json2.Any) Name {
 		loc:          parse_location(m)
 		is_mutable:   m['is_mutable'] or { json2.Any(false) }.bool()
 		v_annotation: parse_type_annotation(m) or { '' }
+		math_member:  (m['math_member'] or { json2.Any('') }).str()
+		api:          (m['api'] or { json2.Any('') }).str()
 	}
 }
 
@@ -1179,6 +1193,7 @@ fn parse_call(m map[string]json2.Any) Call {
 	}
 	return Call{
 		subject_class: (m['subject_class'] or { json2.Any('') }).str()
+		api:           (m['api'] or { json2.Any('') }).str()
 		func:          parse_expr(map_field(m, 'func')) or {
 			&Expr(Constant{
 				value: NoneValue{}
@@ -1203,6 +1218,7 @@ fn parse_attribute(m map[string]json2.Any) Attribute {
 		ctx:          parse_context(map_field(m, 'ctx'))
 		loc:          parse_location(m)
 		v_annotation: parse_type_annotation(m) or { '' }
+		api:          (m['api'] or { json2.Any('') }).str()
 	}
 }
 

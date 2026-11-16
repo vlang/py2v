@@ -1,6 +1,7 @@
 module main
 
 import os
+import pyrt.pathlib
 
 pub struct Box {
 pub mut:
@@ -9,6 +10,12 @@ pub mut:
 
 fn (mut self Box) init(n int) {
 	self.r = n
+}
+
+pub fn py2v_new_box(n int) Box {
+	mut py2v_instance := Box{}
+	py2v_instance.init(n)
+	return py2v_instance
 }
 
 pub struct Reader {
@@ -29,12 +36,8 @@ fn main_func() {
 	println([1, 2].map(it + r_tail + tr))
 	println([1].map('r'))
 	println([1, 2].map('r=${it}'))
-	println([Box{
-		r: 3
-	}].map(it.it))
-	x := Box{
-		r: 4
-	}
+	println([py2v_new_box(3)].map(it.it))
+	x := py2v_new_box(4)
 	println([1, 2].map(x.it + it))
 	println([Reader{}].map(it.it()))
 	println([1, 2].filter(it >= 'r'.len).map(it))
@@ -43,10 +46,10 @@ fn main_func() {
 	println([1, 2].map(it))
 	println([[2, 5, 7]].map([it].map(1)))
 	println([f].map(it(2, 10)))
-	p := 'a/b.txt'
-	paths := ['x/y.txt']
-	println(os.file_name(p))
-	println(paths.map(os.file_name(it)))
+	p := pathlib.new_path('a/b.txt')
+	paths := [pathlib.new_path('x/y.txt')]
+	println(p.name())
+	println(paths.map(it.name()))
 	println((fn () map[int]int {
 		mut result := map[int]int{}
 		for s in [2] {

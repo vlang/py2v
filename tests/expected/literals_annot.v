@@ -7,7 +7,7 @@ fn main() {
 	pi := 3.14
 	s := 'hello'
 	flag := true
-	b := [byte(0x61), 0x62, 0x63]
+	b := [u8(0x61), 0x62, 0x63]
 	c := 1 + math.complex(0.0, 2.0)
 	println(num.str() + ' ' + pi.str() + ' ' + s.str() + ' ' + (if flag { 'True' } else { 'False' }).str() + ' ' + b.str() + ' ' + c.str())
 }

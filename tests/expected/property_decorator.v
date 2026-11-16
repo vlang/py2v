@@ -1,10 +1,8 @@
 module main
 
-type Any = bool | int | i64 | f64 | string | []u8
-
 pub struct Temperature {
 pub mut:
-	celsius_ Any
+	celsius_ f64
 }
 
 fn (mut self Temperature) init(celsius f64) {
@@ -19,10 +17,14 @@ fn (mut self Temperature) set_celsius(value f64) {
 	self.celsius_ = value
 }
 
+pub fn py2v_new_temperature(celsius f64) Temperature {
+	mut py2v_instance := Temperature{}
+	py2v_instance.init(celsius)
+	return py2v_instance
+}
+
 fn main() {
-	t := Temperature{
-		celsius_: 25
-	}
+	t := py2v_new_temperature(25)
 	println(t.celsius)
 	t.set_celsius(30)
 	println(t.celsius)

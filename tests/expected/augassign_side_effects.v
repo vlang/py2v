@@ -11,6 +11,12 @@ fn (mut self Box) init(size int) {
 	self.size = size
 }
 
+pub fn py2v_new_box(size int) Box {
+	mut py2v_instance := Box{}
+	py2v_instance.init(size)
+	return py2v_instance
+}
+
 pub struct Two {
 }
 
@@ -72,12 +78,8 @@ fn main_func() {
 	py2v_idx9 := grow_rows(mut rows)
 	rows[py2v_idx8][py2v_idx9] = math.powi(rows[py2v_idx8][py2v_idx9], 2)
 	println(rows)
-	mut boxes := [Box{
-		size: 1
-	}]
-	boxes[0] = Box{
-		size: 3
-	}
+	mut boxes := [py2v_new_box(1)]
+	boxes[0] = py2v_new_box(3)
 	py2v_idx10 := index(0)
 	boxes[py2v_idx10].size = math.powi(boxes[py2v_idx10].size, 2)
 	println(boxes[0].size)

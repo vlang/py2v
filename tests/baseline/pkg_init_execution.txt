@@ -1,0 +1,2 @@
+py_pkg_init_execution	0
+py_pkg_init_execution_sub	0

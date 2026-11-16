@@ -4,7 +4,7 @@ fn main_func() {
 	mut py2v_broke1 := false
 	for x in [1, 2, 3] {
 		if x == 2 {
-			println(('found').str() + ' ' + x.str())
+			println('found ${x}')
 			py2v_broke1 = true
 			break
 		}
@@ -32,7 +32,7 @@ fn main_func() {
 			}
 		}
 		if !py2v_broke3 {
-			println(('inner done').str() + ' ' + i.str())
+			println('inner done ${i}')
 		}
 		if i == 2 {
 			py2v_broke4 = true
@@ -47,7 +47,7 @@ fn main_func() {
 	for n > 0 {
 		n -= 1
 		if n == 2 {
-			println(('stopped at').str() + ' ' + n.str())
+			println('stopped at ${n}')
 			py2v_broke5 = true
 			break
 		}
@@ -59,7 +59,7 @@ fn main_func() {
 	for k < 3 {
 		k += 1
 	}
-	println(('counted').str() + ' ' + k.str())
+	println('counted ${k}')
 }
 
 fn main() {

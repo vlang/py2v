@@ -6,10 +6,10 @@ fn main_func() {
 	println(s.index('xyz') or { -1 })
 	println(s.count('l'))
 	println(s.count('hello'))
-	println(s.starts_with('hello'))
-	println(s.starts_with('world'))
-	println(s.ends_with('hello'))
-	println(s.ends_with('world'))
+	println(if s.starts_with('hello') { 'True' } else { 'False' })
+	println(if s.starts_with('world') { 'True' } else { 'False' })
+	println(if s.ends_with('hello') { 'True' } else { 'False' })
+	println(if s.ends_with('world') { 'True' } else { 'False' })
 }
 
 fn main() {

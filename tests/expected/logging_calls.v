@@ -1,15 +1,18 @@
 module main
 
 import log
+import pyrt.logging
+import pyrt
 
 fn process() {
-	log.info('starting')
-	log.debug('x=42')
-	log.warn('low memory')
-	log.warn('also a warning')
-	log.error('failed')
-	log.error('shutdown')
-	log.error('caught error')
+	(logging.basic_config() or { pyrt.fail(err) })
+	logging.info('starting')
+	logging.debug('x=42')
+	logging.warning('low memory')
+	logging.warn('also a warning')
+	logging.error_('failed')
+	logging.critical('shutdown')
+	logging.exception('caught error')
 }
 
 fn main() {

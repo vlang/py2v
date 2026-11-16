@@ -31,6 +31,10 @@ pub mut:
 	output_root string
 	// class_fields_by_path maps `module.Class` to its ordered field list.
 	class_fields_by_path map[string][]string
+	// Written initializers and factory names, keyed by defining Python path.
+	init_constructors map[string]InitConstructor
+	// Explicit module-level import bindings, for constructor re-exports.
+	init_import_bindings map[string]string
 	// class_bases_by_path maps `module.Class` to its base class names, so a
 	// struct literal built in another module can fill the embedded bases.
 	class_bases_by_path map[string][]string
@@ -185,7 +189,13 @@ pub fn v_file_stem(v_relpath string) string {
 	if base.ends_with('.v') {
 		base = base[..base.len - 2]
 	}
-	return py_stem_from_path(base)
+	// The stem becomes part of a V function name (`<stem>_main`), so every
+	// character V does not accept in an identifier becomes an underscore.
+	mut out := []u8{}
+	for ch in py_stem_from_path(base) {
+		out << if ch.is_alnum() || ch == `_` { ch } else { `_` }
+	}
+	return out.bytestr()
 }
 
 // collisions returns symbols defined by more than one file in the same V

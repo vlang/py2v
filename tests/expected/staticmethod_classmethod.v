@@ -1,10 +1,8 @@
 module main
 
-type Any = bool | int | i64 | f64 | string | []u8
-
 pub struct MathHelper {
 pub mut:
-	value Any
+	value int
 }
 
 fn (mut self MathHelper) init(value int) {
@@ -22,9 +20,13 @@ fn MathHelper_add(a int, b int) int {
 
 // @classmethod
 fn MathHelper_create(v_ int) MathHelper {
-	return MathHelper{
-		value: v_
-	}
+	return py2v_new_math_helper(v_)
+}
+
+pub fn py2v_new_math_helper(value int) MathHelper {
+	mut py2v_instance := MathHelper{}
+	py2v_instance.init(value)
+	return py2v_instance
 }
 
 fn main() {

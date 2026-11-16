@@ -5,7 +5,7 @@ fn show() {
 	mut first := py2v_unpack1[0]
 	mut middle := py2v_unpack1[1..py2v_unpack1.len - 1]
 	mut last := py2v_unpack1.last()
-	println(first.str() + ' ' + last.str())
+	println('${first} ${last}')
 }
 
 fn main() {
