@@ -53,8 +53,8 @@ fn repr_nested(v Value, ancestors []i64, depth int) string {
 					return '{' + parts.join(', ') + '}'
 				}
 				else {
-					items := iter(whole) or { return '<sequence read error: ${err.msg()}>' }
-					for item in items {
+					sequence_items := iter(whole) or { return '<sequence read error: ${err.msg()}>' }
+					for item in sequence_items {
 						parts << repr_nested(item, path, depth + 1)
 					}
 					if whole is &Tuple {
@@ -341,12 +341,12 @@ fn float_repr(value f64) string {
 	mut numerator := big_multiply_small(big_magnitude(mantissa), factor)
 	mut denominator := [factor]
 	upper_digit := if asymmetric { i64(2) } else { i64(1) }
-	mut upper := [upper_digit]
-	mut lower := [i64(1)]
+	mut upper_margin := [upper_digit]
+	mut lower_margin := [i64(1)]
 	if unit_exponent >= 0 {
 		numerator = big_times_power_two(numerator, unit_exponent)
-		upper = big_times_power_two(upper, unit_exponent)
-		lower = big_times_power_two(lower, unit_exponent)
+		upper_margin = big_times_power_two(upper_margin, unit_exponent)
+		lower_margin = big_times_power_two(lower_margin, unit_exponent)
 	} else {
 		denominator = big_times_power_two(denominator, -unit_exponent)
 	}
@@ -357,8 +357,8 @@ fn float_repr(value f64) string {
 	}
 	for big_compare(numerator, denominator) < 0 {
 		numerator = big_multiply_small(numerator, 10)
-		upper = big_multiply_small(upper, 10)
-		lower = big_multiply_small(lower, 10)
+		upper_margin = big_multiply_small(upper_margin, 10)
+		lower_margin = big_multiply_small(lower_margin, 10)
 		decimal_exponent = decimal_exponent - 1
 	}
 	mut digits := []int{}
@@ -368,8 +368,8 @@ fn float_repr(value f64) string {
 			numerator = big_subtract(numerator, denominator)
 			digit = digit + 1
 		}
-		low_cmp := big_compare(numerator, lower)
-		high_cmp := big_compare(big_add(numerator, upper), denominator)
+		low_cmp := big_compare(numerator, lower_margin)
+		high_cmp := big_compare(big_add(numerator, upper_margin), denominator)
 		low_ok := low_cmp < 0 || (low_cmp == 0 && even)
 		high_ok := high_cmp > 0 || (high_cmp == 0 && even)
 		digits << digit
@@ -394,8 +394,8 @@ fn float_repr(value f64) string {
 			break
 		}
 		numerator = big_multiply_small(numerator, 10)
-		upper = big_multiply_small(upper, 10)
-		lower = big_multiply_small(lower, 10)
+		upper_margin = big_multiply_small(upper_margin, 10)
+		lower_margin = big_multiply_small(lower_margin, 10)
 	}
 	for digits.len > 1 && digits.last() == 0 { _ = digits.pop() }
 	mut decimal := ''

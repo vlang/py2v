@@ -116,9 +116,9 @@ pub fn replace_n(v Value, old Value, replacement Value, count int) !Value {
 
 pub fn join(v Value, iterable Value) !Value {
     separator := as_str(v)!
-    elements := iter(iterable)!
+    joined_elements := iter(iterable)!
     mut parts := []string{}
-    for i, item in elements {
+    for i, item in joined_elements {
         if item !is string {
             return raise('TypeError', 'sequence item ${i}: expected str instance, ${type_name(item)} found')
         }
@@ -129,13 +129,13 @@ pub fn join(v Value, iterable Value) !Value {
 
 // Dict view equivalents are snapshots, as in the existing method dispatcher.
 pub fn keys(v Value) !Value {
-    items := dict_keys(v)!
-    return Value(new_list(items))
+    key_items := dict_keys(v)!
+    return Value(new_list(key_items))
 }
 
 pub fn values(v Value) !Value {
-    items := dict_values(v)!
-    return Value(new_list(items))
+    value_items := dict_values(v)!
+    return Value(new_list(value_items))
 }
 
 pub fn items(v Value) !Value {

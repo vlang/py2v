@@ -98,17 +98,17 @@ pub fn add(a Value, b Value) !Value {
 	}
 	if is_list_value(a) {
 		if is_list_value(b) {
-			mut items := iter(a)!
-			items << iter(b)!
-			return Value(new_list(items))
+			mut joined_items := iter(a)!
+			joined_items << iter(b)!
+			return Value(new_list(joined_items))
 		}
 		return raise('TypeError', 'can only concatenate list (not "${type_name(b)}") to list')
 	}
 	if a is &Tuple {
 		if b is &Tuple {
-			mut items := a.items.clone()
-			items << b.items
-			return Value(new_tuple(items))
+			mut joined_items := a.items.clone()
+			joined_items << b.items
+			return Value(new_tuple(joined_items))
 		}
 		return raise('TypeError', 'can only concatenate tuple (not "${type_name(b)}") to tuple')
 	}
@@ -122,39 +122,39 @@ pub fn sub(a Value, b Value) !Value {
 	}
 	if is_numeric(a) && is_numeric(b) { return Value(numeric_float(a) - numeric_float(b)) }
 	if a is &Set && b is &Set {
-		mut items := []Value{}
+		mut set_difference_items := []Value{}
 		for item in a.items {
 			key := hash_key(item)!
-			if key !in b.index { items << item }
+			if key !in b.index { set_difference_items << item }
 		}
-		if a.frozen { return frozenset_of(items)! }
-        return Value(new_set(items)!)
+		if a.frozen { return frozenset_of(set_difference_items)! }
+        return Value(new_set(set_difference_items)!)
 	}
 	return binary_error('-', a, b)
 }
 
 fn repeated(v Value, count i64) !Value {
 	n := len_(v)!
-	mut times := count
-	if times < 0 { times = 0 }
-	if n != 0 && times > int_max / i64(n) {
+	mut repeat_count := count
+	if repeat_count < 0 { repeat_count = 0 }
+	if n != 0 && repeat_count > int_max / i64(n) {
 		return raise('OverflowError', 'repeated sequence is too long')
 	}
 	// Repeating an empty sequence must not loop count times.
-	if n == 0 { times = 0 }
+	if n == 0 { repeat_count = 0 }
 	if v is string {
 		mut out := ''
-		for _ in 0 .. int(times) { out = out + v }
+		for _ in 0 .. int(repeat_count) { out = out + v }
 		return Value(out)
 	}
 	if v is []u8 {
 		mut out := []u8{}
-		for _ in 0 .. int(times) { out << v }
+		for _ in 0 .. int(repeat_count) { out << v }
 		return Value(out)
 	}
-	items := iter(v)!
+	source_items := iter(v)!
 	mut out := []Value{}
-	for _ in 0 .. int(times) { out << items }
+	for _ in 0 .. int(repeat_count) { out << source_items }
 	if v is &Tuple { return Value(new_tuple(out)) }
 	return Value(new_list(out))
 }
@@ -734,27 +734,27 @@ pub fn delitem(container Value, key Value) ! {
 		&Dict {
 			hash := hash_key(key)!
 			if hash !in container.values { return key_error(key) }
-			mut keys := []Value{}
-			mut values := map[string]Value{}
+			mut remaining_keys := []Value{}
+			mut remaining_values := map[string]Value{}
 			for old in container.keys {
 				old_hash := hash_key(old)!
 				if old_hash != hash {
-					keys << old
-					values[old_hash] = container.values[old_hash] or { none_ }
+					remaining_keys << old
+					remaining_values[old_hash] = container.values[old_hash] or { none_ }
 				}
 			}
 			unsafe {
-				container.keys = keys.clone()
-				container.values = values
+				container.keys = remaining_keys.clone()
+				container.values = remaining_values
 			}
 			return
 		}
 		&List {
 			if !is_integral(key) { return index_type_error('list', key) }
 			i := checked_index(integral_value(key), container.items.len, 'list assignment index out of range')!
-			mut items := []Value{}
-			for j, old in container.items { if j != i { items << old } }
-			unsafe { container.items = items.clone() }
+			mut remaining_items := []Value{}
+			for j, old in container.items { if j != i { remaining_items << old } }
+			unsafe { container.items = remaining_items.clone() }
 			return
 		}
 		Sequence {
@@ -832,8 +832,8 @@ pub fn getslice(v Value, lo ?int, hi ?int, step ?int) !Value {
 		for i in indices { out << v[i] }
 		return Value(out)
 	}
-	mut items := []Value{}
-	for i in indices { items << getitem(v, Value(i64(i)))! }
-	if v is &Tuple { return Value(new_tuple(items)) }
-	return Value(new_list(items))
+	mut sliced_items := []Value{}
+	for i in indices { sliced_items << getitem(v, Value(i64(i)))! }
+	if v is &Tuple { return Value(new_tuple(sliced_items)) }
+	return Value(new_list(sliced_items))
 }

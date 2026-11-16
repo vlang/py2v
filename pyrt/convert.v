@@ -20,31 +20,31 @@ pub fn from_bool(v bool) Value {
 }
 
 pub fn from_strings(v []string) Value {
-	mut items := []Value{}
+	mut boxed_items := []Value{}
 	for item in v {
-		items << Value(item)
+		boxed_items << Value(item)
 	}
-	return Value(new_list(items))
+	return Value(new_list(boxed_items))
 }
 
 pub fn from_ints(v []int) Value {
-	mut items := []Value{}
+	mut boxed_items := []Value{}
 	for item in v {
-		items << Value(i64(item))
+		boxed_items << Value(i64(item))
 	}
-	return Value(new_list(items))
+	return Value(new_list(boxed_items))
 }
 
 // The insertion order here is the order V exposes when iterating this map.
 // To supply a known order, call new_dict() followed by setitem() in that order.
 pub fn from_map(v map[string]Value) Value {
-	mut keys := []Value{}
-	mut values := map[string]Value{}
+	mut dict_keys_list := []Value{}
+	mut dict_value_map := map[string]Value{}
 	for name, item in v {
-		keys << Value(name)
-		values['s' + name] = item
+		dict_keys_list << Value(name)
+		dict_value_map['s' + name] = item
 	}
-	return Value(&Dict{keys: keys, values: values})
+	return Value(&Dict{keys: dict_keys_list, values: dict_value_map})
 }
 
 pub fn as_int(v Value) !i64 {
@@ -96,9 +96,9 @@ pub fn as_list(v Value) ![]Value {
 }
 
 pub fn as_strings(v Value) ![]string {
-	items := as_list(v)!
+	list_items := as_list(v)!
 	mut out := []string{}
-	for item in items {
+	for item in list_items {
 		out << as_str(item)!
 	}
 	return out

@@ -101,8 +101,8 @@ pub fn (c &Cursor) fetchmany(n int) []Row {
     if count < 0 { count = c.rows.len - c.position }
     mut out := []Row{}
     for _ in 0 .. count {
-        row := c.fetchone() or { break }
-        out << row
+        fetched_row := c.fetchone() or { break }
+        out << fetched_row
     }
     return out
 }

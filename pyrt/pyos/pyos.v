@@ -28,7 +28,7 @@ pub fn path_join(base string, parts ...string) string {
             result = part
         } else if result == '' {
             result = part
-        } else if (result.len > 0 && result[result.len - 1] == 47) {
+        } else if result.len > 0 && result[result.len - 1] == 47 {
             result = result + part
         } else {
             result = result + '/' + part

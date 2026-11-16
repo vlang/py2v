@@ -203,17 +203,17 @@ pub fn (s &Set) discard(item Value) ! {
 	if key !in s.index {
 		return
 	}
-	mut items := []Value{}
+	mut retained_items := []Value{}
 	mut index := map[string]bool{}
 	for old in s.items {
 		old_key := hash_key(old)!
 		if old_key != key {
-			items << old
+			retained_items << old
 			index[old_key] = true
 		}
 	}
 	unsafe {
-		s.items = items.clone()
+		s.items = retained_items.clone()
 		s.index = index
 	}
 }
