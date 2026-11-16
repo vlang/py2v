@@ -48,6 +48,7 @@ fn first(items []string) ?string {
 	return items[0]
 }
 
+// NOTE: Tuple[?string, int] — define a struct with named fields
 fn pair(key string) []Any {
 	return [key, key.len]
 }

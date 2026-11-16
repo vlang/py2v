@@ -2842,10 +2842,16 @@ def _choose_boolop_values(tree: ast.Module, facts: Optional[infer.TypeFacts]) ->
         elif isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
             mark(node.operand)
 
-    def spelled(node: ast.expr) -> Optional[str]:
+    def spelled(node: ast.expr, or_none: bool = False) -> Optional[str]:
         type_id = getattr(node, "_assumed", None)
         if type_id is None:
             type_id = getattr(node, "_type", None)
+        if type_id is not None and or_none and facts.types[type_id]["k"] == "union":
+            # `T | None`: the T
+            members = [m for m in facts.types[type_id]["members"]
+                       if facts.types[m]["k"] != "none"]
+            if len(members) == 1 and len(facts.types[type_id]["members"]) == 2:
+                type_id = members[0]
         if type_id is None or facts.types[type_id]["k"] not in ("str", "int", "float", "list"):
             return None
         return _annotation_for_type(facts.types, type_id)
@@ -2860,6 +2866,11 @@ def _choose_boolop_values(tree: ast.Module, facts: Optional[infer.TypeFacts]) ->
             if id(node) in tested:
                 return node
             kinds = {spelled(value) for value in node.values}
+            if isinstance(node.op, ast.Or) and (len(kinds) != 1 or None in kinds):
+                # `given or "default"` where the earlier values may be None: the last one,
+                # which is not, decides the type
+                kinds = {spelled(value, or_none=True) for value in node.values[:-1]}
+                kinds.add(spelled(node.values[-1]))
             if len(kinds) != 1 or None in kinds or not all(plain(v) for v in node.values[:-1]):
                 return node
             result = node.values[-1]
@@ -2871,8 +2882,8 @@ def _choose_boolop_values(tree: ast.Module, facts: Optional[infer.TypeFacts]) ->
                     result = ast.IfExp(test=value, body=result, orelse=again)
                 ast.copy_location(result, node)
                 for name in ("_type", "_assumed"):
-                    if hasattr(value, name):
-                        setattr(result, name, getattr(value, name))
+                    if hasattr(node.values[-1], name):
+                        setattr(result, name, getattr(node.values[-1], name))
             return result
 
     try:
@@ -3375,6 +3386,43 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
             return getattr(node.func, "_binding", None) in any_dict_functions
         return isinstance(node, ast.Name) and getattr(node, "_binding", None) in any_dict_bindings
 
+    # `a or b` and `a and b` used as conditions keep V's operators; used for their value,
+    # with a value of unknown type first, the runtime chooses.
+    tested_values = set()
+
+    def mark_tested(node: ast.expr) -> None:
+        tested_values.add(id(node))
+        if isinstance(node, ast.BoolOp):
+            for value in node.values:
+                mark_tested(value)
+        elif isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
+            mark_tested(node.operand)
+
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.If, ast.While, ast.IfExp, ast.Assert)):
+            mark_tested(node.test)
+        elif isinstance(node, ast.comprehension):
+            for condition in node.ifs:
+                mark_tested(condition)
+        elif isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
+            mark_tested(node.operand)
+
+    def runs_free(node: ast.AST) -> bool:
+        # evaluating it early changes nothing: a constant, a name, a display of those
+        if isinstance(node, (ast.Constant, ast.Name)):
+            return True
+        if isinstance(node, (ast.List, ast.Tuple)):
+            return all(runs_free(e) for e in node.elts)
+        if isinstance(node, ast.Dict):
+            return all(k is not None and runs_free(k) for k in node.keys) and all(
+                runs_free(v) for v in node.values)
+        return isinstance(node, ast.Attribute) and runs_free(node.value)
+
+    def chosen_value(node: ast.AST) -> bool:
+        return (isinstance(node, ast.BoolOp) and id(node) not in tested_values
+                and all(runs_free(v) for v in node.values[1:]) and dynamic(node.values[0])
+                and all(dynamic(v) or boxable(v) for v in node.values))
+
     def dynamic_method_call(node: ast.AST) -> bool:
         """A method of a builtin type called on a value of unknown type: the runtime finds
         the method from what the value is when the call runs."""
@@ -3391,7 +3439,7 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
             return getattr(node, "_binding", None) in dynamic_bindings
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
             return getattr(node.func, "_binding", None) in dynamic_returning
-        if dynamic_method_call(node):
+        if dynamic_method_call(node) or chosen_value(node):
             return True
         if isinstance(node, ast.Subscript) and not isinstance(node.slice, ast.Slice):
             return dynamic(node.value) or any_list(node.value) or any_dict(node.value)
@@ -3535,6 +3583,18 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
                 # would use: the runtime does the arithmetic
                 return _runtime_call(arithmetic, [node.left, node.right], node)
             return node
+
+        def visit_BoolOp(self, node: ast.BoolOp) -> ast.AST:
+            chosen = chosen_value(node)
+            self.generic_visit(node)
+            if not chosen:
+                return node
+            name = "either" if isinstance(node.op, ast.Or) else "both"
+            result = node.values[0]
+            for value in node.values[1:]:
+                other = value if dynamic(value) else _deep_box(value)
+                result = _runtime_call(name, [result, other], node)
+            return result
 
         def visit_Compare(self, node: ast.Compare) -> ast.AST:
             self.generic_visit(node)
@@ -3718,6 +3778,13 @@ def _plan_error_propagation(tree: ast.Module, table: Optional[symbols.SymbolTabl
             continue
         if stmt.args.vararg or stmt.args.kwarg or _is_generator(stmt):
             continue
+        if stmt.returns is not None:
+            declared = _unparse_expr(stmt.returns).replace("typing.", "")
+            if declared.startswith("Optional[") or (
+                    "|" in declared and "None" in [p.strip() for p in declared.split("|")]):
+                # V has no result of an option (vk:no-result-of-option): such a function
+                # keeps ending the program on an error until results carry a Maybe
+                continue
         if _v_spelling(stmt.name) + "_py" in existing_functions:
             continue
         binding_id = getattr(stmt, "_binding", None)
@@ -4096,6 +4163,71 @@ def _runtime_api() -> Dict[str, Dict[str, Any]]:
     return _RUNTIME_API
 
 
+def _annotate_namespace_parameters(tree: ast.Module, table: symbols.SymbolTable) -> bool:
+    """A parameter with no annotation that is only read as a parsed command line is
+    annotated as one (`def cmd_list(args): ... args.limit`). The evidence: the file adds
+    arguments to a parser, the parameter is never assigned, called on, indexed or
+    iterated, at least one attribute of it is read, and every attribute read is the name
+    of an argument the file adds (or `func`, `command`, the names subcommands set).
+    Returns whether any parameter was annotated."""
+    names: Set[str] = set()
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and node.func.attr in ("add_argument", "add_subparsers", "set_defaults")):
+            continue
+        if node.func.attr != "add_argument":
+            names.update(k.arg for k in node.keywords if k.arg is not None)
+            names.update(k.value.value for k in node.keywords
+                         if k.arg == "dest" and isinstance(k.value, ast.Constant)
+                         and isinstance(k.value.value, str))
+            continue
+        flags = [a.value for a in node.args
+                 if isinstance(a, ast.Constant) and isinstance(a.value, str)]
+        if not flags or len(flags) != len(node.args):
+            continue
+        dest = next((k.value.value for k in node.keywords if k.arg == "dest"
+                     and isinstance(k.value, ast.Constant) and isinstance(k.value.value, str)), None)
+        longs = [f for f in flags if f.startswith("--")]
+        names.add(dest or (longs[0][2:] if longs else flags[0].lstrip("-")).replace("-", "_"))
+    if not names:
+        return False
+    found = False
+    for fn in ast.walk(tree):
+        if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        params = {getattr(a, "_binding", None): a for a in fn.args.posonlyargs + fn.args.args
+                  if a.arg not in ("self", "cls") and a.annotation is None}
+        params.pop(None, None)
+        if not params:
+            continue
+        read: Dict[int, Set[str]] = {b: set() for b in params}
+        bases = set()
+        for node in ast.walk(fn):
+            if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) \
+                    and isinstance(node.ctx, ast.Load):
+                binding_id = getattr(node.value, "_binding", None)
+                if binding_id in read:
+                    read[binding_id].add(node.attr)
+                    bases.add(id(node.value))
+        other: Set[int] = set()
+        for node in ast.walk(fn):
+            if isinstance(node, ast.Name) and id(node) not in bases \
+                    and getattr(node, "_binding", None) in read:
+                other.add(node._binding)  # used whole, stored to, indexed or iterated
+            elif isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) \
+                    and id(node.func.value) in bases and node.func.attr not in ("func",):
+                other.add(getattr(node.func.value, "_binding", None))  # a method called on it
+        for binding_id, attrs in read.items():
+            if (not attrs or binding_id in other or table.bindings[binding_id].rebound
+                    or not attrs <= names):
+                continue
+            arg = params[binding_id]
+            arg.annotation = ast.copy_location(ast.Name(id="Namespace", ctx=ast.Load()), arg)
+            arg.annotation._api = "argparse.Namespace"
+            found = True
+    return found
+
+
 def _annotate_database_parameters(tree: ast.Module, table: symbols.SymbolTable,
                                   api: Dict[str, Dict[str, Any]]) -> bool:
     """A parameter with no annotation (or annotated `Any` or `object`) that is only used as
@@ -4166,6 +4298,66 @@ def _annotate_database_parameters(tree: ast.Module, table: symbols.SymbolTable,
     return found
 
 
+def _unquote_annotations(tree: ast.Module, table: Optional[symbols.SymbolTable]) -> None:
+    """An annotation written as text (`-> list["TextContent"]`, or any annotation of a file
+    with names imported under `if TYPE_CHECKING:`) is read as the expression it spells, its
+    names being the module's."""
+    if table is None:
+        return
+    module_names = {b.name: b.id for b in table.bindings
+                    if table.scopes[b.scope].kind == "module" and not b.rebound}
+
+    class Unquote(ast.NodeTransformer):
+        def visit_Constant(self, node: ast.Constant) -> ast.AST:
+            if not isinstance(node.value, str):
+                return node
+            try:
+                spelled = ast.parse(node.value.strip(), mode="eval").body
+            except SyntaxError:
+                return node
+            for part in ast.walk(spelled):
+                ast.copy_location(part, node)
+                if isinstance(part, ast.Name) and part.id in module_names:
+                    part._binding = module_names[part.id]
+            return spelled
+
+        def visit_Subscript(self, node: ast.Subscript) -> ast.AST:
+            # the arguments of `Literal[...]` are values, not types
+            if _unparse_expr(node.value).split(".")[-1] == "Literal":
+                return node
+            return self.generic_visit(node)
+
+    def unquoted(annotation: Optional[ast.expr]) -> Optional[ast.expr]:
+        if annotation is None or not any(
+                isinstance(n, ast.Constant) and isinstance(n.value, str)
+                for n in ast.walk(annotation)):
+            return annotation
+        return Unquote().visit(annotation)
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.arg):
+            node.annotation = unquoted(node.annotation)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            node.returns = unquoted(node.returns)
+        elif isinstance(node, ast.AnnAssign):
+            node.annotation = unquoted(node.annotation)
+
+
+def _drop_type_checking_blocks(tree: ast.Module) -> None:
+    """`if TYPE_CHECKING:` at module level never runs: only its `else` is the program's.
+    (After the passes that read the names it imports for annotations.)"""
+    def checking(test: ast.expr) -> bool:
+        return _unparse_expr(test) in ("TYPE_CHECKING", "typing.TYPE_CHECKING")
+
+    kept: List[ast.stmt] = []
+    for stmt in tree.body:
+        if isinstance(stmt, ast.If) and checking(stmt.test):
+            kept.extend(stmt.orelse)
+        else:
+            kept.append(stmt)
+    tree.body[:] = kept
+
+
 def _mark_runtime_api(tree: ast.Module, table: Optional[symbols.SymbolTable]) -> None:
     """Set `_api` on a call or attribute that reaches the runtime library through the
     file's imports: `datetime.now(...)` after `from datetime import datetime` is
@@ -4192,6 +4384,7 @@ def _mark_runtime_api(tree: ast.Module, table: Optional[symbols.SymbolTable]) ->
                     imported[binding_id] = node.module + "." + alias.name
     imported = {b: q for b, q in imported.items() if not table.bindings[b].rebound}
     ducked = _annotate_database_parameters(tree, table, api)
+    ducked = _annotate_namespace_parameters(tree, table) or ducked
     if not imported and not ducked:
         return
 
@@ -5294,6 +5487,7 @@ def process_file(file_path: str, project: Optional[ProjectFacts] = None) -> str:
     # Lexical bindings on the final scope structure, then the types the code shows
     table = _resolve_bindings(tree)
     _mark_math_members(tree, table)
+    _unquote_annotations(tree, table)
     _mark_runtime_api(tree, table)
     facts = _infer_types(tree, table, project)
     _loop_comprehensions(tree, facts)
@@ -5312,6 +5506,7 @@ def process_file(file_path: str, project: Optional[ProjectFacts] = None) -> str:
     _parameterize_bare_containers(tree, table, facts)
     _mark_module_constants(tree, table)
     _plan_error_propagation(tree, table)
+    _drop_type_checking_blocks(tree)
 
     # Detect class methods
     _detect_class_methods(tree)
