@@ -3500,6 +3500,12 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
             break
         dynamic_bindings |= grown
 
+    # A name given only list comprehensions that collect values of unknown type is a list
+    # of runtime values.
+    any_lists |= {b for b, values in assigned.items()
+                  if b not in other_sites and values
+                  and all(isinstance(v, ast.ListComp) and dynamic(v.elt) for v in values)}
+
     _declare_block_locals(tree, table, facts, dynamic_bindings)
 
     def known(node: ast.AST) -> bool:
@@ -3678,6 +3684,9 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
         if isinstance(node, (ast.If, ast.While, ast.IfExp, ast.Assert)):
             if not any(isinstance(n, ast.NamedExpr) for n in ast.walk(node.test)):
                 node.test = truth(node.test)
+        elif isinstance(node, ast.comprehension):
+            node.ifs = [test if any(isinstance(n, ast.NamedExpr) for n in ast.walk(test))
+                        else truth(test) for test in node.ifs]
     try:
         Lower().visit(tree)
     except RecursionError:
@@ -4101,6 +4110,12 @@ def _box_mixed_displays(tree: ast.Module, table: Optional[symbols.SymbolTable],
         if len(values) < 2 or any(isinstance(v, ast.Starred) or v is None for v in values):
             return False
         kinds = {kind(v) for v in values}
+        if any(getattr(v, "_dynamic", False) for v in values) and not all(
+                getattr(v, "_dynamic", False) for v in values):
+            # a runtime value beside values of a known plain type or displays: all of
+            # them are runtime values in the display
+            return all(getattr(v, "_dynamic", False) or _is_display(v)
+                       or kind(v) in ("int", "float", "str", "bool", "none") for v in values)
         if "?" in kinds:
             return False
         if kinds <= {"int", "float"} or kinds <= {"int", "bool"}:
@@ -4139,7 +4154,8 @@ def _runtime_classes() -> frozenset:
     if _RUNTIME_API_CLASS_SET is None:
         found = set()
         for name, entry in _runtime_api().items():
-            if name.split(".")[0] not in _RUNTIME_API_MODULES:
+            # (what `Path.stat()` gives is declared as the `os` module's class)
+            if name.split(".")[0] not in _RUNTIME_API_MODULES and not name.startswith("os.stat_result"):
                 continue
             if entry.get("v_type") and entry.get("kind") in ("class", "constructor"):
                 found.add(name)
@@ -4648,6 +4664,8 @@ def _mark_runtime_api(tree: ast.Module, table: Optional[symbols.SymbolTable]) ->
     for node in ast.walk(tree):
         if isinstance(node, (ast.Call, ast.Attribute)):
             type_of(node)
+    # for `_declare_block_locals`: the names that hold a runtime object, by binding
+    tree._runtime_binding_types = dict(binding_types)
 
     def row_item(row: ast.expr, index: int, like: ast.AST) -> ast.Call:
         key = ast.Constant(value=index)
@@ -5379,6 +5397,19 @@ def _declare_block_locals(tree: ast.Module, table: Optional[symbols.SymbolTable]
             type_id = fact.get("assumed", fact.get("inferred"))
             text = _annotation_for_type(facts.types, type_id) if type_id is not None else None
             value: Optional[ast.expr] = None
+            runtime_class = ""
+            if text is None and dynamic_bindings is None:
+                # a runtime object, a list of one, or one that may be None
+                held = getattr(tree, "_runtime_binding_types", {}).get(binding_id, "")
+                parts = [p.strip() for p in held.split("|")]
+                inner = parts[0][5:-1] if parts[0].startswith("list[") else parts[0]
+                if inner in _runtime_classes() and len(parts) <= 2 and parts[1:] in ([], ["None"]) \
+                        and not (parts[0].startswith("list[") and len(parts) == 2):
+                    runtime_class = inner
+                    text = "list[py2v_class]" if parts[0].startswith("list[") else (
+                        "Optional[py2v_class]" if len(parts) == 2 else "py2v_class")
+                    if len(parts) == 2:
+                        value = ast.copy_location(ast.Constant(value=None), fn)
             if dynamic_bindings is not None:
                 if text is not None or binding_id not in dynamic_bindings:
                     continue  # declared by the first run, or not a value of unknown type
@@ -5390,6 +5421,10 @@ def _declare_block_locals(tree: ast.Module, table: Optional[symbols.SymbolTable]
             target._binding = binding_id
             declaration = ast.AnnAssign(target=target, annotation=_annotation_node(text, fn),
                                         value=value, simple=1)
+            for part in ast.walk(declaration.annotation):
+                if isinstance(part, ast.Name) and part.id == "py2v_class":
+                    part.id = runtime_class.rsplit(".", 1)[-1]
+                    part._api = runtime_class
             ast.copy_location(target, fn)
             ast.copy_location(declaration, fn)
             declarations.append(declaration)
