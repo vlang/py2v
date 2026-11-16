@@ -231,3 +231,18 @@ fn check_sqlite_expression_storage_classes() ! {
     assert duplicate.get(0) is i64
     assert duplicate.get(1) is f64
 }
+
+// CPython sqlite3.IntegrityError exposes SQLite's message, not V db.sqlite's
+// appended result code and query text.
+fn test_sqlite_constraint_message_excludes_driver_metadata() {
+    conn := connect(':memory:') or { panic(err.msg()) }
+    defer { conn.close() or {} }
+    _ = conn.execute('CREATE TABLE t(x INTEGER PRIMARY KEY)') or { panic(err.msg()) }
+    _ = conn.execute('INSERT INTO t VALUES (1)') or { panic(err.msg()) }
+    _ = conn.execute('INSERT INTO t VALUES (1)') or {
+        assert pyrt.caught(err, 'sqlite3.IntegrityError') != none
+        assert err.msg() == 'UNIQUE constraint failed: t.x'
+        return
+    }
+    assert false, 'expected UNIQUE constraint failure'
+}

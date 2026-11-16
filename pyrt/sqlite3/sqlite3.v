@@ -151,8 +151,25 @@ fn register_sqlite_errors() {
     pyrt.register_exception('sqlite3.NotSupportedError', ['sqlite3.DatabaseError'])
 }
 
-fn sqlite_error(message string) IError {
+// V's db.sqlite appends a numeric result code and SQL statement. Python's
+// sqlite3 exceptions expose only SQLite's message, so strip that wrapper.
+fn sqlite_message(raw string) string {
+    mut at := 0
+    for {
+        open := raw.index_after(' (', at) or { return raw }
+        close := raw.index_after(') (', open) or { return raw }
+        code := raw[open + 2..close]
+        if code.len > 0 && code.bytes().all(it >= `0` && it <= `9`) {
+            return raw[..open]
+        }
+        at = open + 2
+    }
+    return raw
+}
+
+fn sqlite_error(raw string) IError {
     register_sqlite_errors()
+    message := sqlite_message(raw)
     lower := ascii_lower(message)
     if lower.contains('constraint failed') || lower.contains('unique constraint') || lower.contains('foreign key constraint') {
         return pyrt.raise('sqlite3.IntegrityError', message)
