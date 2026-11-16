@@ -179,7 +179,7 @@ fn test_verbose_syntax_and_escapes() {
     assert pyrt.str((g.search(']# ') or { panic('no match') }).group(0) or { panic(err.msg()) }) == ']# '
 }
 
-// Round 8: leading literal ']' in a VERBOSE class and its escaped spelling.
+// A leading literal ']' in a VERBOSE class, and its escaped spelling.
 fn test_verbose_leading_close_bracket_classes() {
     // python: __import__('re').compile(r'[\] #]+', __import__('re').VERBOSE).fullmatch('] #') is not None
     escaped := compile('[\\] #]+', verbose) or { panic(err.msg()) }

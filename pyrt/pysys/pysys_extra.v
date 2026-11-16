@@ -14,7 +14,7 @@ pub:
 }
 
 pub fn version_info() VersionInfo {
-    // The user's production Python interpreter is CPython 3.15.x.
+    // The CPython release whose behavior this runtime follows.
     return VersionInfo{major: 3, minor: 15}
 }
 

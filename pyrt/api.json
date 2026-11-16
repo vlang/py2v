@@ -577,7 +577,7 @@
     "options_struct": null,
     "options": {},
     "status": "implemented",
-    "notes": "User-compiled local exc_str.v; no replacement of that file in this delta.",
+    "notes": "Implemented in pyrt/exc_str.v.",
     "v_returns": "?T",
     "v_result": "option"
   },
@@ -862,7 +862,7 @@
     "options_struct": null,
     "options": {},
     "status": "implemented",
-    "notes": "User-compiled local exc_str.v; no replacement of that file in this delta.",
+    "notes": "Implemented in pyrt/exc_str.v.",
     "v_returns": "string",
     "v_result": "value"
   },
@@ -1897,7 +1897,7 @@
     "options_struct": null,
     "options": {},
     "status": "implemented",
-    "notes": "User-compiled local dyn.v; no replacement of that file in this delta.",
+    "notes": "Implemented in pyrt/dyn.v.",
     "v_kind": "fn",
     "v_returns": "Value",
     "v_result": "value"
@@ -1947,7 +1947,7 @@
     "options_struct": null,
     "options": {},
     "status": "implemented",
-    "notes": "Generic compile-time V boxing; provided by user-verified box.v in their installation.",
+    "notes": "Generic compile-time V boxing, in pyrt/box.v.",
     "v_kind": "fn"
   },
   {
@@ -2970,7 +2970,7 @@
     "options_struct": null,
     "options": {},
     "status": "implemented",
-    "notes": "User-compiled local dyn.v; no replacement of that file in this delta.",
+    "notes": "Implemented in pyrt/dyn.v.",
     "v_kind": "fn",
     "v_returns": "Value",
     "v_result": "value"
@@ -3020,7 +3020,7 @@
     "options_struct": null,
     "options": {},
     "status": "implemented",
-    "notes": "User-verified non-result dyn.v wrapper; panics on Python exception.",
+    "notes": "Non-result wrapper in pyrt/dyn.v; panics on a Python exception.",
     "v_kind": "fn"
   },
   {
@@ -3036,7 +3036,7 @@
     "options_struct": null,
     "options": {},
     "status": "partial",
-    "notes": "User-local dyn.v method exists, but exact V argument/return signature was not supplied. Do not infer types or generate a call from this partial manifest entry.",
+    "notes": "A pyrt/dyn.v method whose V signature this entry does not record; do not infer types or generate a call from it.",
     "v_kind": "fn",
     "v_returns": "Any",
     "v_result": "value"
@@ -3054,7 +3054,7 @@
     "options_struct": null,
     "options": {},
     "status": "partial",
-    "notes": "User-local dyn.v method exists, but exact V argument/return signature was not supplied. Do not infer types or generate a call from this partial manifest entry.",
+    "notes": "A pyrt/dyn.v method whose V signature this entry does not record; do not infer types or generate a call from it.",
     "v_kind": "fn",
     "v_returns": "Any",
     "v_result": "value"
@@ -3142,7 +3142,7 @@
     "options_struct": null,
     "options": {},
     "status": "implemented",
-    "notes": "User-compiled local exc_str.v; no replacement of that file in this delta.",
+    "notes": "Implemented in pyrt/exc_str.v.",
     "v_kind": "fn",
     "v_returns": "PyError",
     "v_result": "value"
@@ -3160,7 +3160,7 @@
     "options_struct": null,
     "options": {},
     "status": "partial",
-    "notes": "User-local dyn.v method exists, but exact V argument/return signature was not supplied. Do not infer types or generate a call from this partial manifest entry.",
+    "notes": "A pyrt/dyn.v method whose V signature this entry does not record; do not infer types or generate a call from it.",
     "v_kind": "fn",
     "v_returns": "Any",
     "v_result": "value"
@@ -3187,7 +3187,7 @@
     "options_struct": null,
     "options": {},
     "status": "implemented",
-    "notes": "User-compiled local dyn.v; no replacement of that file in this delta.",
+    "notes": "Implemented in pyrt/dyn.v.",
     "v_kind": "fn",
     "v_returns": "?string",
     "v_result": "option"
@@ -3790,7 +3790,7 @@
     "options_struct": null,
     "options": {},
     "status": "implemented",
-    "notes": "User-verified non-result dyn.v wrapper; panics on Python exception.",
+    "notes": "Non-result wrapper in pyrt/dyn.v; panics on a Python exception.",
     "v_kind": "fn"
   },
   {
@@ -3811,7 +3811,7 @@
     "options_struct": null,
     "options": {},
     "status": "implemented",
-    "notes": "User-compiled local dyn.v; no replacement of that file in this delta.",
+    "notes": "Implemented in pyrt/dyn.v.",
     "v_kind": "fn",
     "v_returns": "bool",
     "v_result": "value"
@@ -3883,7 +3883,7 @@
     "options_struct": null,
     "options": {},
     "status": "implemented",
-    "notes": "User-compiled local dyn.v; no replacement of that file in this delta.",
+    "notes": "Implemented in pyrt/dyn.v.",
     "v_kind": "fn",
     "v_returns": "Value",
     "v_result": "value"
@@ -3910,7 +3910,7 @@
     "options_struct": null,
     "options": {},
     "status": "implemented",
-    "notes": "User-verified non-result dyn.v wrapper; panics on Python exception.",
+    "notes": "Non-result wrapper in pyrt/dyn.v; panics on a Python exception.",
     "v_kind": "fn"
   },
   {
@@ -4141,7 +4141,7 @@
     "options_struct": null,
     "options": {},
     "status": "implemented",
-    "notes": "User-verified non-result dyn.v wrapper; panics on Python exception.",
+    "notes": "Non-result wrapper in pyrt/dyn.v; panics on a Python exception.",
     "v_kind": "fn"
   },
   {
@@ -5135,7 +5135,7 @@
     "options_struct": null,
     "options": {},
     "status": "implemented",
-    "notes": "Non-result bridge in method_dyn.v (sibling of existing dyn.v); panics with err.msg() on failure.",
+    "notes": "Non-result bridge in pyrt/method_dyn.v; panics with err.msg() on failure.",
     "v_kind": "fn",
     "v_returns": "Value",
     "v_result": "value",
@@ -5165,7 +5165,7 @@
     "options_struct": null,
     "options": {},
     "status": "implemented",
-    "notes": "User-compiled local dyn.v; no replacement of that file in this delta.",
+    "notes": "Implemented in pyrt/dyn.v.",
     "v_kind": "fn",
     "v_returns": "Value",
     "v_result": "value"
@@ -5192,7 +5192,7 @@
     "options_struct": null,
     "options": {},
     "status": "implemented",
-    "notes": "User-compiled local dyn.v; no replacement of that file in this delta.",
+    "notes": "Implemented in pyrt/dyn.v.",
     "v_kind": "fn",
     "v_returns": "Value",
     "v_result": "value"
@@ -5400,7 +5400,7 @@
     "options_struct": null,
     "options": {},
     "status": "implemented",
-    "notes": "User-compiled local dyn.v; no replacement of that file in this delta.",
+    "notes": "Implemented in pyrt/dyn.v.",
     "v_kind": "fn",
     "v_returns": "Value",
     "v_result": "value"
@@ -5640,7 +5640,7 @@
     "options_struct": null,
     "options": {},
     "status": "implemented",
-    "notes": "User-compiled local dyn.v; no replacement of that file in this delta.",
+    "notes": "Implemented in pyrt/dyn.v.",
     "v_kind": "fn",
     "v_returns": "Value",
     "v_result": "value"
@@ -6033,7 +6033,7 @@
     "options_struct": null,
     "options": {},
     "status": "implemented",
-    "notes": "User-verified non-result dyn.v wrapper; panics on Python exception.",
+    "notes": "Non-result wrapper in pyrt/dyn.v; panics on a Python exception.",
     "v_kind": "fn"
   },
   {
@@ -6062,7 +6062,7 @@
     "options_struct": null,
     "options": {},
     "status": "implemented",
-    "notes": "User-compiled local dyn.v; no replacement of that file in this delta.",
+    "notes": "Implemented in pyrt/dyn.v.",
     "v_kind": "fn",
     "v_returns": "Value",
     "v_result": "value"
@@ -6349,7 +6349,7 @@
     "options_struct": null,
     "options": {},
     "status": "implemented",
-    "notes": "User-compiled local dyn.v; no replacement of that file in this delta.",
+    "notes": "Implemented in pyrt/dyn.v.",
     "v_kind": "fn",
     "v_returns": "string",
     "v_result": "value"
@@ -6376,7 +6376,7 @@
     "options_struct": null,
     "options": {},
     "status": "implemented",
-    "notes": "User-compiled local dyn.v; no replacement of that file in this delta.",
+    "notes": "Implemented in pyrt/dyn.v.",
     "v_kind": "fn",
     "v_returns": "Value",
     "v_result": "value"
@@ -6394,7 +6394,7 @@
     "options_struct": null,
     "options": {},
     "status": "partial",
-    "notes": "User-local dyn.v method exists, but exact V argument/return signature was not supplied. Do not infer types or generate a call from this partial manifest entry.",
+    "notes": "A pyrt/dyn.v method whose V signature this entry does not record; do not infer types or generate a call from it.",
     "v_kind": "fn",
     "v_returns": "Any",
     "v_result": "value"
@@ -6412,7 +6412,7 @@
     "options_struct": null,
     "options": {},
     "status": "partial",
-    "notes": "User-local dyn.v method exists, but exact V argument/return signature was not supplied. Do not infer types or generate a call from this partial manifest entry.",
+    "notes": "A pyrt/dyn.v method whose V signature this entry does not record; do not infer types or generate a call from it.",
     "v_kind": "fn",
     "v_returns": "Any",
     "v_result": "value"
@@ -6430,7 +6430,7 @@
     "options_struct": null,
     "options": {},
     "status": "partial",
-    "notes": "User-local dyn.v method exists, but exact V argument/return signature was not supplied. Do not infer types or generate a call from this partial manifest entry.",
+    "notes": "A pyrt/dyn.v method whose V signature this entry does not record; do not infer types or generate a call from it.",
     "v_kind": "fn",
     "v_returns": "Any",
     "v_result": "value"
@@ -6448,7 +6448,7 @@
     "options_struct": null,
     "options": {},
     "status": "partial",
-    "notes": "User-local dyn.v method exists, but exact V argument/return signature was not supplied. Do not infer types or generate a call from this partial manifest entry.",
+    "notes": "A pyrt/dyn.v method whose V signature this entry does not record; do not infer types or generate a call from it.",
     "v_kind": "fn",
     "v_returns": "Any",
     "v_result": "value"
@@ -6589,7 +6589,7 @@
     "options_struct": null,
     "options": {},
     "status": "partial",
-    "notes": "User-local dyn.v method exists, but exact V argument/return signature was not supplied. Do not infer types or generate a call from this partial manifest entry.",
+    "notes": "A pyrt/dyn.v method whose V signature this entry does not record; do not infer types or generate a call from it.",
     "v_kind": "fn",
     "v_returns": "Any",
     "v_result": "value"
@@ -13368,7 +13368,7 @@
     "options_struct": null,
     "options": {},
     "status": "implemented",
-    "notes": "Dispatch via pyrt.call_method(box(receiver), 'get', boxed_args)!; or non-result pyrt.method(...).  Round 8 direct helpers are opt-in; existing v/call_method route remains unchanged.",
+    "notes": "Dispatch via pyrt.call_method(box(receiver), 'get', boxed_args)!; or non-result pyrt.method(...).  Direct helpers are opt-in; call_method remains the default route.",
     "fast_v_candidates": [
       "get"
     ],
@@ -13388,7 +13388,7 @@
     "options_struct": null,
     "options": {},
     "status": "partial",
-    "notes": "Dispatch via pyrt.call_method(box(receiver), 'items', boxed_args)!; or non-result pyrt.method(...). Snapshot list instead of live view;  Round 8 direct helpers are opt-in; existing v/call_method route remains unchanged.",
+    "notes": "Dispatch via pyrt.call_method(box(receiver), 'items', boxed_args)!; or non-result pyrt.method(...). Snapshot list instead of live view;  Direct helpers are opt-in; call_method remains the default route.",
     "fast_v_candidates": [
       "items"
     ],
@@ -13408,7 +13408,7 @@
     "options_struct": null,
     "options": {},
     "status": "partial",
-    "notes": "Dispatch via pyrt.call_method(box(receiver), 'keys', boxed_args)!; or non-result pyrt.method(...). Snapshot list instead of live view;  Round 8 direct helpers are opt-in; existing v/call_method route remains unchanged.",
+    "notes": "Dispatch via pyrt.call_method(box(receiver), 'keys', boxed_args)!; or non-result pyrt.method(...). Snapshot list instead of live view;  Direct helpers are opt-in; call_method remains the default route.",
     "fast_v_candidates": [
       "keys"
     ],
@@ -13499,7 +13499,7 @@
     "options_struct": null,
     "options": {},
     "status": "partial",
-    "notes": "Dispatch via pyrt.call_method(box(receiver), 'values', boxed_args)!; or non-result pyrt.method(...). Snapshot list instead of live view;  Round 8 direct helpers are opt-in; existing v/call_method route remains unchanged.",
+    "notes": "Dispatch via pyrt.call_method(box(receiver), 'values', boxed_args)!; or non-result pyrt.method(...). Snapshot list instead of live view;  Direct helpers are opt-in; call_method remains the default route.",
     "fast_v_candidates": [
       "values"
     ],
@@ -18241,7 +18241,7 @@
     "options_struct": null,
     "options": {},
     "status": "implemented",
-    "notes": "Round 8: user-provided os.environ adapter. Reads and writes live process environment, not a snapshot.",
+    "notes": "os.environ adapter. Reads and writes the live process environment, not a snapshot.",
     "v_kind": "fn",
     "v_returns": "bool",
     "v_result": "value"
@@ -18264,7 +18264,7 @@
     "options_struct": null,
     "options": {},
     "status": "implemented",
-    "notes": "Round 8: user-provided os.environ adapter. Reads and writes live process environment, not a snapshot.",
+    "notes": "os.environ adapter. Reads and writes the live process environment, not a snapshot.",
     "v_kind": "fn",
     "v_returns": "void",
     "v_result": "value"
@@ -18287,7 +18287,7 @@
     "options_struct": null,
     "options": {},
     "status": "implemented",
-    "notes": "Round 8: user-provided os.environ adapter. Reads and writes live process environment, not a snapshot.",
+    "notes": "os.environ adapter. Reads and writes the live process environment, not a snapshot.",
     "v_kind": "fn",
     "v_returns": "string",
     "v_result": "value"
@@ -18360,7 +18360,7 @@
     "options_struct": null,
     "options": {},
     "status": "implemented",
-    "notes": "Round 8: user-provided os.environ adapter. Reads and writes live process environment, not a snapshot.",
+    "notes": "os.environ adapter. Reads and writes the live process environment, not a snapshot.",
     "v_kind": "fn",
     "v_returns": "string",
     "v_result": "value"
@@ -18799,7 +18799,7 @@
     "options_struct": null,
     "options": {},
     "status": "implemented",
-    "notes": "Round 8: user-provided os.environ adapter. Reads and writes live process environment, not a snapshot.",
+    "notes": "os.environ adapter. Reads and writes the live process environment, not a snapshot.",
     "v_kind": "fn",
     "v_returns": "void",
     "v_result": "value"
@@ -19051,7 +19051,7 @@
     "options_struct": null,
     "options": {},
     "status": "implemented",
-    "notes": "Round 8: user-provided os.environ adapter. Reads and writes live process environment, not a snapshot.",
+    "notes": "os.environ adapter. Reads and writes the live process environment, not a snapshot.",
     "v_kind": "fn",
     "v_returns": "void",
     "v_result": "value"
@@ -22946,7 +22946,7 @@
     "options_struct": null,
     "options": {},
     "status": "implemented",
-    "notes": "Dispatch via pyrt.call_method(box(receiver), 'endswith', boxed_args)!; or non-result pyrt.method(...).  Round 8 direct helpers are opt-in; existing v/call_method route remains unchanged.",
+    "notes": "Dispatch via pyrt.call_method(box(receiver), 'endswith', boxed_args)!; or non-result pyrt.method(...).  Direct helpers are opt-in; call_method remains the default route.",
     "fast_v_candidates": [
       "endswith"
     ],
@@ -23141,7 +23141,7 @@
     "options_struct": null,
     "options": {},
     "status": "implemented",
-    "notes": "Dispatch via pyrt.call_method(box(receiver), 'join', boxed_args)!; or non-result pyrt.method(...).  Round 8 direct helpers are opt-in; existing v/call_method route remains unchanged.",
+    "notes": "Dispatch via pyrt.call_method(box(receiver), 'join', boxed_args)!; or non-result pyrt.method(...).  Direct helpers are opt-in; call_method remains the default route.",
     "fast_v_candidates": [
       "join"
     ],
@@ -23186,7 +23186,7 @@
     "options_struct": null,
     "options": {},
     "status": "partial",
-    "notes": "Dispatch via pyrt.call_method(box(receiver), 'lower', boxed_args)!; or non-result pyrt.method(...). No kwargs/mini-language subset or exact Unicode contextual casing.  Round 8 direct helpers are opt-in; existing v/call_method route remains unchanged.",
+    "notes": "Dispatch via pyrt.call_method(box(receiver), 'lower', boxed_args)!; or non-result pyrt.method(...). No kwargs/mini-language subset or exact Unicode contextual casing.  Direct helpers are opt-in; call_method remains the default route.",
     "fast_v_candidates": [
       "lower"
     ],
@@ -23261,7 +23261,7 @@
     "options_struct": null,
     "options": {},
     "status": "implemented",
-    "notes": "Dispatch via pyrt.call_method(box(receiver), 'replace', boxed_args)!; or non-result pyrt.method(...).  Round 8 direct helpers are opt-in; existing v/call_method route remains unchanged.",
+    "notes": "Dispatch via pyrt.call_method(box(receiver), 'replace', boxed_args)!; or non-result pyrt.method(...).  Direct helpers are opt-in; call_method remains the default route.",
     "fast_v_candidates": [
       "replace",
       "replace_n"
@@ -23395,7 +23395,7 @@
     "options_struct": null,
     "options": {},
     "status": "implemented",
-    "notes": "Dispatch via pyrt.call_method(box(receiver), 'split', boxed_args)!; or non-result pyrt.method(...).  Round 8 direct helpers are opt-in; existing v/call_method route remains unchanged.",
+    "notes": "Dispatch via pyrt.call_method(box(receiver), 'split', boxed_args)!; or non-result pyrt.method(...).  Direct helpers are opt-in; call_method remains the default route.",
     "fast_v_candidates": [
       "split",
       "split_sep",
@@ -23453,7 +23453,7 @@
     "options_struct": null,
     "options": {},
     "status": "implemented",
-    "notes": "Dispatch via pyrt.call_method(box(receiver), 'startswith', boxed_args)!; or non-result pyrt.method(...).  Round 8 direct helpers are opt-in; existing v/call_method route remains unchanged.",
+    "notes": "Dispatch via pyrt.call_method(box(receiver), 'startswith', boxed_args)!; or non-result pyrt.method(...).  Direct helpers are opt-in; call_method remains the default route.",
     "fast_v_candidates": [
       "startswith"
     ],
@@ -23479,7 +23479,7 @@
     "options_struct": null,
     "options": {},
     "status": "implemented",
-    "notes": "Dispatch via pyrt.call_method(box(receiver), 'strip', boxed_args)!; or non-result pyrt.method(...).  Round 8 direct helpers are opt-in; existing v/call_method route remains unchanged.",
+    "notes": "Dispatch via pyrt.call_method(box(receiver), 'strip', boxed_args)!; or non-result pyrt.method(...).  Direct helpers are opt-in; call_method remains the default route.",
     "fast_v_candidates": [
       "strip",
       "strip_chars"
@@ -23515,7 +23515,7 @@
     "options_struct": null,
     "options": {},
     "status": "implemented",
-    "notes": "Dispatch via pyrt.call_method(box(receiver), 'upper', boxed_args)!; or non-result pyrt.method(...).  Round 8 direct helpers are opt-in; existing v/call_method route remains unchanged.",
+    "notes": "Dispatch via pyrt.call_method(box(receiver), 'upper', boxed_args)!; or non-result pyrt.method(...).  Direct helpers are opt-in; call_method remains the default route.",
     "fast_v_candidates": [
       "upper"
     ],
@@ -23729,7 +23729,7 @@
     "options_struct": null,
     "options": {},
     "status": "implemented",
-    "notes": "Uses the user's locally compiled extra V methods, not defined again in this overlay. Coerces text or byte output to a string and returns '' for None; binary decode policy comes from the user's implementation.",
+    "notes": "Coerces text or byte output to a string and returns '' for None.",
     "v_returns": "string",
     "v_result": "value"
   },
@@ -23763,7 +23763,7 @@
     "options_struct": null,
     "options": {},
     "status": "implemented",
-    "notes": "Uses the user's locally compiled extra V methods, not defined again in this overlay. Coerces text or byte output to a string and returns '' for None; binary decode policy comes from the user's implementation.",
+    "notes": "Coerces text or byte output to a string and returns '' for None.",
     "v_returns": "string",
     "v_result": "value"
   },
