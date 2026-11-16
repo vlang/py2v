@@ -178,3 +178,22 @@ fn test_verbose_syntax_and_escapes() {
     g := compile('[]# ]+', verbose) or { panic(err.msg()) }
     assert pyrt.str((g.search(']# ') or { panic('no match') }).group(0) or { panic(err.msg()) }) == ']# '
 }
+
+// Round 8: leading literal ']' in a VERBOSE class and its escaped spelling.
+fn test_verbose_leading_close_bracket_classes() {
+    // python: __import__('re').compile(r'[\] #]+', __import__('re').VERBOSE).fullmatch('] #') is not None
+    escaped := compile('[\\] #]+', verbose) or { panic(err.msg()) }
+    assert escaped.fullmatch('] #') != none
+    // python: __import__('re').compile(r'[]# ]+', __import__('re').VERBOSE).fullmatch('] #') is not None
+    literal := compile('[]# ]+', verbose) or { panic(err.msg()) }
+    assert literal.fullmatch('] #') != none
+    // python: __import__('re').compile(r'[^]]+', __import__('re').VERBOSE).fullmatch('abc') is not None
+    negated := compile('[^]]+', verbose) or { panic(err.msg()) }
+    assert negated.fullmatch('abc') != none
+    // python: __import__('re').compile(r'[^]]+', __import__('re').VERBOSE).fullmatch(']') is None
+    assert negated.fullmatch(']') == none
+    // python: __import__('re').compile(r'[\] #]+', __import__('re').VERBOSE).fullmatch('x') is None
+    assert escaped.fullmatch('x') == none
+    // python: __import__('re').compile(r'[]# ]+', __import__('re').VERBOSE).fullmatch('# ]') is not None
+    assert literal.fullmatch('# ]') != none
+}

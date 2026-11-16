@@ -565,6 +565,23 @@
     "v_access": "field"
   },
   {
+    "python": "__pyrt__.Maybe.opt",
+    "v": "opt",
+    "module": "pyrt",
+    "kind": "method",
+    "receiver": "__pyrt__.Maybe",
+    "raises": false,
+    "returns": "Any | None",
+    "params": [],
+    "variadic": false,
+    "options_struct": null,
+    "options": {},
+    "status": "implemented",
+    "notes": "User-compiled local exc_str.v; no replacement of that file in this delta.",
+    "v_returns": "?T",
+    "v_result": "option"
+  },
+  {
     "python": "__pyrt__.Maybe.value",
     "v": "value",
     "module": "pyrt",
@@ -829,6 +846,23 @@
     "options": {},
     "status": "partial",
     "notes": "Runtime receiver pyrt.PyError. Returns Python-style str(exception), WITHOUT the sample code's ClassName: prefix. One-argument KeyError uses repr; multi-argument errors use tuple repr. Specialized OSError/UnicodeError/group formatting is absent.",
+    "v_returns": "string",
+    "v_result": "value"
+  },
+  {
+    "python": "__pyrt__.PyError.str",
+    "v": "str",
+    "module": "pyrt",
+    "kind": "method",
+    "receiver": "__pyrt__.PyError",
+    "raises": false,
+    "returns": "str",
+    "params": [],
+    "variadic": false,
+    "options_struct": null,
+    "options": {},
+    "status": "implemented",
+    "notes": "User-compiled local exc_str.v; no replacement of that file in this delta.",
     "v_returns": "string",
     "v_result": "value"
   },
@@ -1632,6 +1666,32 @@
     "v_result": "result"
   },
   {
+    "python": "__pyrt__.as_dict",
+    "v": "as_dict",
+    "module": "pyrt",
+    "kind": "function",
+    "receiver": null,
+    "raises": true,
+    "returns": "dict[Any, Any]",
+    "params": [
+      {
+        "name": "v",
+        "type": "Any"
+      }
+    ],
+    "variadic": false,
+    "options_struct": null,
+    "options": {},
+    "status": "implemented",
+    "notes": "Returns a mutable &Dict reference, not a copy.",
+    "v_kind": "fn",
+    "v_returns": "!&Dict",
+    "v_result": "result",
+    "v_return_type": "pyrt.Dict",
+    "v_return_import": "pyrt",
+    "v_return_ref": true
+  },
+  {
     "python": "__pyrt__.as_float",
     "v": "as_float",
     "module": "pyrt",
@@ -1814,6 +1874,60 @@
     "v_kind": "fn",
     "v_result": "result",
     "v_returns": "![]u8"
+  },
+  {
+    "python": "__pyrt__.both",
+    "v": "both",
+    "module": "pyrt",
+    "kind": "function",
+    "receiver": null,
+    "raises": false,
+    "returns": "Any",
+    "params": [
+      {
+        "name": "a",
+        "type": "Any"
+      },
+      {
+        "name": "b",
+        "type": "Any"
+      }
+    ],
+    "variadic": false,
+    "options_struct": null,
+    "options": {},
+    "status": "implemented",
+    "notes": "User-compiled local dyn.v; no replacement of that file in this delta.",
+    "v_kind": "fn",
+    "v_returns": "Value",
+    "v_result": "value"
+  },
+  {
+    "python": "__pyrt__.both_lazy",
+    "v": "both_lazy",
+    "module": "pyrt",
+    "kind": "function",
+    "receiver": null,
+    "raises": false,
+    "returns": "Any",
+    "params": [
+      {
+        "name": "left",
+        "type": "Any"
+      },
+      {
+        "name": "right",
+        "type": "Callable[[], Any]"
+      }
+    ],
+    "variadic": false,
+    "options_struct": null,
+    "options": {},
+    "status": "implemented",
+    "notes": "Python a and b, short-circuiting; py2v hoists left operand before call.",
+    "v_kind": "fn",
+    "v_returns": "Value",
+    "v_result": "value"
   },
   {
     "python": "__pyrt__.box",
@@ -2766,6 +2880,129 @@
     "v_result": "value"
   },
   {
+    "python": "__pyrt__.dict_items",
+    "v": "dict_items",
+    "module": "pyrt",
+    "kind": "function",
+    "receiver": null,
+    "raises": true,
+    "returns": "list[tuple[Any, Any]]",
+    "params": [
+      {
+        "name": "v",
+        "type": "Any"
+      }
+    ],
+    "variadic": false,
+    "options_struct": null,
+    "options": {},
+    "status": "implemented",
+    "notes": "Ordered native array snapshot of boxed tuple pairs.",
+    "v_kind": "fn",
+    "v_returns": "![]Value",
+    "v_result": "result"
+  },
+  {
+    "python": "__pyrt__.dict_keys",
+    "v": "dict_keys",
+    "module": "pyrt",
+    "kind": "function",
+    "receiver": null,
+    "raises": true,
+    "returns": "list[Any]",
+    "params": [
+      {
+        "name": "v",
+        "type": "Any"
+      }
+    ],
+    "variadic": false,
+    "options_struct": null,
+    "options": {},
+    "status": "implemented",
+    "notes": "Ordered native array snapshot.",
+    "v_kind": "fn",
+    "v_returns": "![]Value",
+    "v_result": "result"
+  },
+  {
+    "python": "__pyrt__.dict_values",
+    "v": "dict_values",
+    "module": "pyrt",
+    "kind": "function",
+    "receiver": null,
+    "raises": true,
+    "returns": "list[Any]",
+    "params": [
+      {
+        "name": "v",
+        "type": "Any"
+      }
+    ],
+    "variadic": false,
+    "options_struct": null,
+    "options": {},
+    "status": "implemented",
+    "notes": "Ordered native array snapshot.",
+    "v_kind": "fn",
+    "v_returns": "![]Value",
+    "v_result": "result"
+  },
+  {
+    "python": "__pyrt__.either",
+    "v": "either",
+    "module": "pyrt",
+    "kind": "function",
+    "receiver": null,
+    "raises": false,
+    "returns": "Any",
+    "params": [
+      {
+        "name": "a",
+        "type": "Any"
+      },
+      {
+        "name": "b",
+        "type": "Any"
+      }
+    ],
+    "variadic": false,
+    "options_struct": null,
+    "options": {},
+    "status": "implemented",
+    "notes": "User-compiled local dyn.v; no replacement of that file in this delta.",
+    "v_kind": "fn",
+    "v_returns": "Value",
+    "v_result": "value"
+  },
+  {
+    "python": "__pyrt__.either_lazy",
+    "v": "either_lazy",
+    "module": "pyrt",
+    "kind": "function",
+    "receiver": null,
+    "raises": false,
+    "returns": "Any",
+    "params": [
+      {
+        "name": "left",
+        "type": "Any"
+      },
+      {
+        "name": "right",
+        "type": "Callable[[], Any]"
+      }
+    ],
+    "variadic": false,
+    "options_struct": null,
+    "options": {},
+    "status": "implemented",
+    "notes": "Python a or b, short-circuiting; py2v hoists left operand before call.",
+    "v_kind": "fn",
+    "v_returns": "Value",
+    "v_result": "value"
+  },
+  {
     "python": "__pyrt__.elements",
     "v": "elements",
     "module": "pyrt",
@@ -2785,6 +3022,69 @@
     "status": "implemented",
     "notes": "User-verified non-result dyn.v wrapper; panics on Python exception.",
     "v_kind": "fn"
+  },
+  {
+    "python": "__pyrt__.empty_dict",
+    "v": "empty_dict",
+    "module": "pyrt",
+    "kind": "function",
+    "receiver": null,
+    "raises": false,
+    "returns": "Any",
+    "params": [],
+    "variadic": false,
+    "options_struct": null,
+    "options": {},
+    "status": "partial",
+    "notes": "User-local dyn.v method exists, but exact V argument/return signature was not supplied. Do not infer types or generate a call from this partial manifest entry.",
+    "v_kind": "fn",
+    "v_returns": "Any",
+    "v_result": "value"
+  },
+  {
+    "python": "__pyrt__.empty_list",
+    "v": "empty_list",
+    "module": "pyrt",
+    "kind": "function",
+    "receiver": null,
+    "raises": false,
+    "returns": "Any",
+    "params": [],
+    "variadic": false,
+    "options_struct": null,
+    "options": {},
+    "status": "partial",
+    "notes": "User-local dyn.v method exists, but exact V argument/return signature was not supplied. Do not infer types or generate a call from this partial manifest entry.",
+    "v_kind": "fn",
+    "v_returns": "Any",
+    "v_result": "value"
+  },
+  {
+    "python": "__pyrt__.endswith",
+    "v": "endswith",
+    "module": "pyrt",
+    "kind": "function",
+    "receiver": null,
+    "raises": true,
+    "returns": "bool",
+    "params": [
+      {
+        "name": "v",
+        "type": "Any"
+      },
+      {
+        "name": "suffix",
+        "type": "str | tuple[str, ...]"
+      }
+    ],
+    "variadic": false,
+    "options_struct": null,
+    "options": {},
+    "status": "implemented",
+    "notes": "Direct suffix check, no start/end bounds.",
+    "v_kind": "fn",
+    "v_returns": "!bool",
+    "v_result": "result"
   },
   {
     "python": "__pyrt__.exception",
@@ -2815,6 +3115,82 @@
     "v_return_type": "pyrt.PyError",
     "v_return_import": "pyrt",
     "v_return_ref": false
+  },
+  {
+    "python": "__pyrt__.exception_of",
+    "v": "exception_of",
+    "module": "pyrt",
+    "kind": "function",
+    "receiver": null,
+    "raises": false,
+    "returns": "BaseException",
+    "params": [
+      {
+        "name": "class_name",
+        "type": "str"
+      },
+      {
+        "name": "bases",
+        "type": "list[str]"
+      },
+      {
+        "name": "args",
+        "type": "list[Any]"
+      }
+    ],
+    "variadic": false,
+    "options_struct": null,
+    "options": {},
+    "status": "implemented",
+    "notes": "User-compiled local exc_str.v; no replacement of that file in this delta.",
+    "v_kind": "fn",
+    "v_returns": "PyError",
+    "v_result": "value"
+  },
+  {
+    "python": "__pyrt__.fail",
+    "v": "fail",
+    "module": "pyrt",
+    "kind": "function",
+    "receiver": null,
+    "raises": false,
+    "returns": "Any",
+    "params": [],
+    "variadic": false,
+    "options_struct": null,
+    "options": {},
+    "status": "partial",
+    "notes": "User-local dyn.v method exists, but exact V argument/return signature was not supplied. Do not infer types or generate a call from this partial manifest entry.",
+    "v_kind": "fn",
+    "v_returns": "Any",
+    "v_result": "value"
+  },
+  {
+    "python": "__pyrt__.first_text",
+    "v": "first_text",
+    "module": "pyrt",
+    "kind": "function",
+    "receiver": null,
+    "raises": false,
+    "returns": "str | None",
+    "params": [
+      {
+        "name": "a",
+        "type": "str | None"
+      },
+      {
+        "name": "b",
+        "type": "str | None"
+      }
+    ],
+    "variadic": false,
+    "options_struct": null,
+    "options": {},
+    "status": "implemented",
+    "notes": "User-compiled local dyn.v; no replacement of that file in this delta.",
+    "v_kind": "fn",
+    "v_returns": "?string",
+    "v_result": "option"
   },
   {
     "python": "__pyrt__.from_bool",
@@ -3324,6 +3700,37 @@
     "v_return_ref": false
   },
   {
+    "python": "__pyrt__.get",
+    "v": "get",
+    "module": "pyrt",
+    "kind": "function",
+    "receiver": null,
+    "raises": false,
+    "returns": "Any",
+    "params": [
+      {
+        "name": "v",
+        "type": "Any"
+      },
+      {
+        "name": "key",
+        "type": "Any"
+      },
+      {
+        "name": "default",
+        "type": "Any"
+      }
+    ],
+    "variadic": false,
+    "options_struct": null,
+    "options": {},
+    "status": "implemented",
+    "notes": "Non-result dict.get; wrong receiver raises AttributeError through pyrt.fail; a missing key returns default.",
+    "v_kind": "fn",
+    "v_returns": "Value",
+    "v_result": "value"
+  },
+  {
     "python": "__pyrt__.getslice",
     "v": "getslice",
     "module": "pyrt",
@@ -3387,6 +3794,29 @@
     "v_kind": "fn"
   },
   {
+    "python": "__pyrt__.has_text",
+    "v": "has_text",
+    "module": "pyrt",
+    "kind": "function",
+    "receiver": null,
+    "raises": false,
+    "returns": "bool",
+    "params": [
+      {
+        "name": "a",
+        "type": "str | None"
+      }
+    ],
+    "variadic": false,
+    "options_struct": null,
+    "options": {},
+    "status": "implemented",
+    "notes": "User-compiled local dyn.v; no replacement of that file in this delta.",
+    "v_kind": "fn",
+    "v_returns": "bool",
+    "v_result": "value"
+  },
+  {
     "python": "__pyrt__.hash_key",
     "v": "hash_key",
     "module": "pyrt",
@@ -3428,6 +3858,37 @@
     "v_result": "value"
   },
   {
+    "python": "__pyrt__.invoke",
+    "v": "invoke",
+    "module": "pyrt",
+    "kind": "function",
+    "receiver": null,
+    "raises": false,
+    "returns": "Any",
+    "params": [
+      {
+        "name": "v",
+        "type": "Any"
+      },
+      {
+        "name": "name",
+        "type": "str"
+      },
+      {
+        "name": "args",
+        "type": "list[Any]"
+      }
+    ],
+    "variadic": true,
+    "options_struct": null,
+    "options": {},
+    "status": "implemented",
+    "notes": "User-compiled local dyn.v; no replacement of that file in this delta.",
+    "v_kind": "fn",
+    "v_returns": "Value",
+    "v_result": "value"
+  },
+  {
     "python": "__pyrt__.item_at",
     "v": "item_at",
     "module": "pyrt",
@@ -3451,6 +3912,56 @@
     "status": "implemented",
     "notes": "User-verified non-result dyn.v wrapper; panics on Python exception.",
     "v_kind": "fn"
+  },
+  {
+    "python": "__pyrt__.items",
+    "v": "items",
+    "module": "pyrt",
+    "kind": "function",
+    "receiver": null,
+    "raises": true,
+    "returns": "list[tuple[Any, Any]]",
+    "params": [
+      {
+        "name": "v",
+        "type": "Any"
+      }
+    ],
+    "variadic": false,
+    "options_struct": null,
+    "options": {},
+    "status": "implemented",
+    "notes": "Boxed list snapshot, not live dict_items.",
+    "v_kind": "fn",
+    "v_returns": "!Value",
+    "v_result": "result"
+  },
+  {
+    "python": "__pyrt__.join",
+    "v": "join",
+    "module": "pyrt",
+    "kind": "function",
+    "receiver": null,
+    "raises": true,
+    "returns": "str",
+    "params": [
+      {
+        "name": "v",
+        "type": "Any"
+      },
+      {
+        "name": "iterable",
+        "type": "Iterable[str]"
+      }
+    ],
+    "variadic": false,
+    "options_struct": null,
+    "options": {},
+    "status": "implemented",
+    "notes": "String separator join, checks all elements are strings.",
+    "v_kind": "fn",
+    "v_returns": "!Value",
+    "v_result": "result"
   },
   {
     "python": "__pyrt__.json.DumpOptions",
@@ -3588,6 +4099,29 @@
     "v_kind": "fn",
     "v_returns": "IError",
     "v_result": "value"
+  },
+  {
+    "python": "__pyrt__.keys",
+    "v": "keys",
+    "module": "pyrt",
+    "kind": "function",
+    "receiver": null,
+    "raises": true,
+    "returns": "list[Any]",
+    "params": [
+      {
+        "name": "v",
+        "type": "Any"
+      }
+    ],
+    "variadic": false,
+    "options_struct": null,
+    "options": {},
+    "status": "implemented",
+    "notes": "Boxed list snapshot, not live dict_keys.",
+    "v_kind": "fn",
+    "v_returns": "!Value",
+    "v_result": "result"
   },
   {
     "python": "__pyrt__.length",
@@ -4451,6 +4985,29 @@
     "v_result": "value"
   },
   {
+    "python": "__pyrt__.lower",
+    "v": "lower",
+    "module": "pyrt",
+    "kind": "function",
+    "receiver": null,
+    "raises": true,
+    "returns": "str",
+    "params": [
+      {
+        "name": "v",
+        "type": "Any"
+      }
+    ],
+    "variadic": false,
+    "options_struct": null,
+    "options": {},
+    "status": "implemented",
+    "notes": "Direct builtin Unicode casing helper; no string method-name dispatch.",
+    "v_kind": "fn",
+    "v_returns": "!Value",
+    "v_result": "result"
+  },
+  {
     "python": "__pyrt__.mcp.types.TextContent.as_value",
     "v": "as_value",
     "module": "pyrt.mcptypes",
@@ -4585,6 +5142,60 @@
     "v_return_type": "pyrt.Value",
     "v_return_import": "pyrt",
     "v_return_ref": false
+  },
+  {
+    "python": "__pyrt__.minus",
+    "v": "minus",
+    "module": "pyrt",
+    "kind": "function",
+    "receiver": null,
+    "raises": false,
+    "returns": "Any",
+    "params": [
+      {
+        "name": "a",
+        "type": "Any"
+      },
+      {
+        "name": "b",
+        "type": "Any"
+      }
+    ],
+    "variadic": false,
+    "options_struct": null,
+    "options": {},
+    "status": "implemented",
+    "notes": "User-compiled local dyn.v; no replacement of that file in this delta.",
+    "v_kind": "fn",
+    "v_returns": "Value",
+    "v_result": "value"
+  },
+  {
+    "python": "__pyrt__.modulo",
+    "v": "modulo",
+    "module": "pyrt",
+    "kind": "function",
+    "receiver": null,
+    "raises": false,
+    "returns": "Any",
+    "params": [
+      {
+        "name": "a",
+        "type": "Any"
+      },
+      {
+        "name": "b",
+        "type": "Any"
+      }
+    ],
+    "variadic": false,
+    "options_struct": null,
+    "options": {},
+    "status": "implemented",
+    "notes": "User-compiled local dyn.v; no replacement of that file in this delta.",
+    "v_kind": "fn",
+    "v_returns": "Value",
+    "v_result": "value"
   },
   {
     "python": "__pyrt__.new_dict",
@@ -4768,6 +5379,33 @@
     "v_result": "value"
   },
   {
+    "python": "__pyrt__.over",
+    "v": "over",
+    "module": "pyrt",
+    "kind": "function",
+    "receiver": null,
+    "raises": false,
+    "returns": "Any",
+    "params": [
+      {
+        "name": "a",
+        "type": "Any"
+      },
+      {
+        "name": "b",
+        "type": "Any"
+      }
+    ],
+    "variadic": false,
+    "options_struct": null,
+    "options": {},
+    "status": "implemented",
+    "notes": "User-compiled local dyn.v; no replacement of that file in this delta.",
+    "v_kind": "fn",
+    "v_returns": "Value",
+    "v_result": "value"
+  },
+  {
     "python": "__pyrt__.pathlib.MkdirOptions",
     "v": "MkdirOptions",
     "module": "pyrt.pathlib",
@@ -4870,6 +5508,22 @@
     "v_ref": false
   },
   {
+    "python": "__pyrt__.pathlib.Stat.st_mtime",
+    "v": "mtime",
+    "module": "pyrt.pathlib",
+    "kind": "property",
+    "receiver": "__pyrt__.pathlib.Stat",
+    "raises": false,
+    "returns": "float",
+    "params": [],
+    "variadic": false,
+    "options_struct": null,
+    "options": {},
+    "status": "implemented",
+    "notes": "Concrete pathlib.Stat field mtime, avoiding macOS sys/stat.h st_mtime macro.",
+    "v_access": "field"
+  },
+  {
     "python": "__pyrt__.pathlib.TouchOptions",
     "v": "TouchOptions",
     "module": "pyrt.pathlib",
@@ -4965,6 +5619,33 @@
     "v_result": "result"
   },
   {
+    "python": "__pyrt__.plus",
+    "v": "plus",
+    "module": "pyrt",
+    "kind": "function",
+    "receiver": null,
+    "raises": false,
+    "returns": "Any",
+    "params": [
+      {
+        "name": "a",
+        "type": "Any"
+      },
+      {
+        "name": "b",
+        "type": "Any"
+      }
+    ],
+    "variadic": false,
+    "options_struct": null,
+    "options": {},
+    "status": "implemented",
+    "notes": "User-compiled local dyn.v; no replacement of that file in this delta.",
+    "v_kind": "fn",
+    "v_returns": "Value",
+    "v_result": "value"
+  },
+  {
     "python": "__pyrt__.pyos.PathStat",
     "v": "PathStat",
     "module": "pyrt.pyos",
@@ -4995,7 +5676,7 @@
     "options_struct": null,
     "options": {},
     "status": "implemented",
-    "notes": "",
+    "notes": "The concrete V field is mtime to avoid the macOS sys/stat.h st_mtime macro. macOS st_mtime macro collision; actual V field is mtime.",
     "v_access": "field"
   },
   {
@@ -5234,6 +5915,72 @@
     "v_result": "value"
   },
   {
+    "python": "__pyrt__.replace",
+    "v": "replace",
+    "module": "pyrt",
+    "kind": "function",
+    "receiver": null,
+    "raises": true,
+    "returns": "str",
+    "params": [
+      {
+        "name": "v",
+        "type": "Any"
+      },
+      {
+        "name": "old",
+        "type": "str"
+      },
+      {
+        "name": "new",
+        "type": "str"
+      }
+    ],
+    "variadic": false,
+    "options_struct": null,
+    "options": {},
+    "status": "implemented",
+    "notes": "Replace all occurrences; replace_n adds explicit count.",
+    "v_kind": "fn",
+    "v_returns": "!Value",
+    "v_result": "result"
+  },
+  {
+    "python": "__pyrt__.replace_n",
+    "v": "replace_n",
+    "module": "pyrt",
+    "kind": "function",
+    "receiver": null,
+    "raises": true,
+    "returns": "str",
+    "params": [
+      {
+        "name": "v",
+        "type": "Any"
+      },
+      {
+        "name": "old",
+        "type": "str"
+      },
+      {
+        "name": "new",
+        "type": "str"
+      },
+      {
+        "name": "count",
+        "type": "int"
+      }
+    ],
+    "variadic": false,
+    "options_struct": null,
+    "options": {},
+    "status": "implemented",
+    "notes": "Replace at most count occurrences.",
+    "v_kind": "fn",
+    "v_returns": "!Value",
+    "v_result": "result"
+  },
+  {
     "python": "__pyrt__.secrets.compare_digest_str",
     "v": "compare_digest_str",
     "module": "pyrt.secrets",
@@ -5290,6 +6037,37 @@
     "v_kind": "fn"
   },
   {
+    "python": "__pyrt__.slice_of",
+    "v": "slice_of",
+    "module": "pyrt",
+    "kind": "function",
+    "receiver": null,
+    "raises": false,
+    "returns": "Any",
+    "params": [
+      {
+        "name": "v",
+        "type": "Any"
+      },
+      {
+        "name": "lo",
+        "type": "Any"
+      },
+      {
+        "name": "hi",
+        "type": "Any"
+      }
+    ],
+    "variadic": false,
+    "options_struct": null,
+    "options": {},
+    "status": "implemented",
+    "notes": "User-compiled local dyn.v; no replacement of that file in this delta.",
+    "v_kind": "fn",
+    "v_returns": "Value",
+    "v_result": "value"
+  },
+  {
     "python": "__pyrt__.some",
     "v": "some",
     "module": "pyrt",
@@ -5311,6 +6089,87 @@
     "v_kind": "fn",
     "v_returns": "Maybe[T]",
     "v_result": "value"
+  },
+  {
+    "python": "__pyrt__.split",
+    "v": "split",
+    "module": "pyrt",
+    "kind": "function",
+    "receiver": null,
+    "raises": true,
+    "returns": "list[str]",
+    "params": [
+      {
+        "name": "v",
+        "type": "Any"
+      }
+    ],
+    "variadic": false,
+    "options_struct": null,
+    "options": {},
+    "status": "implemented",
+    "notes": "Default whitespace split, unlimited.",
+    "v_kind": "fn",
+    "v_returns": "!Value",
+    "v_result": "result"
+  },
+  {
+    "python": "__pyrt__.split_n",
+    "v": "split_n",
+    "module": "pyrt",
+    "kind": "function",
+    "receiver": null,
+    "raises": true,
+    "returns": "list[str]",
+    "params": [
+      {
+        "name": "v",
+        "type": "Any"
+      },
+      {
+        "name": "sep",
+        "type": "str | None"
+      },
+      {
+        "name": "maxsplit",
+        "type": "int"
+      }
+    ],
+    "variadic": false,
+    "options_struct": null,
+    "options": {},
+    "status": "implemented",
+    "notes": "Separator and maxsplit.",
+    "v_kind": "fn",
+    "v_returns": "!Value",
+    "v_result": "result"
+  },
+  {
+    "python": "__pyrt__.split_sep",
+    "v": "split_sep",
+    "module": "pyrt",
+    "kind": "function",
+    "receiver": null,
+    "raises": true,
+    "returns": "list[str]",
+    "params": [
+      {
+        "name": "v",
+        "type": "Any"
+      },
+      {
+        "name": "sep",
+        "type": "str | None"
+      }
+    ],
+    "variadic": false,
+    "options_struct": null,
+    "options": {},
+    "status": "implemented",
+    "notes": "Separator-based split, unlimited.",
+    "v_kind": "fn",
+    "v_returns": "!Value",
+    "v_result": "result"
   },
   {
     "python": "__pyrt__.sqlite3.Connection.lastrowid",
@@ -5392,6 +6251,282 @@
     "v_kind": "const"
   },
   {
+    "python": "__pyrt__.startswith",
+    "v": "startswith",
+    "module": "pyrt",
+    "kind": "function",
+    "receiver": null,
+    "raises": true,
+    "returns": "bool",
+    "params": [
+      {
+        "name": "v",
+        "type": "Any"
+      },
+      {
+        "name": "prefix",
+        "type": "str | tuple[str, ...]"
+      }
+    ],
+    "variadic": false,
+    "options_struct": null,
+    "options": {},
+    "status": "implemented",
+    "notes": "Direct prefix check, no start/end bounds.",
+    "v_kind": "fn",
+    "v_returns": "!bool",
+    "v_result": "result"
+  },
+  {
+    "python": "__pyrt__.strip",
+    "v": "strip",
+    "module": "pyrt",
+    "kind": "function",
+    "receiver": null,
+    "raises": true,
+    "returns": "str",
+    "params": [
+      {
+        "name": "v",
+        "type": "Any"
+      }
+    ],
+    "variadic": false,
+    "options_struct": null,
+    "options": {},
+    "status": "implemented",
+    "notes": "Whitespace-only form; strip_chars accepts explicit chars.",
+    "v_kind": "fn",
+    "v_returns": "!Value",
+    "v_result": "result"
+  },
+  {
+    "python": "__pyrt__.strip_chars",
+    "v": "strip_chars",
+    "module": "pyrt",
+    "kind": "function",
+    "receiver": null,
+    "raises": true,
+    "returns": "str",
+    "params": [
+      {
+        "name": "v",
+        "type": "Any"
+      },
+      {
+        "name": "chars",
+        "type": "str | None"
+      }
+    ],
+    "variadic": false,
+    "options_struct": null,
+    "options": {},
+    "status": "implemented",
+    "notes": "Direct strip with explicit character set.",
+    "v_kind": "fn",
+    "v_returns": "!Value",
+    "v_result": "result"
+  },
+  {
+    "python": "__pyrt__.text_or",
+    "v": "text_or",
+    "module": "pyrt",
+    "kind": "function",
+    "receiver": null,
+    "raises": false,
+    "returns": "str",
+    "params": [
+      {
+        "name": "a",
+        "type": "str | None"
+      },
+      {
+        "name": "b",
+        "type": "str"
+      }
+    ],
+    "variadic": false,
+    "options_struct": null,
+    "options": {},
+    "status": "implemented",
+    "notes": "User-compiled local dyn.v; no replacement of that file in this delta.",
+    "v_kind": "fn",
+    "v_returns": "string",
+    "v_result": "value"
+  },
+  {
+    "python": "__pyrt__.times",
+    "v": "times",
+    "module": "pyrt",
+    "kind": "function",
+    "receiver": null,
+    "raises": false,
+    "returns": "Any",
+    "params": [
+      {
+        "name": "a",
+        "type": "Any"
+      },
+      {
+        "name": "b",
+        "type": "Any"
+      }
+    ],
+    "variadic": false,
+    "options_struct": null,
+    "options": {},
+    "status": "implemented",
+    "notes": "User-compiled local dyn.v; no replacement of that file in this delta.",
+    "v_kind": "fn",
+    "v_returns": "Value",
+    "v_result": "value"
+  },
+  {
+    "python": "__pyrt__.to_bool",
+    "v": "to_bool",
+    "module": "pyrt",
+    "kind": "function",
+    "receiver": null,
+    "raises": false,
+    "returns": "Any",
+    "params": [],
+    "variadic": false,
+    "options_struct": null,
+    "options": {},
+    "status": "partial",
+    "notes": "User-local dyn.v method exists, but exact V argument/return signature was not supplied. Do not infer types or generate a call from this partial manifest entry.",
+    "v_kind": "fn",
+    "v_returns": "Any",
+    "v_result": "value"
+  },
+  {
+    "python": "__pyrt__.to_float",
+    "v": "to_float",
+    "module": "pyrt",
+    "kind": "function",
+    "receiver": null,
+    "raises": false,
+    "returns": "Any",
+    "params": [],
+    "variadic": false,
+    "options_struct": null,
+    "options": {},
+    "status": "partial",
+    "notes": "User-local dyn.v method exists, but exact V argument/return signature was not supplied. Do not infer types or generate a call from this partial manifest entry.",
+    "v_kind": "fn",
+    "v_returns": "Any",
+    "v_result": "value"
+  },
+  {
+    "python": "__pyrt__.to_int",
+    "v": "to_int",
+    "module": "pyrt",
+    "kind": "function",
+    "receiver": null,
+    "raises": false,
+    "returns": "Any",
+    "params": [],
+    "variadic": false,
+    "options_struct": null,
+    "options": {},
+    "status": "partial",
+    "notes": "User-local dyn.v method exists, but exact V argument/return signature was not supplied. Do not infer types or generate a call from this partial manifest entry.",
+    "v_kind": "fn",
+    "v_returns": "Any",
+    "v_result": "value"
+  },
+  {
+    "python": "__pyrt__.to_str",
+    "v": "to_str",
+    "module": "pyrt",
+    "kind": "function",
+    "receiver": null,
+    "raises": false,
+    "returns": "Any",
+    "params": [],
+    "variadic": false,
+    "options_struct": null,
+    "options": {},
+    "status": "partial",
+    "notes": "User-local dyn.v method exists, but exact V argument/return signature was not supplied. Do not infer types or generate a call from this partial manifest entry.",
+    "v_kind": "fn",
+    "v_returns": "Any",
+    "v_result": "value"
+  },
+  {
+    "python": "__pyrt__.tuple_item",
+    "v": "tuple_item",
+    "module": "pyrt",
+    "kind": "function",
+    "receiver": null,
+    "raises": true,
+    "returns": "Any",
+    "params": [
+      {
+        "name": "v",
+        "type": "Any"
+      },
+      {
+        "name": "index",
+        "type": "int"
+      }
+    ],
+    "variadic": false,
+    "options_struct": null,
+    "options": {},
+    "status": "implemented",
+    "notes": "Supports negative tuple positions.",
+    "v_kind": "fn",
+    "v_returns": "!Value",
+    "v_result": "result"
+  },
+  {
+    "python": "__pyrt__.tuple_items",
+    "v": "tuple_items",
+    "module": "pyrt",
+    "kind": "function",
+    "receiver": null,
+    "raises": true,
+    "returns": "list[Any]",
+    "params": [
+      {
+        "name": "v",
+        "type": "Any"
+      }
+    ],
+    "variadic": false,
+    "options_struct": null,
+    "options": {},
+    "status": "implemented",
+    "notes": "Native snapshot of tuple elements.",
+    "v_kind": "fn",
+    "v_returns": "![]Value",
+    "v_result": "result"
+  },
+  {
+    "python": "__pyrt__.tuple_of",
+    "v": "tuple_of",
+    "module": "pyrt",
+    "kind": "function",
+    "receiver": null,
+    "raises": false,
+    "returns": "tuple[Any, ...]",
+    "params": [
+      {
+        "name": "values",
+        "type": "Any"
+      }
+    ],
+    "variadic": true,
+    "options_struct": null,
+    "options": {},
+    "status": "implemented",
+    "notes": "Variadic Value constructor for mixed-type fixed tuples; no mutable array exposure.",
+    "v_kind": "fn",
+    "v_returns": "Value",
+    "v_result": "value"
+  },
+  {
     "python": "__pyrt__.type_name",
     "v": "type_name",
     "module": "pyrt",
@@ -5413,6 +6548,97 @@
     "v_kind": "fn",
     "v_returns": "string",
     "v_result": "value"
+  },
+  {
+    "python": "__pyrt__.unpack",
+    "v": "unpack",
+    "module": "pyrt",
+    "kind": "function",
+    "receiver": null,
+    "raises": true,
+    "returns": "list[Any]",
+    "params": [
+      {
+        "name": "v",
+        "type": "Any"
+      },
+      {
+        "name": "expected",
+        "type": "int"
+      }
+    ],
+    "variadic": false,
+    "options_struct": null,
+    "options": {},
+    "status": "implemented",
+    "notes": "Exact-arity unpacking with Python ValueError.",
+    "v_kind": "fn",
+    "v_returns": "![]Value",
+    "v_result": "result"
+  },
+  {
+    "python": "__pyrt__.unreachable",
+    "v": "unreachable",
+    "module": "pyrt",
+    "kind": "function",
+    "receiver": null,
+    "raises": false,
+    "returns": "Any",
+    "params": [],
+    "variadic": false,
+    "options_struct": null,
+    "options": {},
+    "status": "partial",
+    "notes": "User-local dyn.v method exists, but exact V argument/return signature was not supplied. Do not infer types or generate a call from this partial manifest entry.",
+    "v_kind": "fn",
+    "v_returns": "Any",
+    "v_result": "value"
+  },
+  {
+    "python": "__pyrt__.upper",
+    "v": "upper",
+    "module": "pyrt",
+    "kind": "function",
+    "receiver": null,
+    "raises": true,
+    "returns": "str",
+    "params": [
+      {
+        "name": "v",
+        "type": "Any"
+      }
+    ],
+    "variadic": false,
+    "options_struct": null,
+    "options": {},
+    "status": "implemented",
+    "notes": "Direct builtin Unicode casing helper; no string method-name dispatch.",
+    "v_kind": "fn",
+    "v_returns": "!Value",
+    "v_result": "result"
+  },
+  {
+    "python": "__pyrt__.values",
+    "v": "values",
+    "module": "pyrt",
+    "kind": "function",
+    "receiver": null,
+    "raises": true,
+    "returns": "list[Any]",
+    "params": [
+      {
+        "name": "v",
+        "type": "Any"
+      }
+    ],
+    "variadic": false,
+    "options_struct": null,
+    "options": {},
+    "status": "implemented",
+    "notes": "Boxed list snapshot, not live dict_values.",
+    "v_kind": "fn",
+    "v_returns": "!Value",
+    "v_result": "result"
   },
   {
     "python": "argparse.Action",
@@ -12142,7 +13368,12 @@
     "options_struct": null,
     "options": {},
     "status": "implemented",
-    "notes": "Dispatch via pyrt.call_method(box(receiver), 'get', boxed_args)!; or non-result pyrt.method(...). "
+    "notes": "Dispatch via pyrt.call_method(box(receiver), 'get', boxed_args)!; or non-result pyrt.method(...).  Round 8 direct helpers are opt-in; existing v/call_method route remains unchanged.",
+    "fast_v_candidates": [
+      "get"
+    ],
+    "fast_module": "pyrt",
+    "fast_receiver_as_arg": true
   },
   {
     "python": "dict.items",
@@ -12157,7 +13388,12 @@
     "options_struct": null,
     "options": {},
     "status": "partial",
-    "notes": "Dispatch via pyrt.call_method(box(receiver), 'items', boxed_args)!; or non-result pyrt.method(...). Snapshot list instead of live view; "
+    "notes": "Dispatch via pyrt.call_method(box(receiver), 'items', boxed_args)!; or non-result pyrt.method(...). Snapshot list instead of live view;  Round 8 direct helpers are opt-in; existing v/call_method route remains unchanged.",
+    "fast_v_candidates": [
+      "items"
+    ],
+    "fast_module": "pyrt",
+    "fast_receiver_as_arg": true
   },
   {
     "python": "dict.keys",
@@ -12172,7 +13408,12 @@
     "options_struct": null,
     "options": {},
     "status": "partial",
-    "notes": "Dispatch via pyrt.call_method(box(receiver), 'keys', boxed_args)!; or non-result pyrt.method(...). Snapshot list instead of live view; "
+    "notes": "Dispatch via pyrt.call_method(box(receiver), 'keys', boxed_args)!; or non-result pyrt.method(...). Snapshot list instead of live view;  Round 8 direct helpers are opt-in; existing v/call_method route remains unchanged.",
+    "fast_v_candidates": [
+      "keys"
+    ],
+    "fast_module": "pyrt",
+    "fast_receiver_as_arg": true
   },
   {
     "python": "dict.pop",
@@ -12258,7 +13499,12 @@
     "options_struct": null,
     "options": {},
     "status": "partial",
-    "notes": "Dispatch via pyrt.call_method(box(receiver), 'values', boxed_args)!; or non-result pyrt.method(...). Snapshot list instead of live view; "
+    "notes": "Dispatch via pyrt.call_method(box(receiver), 'values', boxed_args)!; or non-result pyrt.method(...). Snapshot list instead of live view;  Round 8 direct helpers are opt-in; existing v/call_method route remains unchanged.",
+    "fast_v_candidates": [
+      "values"
+    ],
+    "fast_module": "pyrt",
+    "fast_receiver_as_arg": true
   },
   {
     "python": "frozenset",
@@ -16978,6 +18224,93 @@
     "v_access": "method"
   },
   {
+    "python": "os.environ.__contains__",
+    "v": "environ_has",
+    "module": "pyrt.pyos",
+    "kind": "function",
+    "receiver": null,
+    "raises": false,
+    "returns": "bool",
+    "params": [
+      {
+        "name": "key",
+        "type": "str"
+      }
+    ],
+    "variadic": false,
+    "options_struct": null,
+    "options": {},
+    "status": "implemented",
+    "notes": "Round 8: user-provided os.environ adapter. Reads and writes live process environment, not a snapshot.",
+    "v_kind": "fn",
+    "v_returns": "bool",
+    "v_result": "value"
+  },
+  {
+    "python": "os.environ.__delitem__",
+    "v": "environ_delete",
+    "module": "pyrt.pyos",
+    "kind": "function",
+    "receiver": null,
+    "raises": false,
+    "returns": "None",
+    "params": [
+      {
+        "name": "key",
+        "type": "str"
+      }
+    ],
+    "variadic": false,
+    "options_struct": null,
+    "options": {},
+    "status": "implemented",
+    "notes": "Round 8: user-provided os.environ adapter. Reads and writes live process environment, not a snapshot.",
+    "v_kind": "fn",
+    "v_returns": "void",
+    "v_result": "value"
+  },
+  {
+    "python": "os.environ.__getitem__",
+    "v": "environ_item",
+    "module": "pyrt.pyos",
+    "kind": "function",
+    "receiver": null,
+    "raises": false,
+    "returns": "str",
+    "params": [
+      {
+        "name": "key",
+        "type": "str"
+      }
+    ],
+    "variadic": false,
+    "options_struct": null,
+    "options": {},
+    "status": "implemented",
+    "notes": "Round 8: user-provided os.environ adapter. Reads and writes live process environment, not a snapshot.",
+    "v_kind": "fn",
+    "v_returns": "string",
+    "v_result": "value"
+  },
+  {
+    "python": "os.environ.copy",
+    "v": "environ",
+    "module": "pyrt.pyos",
+    "kind": "function",
+    "receiver": null,
+    "raises": false,
+    "returns": "dict[str, str]",
+    "params": [],
+    "variadic": false,
+    "options_struct": null,
+    "options": {},
+    "status": "implemented",
+    "notes": "Snapshot using os.environ(); V return is map[string]string.",
+    "v_kind": "fn",
+    "v_returns": "map[string]string",
+    "v_result": "value"
+  },
+  {
     "python": "os.environ.get",
     "v": "environ_get",
     "module": "pyrt.pyos",
@@ -17001,6 +18334,33 @@
     "options": {},
     "status": "partial",
     "notes": "POSIX paths, no dir_fd/file descriptor support, exact OS error mapping partial.",
+    "v_kind": "fn",
+    "v_returns": "string",
+    "v_result": "value"
+  },
+  {
+    "python": "os.environ.setdefault",
+    "v": "environ_setdefault",
+    "module": "pyrt.pyos",
+    "kind": "function",
+    "receiver": null,
+    "raises": false,
+    "returns": "str",
+    "params": [
+      {
+        "name": "key",
+        "type": "str"
+      },
+      {
+        "name": "default",
+        "type": "str"
+      }
+    ],
+    "variadic": false,
+    "options_struct": null,
+    "options": {},
+    "status": "implemented",
+    "notes": "Round 8: user-provided os.environ adapter. Reads and writes live process environment, not a snapshot.",
     "v_kind": "fn",
     "v_returns": "string",
     "v_result": "value"
@@ -17418,6 +18778,33 @@
     "v_result": "value"
   },
   {
+    "python": "os.putenv",
+    "v": "putenv",
+    "module": "pyrt.pyos",
+    "kind": "function",
+    "receiver": null,
+    "raises": false,
+    "returns": "None",
+    "params": [
+      {
+        "name": "key",
+        "type": "str"
+      },
+      {
+        "name": "value",
+        "type": "str"
+      }
+    ],
+    "variadic": false,
+    "options_struct": null,
+    "options": {},
+    "status": "implemented",
+    "notes": "Round 8: user-provided os.environ adapter. Reads and writes live process environment, not a snapshot.",
+    "v_kind": "fn",
+    "v_returns": "void",
+    "v_result": "value"
+  },
+  {
     "python": "os.remove",
     "v": "remove",
     "module": "pyrt.pyos",
@@ -17604,7 +18991,7 @@
     "options_struct": null,
     "options": {},
     "status": "partial",
-    "notes": "Public field with identical spelling in pyos.PathStat and pathlib.Stat. Retain the concrete producer representation.",
+    "notes": "Public field with identical spelling in pyos.PathStat and pathlib.Stat. Retain the concrete producer representation. The concrete V field is mtime to avoid the macOS sys/stat.h st_mtime macro. macOS st_mtime macro collision; actual V field is mtime.",
     "v_access": "field"
   },
   {
@@ -17645,6 +19032,29 @@
     "v_kind": "fn",
     "v_returns": "!",
     "v_result": "result"
+  },
+  {
+    "python": "os.unsetenv",
+    "v": "unsetenv",
+    "module": "pyrt.pyos",
+    "kind": "function",
+    "receiver": null,
+    "raises": false,
+    "returns": "None",
+    "params": [
+      {
+        "name": "key",
+        "type": "str"
+      }
+    ],
+    "variadic": false,
+    "options_struct": null,
+    "options": {},
+    "status": "implemented",
+    "notes": "Round 8: user-provided os.environ adapter. Reads and writes live process environment, not a snapshot.",
+    "v_kind": "fn",
+    "v_returns": "void",
+    "v_result": "value"
   },
   {
     "python": "os.walk",
@@ -21536,7 +22946,12 @@
     "options_struct": null,
     "options": {},
     "status": "implemented",
-    "notes": "Dispatch via pyrt.call_method(box(receiver), 'endswith', boxed_args)!; or non-result pyrt.method(...). "
+    "notes": "Dispatch via pyrt.call_method(box(receiver), 'endswith', boxed_args)!; or non-result pyrt.method(...).  Round 8 direct helpers are opt-in; existing v/call_method route remains unchanged.",
+    "fast_v_candidates": [
+      "endswith"
+    ],
+    "fast_module": "pyrt",
+    "fast_receiver_as_arg": true
   },
   {
     "python": "str.find",
@@ -21726,7 +23141,12 @@
     "options_struct": null,
     "options": {},
     "status": "implemented",
-    "notes": "Dispatch via pyrt.call_method(box(receiver), 'join', boxed_args)!; or non-result pyrt.method(...). "
+    "notes": "Dispatch via pyrt.call_method(box(receiver), 'join', boxed_args)!; or non-result pyrt.method(...).  Round 8 direct helpers are opt-in; existing v/call_method route remains unchanged.",
+    "fast_v_candidates": [
+      "join"
+    ],
+    "fast_module": "pyrt",
+    "fast_receiver_as_arg": true
   },
   {
     "python": "str.ljust",
@@ -21766,7 +23186,12 @@
     "options_struct": null,
     "options": {},
     "status": "partial",
-    "notes": "Dispatch via pyrt.call_method(box(receiver), 'lower', boxed_args)!; or non-result pyrt.method(...). No kwargs/mini-language subset or exact Unicode contextual casing. "
+    "notes": "Dispatch via pyrt.call_method(box(receiver), 'lower', boxed_args)!; or non-result pyrt.method(...). No kwargs/mini-language subset or exact Unicode contextual casing.  Round 8 direct helpers are opt-in; existing v/call_method route remains unchanged.",
+    "fast_v_candidates": [
+      "lower"
+    ],
+    "fast_module": "pyrt",
+    "fast_receiver_as_arg": true
   },
   {
     "python": "str.lstrip",
@@ -21836,7 +23261,13 @@
     "options_struct": null,
     "options": {},
     "status": "implemented",
-    "notes": "Dispatch via pyrt.call_method(box(receiver), 'replace', boxed_args)!; or non-result pyrt.method(...). "
+    "notes": "Dispatch via pyrt.call_method(box(receiver), 'replace', boxed_args)!; or non-result pyrt.method(...).  Round 8 direct helpers are opt-in; existing v/call_method route remains unchanged.",
+    "fast_v_candidates": [
+      "replace",
+      "replace_n"
+    ],
+    "fast_module": "pyrt",
+    "fast_receiver_as_arg": true
   },
   {
     "python": "str.rfind",
@@ -21964,7 +23395,14 @@
     "options_struct": null,
     "options": {},
     "status": "implemented",
-    "notes": "Dispatch via pyrt.call_method(box(receiver), 'split', boxed_args)!; or non-result pyrt.method(...). "
+    "notes": "Dispatch via pyrt.call_method(box(receiver), 'split', boxed_args)!; or non-result pyrt.method(...).  Round 8 direct helpers are opt-in; existing v/call_method route remains unchanged.",
+    "fast_v_candidates": [
+      "split",
+      "split_sep",
+      "split_n"
+    ],
+    "fast_module": "pyrt",
+    "fast_receiver_as_arg": true
   },
   {
     "python": "str.splitlines",
@@ -22015,7 +23453,12 @@
     "options_struct": null,
     "options": {},
     "status": "implemented",
-    "notes": "Dispatch via pyrt.call_method(box(receiver), 'startswith', boxed_args)!; or non-result pyrt.method(...). "
+    "notes": "Dispatch via pyrt.call_method(box(receiver), 'startswith', boxed_args)!; or non-result pyrt.method(...).  Round 8 direct helpers are opt-in; existing v/call_method route remains unchanged.",
+    "fast_v_candidates": [
+      "startswith"
+    ],
+    "fast_module": "pyrt",
+    "fast_receiver_as_arg": true
   },
   {
     "python": "str.strip",
@@ -22036,7 +23479,13 @@
     "options_struct": null,
     "options": {},
     "status": "implemented",
-    "notes": "Dispatch via pyrt.call_method(box(receiver), 'strip', boxed_args)!; or non-result pyrt.method(...). "
+    "notes": "Dispatch via pyrt.call_method(box(receiver), 'strip', boxed_args)!; or non-result pyrt.method(...).  Round 8 direct helpers are opt-in; existing v/call_method route remains unchanged.",
+    "fast_v_candidates": [
+      "strip",
+      "strip_chars"
+    ],
+    "fast_module": "pyrt",
+    "fast_receiver_as_arg": true
   },
   {
     "python": "str.title",
@@ -22066,7 +23515,12 @@
     "options_struct": null,
     "options": {},
     "status": "implemented",
-    "notes": "Dispatch via pyrt.call_method(box(receiver), 'upper', boxed_args)!; or non-result pyrt.method(...). "
+    "notes": "Dispatch via pyrt.call_method(box(receiver), 'upper', boxed_args)!; or non-result pyrt.method(...).  Round 8 direct helpers are opt-in; existing v/call_method route remains unchanged.",
+    "fast_v_candidates": [
+      "upper"
+    ],
+    "fast_module": "pyrt",
+    "fast_receiver_as_arg": true
   },
   {
     "python": "str.zfill",
@@ -23729,169 +25183,5 @@
     "v_kind": "fn",
     "v_returns": "!UUID",
     "v_result": "result"
-  },
-  {
-    "python": "os.putenv",
-    "v": "putenv",
-    "module": "pyrt.pyos",
-    "kind": "function",
-    "receiver": null,
-    "raises": false,
-    "returns": "None",
-    "params": [
-      {
-        "name": "key",
-        "type": "str"
-      },
-      {
-        "name": "value",
-        "type": "str"
-      }
-    ],
-    "variadic": false,
-    "options_struct": null,
-    "options": {},
-    "status": "implemented",
-    "notes": "The process environment; a missing name ends the program with KeyError.",
-    "v_kind": "fn",
-    "v_returns": "void",
-    "v_result": "value"
-  },
-  {
-    "python": "os.unsetenv",
-    "v": "unsetenv",
-    "module": "pyrt.pyos",
-    "kind": "function",
-    "receiver": null,
-    "raises": false,
-    "returns": "None",
-    "params": [
-      {
-        "name": "key",
-        "type": "str"
-      }
-    ],
-    "variadic": false,
-    "options_struct": null,
-    "options": {},
-    "status": "implemented",
-    "notes": "The process environment; a missing name ends the program with KeyError.",
-    "v_kind": "fn",
-    "v_returns": "void",
-    "v_result": "value"
-  },
-  {
-    "python": "os.environ.__getitem__",
-    "v": "environ_item",
-    "module": "pyrt.pyos",
-    "kind": "function",
-    "receiver": null,
-    "raises": false,
-    "returns": "str",
-    "params": [
-      {
-        "name": "key",
-        "type": "str"
-      }
-    ],
-    "variadic": false,
-    "options_struct": null,
-    "options": {},
-    "status": "implemented",
-    "notes": "The process environment; a missing name ends the program with KeyError.",
-    "v_kind": "fn",
-    "v_returns": "string",
-    "v_result": "value"
-  },
-  {
-    "python": "os.environ.__delitem__",
-    "v": "environ_delete",
-    "module": "pyrt.pyos",
-    "kind": "function",
-    "receiver": null,
-    "raises": false,
-    "returns": "None",
-    "params": [
-      {
-        "name": "key",
-        "type": "str"
-      }
-    ],
-    "variadic": false,
-    "options_struct": null,
-    "options": {},
-    "status": "implemented",
-    "notes": "The process environment; a missing name ends the program with KeyError.",
-    "v_kind": "fn",
-    "v_returns": "void",
-    "v_result": "value"
-  },
-  {
-    "python": "os.environ.__contains__",
-    "v": "environ_has",
-    "module": "pyrt.pyos",
-    "kind": "function",
-    "receiver": null,
-    "raises": false,
-    "returns": "bool",
-    "params": [
-      {
-        "name": "key",
-        "type": "str"
-      }
-    ],
-    "variadic": false,
-    "options_struct": null,
-    "options": {},
-    "status": "implemented",
-    "notes": "The process environment; a missing name ends the program with KeyError.",
-    "v_kind": "fn",
-    "v_returns": "bool",
-    "v_result": "value"
-  },
-  {
-    "python": "os.environ.setdefault",
-    "v": "environ_setdefault",
-    "module": "pyrt.pyos",
-    "kind": "function",
-    "receiver": null,
-    "raises": false,
-    "returns": "str",
-    "params": [
-      {
-        "name": "key",
-        "type": "str"
-      },
-      {
-        "name": "default",
-        "type": "str"
-      }
-    ],
-    "variadic": false,
-    "options_struct": null,
-    "options": {},
-    "status": "implemented",
-    "notes": "The process environment; a missing name ends the program with KeyError.",
-    "v_kind": "fn",
-    "v_returns": "string",
-    "v_result": "value"
-  },
-  {
-    "python": "os.environ.copy",
-    "v": "environ",
-    "module": "pyrt.pyos",
-    "kind": "function",
-    "receiver": null,
-    "raises": false,
-    "returns": "dict[str, str]",
-    "params": [],
-    "variadic": false,
-    "options_struct": null,
-    "options": {},
-    "status": "implemented",
-    "notes": "The process environment; a missing name ends the program with KeyError.",
-    "v_kind": "fn",
-    "v_returns": "map[string]string",
-    "v_result": "value"
   }
 ]

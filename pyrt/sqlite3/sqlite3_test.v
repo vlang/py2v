@@ -155,3 +155,79 @@ fn check_sqlite_script_and_errors() ! {
     _ = failure
     assert false, 'expected duplicate-key error'
 }
+
+// Regression: unaliased SELECT literals and computed expressions previously
+// fell back to string cells. Values must be typed by SQLite storage class.
+fn test_sqlite_expression_storage_classes() {
+    check_sqlite_expression_storage_classes() or { assert false, err.msg() }
+}
+
+fn check_sqlite_expression_storage_classes() ! {
+    path := os.join_path(os.vtmp_dir(), 'pyrt_sqlite3_storage_types_v_test.sqlite')
+    defer { os.rm(path) or {} }
+    conn := connect(path)!
+    defer { conn.close() or {} }
+
+    int_cur := conn.execute('SELECT 1')!
+    int_row := int_cur.fetchone() or { return pyrt.raise('AssertionError', 'missing integer') }
+    integer := int_row.get(0)
+    // python: type(__import__('sqlite3').connect(':memory:').execute('SELECT 1').fetchone()[0]) is int
+    assert integer is i64
+    // python: __import__('sqlite3').connect(':memory:').execute('SELECT 41 + 1').fetchone()[0] == 42
+    math_cur := conn.execute('SELECT 41 + 1')!
+    math_row := math_cur.fetchone() or { return pyrt.raise('AssertionError', 'missing expression') }
+    expression := math_row.get(0)
+    assert expression is i64
+    assert pyrt.as_int(expression)! == 42
+
+    // python: type(__import__('sqlite3').connect(':memory:').execute('SELECT 1.0').fetchone()[0]) is float
+    real_cur := conn.execute('SELECT 1.0')!
+    real_row := real_cur.fetchone() or { return pyrt.raise('AssertionError', 'missing real') }
+    real_value := real_row.get(0)
+    assert real_value is f64
+    assert pyrt.repr(real_value) == '1.0'
+
+    // python: type(__import__('sqlite3').connect(':memory:').execute("SELECT '1'").fetchone()[0]) is str
+    text_cur := conn.execute("SELECT '1'")!
+    text_row := text_cur.fetchone() or { return pyrt.raise('AssertionError', 'missing text') }
+    text_value := text_row.get(0)
+    assert text_value is string
+    assert pyrt.as_str(text_value)! == '1'
+
+    // python: __import__('sqlite3').connect(':memory:').execute('SELECT NULL').fetchone()[0] is None
+    null_cur := conn.execute('SELECT NULL')!
+    null_row := null_cur.fetchone() or { return pyrt.raise('AssertionError', 'missing null') }
+    assert null_row.get(0) is pyrt.NoneType
+
+    // python: __import__('sqlite3').connect(':memory:').execute("SELECT X'00FF'").fetchone()[0] == bytes([0,255])
+    blob_cur := conn.execute("SELECT X'00FF'")!
+    blob_row := blob_cur.fetchone() or { return pyrt.raise('AssertionError', 'missing blob') }
+    bytes_value := blob_row.get(0)
+    assert bytes_value is []u8
+    assert pyrt.repr(bytes_value) == "b'\\x00\\xff'"
+
+    // python: [type(r[0]).__name__ for r in __import__('sqlite3').connect(':memory:').execute('SELECT 1 AS v UNION ALL SELECT 1.5')] == ['int','float']
+    mixed_cur := conn.execute('SELECT 1 AS v UNION ALL SELECT 1.5')!
+    mixed := mixed_cur.fetchall()
+    assert mixed.len == 2
+    assert mixed[0].get(0) is i64
+    assert mixed[1].get(0) is f64
+
+    _ = conn.execute('CREATE TABLE storage_classes (value)')!
+    _ = conn.execute("INSERT INTO storage_classes(value) VALUES (1), (1.5), ('1'), (X'01FF'), (NULL)")!
+    every_cur := conn.execute('SELECT value FROM storage_classes ORDER BY rowid')!
+    every := every_cur.fetchall()
+    // python: [type(row[0]).__name__ for row in (lambda c: (c.execute('CREATE TABLE t(v)'), c.execute("INSERT INTO t VALUES (1), (1.5), ('1'), (X'01FF'), (NULL)"), c.execute('SELECT v FROM t ORDER BY rowid').fetchall())[-1])(__import__('sqlite3').connect(':memory:'))] == ['int','float','str','bytes','NoneType']
+    assert every.len == 5
+    assert every[0].get(0) is i64
+    assert every[1].get(0) is f64
+    assert every[2].get(0) is string
+    assert every[3].get(0) is []u8
+    assert every[4].get(0) is pyrt.NoneType
+
+    // python: __import__('sqlite3').connect(':memory:').execute('SELECT 1 AS x, 2.5 AS x').fetchone() == (1, 2.5)
+    duplicate_cur := conn.execute('SELECT 1 AS x, 2.5 AS x')!
+    duplicate := duplicate_cur.fetchone() or { return pyrt.raise('AssertionError', 'missing duplicate alias row') }
+    assert duplicate.get(0) is i64
+    assert duplicate.get(1) is f64
+}

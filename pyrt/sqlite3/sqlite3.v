@@ -25,9 +25,8 @@ pub const not_supported_error = 'sqlite3.NotSupportedError'
 // db.sqlite's supplied public API has no sqlite3_stmt bind/column-type calls.
 // Parameters are rendered as type-safe SQL *literals*: strings through a UTF-8
 // hex literal CAST, binary through a BLOB X'' literal, and None through NULL.
-// The SELECT wrapper uses SQLite typeof/hex/printf SQL functions to recover
-// typed values where result column names can be derived from the SQL text.
-// Complex result metadata falls back to strings; see README limitations.
+// The SELECT wrapper uses SQLite typeof/hex/printf to recover each result
+// VALUE storage class with synthetic CTE column names. See limitations.
 
 struct State {
 mut:
@@ -152,25 +151,8 @@ fn register_sqlite_errors() {
     pyrt.register_exception('sqlite3.NotSupportedError', ['sqlite3.DatabaseError'])
 }
 
-// V's db.sqlite reports `<SQLite's message> (<result code>) (<the statement>)`; Python's
-// exception carries SQLite's message alone.
-fn sqlite_message(raw string) string {
-    mut at := 0
-    for {
-        open := raw.index_after(' (', at) or { return raw }
-        close := raw.index_after(') (', open) or { return raw }
-        code := raw[open + 2..close]
-        if code.len > 0 && code.bytes().all(it >= `0` && it <= `9`) {
-            return raw[..open]
-        }
-        at = open + 2
-    }
-    return raw
-}
-
-fn sqlite_error(raw string) IError {
+fn sqlite_error(message string) IError {
     register_sqlite_errors()
-    message := sqlite_message(raw)
     lower := ascii_lower(message)
     if lower.contains('constraint failed') || lower.contains('unique constraint') || lower.contains('foreign key constraint') {
         return pyrt.raise('sqlite3.IntegrityError', message)
@@ -603,36 +585,80 @@ fn row_from_typed(values []string, names []string) Row {
     return Row{columns: names.clone(), cells: cells}
 }
 
-fn read_query(mut state State, query string) ![]Row {
-    name_list := select_column_names(query, mut state)
-    if name_list.len > 0 {
-        mut expressions := []string{}
-        for name in name_list {
-            col := 'q.' + quote_ident(name)
-            expressions << 'typeof(' + col + ')'
-            expressions << "CASE WHEN typeof(" + col + ") = 'real' THEN printf('%.17g', " + col + ") WHEN typeof(" + col + ") = 'blob' THEN '' ELSE CAST(" + col + ' AS TEXT) END'
-            expressions << 'hex(' + col + ')'
-        }
-        clean := trimmed(query)
-        statement := if clean.len > 0 && clean[clean.len - 1] == 59 { trimmed(clean[0 .. clean.len - 1]) } else { clean }
-        wrapper := 'SELECT ' + expressions.join(', ') + ' FROM (' + statement + ') AS q'
-        typed_rows := state.db.exec(wrapper) or { []sqlite.Row{} }
-        if typed_rows.len > 0 {
-            mut out := []Row{}
-            for raw in typed_rows {
-                values := raw.values()
-                if values.len != name_list.len * 3 { break }
-                out << row_from_typed(values, name_list)
-            }
-            if out.len == typed_rows.len { return out }
+// SQLite typeof() interrogates each VALUE's storage class. A synthetic
+// column-name list avoids dependence on the original projection's spelling:
+// SELECT 1, SELECT 41 + 1, duplicate aliases, and quoted expression names all
+// work identically. SQLite does not expose sqlite3_column_type via the supplied
+// V db.sqlite interface, so this is SQL-level introspection rather than C API
+// typed binding/column inspection.
+//
+// MATERIALIZED keeps random()/other volatile expressions from being evaluated
+// separately by each typeof/CAST/hex probe. Requires SQLite >= 3.35.0.
+fn typed_sql(query string, count int) string {
+    mut aliases := []string{}
+    mut expressions := []string{}
+    for i in 0 .. count {
+        name := 'pyrt_value_${i}'
+        aliases << quote_ident(name)
+        column := 'q.' + quote_ident(name)
+        expressions << 'typeof(' + column + ')'
+        expressions << "CASE WHEN typeof(" + column + ") = 'real' THEN printf('%.17g', " + column + ") WHEN typeof(" + column + ") = 'blob' THEN '' ELSE CAST(" + column + ' AS TEXT) END'
+        expressions << 'hex(' + column + ')'
+    }
+    clean := trimmed(query)
+    statement := if clean.len > 0 && clean[clean.len - 1] == 59 {
+        trimmed(clean[0 .. clean.len - 1])
+    } else { clean }
+    mut wrapped := 'WITH pyrt_typed(' + aliases.join(', ') + ') AS MATERIALIZED ('
+    wrapped = wrapped + statement + ') SELECT '
+    wrapped = wrapped + expressions.join(', ') + ' FROM pyrt_typed AS q'
+    return wrapped
+}
+
+fn typed_result(mut state State, query string, given_names []string, count int) ?[]Row {
+    if count <= 0 || count > 1024 { return none }
+    mut names := []string{}
+    for i in 0 .. count {
+        if i < given_names.len {
+            names << given_names[i]
         } else {
-            // Empty result sets are indistinguishable from a wrapper error
-            // through this `or` fallback; the direct query below is safe.
+            names << 'column${i}'
+        }
+    }
+    typed_rows := state.db.exec(typed_sql(query, count)) or { return none }
+    mut out := []Row{}
+    for raw in typed_rows {
+        values := raw.values()
+        if values.len != count * 3 { return none }
+        out << row_from_typed(values, names)
+    }
+    return out
+}
+
+fn read_query(mut state State, query string) ![]Row {
+    names := select_column_names(query, mut state)
+    // Preferred path: ONE SQLite execution with SQL storage classes annotated.
+    // Known projection count allows us to avoid running a volatile query twice.
+    if names.len > 0 {
+        if typed := typed_result(mut state, query, names, names.len) {
+            return typed
         }
     }
     raw_rows := state.db.exec(query) or { return sqlite_error(err.msg()) }
+    if raw_rows.len == 0 { return []Row{} }
+    // For SELECT * over joins, aliases, and other projections that our simple
+    // parser cannot count, the V wrapper exposes only string cells. The first
+    // raw row reveals the true column COUNT, allowing a second, typed query.
+    // A second execution may see changed nondeterministic results; callers
+    // must not use this fallback for side-effecting SELECT expressions.
+    actual_count := raw_rows[0].values().len
+    if actual_count != names.len {
+        if typed := typed_result(mut state, query, names, actual_count) {
+            return typed
+        }
+    }
     mut out := []Row{}
-    for raw in raw_rows { out << row_from_raw(raw.values(), name_list) }
+    for raw in raw_rows { out << row_from_raw(raw.values(), names) }
     return out
 }
 
