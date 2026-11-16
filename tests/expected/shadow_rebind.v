@@ -61,5 +61,5 @@ fn destructure(mut path Any, rows Any) {
 fn main() {
 	first_existing(mut 1)
 	rebind_local([1, 2])
-	destructure(mut 'p', pyrt.box([[1, 2, 3]]))
+	destructure(mut 'p', pyrt.box([pyrt.box([1, 2, 3])]))
 }

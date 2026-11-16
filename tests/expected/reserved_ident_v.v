@@ -30,7 +30,13 @@ fn param_use(v_ int) int {
 }
 
 fn comprehension(rows [][]int) []string {
-	return rows.map('${v_}')
+	mut py2v_comp1 := []string{}
+	for row in rows {
+		for v_ in row {
+			py2v_comp1 << '${v_}'
+		}
+	}
+	return py2v_comp1
 }
 
 fn spawn_(x int) int {

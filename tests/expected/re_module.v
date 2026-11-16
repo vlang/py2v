@@ -1,15 +1,17 @@
 module main
 
 import regex
+import pyrt.re
+import pyrt
 
 fn main() {
-	pattern := regex.regex_opt('\\d+') or { panic(err) }
+	pattern := (re.compile('\\d+', 0) or { pyrt.fail(err) })
 	text := 'hello 42 world'
-	m := (regex.regex_opt('hello') or { panic(err) }).match_string(text)
-	s := (regex.regex_opt('\\d+') or { panic(err) }).find(text)
-	matches := (regex.regex_opt('\\d+') or { panic(err) }).find_all_str(text)
-	result := (regex.regex_opt('\\d+') or { panic(err) }).replace(text, 'NUM')
-	parts := (regex.regex_opt('\\s+') or { panic(err) }).split(text)
-	fm := (regex.regex_opt('hello \\d+ world') or { panic(err) }).match_string(text)
+	m := (re.match_('hello', text, 0) or { pyrt.fail(err) }).opt()
+	s := (re.search('\\d+', text, 0) or { pyrt.fail(err) }).opt()
+	matches := (re.findall('\\d+', text, 0) or { pyrt.fail(err) })
+	result := (re.sub('\\d+', 'NUM', text, 0, 0) or { pyrt.fail(err) })
+	parts := (re.split('\\s+', text, 0, 0) or { pyrt.fail(err) })
+	fm := (re.fullmatch('hello \\d+ world', text, 0) or { pyrt.fail(err) }).opt()
 	println(result)
 }
