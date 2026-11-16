@@ -2829,10 +2829,9 @@ pub fn (mut t VTranspiler) visit_ann_assign(node AnnAssign) string {
 			&& !type_str.ends_with(']') {
 			return '${kw}${target} ${op} ${type_str}{}'
 		}
-		// `prev: Node | None = None` declares an optional reference: a bare
-		// `none` has no type a node could later be assigned to.
-		if !is_attr && !is_condition_local && val_str == 'none' && type_str.starts_with('?')
-			&& t.is_ref_class_type(type_str) {
+		// `prev: Node | None = None` and `name: str | None = None` declare an optional:
+		// a bare `none` has no type a value could later be assigned to.
+		if !is_attr && !is_condition_local && val_str == 'none' && type_str.starts_with('?') {
 			return '${kw}${target} ${op} ${type_str}(none)'
 		}
 
@@ -5608,27 +5607,39 @@ fn propagated_call(code string) string {
 	return '${name}_py${code[open..]}!'
 }
 
+// without_opt takes the `.opt()` that ends the text of a runtime call giving a
+// `pyrt.Maybe`, so that the error handling of the call itself can be rewritten.
+fn without_opt(code string) (string, bool) {
+	if code.ends_with('.opt()') {
+		return code[..code.len - 6], true
+	}
+	return code, false
+}
+
 // visit_call binds eligible module functions before rendering their arguments.
 pub fn (mut t VTranspiler) visit_call(original Call) string {
 	if original.guard > 0 {
 		// a call that can fail, in the body of a `try` whose handlers take the error
-		code := t.visit_call(Call{
+		code, optional := without_opt(t.visit_call(Call{
 			...original
 			guard: 0
-		})
-		return guarded_call(code, original.guard)
+		}))
+		guarded := guarded_call(code, original.guard)
+		return if optional { '(${guarded}).opt()' } else { guarded }
 	}
 	if original.propagate {
 		// a call that can fail, in straight-line code of a function returning a result
-		code := t.visit_call(Call{
+		code, optional := without_opt(t.visit_call(Call{
 			...original
 			propagate: false
-		})
-		return propagated_call(code)
+		}))
+		passed := propagated_call(code)
+		return if optional { passed + '.opt()' } else { passed }
 	}
 	if original.api != '' {
 		if code := t.runtime_api_call(original) {
-			return code
+			// a result that may hold None becomes V's option once the error is dealt with
+			return if runtime_api[original.api].maybe { code + '.opt()' } else { code }
 		}
 	}
 	if constructor := t.visit_init_constructor(original) {
@@ -5889,10 +5900,10 @@ pub fn (mut t VTranspiler) visit_call(original Call) string {
 			'join' {
 				if vargs.len > 0 {
 					arg_type := t.infer_expr_type(node.args[0])
-					if arg_type.len == 0 || arg_type == 'Any' {
-						// Fallback when iterable element type is unknown.
-						// Do not add .str() — emit the iterable expression as-is.
-						return '(${vargs[0]})'
+					if arg_type == 'Any' {
+						// a value of unknown type: the runtime joins what it holds
+						t.add_using('pyrt')
+						return "pyrt.to_str(pyrt.invoke(pyrt.box(${obj}), 'join', ${vargs[0]}))"
 					}
 					return '${as_receiver(vargs[0])}.join(${obj})'
 				}
@@ -7537,6 +7548,10 @@ fn (mut t VTranspiler) visit_generator_exp_impl(elt Expr, generators []Comprehen
 		}
 	} else {
 		result = t.visit_expr(iter)
+		if t.is_map_expr(iter) {
+			// iterating a dict visits its keys
+			result = '${as_receiver(result)}.keys()'
+		}
 	}
 
 	// Apply filters - need to use 'it' for the element reference

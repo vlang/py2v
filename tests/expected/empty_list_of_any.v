@@ -88,7 +88,7 @@ fn main_func() {
 	if pyrt.eq(row[0], pyrt.box(7)) {
 		println('first is seven')
 	}
-	println(pyrt.str(row[0] + pyrt.box(1)))
+	println(pyrt.str(pyrt.plus(row[0], pyrt.box(1))))
 	mut stack := py2v_new_stack()
 	stack.push(3)
 	stack.push('three')

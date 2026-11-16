@@ -23,6 +23,7 @@ Usage:
 
 import ast
 import copy
+import functools
 import json
 import sys
 import os
@@ -2731,6 +2732,89 @@ def _truth_kind(node: ast.expr, facts: infer.TypeFacts) -> str:
     return facts.types[type_id]["k"] if type_id is not None else "unknown"
 
 
+def _lower_optional_text_calls(tree: ast.Module, table: Optional[symbols.SymbolTable],
+                               facts: Optional[infer.TypeFacts]) -> None:
+    """A runtime call that gives text or None (`os.environ.get(name)`), used where Python
+    asks for its truth or chooses with `or`: `if call:` becomes `pyrt.has_text(call)`,
+    `call or "text"` becomes `pyrt.text_or(call, "text")` and `call or other_call` becomes
+    `pyrt.first_text(call, other_call)`. The call runs once. The right side of an `or` runs
+    whether or not it is needed, so it is taken only when it is a constant, a name, or
+    another runtime call that cannot fail."""
+    if table is None or facts is None or any(b.name == "pyrt" for b in table.bindings):
+        return
+    api = _runtime_api()
+
+    def optional_text(node: ast.AST) -> bool:
+        entry = api.get(getattr(node, "_api", "")) if isinstance(node, ast.Call) else None
+        return bool(entry) and entry.get("returns") == "str | None" and not entry.get("raises")
+
+    def helper(name: str, args: List[ast.expr], like: ast.AST) -> ast.expr:
+        call = _runtime_call(name, args, like)
+        call._dynamic = False
+        return call
+
+    def text(node: ast.expr) -> bool:
+        if not (isinstance(node, (ast.Constant, ast.Name))
+                or isinstance(node, ast.Call) and getattr(node, "_api", "")
+                and not api.get(node._api, {}).get("raises")):
+            return False
+        return _truth_kind(node, facts) == "str"
+
+    tested = set()
+
+    def mark(node: ast.expr) -> None:
+        tested.add(id(node))
+        if isinstance(node, ast.BoolOp):
+            for value in node.values:
+                mark(value)
+        elif isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
+            mark(node.operand)
+
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.If, ast.While, ast.IfExp, ast.Assert)):
+            mark(node.test)
+        elif isinstance(node, ast.comprehension):
+            for condition in node.ifs:
+                mark(condition)
+        elif isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
+            mark(node.operand)
+
+    class Lower(ast.NodeTransformer):
+        def visit_Call(self, node: ast.Call) -> ast.AST:
+            was_tested = id(node) in tested
+            self.generic_visit(node)
+            if was_tested and optional_text(node):
+                return helper("has_text", [node], node)
+            return node
+
+        def visit_BoolOp(self, node: ast.BoolOp) -> ast.AST:
+            was_tested = id(node) in tested
+            self.generic_visit(node)
+            if was_tested or not isinstance(node.op, ast.Or) or not optional_text(node.values[0]):
+                return node
+            if not all(optional_text(v) or text(v) for v in node.values[1:]):
+                return node
+            result = node.values[0]
+            is_text = False
+            for value in node.values[1:]:
+                if is_text:
+                    return node  # text first: `_choose_boolop_values` has that form
+                if optional_text(value):
+                    result = helper("first_text", [result, value], node)
+                else:
+                    result = helper("text_or", [result, value], node)
+                    is_text = True
+                    for name in ("_type", "_assumed"):
+                        if hasattr(value, name):
+                            setattr(result, name, getattr(value, name))
+            return result
+
+    try:
+        Lower().visit(tree)
+    except RecursionError:
+        pass
+
+
 def _choose_boolop_values(tree: ast.Module, facts: Optional[infer.TypeFacts]) -> None:
     """`a or b` and `a and b` used for their value, not as a condition, become the choice
     Python makes: `a if a else b` and `b if a else a` (`name = given or "default"`). V's
@@ -3203,6 +3287,9 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
     def any_list(node: ast.AST) -> bool:
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
             return getattr(node.func, "_binding", None) in any_list_functions
+        if isinstance(node, ast.Call) and getattr(node, "_api", ""):
+            # a runtime call declared as giving a list of runtime values
+            return _runtime_api().get(node._api, {}).get("returns") == "list[Any]"
         return getattr(node, "_any_list", False) or (
             isinstance(node, ast.Name) and getattr(node, "_binding", None) in any_lists)
     # The bindings the backend declares as `Any`: parameters with no annotation (the
@@ -3221,6 +3308,18 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
                 binding_id = getattr(arg, "_binding", None)
                 if binding_id is not None:
                     dynamic_bindings.add(binding_id)
+
+    # A local declared `name: Any`, and its first value where that is None or a display.
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name)
+                and _unparse_expr(node.annotation) in ("Any", "object", "typing.Any")):
+            binding_id = getattr(node.target, "_binding", None)
+            if binding_id is None or table.scopes[table.bindings[binding_id].scope].kind != "function":
+                continue
+            dynamic_bindings.add(binding_id)
+            if node.value is not None and (_is_display(node.value) or (
+                    isinstance(node.value, ast.Constant) and node.value.value is None)):
+                node.value = _deep_box(node.value)
 
     # Functions of this file with no return annotation that return a value: the backend
     # declares their result as `Any`. Their parameters, by position, for call sites.
@@ -3254,10 +3353,16 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
 
     any_dict_functions = set()
     any_dict_bindings = set()
+    # which positional parameters of a function of this file are declared as such a dict
+    any_dict_parameters: Dict[int, List[bool]] = {}
     for fn in ast.walk(tree):
         if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
             if any_dict_annotation(fn.returns):
                 any_dict_functions.add(getattr(fn, "_binding", None))
+            flags = [any_dict_annotation(a.annotation) for a in fn.args.args]
+            binding_id = getattr(fn, "_binding", None)
+            if any(flags) and binding_id is not None and not table.bindings[binding_id].rebound:
+                any_dict_parameters[binding_id] = flags
             for a in fn.args.posonlyargs + fn.args.args + fn.args.kwonlyargs:
                 binding_id = getattr(a, "_binding", None)
                 if (any_dict_annotation(a.annotation) and binding_id is not None
@@ -3270,6 +3375,15 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
             return getattr(node.func, "_binding", None) in any_dict_functions
         return isinstance(node, ast.Name) and getattr(node, "_binding", None) in any_dict_bindings
 
+    def dynamic_method_call(node: ast.AST) -> bool:
+        """A method of a builtin type called on a value of unknown type: the runtime finds
+        the method from what the value is when the call runs."""
+        return (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and node.func.attr in _builtin_method_names() and not node.keywords
+                and not getattr(node, "_api", "")
+                and not any(isinstance(a, ast.Starred) for a in node.args)
+                and dynamic(node.func.value))
+
     def dynamic(node: ast.AST) -> bool:
         if getattr(node, "_dynamic", False):
             return True
@@ -3277,8 +3391,12 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
             return getattr(node, "_binding", None) in dynamic_bindings
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
             return getattr(node.func, "_binding", None) in dynamic_returning
+        if dynamic_method_call(node):
+            return True
         if isinstance(node, ast.Subscript) and not isinstance(node.slice, ast.Slice):
             return dynamic(node.value) or any_list(node.value) or any_dict(node.value)
+        if isinstance(node, ast.Subscript) and node.slice.step is None:
+            return dynamic(node.value)
         if isinstance(node, ast.BinOp) and isinstance(
                 node.op, (ast.Add, ast.Sub, ast.Mult, ast.Div, ast.Mod)):
             return dynamic(node.left) or dynamic(node.right)
@@ -3305,13 +3423,36 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
             other_sites.add(binding.id)
     any_dict_bindings |= {b for b, values in assigned.items()
                           if b not in other_sites and all(any_dict(v) for v in values)}
+    # The variable of a loop over a value of unknown type is one too.
+    loop_targets = []
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.For, ast.comprehension)) and isinstance(node.target, ast.Name):
+            binding_id = getattr(node.target, "_binding", None)
+            if binding_id is not None and len(table.bindings[binding_id].sites) == 1:
+                loop_targets.append((binding_id, node.iter))
+    def boxable(node: ast.AST) -> bool:
+        # a value of a known plain type, None, or a display: the runtime value of it is made
+        if _is_display(node) or isinstance(node, ast.Constant) and node.value is None:
+            return True
+        type_id = getattr(node, "_assumed", None)
+        if type_id is None:
+            type_id = getattr(node, "_type", None)
+        return type_id is not None and facts.types[type_id]["k"] in ("int", "float", "str", "bool")
+
     while True:
+        # every value dynamic, or at least one and the others of a plain type (boxed where
+        # they are assigned)
         grown = {b for b, values in assigned.items()
                  if b not in dynamic_bindings and b not in other_sites
-                 and all(dynamic(v) for v in values)}
+                 and any(dynamic(v) for v in values)
+                 and all(dynamic(v) or boxable(v) for v in values)}
+        grown |= {b for b, iterable in loop_targets
+                  if b not in dynamic_bindings and dynamic(iterable)}
         if not grown:
             break
         dynamic_bindings |= grown
+
+    _declare_block_locals(tree, table, facts, dynamic_bindings)
 
     def known(node: ast.AST) -> bool:
         type_id = getattr(node, "_assumed", None)
@@ -3336,13 +3477,42 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
         return isinstance(node, (ast.List, ast.Tuple, ast.ListComp)) or (
             type_id is not None and facts.types[type_id]["k"] in ("list", "tuple", "tuple_of"))
 
+    def runtime_result(node: ast.AST) -> bool:
+        return (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and isinstance(node.func.value, ast.Name) and node.func.value.id == "pyrt")
+
     class Lower(ast.NodeTransformer):
         def visit_Subscript(self, node: ast.Subscript) -> ast.AST:
             self.generic_visit(node)
             if (isinstance(node.ctx, ast.Load) and dynamic(node.value)
                     and not isinstance(node.slice, ast.Slice)):
                 return _runtime_call("item_at", [node.value, boxed(node.slice)], node)
+            if (isinstance(node.ctx, ast.Load) and dynamic(node.value)
+                    and node.slice.step is None):
+                nothing = ast.copy_location(ast.Constant(value=None), node)
+                bounds = [_runtime_call("box", [bound if bound is not None else nothing], node)
+                          for bound in (node.slice.lower, node.slice.upper)]
+                return _runtime_call("slice_of", [node.value] + bounds, node)
             return node
+
+        def visit_Assign(self, node: ast.Assign) -> ast.AST:
+            # `v[key] = item` where v is a value of unknown type
+            target = node.targets[0] if len(node.targets) == 1 else None
+            stores = (isinstance(target, ast.Subscript) and not isinstance(target.slice, ast.Slice)
+                      and dynamic(target.value))
+            self.generic_visit(node)
+            if (target is not None and isinstance(target, ast.Name)
+                    and getattr(target, "_binding", None) in dynamic_bindings
+                    and not dynamic(node.value) and boxable(node.value)):
+                # a plain value given to a name that holds values of unknown type
+                node.value = _deep_box(node.value)
+            if not stores:
+                return node
+            item = node.value
+            if not dynamic(item):
+                item = _deep_box(item) if _is_display(item) else boxed(item)
+            call = _runtime_call("set_index", [target.value, boxed(target.slice), item], node)
+            return ast.copy_location(ast.Expr(value=call), node)
 
         def visit_BinOp(self, node: ast.BinOp) -> ast.AST:
             was_dynamic = dynamic(node)
@@ -3356,6 +3526,14 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
                     node._dynamic = True
             if was_dynamic:
                 node._dynamic = True
+            arithmetic = {ast.Add: "plus", ast.Sub: "minus", ast.Mult: "times",
+                          ast.Div: "over", ast.Mod: "modulo"}.get(type(node.op))
+            if (arithmetic and getattr(node, "_dynamic", False)
+                    and (runtime_result(node.left) or runtime_result(node.right))
+                    and all(dynamic(side) for side in (node.left, node.right))):
+                # what a runtime call gives is not the file's `Any`, whose operators V
+                # would use: the runtime does the arithmetic
+                return _runtime_call(arithmetic, [node.left, node.right], node)
             return node
 
         def visit_Compare(self, node: ast.Compare) -> ast.AST:
@@ -3376,12 +3554,25 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
             return node
 
         def visit_Call(self, node: ast.Call) -> ast.AST:
+            is_method = dynamic_method_call(node)
             self.generic_visit(node)
+            if is_method:
+                name = ast.copy_location(ast.Constant(value=node.func.attr), node)
+                args = [a if dynamic(a) else _runtime_call("box", [a], a) for a in node.args]
+                call = _runtime_call("invoke", [node.func.value, name] + args, node)
+                call._invoked = True
+                return call
             if isinstance(node.func, ast.Name) and not node.keywords:
+                holds_values = any_dict_parameters.get(getattr(node.func, "_binding", None), [])
+                for flag, arg in zip(holds_values, node.args):
+                    if flag and isinstance(arg, ast.Dict) and _is_display(arg):
+                        # the dict holds runtime values: a display inside it is one too
+                        arg.values = [_deep_box(v) if _is_display(v) else v for v in arg.values]
                 flags = dynamic_functions.get(getattr(node.func, "_binding", None))
                 if flags is not None and len(node.args) <= len(flags):
                     # A list or dict has no automatic conversion to the runtime value
-                    node.args = [boxed(a) if flags[i] and container(a) else a
+                    node.args = [_deep_box(a) if flags[i] and _is_display(a)
+                                 else boxed(a) if flags[i] and container(a) else a
                                  for i, a in enumerate(node.args)]
                 if (node.func.id == "print" and getattr(node.func, "_binding", None) is None):
                     node.args = [_runtime_call("str", [a], a) if dynamic(a) else a
@@ -3406,7 +3597,8 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
 
         def visit_For(self, node: ast.For) -> ast.AST:
             self.generic_visit(node)
-            if dynamic(node.iter) and not getattr(node.iter, "_dynamic", False):
+            if dynamic(node.iter) and (not getattr(node.iter, "_dynamic", False)
+                                       or getattr(node.iter, "_invoked", False)):
                 node.iter = _runtime_call("elements", [node.iter], node.iter)
             return node
 
@@ -3417,7 +3609,7 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
         if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
             node.operand = truth(node.operand)
             return node
-        if isinstance(node, (ast.Name, ast.Subscript)) and dynamic(node):
+        if isinstance(node, (ast.Name, ast.Subscript, ast.Call)) and dynamic(node):
             return _runtime_call("truth", [node], node)
         return node
 
@@ -3447,6 +3639,14 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
                 found.append(node)
             pending.extend(ast.iter_child_nodes(node))
         return found
+
+    # A list or dict written out, returned from a function whose result is a value of
+    # unknown type, is that value: V makes one of a number or text by itself, not of these.
+    for fn in ast.walk(tree):
+        if isinstance(fn, ast.FunctionDef) and getattr(fn, "_binding", None) in dynamic_returning:
+            for ret in own_returns(fn):
+                if ret.value is not None and _is_display(ret.value):
+                    ret.value = _deep_box(ret.value)
 
     for fn in ast.walk(tree):
         if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)) or fn.returns is None:
@@ -3732,6 +3932,13 @@ def _plan_error_propagation(tree: ast.Module, table: Optional[symbols.SymbolTabl
                     call._propagate = True
 
 
+@functools.lru_cache(maxsize=None)
+def _builtin_method_names() -> frozenset:
+    """The public methods of the builtin types a value of unknown type can be."""
+    return frozenset(name for kind in (str, list, dict, set, tuple, bytes)
+                     for name in dir(kind) if not name.startswith("_"))
+
+
 def _builtin_exception_names() -> frozenset:
     """The builtin exception classes, as Python itself lists them."""
     import builtins
@@ -3783,6 +3990,27 @@ def _mark_module_constants(tree: ast.Module, table: Optional[symbols.SymbolTable
     tree._module_consts = names
 
 
+def _is_display(node: ast.AST) -> bool:
+    """A dict or list written out, with no `**` or `*` part."""
+    if isinstance(node, ast.Dict):
+        return all(k is not None for k in node.keys)
+    return (isinstance(node, ast.List) and isinstance(node.ctx, ast.Load)
+            and not any(isinstance(e, ast.Starred) for e in node.elts))
+
+
+def _deep_box(node: ast.expr) -> ast.expr:
+    """The runtime value of an expression. A display inside a boxed display is boxed at
+    every level: the runtime value of a dict holds runtime values, not V maps."""
+    if getattr(node, "_dynamic", False):
+        return node
+    if _is_display(node):
+        if isinstance(node, ast.Dict):
+            node.values = [_deep_box(v) for v in node.values]
+        else:
+            node.elts = [_deep_box(e) for e in node.elts]  # type: ignore[attr-defined]
+    return _runtime_call("box", [node], node)
+
+
 def _box_mixed_displays(tree: ast.Module, table: Optional[symbols.SymbolTable],
                         facts: Optional[infer.TypeFacts]) -> None:
     """A list or dict display whose values are not all of one type holds runtime values:
@@ -3812,23 +4040,7 @@ def _box_mixed_displays(tree: ast.Module, table: Optional[symbols.SymbolTable],
             return False  # the backend has its own handling of mixed numbers
         return len(kinds) > 1
 
-    def display(node: ast.AST) -> bool:
-        if isinstance(node, ast.Dict):
-            return all(k is not None for k in node.keys)
-        return (isinstance(node, ast.List) and isinstance(node.ctx, ast.Load)
-                and not any(isinstance(e, ast.Starred) for e in node.elts))
-
-    def deep(node: ast.expr) -> ast.expr:
-        # A display inside a boxed display is boxed at every level: the runtime value of
-        # a dict holds runtime values, not V maps.
-        if getattr(node, "_dynamic", False):
-            return node
-        if display(node):
-            if isinstance(node, ast.Dict):
-                node.values = [deep(v) for v in node.values]
-            else:
-                node.elts = [deep(e) for e in node.elts]  # type: ignore[attr-defined]
-        return _runtime_call("box", [node], node)
+    display, deep = _is_display, _deep_box
 
     for node in ast.walk(tree):
         if isinstance(node, ast.List) and isinstance(node.ctx, ast.Load) and mixed(node.elts):
@@ -3847,7 +4059,7 @@ _RUNTIME_API: Optional[Dict[str, Dict[str, Any]]] = None
 # Modules whose calls are resolved here. The others in the manifest (json, pathlib, os,
 # sys, time, re) still have their own lowering in the backend.
 _RUNTIME_API_MODULES = ("datetime", "sqlite3", "pathlib", "logging", "argparse", "subprocess",
-                        "hashlib", "uuid", "shutil", "tempfile", "base64", "secrets", "json",
+                        "hashlib", "uuid", "shutil", "tempfile", "base64", "secrets", "json", "re", "time",
                         "mcp")
 # The classes of those modules that have a V type (runtime_class_types in the backend).
 _RUNTIME_API_CLASS_SET: Optional[frozenset] = None
@@ -4018,6 +4230,95 @@ def _mark_runtime_api(tree: ast.Module, table: Optional[symbols.SymbolTable]) ->
                 return node.attr
         return ""
 
+    def environ(node: ast.AST) -> bool:
+        return isinstance(node, ast.Attribute) and qualified(node) == "os.environ"
+
+    def environ_call(name: str, args: List[ast.expr], like: ast.AST) -> ast.Call:
+        call = ast.Call(func=ast.Name(id="environ", ctx=ast.Load()), args=args, keywords=[])
+        for part in (call, call.func):
+            ast.copy_location(part, like)
+        call._api = name
+        return call
+
+    def key_of(node: ast.AST) -> Optional[ast.expr]:
+        if (isinstance(node, ast.Subscript) and environ(node.value)
+                and not isinstance(node.slice, (ast.Slice, ast.Tuple))):
+            return node.slice
+        return None
+
+    class Environ(ast.NodeTransformer):
+        """`os.environ` used as the mapping it is: each form is the runtime call that reads
+        or changes the process environment. `os.environ.get` is marked with the calls."""
+
+        def visit_Assign(self, node: ast.Assign) -> ast.AST:
+            key = key_of(node.targets[0]) if len(node.targets) == 1 else None
+            if key is None:
+                return self.generic_visit(node)
+            call = environ_call("os.putenv", [self.visit(key), self.visit(node.value)], node)
+            return ast.copy_location(ast.Expr(value=call), node)
+
+        def visit_Delete(self, node: ast.Delete) -> ast.AST:
+            keys = [key_of(target) for target in node.targets]
+            if any(key is None for key in keys):
+                return self.generic_visit(node)
+            return [ast.copy_location(ast.Expr(value=environ_call(
+                "os.environ.__delitem__", [self.visit(key)], node)), node) for key in keys]
+
+        def visit_Expr(self, node: ast.Expr) -> ast.AST:
+            call = node.value
+            if (isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute)
+                    and call.func.attr == "pop" and environ(call.func.value)
+                    and not call.keywords and len(call.args) in (1, 2)
+                    and not isinstance(call.args[0], ast.Starred)):
+                # with a default nothing is raised for a name that is not set
+                name = "os.unsetenv" if len(call.args) == 2 else "os.environ.__delitem__"
+                node.value = environ_call(name, [self.visit(call.args[0])], call)
+                return node
+            return self.generic_visit(node)
+
+        def visit_Subscript(self, node: ast.Subscript) -> ast.AST:
+            key = key_of(node) if isinstance(node.ctx, ast.Load) else None
+            if key is None:
+                return self.generic_visit(node)
+            return environ_call("os.environ.__getitem__", [self.visit(key)], node)
+
+        def visit_Compare(self, node: ast.Compare) -> ast.AST:
+            if (len(node.ops) == 1 and isinstance(node.ops[0], (ast.In, ast.NotIn))
+                    and environ(node.comparators[0])):
+                call = environ_call("os.environ.__contains__", [self.visit(node.left)], node)
+                if isinstance(node.ops[0], ast.NotIn):
+                    return ast.copy_location(ast.UnaryOp(op=ast.Not(), operand=call), node)
+                return call
+            return self.generic_visit(node)
+
+        def visit_Call(self, node: ast.Call) -> ast.AST:
+            func = node.func
+            if isinstance(func, ast.Attribute) and environ(func.value):
+                node.args = [self.visit(a) for a in node.args]
+                for kw in node.keywords:
+                    kw.value = self.visit(kw.value)
+                if func.attr == "copy" and not node.args and not node.keywords:
+                    return environ_call("os.environ.copy", [], node)
+                if func.attr == "setdefault" and len(node.args) == 2 and not node.keywords:
+                    return environ_call("os.environ.setdefault", node.args, node)
+                if func.attr in ("items", "keys", "values"):
+                    func.value = environ_call("os.environ.copy", [], func.value)
+                return node
+            if (isinstance(func, ast.Name) and func.id == "dict"
+                    and getattr(func, "_binding", None) is None and len(node.args) == 1
+                    and not node.keywords and environ(node.args[0])):
+                return environ_call("os.environ.copy", [], node)
+            return self.generic_visit(node)
+
+        def visit_Attribute(self, node: ast.Attribute) -> ast.AST:
+            # the mapping itself as a value (`env=os.environ`, `{**os.environ}`): what it holds now
+            if environ(node) and isinstance(node.ctx, ast.Load):
+                return environ_call("os.environ.copy", [], node)
+            return self.generic_visit(node)
+
+    if any(q == "os" or q.startswith("os.environ") for q in imported.values()):
+        Environ().visit(tree)
+
     callees = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Call):
@@ -4030,9 +4331,18 @@ def _mark_runtime_api(tree: ast.Module, table: Optional[symbols.SymbolTable]) ->
                         kw.value = ast.copy_location(ast.Constant(value=standard_stream(kw.value)), kw.value)
                 node.args = [ast.copy_location(ast.Constant(value=standard_stream(a)), a)
                              if standard_stream(a) else a for a in node.args]
-            if name.startswith("os.") and not (
-                    name == "os.getcwd" or name == "os.environ.get" and len(node.args) == 2
-                    and not node.keywords):
+            if name in ("os.environ.get", "os.getenv") and not node.keywords and not any(
+                    isinstance(a, ast.Starred) for a in node.args):
+                # one name: the value or None; with a default: always text
+                if len(node.args) == 2 and isinstance(node.args[1], ast.Constant) \
+                        and node.args[1].value is None:
+                    node.args = node.args[:1]
+                if len(node.args) == 1:
+                    node._api = "os.getenv"
+                elif len(node.args) == 2:
+                    node._api = "os.environ.get"
+                continue
+            if name.startswith("os.") and name != "os.getcwd":
                 # The rest of `os` is still lowered by the backend.
                 continue
             if api.get(name, {}).get("kind") in ("function", "constructor"):
@@ -4145,6 +4455,102 @@ def _mark_runtime_api(tree: ast.Module, table: Optional[symbols.SymbolTable]) ->
     for node in ast.walk(tree):
         if isinstance(node, (ast.Call, ast.Attribute)):
             type_of(node)
+
+    def row_item(row: ast.expr, index: int, like: ast.AST) -> ast.Call:
+        key = ast.Constant(value=index)
+        call = ast.Call(func=ast.Attribute(value=row, attr="get", ctx=ast.Load()),
+                        args=[key], keywords=[])
+        for part in (key, call, call.func):
+            ast.copy_location(part, like)
+        call._api = "sqlite3.Row.__getitem__"
+        call._dynamic = True
+        return call
+
+    def plain_names(target: ast.AST) -> List[ast.Name]:
+        elts = target.elts if isinstance(target, (ast.Tuple, ast.List)) else []
+        return list(elts) if elts and all(isinstance(e, ast.Name) for e in elts) else []
+
+    row_counter = [0]
+
+    class RowUnpack(ast.NodeTransformer):
+        """`a, b = row` and `for a, b in rows` on database rows: each name is given its
+        column, as a row is not a V tuple."""
+
+        def visit_Assign(self, node: ast.Assign) -> Any:
+            self.generic_visit(node)
+            names = plain_names(node.targets[0]) if len(node.targets) == 1 else []
+            if (not names or not isinstance(node.value, ast.Name)
+                    or class_of(type_of(node.value)) != "sqlite3.Row"):
+                return node
+            made = []
+            for index, name in enumerate(names):
+                source = ast.copy_location(ast.Name(id=node.value.id, ctx=ast.Load()), node.value)
+                source._binding = getattr(node.value, "_binding", None)
+                if "None" in type_of(node.value):
+                    source._api = "sqlite3.must_row"
+                made.append(ast.copy_location(
+                    ast.Assign(targets=[name], value=row_item(source, index, node)), node))
+            return made
+
+        def visit_For(self, node: ast.For) -> Any:
+            self.generic_visit(node)
+            names = plain_names(node.target)
+            if not names or class_of(element_of(type_of(node.iter))) != "sqlite3.Row":
+                return node
+            row_counter[0] += 1
+            row = f"py2v_row{row_counter[0]}"
+            node.body[0:0] = [ast.copy_location(ast.Assign(
+                targets=[name],
+                value=row_item(ast.copy_location(ast.Name(id=row, ctx=ast.Load()), node), index, node)),
+                node) for index, name in enumerate(names)]
+            node.target = ast.copy_location(ast.Name(id=row, ctx=ast.Store()), node.target)
+            return node
+
+    RowUnpack().visit(tree)
+
+    # A runtime object that may be None, used as a condition: it is true when it is there.
+    def optional_row(node: ast.AST) -> bool:
+        # a name or a call that gives a runtime object or None (a row, a regex match)
+        if not isinstance(node, (ast.Name, ast.Call)):
+            return False
+        text = type_of(node)
+        return "None" in text.split("|")[-1] and class_of(text) in _runtime_classes()
+
+    def stated(test: ast.expr) -> ast.expr:
+        if isinstance(test, ast.BoolOp):
+            test.values = [stated(v) for v in test.values]
+        elif isinstance(test, ast.UnaryOp) and isinstance(test.op, ast.Not):
+            if optional_row(test.operand):
+                nothing = ast.copy_location(ast.Constant(value=None), test)
+                return ast.copy_location(ast.Compare(left=test.operand, ops=[ast.Is()],
+                                                     comparators=[nothing]), test)
+            test.operand = stated(test.operand)
+        elif optional_row(test):
+            nothing = ast.copy_location(ast.Constant(value=None), test)
+            return ast.copy_location(ast.Compare(left=test, ops=[ast.IsNot()],
+                                                 comparators=[nothing]), test)
+        return test
+
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.If, ast.While, ast.IfExp, ast.Assert)):
+            node.test = stated(node.test)
+        elif isinstance(node, ast.comprehension):
+            node.ifs = [stated(test) for test in node.ifs]
+
+    class Truth(ast.NodeTransformer):
+        """`bool(x)` of such a value is whether it is there."""
+
+        def visit_Call(self, node: ast.Call) -> ast.AST:
+            self.generic_visit(node)
+            if (isinstance(node.func, ast.Name) and node.func.id == "bool"
+                    and getattr(node.func, "_binding", None) is None and len(node.args) == 1
+                    and not node.keywords and optional_row(node.args[0])):
+                nothing = ast.copy_location(ast.Constant(value=None), node)
+                return ast.copy_location(ast.Compare(left=node.args[0], ops=[ast.IsNot()],
+                                                     comparators=[nothing]), node)
+            return node
+
+    Truth().visit(tree)
 
     # `row[0]` and `row["name"]` on a database row are its `get` and `by_name`
     class RowIndex(ast.NodeTransformer):
@@ -4448,8 +4854,264 @@ def _empty_field_annotations(tree: ast.Module, facts: infer.TypeFacts) -> Dict[i
     return found
 
 
+def _loop_comprehensions(tree: ast.Module, facts: Optional[infer.TypeFacts]) -> None:
+    """A comprehension the backend's `.filter(...).map(...)` form cannot say becomes the
+    loop a V programmer writes: one that unpacks its items (`for k, v in d.items()`) or has
+    more than one `for`. In a function, before the statement that uses it:
+
+        names = [k for k, v in ranks.items() if v == rank]
+
+    is `names: list[str] = []` and a `for` with an `if` that appends. Done where inference
+    knows the whole type of what is collected, where the comprehension is evaluated exactly
+    once and before anything else of its statement that could matter, and where its loop
+    names are not names of the function."""
+    if facts is None:
+        return
+    counter = [0]
+
+    def spelled(node: ast.AST) -> Optional[str]:
+        type_id = getattr(node, "_assumed", None)
+        if type_id is None:
+            type_id = getattr(node, "_type", None)
+        return _annotation_for_type(facts.types, type_id) if type_id is not None else None
+
+    def wanted(node: ast.AST) -> bool:
+        if not isinstance(node, (ast.ListComp, ast.GeneratorExp, ast.DictComp)):
+            return False
+        if any(g.is_async for g in node.generators):
+            return False
+        unpacks = any(isinstance(g.target, (ast.Tuple, ast.List)) for g in node.generators)
+        if not unpacks and len(node.generators) == 1:
+            return False
+        for g in node.generators:
+            names = [g.target] if isinstance(g.target, ast.Name) else list(getattr(g.target, "elts", []))
+            if not names or not all(isinstance(n, ast.Name) for n in names):
+                return False
+        if any(isinstance(n, (ast.NamedExpr, ast.Await, ast.Yield, ast.YieldFrom, ast.Lambda))
+               for n in ast.walk(node)):
+            return False
+        if isinstance(node, ast.DictComp):
+            return spelled(node.key) in ("str", "int") and spelled(node.value) is not None
+        return spelled(node.elt) is not None
+
+    def simple(node: ast.AST) -> bool:
+        while isinstance(node, ast.Attribute):
+            node = node.value
+        return isinstance(node, (ast.Name, ast.Constant))
+
+    def first_match(node: ast.AST) -> bool:
+        """`next((x for x in xs if test), default)`: the first match, or the default."""
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                and node.func.id == "next" and getattr(node.func, "_binding", None) is None
+                and len(node.args) == 2 and not node.keywords
+                and isinstance(node.args[0], ast.GeneratorExp)):
+            return False
+        gen, default = node.args
+        if len(gen.generators) != 1 or gen.generators[0].is_async or not simple(default):
+            return False
+        target = gen.generators[0].target
+        names = [target] if isinstance(target, ast.Name) else list(getattr(target, "elts", []))
+        if not names or not all(isinstance(n, ast.Name) for n in names):
+            return False
+        if any(isinstance(n, (ast.NamedExpr, ast.Await, ast.Yield, ast.YieldFrom, ast.Lambda))
+               for n in ast.walk(gen)):
+            return False
+        text = spelled(gen.elt)
+        nothing = isinstance(default, ast.Constant) and default.value is None
+        return text is not None and (nothing or spelled(default) == text)
+
+    def generators(node: ast.AST) -> List[ast.comprehension]:
+        return node.args[0].generators if isinstance(node, ast.Call) else node.generators
+
+    def find(node: ast.AST, found: List[ast.AST]) -> bool:
+        """Collect the comprehensions of an expression that are safe to run first, in the
+        order Python reaches them. False once something else would have run before."""
+        if wanted(node) or first_match(node):
+            found.append(node)
+            return True
+        if simple(node):
+            return True
+        parts: List[ast.AST] = []
+        if isinstance(node, ast.Call) and not any(k.arg is None for k in node.keywords):
+            func = node.func
+            if isinstance(func, ast.Attribute):
+                parts.append(func.value)
+            elif not isinstance(func, ast.Name):
+                return False
+            parts += node.args + [k.value for k in node.keywords]
+        elif isinstance(node, ast.UnaryOp):
+            parts = [node.operand]
+        elif isinstance(node, ast.BinOp):
+            parts = [node.left, node.right]
+        elif isinstance(node, ast.Compare):
+            parts = [node.left] + node.comparators
+        elif isinstance(node, ast.Subscript) and not isinstance(node.slice, ast.Slice):
+            parts = [node.value, node.slice]
+        elif isinstance(node, ast.Starred):
+            parts = [node.value]
+        elif isinstance(node, (ast.Tuple, ast.List, ast.Set)):
+            parts = list(node.elts)
+        elif isinstance(node, ast.BoolOp):
+            find(node.values[0], found)
+            return False
+        elif isinstance(node, ast.IfExp):
+            find(node.test, found)
+            return False
+        else:
+            return False
+        for part in parts:
+            if not find(part, found):
+                return False
+        # the call, operation or display itself runs after its parts: nothing later in
+        # the statement may be moved in front of it
+        return False if isinstance(node, (ast.Call, ast.Subscript, ast.BinOp, ast.Compare)) \
+            and not found else not isinstance(node, ast.Call)
+
+    def loop(comp: ast.AST, name: str, target: Optional[ast.Name] = None) -> List[ast.stmt]:
+        def load() -> ast.Name:
+            return ast.Name(id=name, ctx=ast.Load())
+
+        if isinstance(comp, ast.Call):
+            gen, default = comp.args
+            text = spelled(gen.elt)
+            if isinstance(default, ast.Constant) and default.value is None:
+                text = f"Optional[{text}]"
+            only = gen.generators[0]
+            found_it: List[ast.stmt] = [ast.Assign(targets=[ast.Name(id=name, ctx=ast.Store())],
+                                                   value=gen.elt), ast.Break()]
+            if only.ifs:
+                test = only.ifs[0] if len(only.ifs) == 1 else ast.BoolOp(op=ast.And(),
+                                                                         values=list(only.ifs))
+                found_it = [ast.If(test=test, body=found_it, orelse=[])]
+            search = ast.For(target=only.target, iter=only.iter, body=found_it, orelse=[])
+            declaration = ast.AnnAssign(target=target or ast.Name(id=name, ctx=ast.Store()),
+                                        annotation=_annotation_node(text, comp), value=default,
+                                        simple=1)
+            made = [declaration, search]
+            for stmt in made:
+                for part in ast.walk(stmt):
+                    if not hasattr(part, "lineno"):
+                        ast.copy_location(part, comp)
+            return made
+        if isinstance(comp, ast.DictComp):
+            text = f"dict[{spelled(comp.key)}, {spelled(comp.value)}]"
+            empty: ast.expr = ast.Dict(keys=[], values=[])
+            store = ast.Assign(targets=[ast.Subscript(value=load(), slice=comp.key,
+                                                      ctx=ast.Store())], value=comp.value)
+        else:
+            text = f"list[{spelled(comp.elt)}]"
+            empty = ast.List(elts=[], ctx=ast.Load())
+            store = ast.Expr(value=ast.Call(func=ast.Attribute(value=load(), attr="append",
+                                                               ctx=ast.Load()),
+                                            args=[comp.elt], keywords=[]))
+        body: List[ast.stmt] = [store]
+        for g in reversed(comp.generators):
+            if g.ifs:
+                test = g.ifs[0] if len(g.ifs) == 1 else ast.BoolOp(op=ast.And(), values=list(g.ifs))
+                body = [ast.If(test=test, body=body, orelse=[])]
+            body = [ast.For(target=g.target, iter=g.iter, body=body, orelse=[])]
+        declaration = ast.AnnAssign(target=target or ast.Name(id=name, ctx=ast.Store()),
+                                    annotation=_annotation_node(text, comp), value=empty, simple=1)
+        made = [declaration] + body
+        for stmt in made:
+            for part in ast.walk(stmt):
+                if not hasattr(part, "lineno"):
+                    ast.copy_location(part, comp)
+        return made
+
+    def headers(stmt: ast.stmt) -> List[ast.expr]:
+        if isinstance(stmt, (ast.Assign, ast.AugAssign, ast.Expr, ast.Return)):
+            return [stmt.value] if stmt.value is not None else []
+        if isinstance(stmt, ast.AnnAssign):
+            return [stmt.value] if stmt.value is not None else []
+        if isinstance(stmt, ast.If):
+            return [stmt.test]
+        if isinstance(stmt, ast.For):
+            return [stmt.iter]
+        return []
+
+    class Replace(ast.NodeTransformer):
+        def __init__(self, names: Dict[int, str]) -> None:
+            self.names = names
+
+        def visit(self, node: ast.AST) -> ast.AST:
+            if id(node) in self.names:
+                name = ast.copy_location(ast.Name(id=self.names[id(node)], ctx=ast.Load()), node)
+                for mark in ("_type", "_assumed"):
+                    if hasattr(node, mark):
+                        setattr(name, mark, getattr(node, mark))
+                return name
+            return self.generic_visit(node)
+
+    def rewrite(stmts: List[ast.stmt], taken: Dict[str, int]) -> None:
+        index = 0
+        while index < len(stmts):
+            stmt = stmts[index]
+            for field in ("body", "orelse", "finalbody"):
+                inner = getattr(stmt, field, None)
+                if isinstance(inner, list) and inner and isinstance(inner[0], ast.stmt) \
+                        and not isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                    rewrite(inner, taken)
+            for handler in getattr(stmt, "handlers", []):
+                rewrite(handler.body, taken)
+            for case in getattr(stmt, "cases", []):
+                rewrite(case.body, taken)
+            found: List[ast.AST] = []
+            for expr in headers(stmt):
+                find(expr, found)
+            found = [c for c in found if not any(
+                isinstance(n, ast.Name) and n.id in taken
+                for g in generators(c) for n in ast.walk(g.target))]
+            if not found:
+                index += 1
+                continue
+            if (isinstance(stmt, ast.Assign) and len(stmt.targets) == 1
+                    and isinstance(stmt.targets[0], ast.Name) and found == [stmt.value]
+                    and taken.get(stmt.targets[0].id) == 1
+                    and not any(isinstance(n, ast.Name) and n.id == stmt.targets[0].id
+                                for n in ast.walk(stmt.value))):
+                # the name is given the comprehension and nothing else: the loop fills it
+                made = loop(stmt.value, stmt.targets[0].id, stmt.targets[0])
+                stmts[index:index + 1] = made
+                index += len(made)
+                continue
+            names: Dict[int, str] = {}
+            before: List[ast.stmt] = []
+            for comp in found:
+                counter[0] += 1
+                names[id(comp)] = f"py2v_{'first' if isinstance(comp, ast.Call) else 'comp'}{counter[0]}"
+                before += loop(comp, names[id(comp)])
+            for field, value in ast.iter_fields(stmt):
+                if isinstance(value, ast.expr):
+                    setattr(stmt, field, Replace(names).visit(value))
+            stmts[index:index] = before
+            index += len(before) + 1
+
+    for fn in ast.walk(tree):
+        if not isinstance(fn, ast.FunctionDef):
+            continue
+        # every name the function itself binds: a loop name equal to one would change it
+        taken = {a.arg: 1 for a in ast.walk(fn.args) if isinstance(a, ast.arg)}
+        pending = list(fn.body)
+        while pending:
+            node = pending.pop()
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda,
+                                 ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                    taken[node.name] = taken.get(node.name, 0) + 2
+                continue
+            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+                taken[node.id] = taken.get(node.id, 0) + 1
+            elif isinstance(node, (ast.Global, ast.Nonlocal)):
+                for name in node.names:
+                    taken[name] = taken.get(name, 0) + 2
+            pending.extend(ast.iter_child_nodes(node))
+        rewrite(fn.body, taken)
+
+
 def _declare_block_locals(tree: ast.Module, table: Optional[symbols.SymbolTable],
-                          facts: Optional[infer.TypeFacts]) -> None:
+                          facts: Optional[infer.TypeFacts],
+                          dynamic_bindings: Optional[set] = None) -> None:
     """Declare at the top of its function a local that Python first assigns inside a block
     and uses outside it.
 
@@ -4458,7 +5120,10 @@ def _declare_block_locals(tree: ast.Module, table: Optional[symbols.SymbolTable]
     declared before the `if`. Where inference knows the local's whole type (int, float,
     str, bool, or a list or dict of those), the function gets `label: str` as a first
     statement, which the backend emits as a declaration with the type's zero value; the
-    assignments then assign. A local whose type is not fully known is left as it was."""
+    assignments then assign. A local whose type is not fully known is left as it was.
+
+    With `dynamic_bindings` (the second run, from `_lower_dynamic_values`), the locals among
+    them are declared instead, as `name: Any = None`: a value of unknown type."""
     if table is None or facts is None:
         return
     known = {b["id"]: b for b in facts.bindings}
@@ -4520,12 +5185,18 @@ def _declare_block_locals(tree: ast.Module, table: Optional[symbols.SymbolTable]
                 continue  # never seen outside the block that first assigns it
             type_id = fact.get("assumed", fact.get("inferred"))
             text = _annotation_for_type(facts.types, type_id) if type_id is not None else None
+            value: Optional[ast.expr] = None
+            if dynamic_bindings is not None:
+                if text is not None or binding_id not in dynamic_bindings:
+                    continue  # declared by the first run, or not a value of unknown type
+                text = "Any"
+                value = _runtime_call("box", [ast.copy_location(ast.Constant(value=None), fn)], fn)
             if text is None:
                 continue
             target = ast.Name(id=first.id, ctx=ast.Store())
             target._binding = binding_id
             declaration = ast.AnnAssign(target=target, annotation=_annotation_node(text, fn),
-                                        value=None, simple=1)
+                                        value=value, simple=1)
             ast.copy_location(target, fn)
             ast.copy_location(declaration, fn)
             declarations.append(declaration)
@@ -4625,8 +5296,10 @@ def process_file(file_path: str, project: Optional[ProjectFacts] = None) -> str:
     _mark_math_members(tree, table)
     _mark_runtime_api(tree, table)
     facts = _infer_types(tree, table, project)
+    _loop_comprehensions(tree, facts)
     any_lists = _declare_inferred_containers(tree, table, facts)
     _declare_block_locals(tree, table, facts)
+    _lower_optional_text_calls(tree, table, facts)
     _choose_boolop_values(tree, facts)
     _state_truth_tests(tree, table, facts)
     _mark_isinstance_inferred(tree, table, facts)

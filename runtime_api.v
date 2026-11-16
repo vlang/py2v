@@ -64,6 +64,7 @@ struct RuntimeEntry {
 	v_type   string   // for a class: its V type, `logging.Logger`
 	v_import string   // and the module that declares it, `pyrt.logging`
 	v_ref    bool     // whether values of the class are references in V
+	maybe    bool     // the V function gives `!pyrt.Maybe[T]`: a result that may hold None
 }
 
 struct ApiFullEntry {
@@ -81,6 +82,7 @@ struct ApiFullEntry {
 	v_type        string
 	v_import      string
 	v_ref         bool
+	v_returns     string
 }
 
 const runtime_api = load_runtime_api()
@@ -110,6 +112,7 @@ fn load_runtime_api() map[string]RuntimeEntry {
 			v_type:   e.v_type
 			v_import: e.v_import
 			v_ref:    e.v_ref
+			maybe:    e.v_returns.contains('Maybe[')
 		}
 	}
 	// The output of a finished process read as text (pyrt/subprocess/text.v).
@@ -166,6 +169,28 @@ const runtime_positional_options = {
 		'weeks']
 }
 
+// runtime_whole_signature_modules are the runtime modules whose V functions take every
+// Python parameter in Python's order, the ones with a default too (`re.search(pattern,
+// string, flags=0)` is `re.search(pattern, text, flags)`): a parameter the call leaves out
+// is given its default. (This table goes when the manifest says so per entry.)
+const runtime_whole_signature_modules = ['pyrt.re']
+
+// fill_api_defaults appends the defaults of the parameters from `args.len` up to `upto`,
+// for a module of `runtime_whole_signature_modules`. False where one has no plain default.
+fn fill_api_defaults(entry RuntimeEntry, mut args []string, upto int) bool {
+	if entry.v_module !in runtime_whole_signature_modules {
+		return args.len == upto
+	}
+	for i := args.len; i < upto; i++ {
+		default := entry.params[i].default
+		if default == '' || default.trim_left('-').bytes().any(!it.is_digit()) {
+			return false
+		}
+		args << default
+	}
+	return true
+}
+
 // runtime_api_call emits a call of a runtime function or constructor that the frontend
 // resolved (`node.api`): the V name, positional arguments (boxed where the parameter takes
 // any value), keyword and option arguments as fields of the options struct, and, as py2v's
@@ -216,6 +241,16 @@ fn (mut t VTranspiler) runtime_api_call(node Call) ?string {
 		name := kw.arg or { return none }
 		field := entry.options[name] or { name }
 		code := t.visit_expr(kw.value)
+		at := entry.params.map(it.name).index(name)
+		if entry.v_module in runtime_whole_signature_modules && name !in entry.options
+			&& at >= positional.len {
+			// a keyword that names a later positional parameter of the V function
+			if !fill_api_defaults(entry, mut positional, at) {
+				return none
+			}
+			positional << code
+			continue
+		}
 		// an option the runtime keeps as a runtime value (a JSON schema, a payload)
 		named << if name in entry.boxed && !code.starts_with('pyrt.') {
 			'${field}: pyrt.box(${code})'
@@ -230,6 +265,7 @@ fn (mut t VTranspiler) runtime_api_call(node Call) ?string {
 		}
 		positional << '[]u8{}'
 	}
+	fill_api_defaults(entry, mut positional, entry.params.len)
 	positional << named
 	call := '${entry.v_module.all_after_last('.')}.${entry.v_name}(${positional.join(', ')})'
 	return if entry.raises { '(${call} or { pyrt.fail(err) })' } else { call }
@@ -306,6 +342,10 @@ fn (mut t VTranspiler) runtime_api_method(node Call, entry RuntimeEntry) ?string
 		} else if args.len < entry.params.len && entry.params[args.len].name == name
 			&& !entry.params[args.len].typ.contains('Any') {
 			args << code
+		} else if entry.v_module in runtime_whole_signature_modules
+			&& entry.params.map(it.name).index(name) > args.len
+			&& fill_api_defaults(entry, mut args, entry.params.map(it.name).index(name)) {
+			args << code
 		} else {
 			return none
 		}
@@ -315,6 +355,9 @@ fn (mut t VTranspiler) runtime_api_method(node Call, entry RuntimeEntry) ?string
 		// with no argument Python parses the program's own arguments
 		t.add_using('pyrt.pysys')
 		args << 'pysys.argv()[1..]'
+	}
+	if !entry.variadic {
+		fill_api_defaults(entry, mut args, entry.params.len)
 	}
 	call := '${receiver}.${entry.v_name}(${args.join(', ')})'
 	return if entry.raises { '${call} or { pyrt.fail(err) }' } else { call }
