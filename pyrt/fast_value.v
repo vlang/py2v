@@ -2,7 +2,7 @@ module pyrt
 
 // Direct, result-returning operations for the common dynamically typed cases.
 // as_str(Value) and as_list(Value) already exist in convert.v; they are NOT
-// redeclared here. Dynamic wrappers in the user's dyn.v are preserved.
+// redeclared here; these helpers are independent of the dynamic dispatcher.
 
 // Retains the dictionary object (unlike as_list, which returns a snapshot).
 pub fn as_dict(v Value) !&Dict {
@@ -39,7 +39,7 @@ pub fn dict_values(v Value) ![]Value {
 }
 
 // Non-result dict.get: a missing key returns the supplied default; a non-dict
-// or unhashable key raises the same exception path as the existing dyn.v.
+// or unhashable key propagates the normal runtime exception.
 pub fn get(v Value, key Value, default_value Value) Value {
     if v is &Dict {
         hash := hash_key(key) or { fail(err) }

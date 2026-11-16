@@ -3,7 +3,7 @@ module pyos
 import os
 import pyrt
 
-// Local Round 8 implementation, preserved verbatim. These non-result helpers
+// These process-backed, non-result helpers
 // expose Python os.environ mutation and missing-key behavior to generated code.
 pub fn putenv(name string, value string) {
     os.setenv(name, value, true)

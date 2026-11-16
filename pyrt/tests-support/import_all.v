@@ -4,8 +4,8 @@ module main
 // The checker must see this as a top-level program beside pyrt/, not inside pyrt/.
 // From the project root:
 //   cp pyrt/tests-support/import_all.v ./pyrt_import_all.v
-//   V_MACOS_V3_NO_FALLBACK=1 tend slot run --light -- v -check ./pyrt_import_all.v
-//   V_MACOS_V3_NO_FALLBACK=1 tend slot run --light -- v -W -check ./pyrt_import_all.v
+//   v -check ./pyrt_import_all.v
+//   v -W -check ./pyrt_import_all.v
 //   rm ./pyrt_import_all.v
 import pyrt
 import pyrt.argparse
