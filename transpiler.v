@@ -7477,17 +7477,18 @@ pub fn (mut t VTranspiler) visit_set(node Set) string {
 // parenthesized `if` expression, as `(a if c else b).startswith(x)` becomes.
 fn (mut t VTranspiler) if_condition(test Expr) string {
 	code := t.visit_expr(test)
-	if code.starts_with('(if ') {
-		return 'true && ${code}'
+	if code.starts_with('if ') || code.starts_with('(if ') {
+		return 'true && (${code})'
 	}
 	return code
 }
 
 // visit_ifexp emits V code for inline if-expressions (IfExp).
 pub fn (mut t VTranspiler) visit_ifexp(node IfExp) string {
-	test := t.visit_expr(node.test)
-	body := t.ifexp_value(*node.body)
-	orelse := t.ifexp_value(*node.orelse)
+	test := t.if_condition(node.test)
+	// A bare map at the start of a branch is parsed as a statement block.
+	body := t.ifexp_branch(node.body)
+	orelse := t.ifexp_branch(node.orelse)
 	return 'if ${test} { ${body} } else { ${orelse} }'
 }
 
@@ -7507,6 +7508,12 @@ fn (mut t VTranspiler) ifexp_value(expr Expr) string {
 		return op_to_symbol(get_unary_op_type(expr.op)) + t.ifexp_value(expr.operand)
 	}
 	return t.visit_expr(expr)
+}
+
+// ifexp_branch retains value types and groups map literals in V branches.
+fn (mut t VTranspiler) ifexp_branch(expr Expr) string {
+	code := t.ifexp_value(expr)
+	return if expr is Dict && code.starts_with('{') { '(${code})' } else { code }
 }
 
 // visit_lambda emits V code for lambda expressions (Lambda).

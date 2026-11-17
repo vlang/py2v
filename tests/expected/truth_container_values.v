@@ -44,18 +44,18 @@ fn report(items []int, data map[string]int) {
 	println((if items.len > 0 { [8] } else { items }).len)
 	println((if data.len > 0 { data } else { map[string]int{} }).len)
 	println((if data.len > 0 {
-		{
+		({
 			'selected': 9
-		}
+		})
 	} else {
 		data
 	}).len)
 	println((if data.len > 0 {
 		data
 	} else {
-		{
+		({
 			'default': 7
-		}
+		})
 	}).len)
 }
 
