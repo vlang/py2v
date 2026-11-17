@@ -35,6 +35,10 @@ pub mut:
 	text string = 'known'
 }
 
+fn (self Label) == (other Label) bool {
+	return self.text == other.text
+}
+
 fn typed_label(value Label) string {
 	return value.text.to_upper()
 }
@@ -168,4 +172,5 @@ fn main() {
 	non_callable(pyrt.box(args))
 	call_value('text')
 	println(typed_label(Label{}))
+	println(if Label{} == Label{} { 'True' } else { 'False' })
 }

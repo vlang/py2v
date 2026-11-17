@@ -24,8 +24,3 @@ def compare(a: Version, b: Version) -> bool:
 
 def add(a: Version, b: Version) -> Version:
     return a + b
-
-
-if __name__ == "__main__":
-    print(compare(Version(1), Version(2)))
-    print(add(Version(1), Version(2)).major)

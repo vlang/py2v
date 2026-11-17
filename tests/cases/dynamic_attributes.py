@@ -5,6 +5,9 @@ from typing import Any
 class Label:
     text: str = "known"
 
+    def __eq__(self, other) -> bool:
+        return self.text == other.text
+
 
 def typed_label(value: Label) -> str:
     return value.text.upper()
@@ -70,3 +73,4 @@ if __name__ == "__main__":
     non_callable(args)
     call_value("text")
     print(typed_label(Label()))
+    print(Label() == Label())
