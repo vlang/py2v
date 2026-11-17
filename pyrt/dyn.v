@@ -147,6 +147,9 @@ pub fn fail(err IError) {
 		if code is int {
 			exit(code)
 		}
+		if code is bool {
+			exit(if code { 1 } else { 0 })
+		}
 		if code is NoneType {
 			exit(0)
 		}

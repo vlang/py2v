@@ -3297,6 +3297,69 @@ def _annotate_returns(tree: ast.Module, facts: Optional[infer.TypeFacts]) -> Non
             fn.returns = _annotation_node(text, fn)
 
 
+def _lower_exit_statements(tree: ast.Module, table: Optional[symbols.SymbolTable]) -> None:
+    """A resolved exit statement raises SystemExit with its original argument."""
+    if table is None or any(binding.name == "SystemExit" for binding in table.bindings):
+        return
+    imported: Dict[int, str] = {}
+    import_lines: Dict[int, int] = {}
+    for stmt in tree.body:
+        if isinstance(stmt, ast.Import):
+            for alias in stmt.names:
+                binding = getattr(alias, "_binding", None)
+                if binding is not None and alias.name == "sys" and not table.bindings[binding].rebound:
+                    imported[binding] = "sys"
+                    import_lines[binding] = stmt.lineno
+        elif isinstance(stmt, ast.ImportFrom) and stmt.module == "sys" and stmt.level == 0:
+            for alias in stmt.names:
+                binding = getattr(alias, "_binding", None)
+                if binding is not None and alias.name == "exit" and not table.bindings[binding].rebound:
+                    imported[binding] = "sys.exit"
+                    import_lines[binding] = stmt.lineno
+
+    changed = any(isinstance(node, ast.Attribute) and node.attr == "exit"
+                  and isinstance(node.ctx, (ast.Store, ast.Del))
+                  and isinstance(node.value, ast.Name)
+                  and imported.get(getattr(node.value, "_binding", None)) == "sys"
+                  for node in ast.walk(tree))
+
+    def exit_call(node: ast.Call) -> bool:
+        if isinstance(node.func, ast.Name):
+            binding = getattr(node.func, "_binding", None)
+            return (binding is None and node.func.id in ("exit", "quit")
+                    or not changed and imported.get(binding) == "sys.exit"
+                    and import_lines[binding] < node.lineno)
+        if isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Name):
+            binding = getattr(node.func.value, "_binding", None)
+            return (not changed and node.func.attr == "exit" and imported.get(binding) == "sys"
+                    and import_lines[binding] < node.lineno)
+        return False
+
+    class Lower(ast.NodeTransformer):
+        def visit_Try(self, node: ast.Try) -> ast.AST:
+            return node if node.finalbody else self.generic_visit(node)
+
+        def visit_With(self, node: ast.With) -> ast.AST:
+            return node
+
+        def visit_AsyncWith(self, node: ast.AsyncWith) -> ast.AST:
+            return node
+
+        def visit_Expr(self, node: ast.Expr) -> ast.AST:
+            call = node.value
+            if (isinstance(call, ast.Call) and exit_call(call) and len(call.args) <= 1
+                    and not call.keywords and not any(isinstance(arg, ast.Starred) for arg in call.args)):
+                args = [_runtime_call("box", [arg], arg)
+                        if isinstance(arg, ast.Constant) and arg.value is None else arg for arg in call.args]
+                exc = ast.copy_location(ast.Call(
+                    func=ast.copy_location(ast.Name(id="SystemExit", ctx=ast.Load()), node),
+                    args=args, keywords=[]), node)
+                return ast.copy_location(ast.Raise(exc=exc, cause=None), node)
+            return self.generic_visit(node)
+
+    Lower().visit(tree)
+
+
 def _erase_typing_casts(tree: ast.Module, table: Optional[symbols.SymbolTable]) -> None:
     """Erase typing's identity call only when its type argument has no runtime effect."""
     if table is None:
@@ -6292,6 +6355,7 @@ def process_file(file_path: str, project: Optional[ProjectFacts] = None) -> str:
     _mark_math_members(tree, table)
     _unquote_annotations(tree, table)
     _mark_runtime_api(tree, table)
+    _lower_exit_statements(tree, table)
     _erase_typing_casts(tree, table)
     facts = _infer_types(tree, table, project)
     _loop_comprehensions(tree, facts)

@@ -3620,7 +3620,16 @@ pub fn (mut t VTranspiler) visit_raise(node Raise) string {
 			'pyrt.fail(py2v_raised_${node.guard})'
 		}
 	}
-	if node.mode in ['result', 'guard'] {
+	mut exits := false
+	if exc := node.exc {
+		if exc is Name {
+			exits = exc.id == 'SystemExit'
+		} else if exc is Call && exc.func is Name {
+			exits = exc.func.id == 'SystemExit'
+		}
+	}
+	exits = exits && 'SystemExit' !in t.known_classes
+	if node.mode in ['result', 'guard'] || exits {
 		if made := t.raised_error(node) {
 			t.add_using('pyrt')
 			if node.mode == 'guard' {
@@ -3628,6 +3637,9 @@ pub fn (mut t VTranspiler) visit_raise(node Raise) string {
 			}
 			if t.fn_returns_result {
 				return 'return ${made}'
+			}
+			if exits {
+				return 'pyrt.fail(${made})'
 			}
 		}
 	}

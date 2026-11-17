@@ -352,6 +352,7 @@ for witness in [
 		'0 2 2 2 1\nTrue False\n2 0 0\nleft\nright\nTrue\nfrozenset({1.0})\nfrozenset({-0.0})\nfrozenset({1.0})\nfrozenset({-0.0})\nFalse True\nunhashable\nmember error\nnot iterable\n'],
 	['builtin_frozenset_shadow', '22\n'],
 	['builtin_typing_cast', '1\nword\n3\nonce\n8\n9\n'],
+	['builtin_exit_shadow', '22\n'],
 ] {
 	builtin_root := os.join_path(os.temp_dir(), 'py2v_builtin_${witness[0]}_${os.getpid()}')
 	os.mkdir_all(builtin_root) or { panic(err) }
@@ -376,6 +377,56 @@ for witness in [
 		failures << fail_line('FAIL', name, '')
 	}
 	os.rmdir_all(builtin_root) or { panic(err) }
+}
+// All exit modes share one compiled fixture and compare status as well as output.
+exit_root := os.join_path(os.temp_dir(), 'py2v_builtin_exit_${os.getpid()}')
+os.mkdir_all(exit_root) or { panic(err) }
+exit_source := os.join_path(cases_dir, 'builtin_exit.py')
+exit_translated := os.exec([py2v, exit_source])
+exit_generated := os.join_path(exit_root, 'main.v')
+exit_binary := os.join_path(exit_root, 'probe' + $if windows { '.exe' } $else { '' })
+os.write_file(exit_generated, exit_translated.output) or { panic(err) }
+exit_built := os.exec([@VEXE, '-path', project_dir + '|@vlib|@vmodules', '-o', exit_binary,
+	exit_generated])
+for mode in ['caught', 'zero', 'int', 'true', 'false', 'none', 'message'] {
+	native := if exit_built.exit_code == 0 { os.exec([exit_binary, mode]) } else { exit_built }
+	cpython := os.exec([python, '-B', exit_source, mode])
+	expected_status := match mode {
+		'int' { 7 }
+		'true', 'message' { 1 }
+		else { 0 }
+	}
+	expected_output := match mode {
+		'caught' { 'caught 3\nbase message\ndefault\nnone\n' }
+		'message' { 'message\n' }
+		else { '' }
+	}
+	name := 'builtins: exit ${mode}'
+	if exit_translated.exit_code == 0 && native.exit_code == expected_status
+		&& cpython.exit_code == expected_status
+		&& native.output.replace('\r', '') == expected_output
+		&& cpython.output.replace('\r', '') == expected_output {
+		report('PASS', name, '')
+		passed++
+	} else {
+		report('FAIL', name, '')
+		println('status ${native.exit_code}, expected ${expected_status}')
+		println(excerpt_n(native.output, 20))
+		failed++
+		failures << fail_line('FAIL', name, '')
+	}
+}
+os.rmdir_all(exit_root) or { panic(err) }
+exit_analysis := os.exec([python, '-B', os.join_path(script_dir, 'exit_lowering_test.py')])
+exit_analysis_name := 'builtins: exit resolution and refusal cases'
+if exit_analysis.exit_code == 0 {
+	report('PASS', exit_analysis_name, '')
+	passed++
+} else {
+	report('FAIL', exit_analysis_name, '')
+	println(excerpt_n(exit_analysis.output, 20))
+	failed++
+	failures << fail_line('FAIL', exit_analysis_name, '')
 }
 cast_analysis := os.exec([python, '-B', os.join_path(script_dir, 'typing_cast_test.py')])
 cast_analysis_name := 'builtins: typing cast effects and refusal cases'
