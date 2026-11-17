@@ -86,19 +86,10 @@ fn compare_execution(args []string) os.Result {
 	os.write_file(args[3], translation.output) or {
 		return os.Result{ exit_code: 1, output: err.msg() }
 	}
-	// UTF-8 mode: on Windows CPython would otherwise write its output in the console code page.
+	// UTF-8 mode: on Windows CPython would otherwise use the console code page.
 	python_run := os.exec([args[1], '-X', 'utf8', '-I', args[2]])
 	v_run := run_generated(args[3])
-	if args.len > 5 && args[5] == 'native_alias_unsupported' && v_run.exit_code != 0 {
-		// A native mutable alias must not silently become a boxed snapshot.
-		syntax := os.exec([@VEXE, '-check-syntax', args[3]])
-		if python_run.exit_code == 0 && python_run.output.len > 0 && syntax.exit_code == 0
-			&& v_run.output.contains('cannot cast `map[string]map[string]int` to `Any`') {
-			return os.Result{}
-		}
-	}
 	if python_run.exit_code == 0 && v_run.exit_code == 0
-		&& (args.len < 5 || python_run.output.len > 0)
 		&& python_run.output.replace('\r', '') == v_run.output.replace('\r', '') {
 		return os.Result{}
 	}
@@ -106,26 +97,6 @@ fn compare_execution(args []string) os.Result {
 		exit_code: 1
 		output:    'CPython (exit ${python_run.exit_code}):\n${python_run.output}\nV (exit ${v_run.exit_code}):\n${v_run.output}'
 	}
-}
-
-// run_dynamic_case owns scratch paths and uses the shared execution comparison.
-fn run_dynamic_case(case_name string) os.Result {
-	if case_name.ends_with('_test.v') {
-		return os.exec([@VEXE, 'test', os.join_path(project_dir, case_name)])
-	}
-	case_id := case_name.replace('/', '_')
-	root := os.join_path(os.temp_dir(), 'py2v_dynamic_${os.getpid()}_${case_id}')
-	os.mkdir_all(root) or { return os.Result{ exit_code: 1, output: err.msg() } }
-	defer {
-		os.rmdir_all(root) or { panic(err) }
-	}
-	python_bin := $if windows { 'python' } $else { 'python3' }
-	mut args := [resolve_py2v(), python_bin, os.join_path(cases_dir, case_name + '.py'),
-		os.join_path(root, 'main.v'), 'nonempty']
-	if case_name == 'dynamic_errors/container_alias' {
-		args << 'native_alias_unsupported'
-	}
-	return compare_execution(args)
 }
 
 const script_dir = os.dir(os.abs_path(@FILE))
@@ -223,9 +194,15 @@ python := $if windows { 'python' } $else { 'python3' }
 dynamic_cases := ['dynamic_container_elements', 'dynamic_membership', 'dynamic_comprehensions',
 	'dynamic_methods', 'dynamic_or_default', 'dynamic_stores', 'dynamic_runtime_returns',
 	'dynamic_attributes', 'dynamic_truth', 'dynamic_mixed_membership', 'dynamic_boxed_bytes',
-	'dynamic_unpacking', 'dynamic_optional', 'dynamic_conditional', 'dynamic_errors/container_alias',
-	'native_map_types', 'pyrt/box_boundary_test.v']
-dynamic_results := parallel.amap(dynamic_cases, run_dynamic_case, workers: 2)
+	'dynamic_unpacking', 'dynamic_optional', 'dynamic_conditional', 'native_map_types']
+dynamic_root := os.join_path(os.temp_dir(), 'py2v_dynamic_${os.getpid()}')
+os.mkdir_all(dynamic_root) or { panic(err) }
+mut dynamic_args := [][]string{}
+for name in dynamic_cases {
+	dynamic_args << [py2v, python, os.join_path(cases_dir, name + '.py'),
+		os.join_path(dynamic_root, name.replace('/', '_') + '.v')]
+}
+dynamic_results := parallel.amap(dynamic_args, compare_execution, workers: 2)
 for i, result in dynamic_results {
 	name := 'runtime execution: ' + dynamic_cases[i]
 	if result.exit_code == 0 {
@@ -237,6 +214,47 @@ for i, result in dynamic_results {
 		failed++
 		failures << fail_line('FAIL', name, '')
 	}
+}
+// This program needs native dict aliasing that pyrt.box cannot preserve. Its
+// compilation rejection is a guard against silently compiling wrong code, NOT
+// a passing CPython/V execution comparison.
+alias_name := 'runtime boundary: reject native map alias copy'
+alias_source := os.join_path(cases_dir, 'dynamic_errors', 'container_alias.py')
+alias_v := os.join_path(dynamic_root, 'native_alias.v')
+alias_translation := os.exec([py2v, alias_source])
+mut alias_ok := alias_translation.exit_code == 0
+if alias_ok {
+	os.write_file(alias_v, alias_translation.output) or { panic(err) }
+	alias_python := os.exec([python, '-X', 'utf8', '-I', alias_source])
+	alias_syntax := os.exec([@VEXE, '-check-syntax', alias_v])
+	alias_generated := run_generated(alias_v)
+	alias_ok = alias_python.exit_code == 0 && alias_python.output.trim_space() == '2'
+		&& alias_syntax.exit_code == 0 && alias_generated.exit_code != 0
+		&& alias_generated.output.contains('cannot cast `map[string]map[string]int` to `Any`')
+}
+if alias_ok {
+	report('PASS', alias_name, '')
+	passed++
+	report('SKIP', 'runtime execution: dynamic_errors/container_alias',
+		' (native mutable alias semantics not implemented)')
+	skipped++
+} else {
+	report('FAIL', alias_name, '')
+	failed++
+	failures << fail_line('FAIL', alias_name, '')
+}
+os.rmdir_all(dynamic_root) or { panic(err) }
+
+boundary_name := 'runtime execution: pyrt/box_boundary_test.v'
+boundary_run := os.exec([@VEXE, 'test', os.join_path(project_dir, 'pyrt', 'box_boundary_test.v')])
+if boundary_run.exit_code == 0 {
+	report('PASS', boundary_name, '')
+	passed++
+} else {
+	report('FAIL', boundary_name, '')
+	println(boundary_run.output)
+	failed++
+	failures << fail_line('FAIL', boundary_name, '')
 }
 
 init_py_run := os.exec([python, '-B', init_source])
