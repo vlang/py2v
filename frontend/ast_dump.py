@@ -83,6 +83,28 @@ class AnalysisContext:
                 return True
         return False
 
+    def native_map_annotation(self, node: ast.AnnAssign) -> Optional[str]:
+        """A populated local map keeps the concrete type of its emitted initializer."""
+        if self.table is None or self.facts is None or not isinstance(node.target, ast.Name):
+            return None
+        binding_id = getattr(node.target, "_binding", None)
+        if binding_id is None:
+            return None
+        binding = self.table.bindings[binding_id]
+        if (binding.is_param or len(binding.sites) != 1
+                or self.table.scopes[binding.scope].kind != "function"):
+            return None
+        declared = self.facts.bindings[binding_id].get("declared")
+        if declared is None or self.facts.types[declared]["k"] != "dict":
+            return None
+        value_kind = self.facts.types[self.facts.types[declared]["value"]]["k"]
+        if value_kind not in ("unknown", "dynamic"):
+            return None
+        if not isinstance(node.value, ast.Dict) or not node.value.keys or None in node.value.keys:
+            return None
+        actual = getattr(node.value, "_represented", None)
+        return _annotation_for_type(self.facts.types, actual) if actual is not None else None
+
     def owned_names(self, scope_node: ast.AST) -> Set[str]:
         """Names the scope that `scope_node` opens binds itself: its parameters and locals."""
         scope_id = getattr(scope_node, "_scope_id", None)
@@ -2054,8 +2076,12 @@ def _node_to_dict(node: ast.AST, mutable_vars: Set[str],
         result["value"] = _node_to_dict(node.value, mutable_vars, redefined, ctx)
 
     elif isinstance(node, ast.AnnAssign):
+        native_map = ctx.native_map_annotation(node)
+        annotation = _annotation_node(native_map, node.annotation) if native_map else node.annotation
+        if native_map:
+            ctx.var_annotations[node.target.id] = native_map
         result["target"] = _node_to_dict(node.target, mutable_vars, redefined, ctx)
-        result["annotation"] = _node_to_dict(node.annotation, mutable_vars, redefined, ctx)
+        result["annotation"] = _node_to_dict(annotation, mutable_vars, redefined, ctx)
         result["value"] = _node_to_dict(node.value, mutable_vars, redefined, ctx) if node.value else None
         result["simple"] = node.simple
 

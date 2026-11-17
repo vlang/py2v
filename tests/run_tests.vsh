@@ -224,7 +224,7 @@ dynamic_cases := ['dynamic_container_elements', 'dynamic_membership', 'dynamic_c
 	'dynamic_methods', 'dynamic_or_default', 'dynamic_stores', 'dynamic_runtime_returns',
 	'dynamic_attributes', 'dynamic_truth', 'dynamic_mixed_membership', 'dynamic_boxed_bytes',
 	'dynamic_unpacking', 'dynamic_optional', 'dynamic_conditional', 'dynamic_errors/container_alias',
-	'pyrt/box_boundary_test.v']
+	'native_map_types', 'pyrt/box_boundary_test.v']
 dynamic_results := parallel.amap(dynamic_cases, run_dynamic_case, workers: 2)
 for i, result in dynamic_results {
 	name := 'runtime execution: ' + dynamic_cases[i]
