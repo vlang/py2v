@@ -1276,24 +1276,94 @@ _DUNDER_V_OP: Dict[str, str] = {
     "__sub__": "-",
     "__mul__": "*",
     "__truediv__": "/",
-    "__floordiv__": "/",
+    "__floordiv__": "py_floor_div",
     "__mod__": "%",
     "__eq__": "==",
-    "__ne__": "!=",
+    "__ne__": "py_ne",
     "__lt__": "<",
-    "__le__": "<=",
-    "__gt__": ">",
-    "__ge__": ">=",
+    "__le__": "py_le",
+    "__gt__": "py_gt",
+    "__ge__": "py_ge",
     "__str__": "str",
     "__repr__": "repr",
     "__len__": "len",
     "__getitem__": "index",
     "__setitem__": "index_set",
     "__contains__": "contains",
-    "__neg__": "-",
-    "__pos__": "+",
-    "__invert__": "~",
+    "__neg__": "py_neg",
+    "__pos__": "py_pos",
+    "__invert__": "py_invert",
 }
+
+
+def _lower_named_dunder_operations(tree, facts):
+    """Call Python's own hooks where V cannot overload the operator.
+
+    V derives !=, <=, > and >= from == and <; Python permits independent
+    implementations. Unary operators and floor division also need named methods.
+    Only a receiver resolved to a class in this file selects one of these hooks.
+    """
+    if facts is None:
+        return
+    classes = {n.name: n for n in ast.walk(tree) if isinstance(n, ast.ClassDef)}
+    if not classes:
+        return
+
+    def defines(name, method, seen=None):
+        seen = set() if seen is None else seen
+        cls = classes.get(name)
+        if cls is None or name in seen:
+            return False
+        seen.add(name)
+        return (any(isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+                    and n.name == method for n in cls.body)
+                or any(isinstance(b, ast.Name) and defines(b.id, method, seen)
+                       for b in cls.bases))
+
+    def call_hook(node, receiver, method, args):
+        typ = getattr(receiver, "_assumed", getattr(receiver, "_type", None))
+        info = facts.types[typ] if typ is not None else {}
+        if info.get("k") != "instance" or not defines(info.get("name"), method):
+            return node
+        call = ast.Call(func=ast.Attribute(value=receiver, attr=method, ctx=ast.Load()),
+                        args=args, keywords=[])
+        return ast.copy_location(call, node)
+
+    class Lower(ast.NodeTransformer):
+        def visit_UnaryOp(self, node):
+            self.generic_visit(node)
+            method = {ast.USub: "__neg__", ast.UAdd: "__pos__",
+                      ast.Invert: "__invert__"}.get(type(node.op))
+            return call_hook(node, node.operand, method, []) if method else node
+
+        def visit_BinOp(self, node):
+            self.generic_visit(node)
+            if isinstance(node.op, ast.FloorDiv):
+                return call_hook(node, node.left, "__floordiv__", [node.right])
+            return node
+
+        def visit_Compare(self, node):
+            self.generic_visit(node)
+            methods = {ast.NotEq: "__ne__", ast.LtE: "__le__", ast.Gt: "__gt__",
+                       ast.GtE: "__ge__"}
+            if len(node.ops) != 1:
+                operands = [node.left] + node.comparators
+                for receiver, op in zip(operands, node.ops):
+                    method = methods.get(type(op))
+                    if method and call_hook(node, receiver, method, []) is not node:
+                        # A chain must retain its once-only operands and lazy comparisons.
+                        # Do not silently substitute V's derived ordering for Python hooks.
+                        labels = ast.List(elts=[ast.Constant(value=type(op).__name__)
+                                                for op in node.ops], ctx=ast.Load())
+                        call = ast.Call(func=ast.Name(id="py2v_unsupported_comparison_chain",
+                                                     ctx=ast.Load()),
+                                        args=[labels] + operands, keywords=[])
+                        return ast.copy_location(call, node)
+                return node
+            method = methods.get(type(node.ops[0]))
+            return call_hook(node, node.left, method, node.comparators) if method else node
+
+    Lower().visit(tree)
 
 
 def _dunder_to_v_op(name: str) -> str:
@@ -6701,6 +6771,7 @@ def process_file(file_path: str, project: Optional[ProjectFacts] = None) -> str:
     _erase_typing_casts(tree, table)
     _expand_bool_calls(tree)
     facts = _infer_types(tree, table, project)
+    _lower_named_dunder_operations(tree, facts)
     _plan_bound_appends(tree, table, facts)
     _loop_comprehensions(tree, facts)
     any_lists = _declare_inferred_containers(tree, table, facts)

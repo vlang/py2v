@@ -6652,10 +6652,11 @@ pub fn (mut t VTranspiler) visit_call(original Call) string {
 				// Not a known builtin method: forward it as an ordinary V method
 				// call. Falling through here used to drop the call entirely and
 				// evaluate to the bare receiver.
+				v_method := python_dunder_method_names[method] or { method }
 				mut call := if vargs.len > 0 {
-					'${obj}.${method}(${vargs.join(', ')})'
+					'${obj}.${v_method}(${vargs.join(', ')})'
 				} else {
-					'${obj}.${method}()'
+					'${obj}.${v_method}()'
 				}
 				// list.append becomes the V `<<` operator.
 				if method == 'append' && vargs.len > 0 {

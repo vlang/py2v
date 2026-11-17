@@ -333,6 +333,14 @@ pub fn escape_keyword(name string) string {
 // ordinary named methods rather than operators. V forbids a leading underscore
 // on method names, so `__init__` becomes `init`.
 pub const python_dunder_method_names = {
+	'__floordiv__':  'py_floor_div'
+	'__ne__':        'py_ne'
+	'__le__':        'py_le'
+	'__gt__':        'py_gt'
+	'__ge__':        'py_ge'
+	'__neg__':       'py_neg'
+	'__pos__':       'py_pos'
+	'__invert__':    'py_invert'
 	'__init__':      'init'
 	'__post_init__': 'post_init'
 	'__enter__':     'enter'
