@@ -45,14 +45,14 @@ pub fn py2v_new_token(text string, quoted bool) Token {
 	return py2v_instance
 }
 
-fn tokenize(src string) []Token {
-	mut tokens := []Token{}
+fn tokenize(src string) &pyrt.ListRef[Token] {
+	mut tokens := pyrt.list_ref[Token]([]Token{})
 	mut cur := ''
 	py2v_capture1 := &cur
 	py2v_capture2 := &tokens
 	end_token := fn [py2v_capture1, py2v_capture2] () {
 		if (*py2v_capture1) != '' {
-			(*py2v_capture2) << py2v_new_token((*py2v_capture1), false)
+			(*py2v_capture2).items << py2v_new_token((*py2v_capture1), false)
 			unsafe {
 				(*py2v_capture1) = ''
 			}
@@ -70,7 +70,7 @@ fn tokenize(src string) []Token {
 }
 
 fn main() {
-	for token in tokenize('ab c') {
+	for token in tokenize('ab c').items {
 		println((token.text).str() + ' ' + (if token.quoted { 'True' } else { 'False' }).str())
 	}
 }

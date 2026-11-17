@@ -34,9 +34,9 @@ fn main_func() {
 		'b': 2
 		'c': 3
 	}
-	keys := d.keys()
+	keys := d.keys().clone()
 	println(keys)
-	values := d.values()
+	values := d.values().clone()
 	println(values)
 	mut val := d['a'] or { 0 }
 	println(val)

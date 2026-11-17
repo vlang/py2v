@@ -378,7 +378,11 @@ call_results_cases := ['dict_get_missing', 'dict_get_eager', 'dict_get_chain', '
 	'review_nested_default_once', 'review_nested_if', 'review_nested_loop',
 	'review_nested_literal_block', 'review_divmod_negative_float', 'modulo_signed', 'modulo_float',
 	'modulo_generic', 'modulo_target_once', 'modulo_dynamic_target', 'dict_local_any_writes',
-	'dict_local_inferred_writes']
+	'dict_local_inferred_writes', 'modulo_loop_value', 'list_name_alias', 'list_function_alias',
+	'list_field_alias', 'list_container_alias', 'list_return_alias', 'list_copy_boundary',
+	'list_identity_compare', 'list_nested_paths', 'list_slice_alias', 'list_reference_ops',
+	'list_heterogeneous_alias', 'list_delete_alias', 'list_augassign_target', 'augassign_side_effects',
+	'comb_sort', 'element_store_mut', 'mut_inplace_methods', 'typing_abc_annotations']
 mut execution_args := [][]string{}
 for name in call_results_cases {
 	execution_args << [py2v, python, os.join_path(cases_dir, name + '.py'),
@@ -393,6 +397,36 @@ for i, result in execution_results {
 	} else {
 		report('FAIL', name, '')
 		println(result.output)
+		failed++
+		failures << fail_line('FAIL', name, '')
+	}
+}
+// Refused identity operations must fail compilation with an explicit boundary diagnostic.
+for refusal in [
+	['list_identity_refusal', '[1, 2, 3]', 'during iteration'],
+	['list_iteration_call_refusal', '[1, 2, 3]', 'during iteration'],
+	['list_iteration_aug_refusal', '[1, 2, 3]', 'during iteration'],
+	['list_iteration_slice_refusal', '[4, 5, 6] [1, 5, 6]', 'during iteration'],
+	['list_comprehension_refusal', '[1, 2, 3]', 'during iteration'],
+	['list_enumerate_refusal', '[1, 2, 3] [1, 2, 3]', 'during iteration'],
+	['list_call_refusal', '[1, 2]', 'unresolved call'],
+] {
+	refusal_source := os.join_path(cases_dir, refusal[0] + '.py')
+	refusal_translation := os.exec([py2v, refusal_source])
+	refusal_v := os.join_path(call_results_root, refusal[0] + '.v')
+	os.write_file(refusal_v, refusal_translation.output) or { panic(err) }
+	refusal_run := run_generated(refusal_v)
+	refusal_python := os.exec([python, '-X', 'utf8', '-I', refusal_source])
+	name := 'list identity: ${refusal[0]} refusal'
+	if refusal_translation.exit_code == 0 && refusal_python.exit_code == 0
+		&& refusal_python.output.trim_space() == refusal[1]
+		&& refusal_translation.output.contains(refusal[2])
+		&& refusal_run.exit_code != 0 && refusal_run.output.contains('py2v_unsupported_list_identity') {
+		report('PASS', name, '')
+		passed++
+	} else {
+		report('FAIL', name, '')
+		println(refusal_run.output)
 		failed++
 		failures << fail_line('FAIL', name, '')
 	}

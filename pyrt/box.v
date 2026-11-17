@@ -1,7 +1,8 @@
 module pyrt
 
 // box turns typed scalars, bytes, containers, and runtime handles into Value.
-// Native arrays and maps become new containers; native bytes are copied.
+// Shared native list descriptors cross through a Sequence bridge without copying.
+// Ordinary arrays and maps become new containers; native bytes are copied.
 pub fn box[T](v T) Value {
 	$if T is ?Value || T is ?string || T is ?bool || T is ?int || T is ?i64 || T is ?f64 || T is ?[]u8 || T is ?&List || T is ?&Dict || T is ?&Set || T is ?&Tuple || T is ?Instance || T is ?Sequence {
 		if actual := v {
@@ -15,6 +16,9 @@ pub fn box[T](v T) Value {
 	} $else $if T is Instance {
 		return Value(Instance(v))
 	} $else $if T is Sequence {
+		$if T is ListMethods {
+			return Value(Sequence(&ListBridge{ sequence: Sequence(v), methods: ListMethods(v) }))
+		}
 		return Value(Sequence(v))
 	} $else $if T is bool {
 		return Value(v)

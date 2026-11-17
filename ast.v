@@ -163,9 +163,11 @@ pub type Stmt = Pass
 // Module is the root node
 pub struct Module {
 pub mut:
-	body              []Stmt
-	loc               Location
-	docstring_comment ?string
+	// list_identity_error refuses a list operation whose aliases cannot be preserved.
+	list_identity_error string
+	body                []Stmt
+	loc                 Location
+	docstring_comment   ?string
 	// source_words lists the words of the source as py2v may emit them; temps avoid them.
 	source_words           []string
 	condition_walrus_names []string

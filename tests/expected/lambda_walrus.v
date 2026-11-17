@@ -8,7 +8,7 @@ fn show() {
 	nums := [1, 2, 3]
 	result := nums.map(fn (x int) i64 {
 		return x * 2
-	})
+	}).clone()
 	println(result.len)
 }
 

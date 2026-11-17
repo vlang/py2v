@@ -138,6 +138,7 @@ fn parse_module(m map[string]json2.Any) !Module {
 		}
 	}
 	return Module{
+		list_identity_error:    (m['list_identity_error'] or { json2.Any('') }).str()
 		body:                   body
 		loc:                    parse_location(m)
 		docstring_comment:      docstring

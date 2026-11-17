@@ -19,6 +19,6 @@ fn main() {
 	for f in pathlib.new_path('.').iterdir() or { pyrt.fail(err) } {
 		println(f)
 	}
-	files := pathlib.new_path('.').glob('*.txt') or { pyrt.fail(err) }
+	files := (pathlib.new_path('.').glob('*.txt') or { pyrt.fail(err) }).clone()
 	println(files)
 }

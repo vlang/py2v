@@ -27,7 +27,7 @@ fn init_required_reference_fields(node ClassDef, classes map[string]ClassDef, mu
 		if typ in node.type_params || raw_type in node.type_params {
 			continue
 		}
-		if typ.starts_with('&') || should_emit_ref_field_type(typ) {
+		if (typ.starts_with('&') && !typ.starts_with('&pyrt.ListRef[')) || should_emit_ref_field_type(typ) {
 			fields << field
 		}
 	}

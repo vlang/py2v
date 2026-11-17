@@ -277,6 +277,12 @@ pub fn (t VTranspiler) emitted_fn_name(name string) string {
 // visit_module renders a whole Python module: constants, imports, structs and
 // functions, in the order V requires them.
 pub fn (mut t VTranspiler) visit_module(node Module) string {
+	if node.list_identity_error != '' {
+		name := if t.module_name == '' { 'main' } else { t.module_name }
+		reason := node.list_identity_error.replace('\n', ' ')
+		return 'module ${name}\n\n// ${reason}\nfn main() {\n\tpy2v_unsupported_list_identity()\n}\n'
+	}
+
 	t.prepare_init_constructors(node)
 	mut bindings := map[string]int{}
 	mut calls := []BindingCall{}
@@ -927,6 +933,8 @@ pub fn (mut t VTranspiler) visit_stmt(stmt Stmt) string {
 
 // visit_expr visits an expression and dispatches to expression visitors.
 pub fn (mut t VTranspiler) visit_expr(expr Expr) string {
+	if get_v_annotation(expr).contains('pyrt.ListRef[') { t.add_using('pyrt') }
+
 	match expr {
 		Constant { return t.visit_constant(expr) }
 		Name { return t.visit_name(expr) }
@@ -1439,12 +1447,16 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 				&& is_optional_value_type(typename)
 			if typename in v_value_param_types && arg.arg in node.condition_walrus_names {
 				// The walrus lowering copies this parameter itself.
-			} else if typename in v_value_param_types || optional_value {
+			} else if typename in v_value_param_types || optional_value || typename.starts_with('&pyrt.ListRef[') {
 				// Rebinding a number, string or bool parameter is local in Python, and V
 				// has no `mut` for these or their options: it arrives under another name and the
 				// body starts with a mutable local that has the source's name.
 				incoming := t.new_tmp('${arg.arg}_in')
-				param_copies << 'mut ${arg_name} := ${incoming}'
+				param_copies << if typename.starts_with('&pyrt.ListRef[') {
+					'mut ${arg_name} := unsafe { ${incoming} }'
+				} else {
+					'mut ${arg_name} := ${incoming}'
+				}
 				arg_name = incoming
 			} else {
 				arg_name = 'mut ${arg_name}'
@@ -2052,6 +2064,9 @@ pub fn (mut t VTranspiler) visit_class_def(node ClassDef) string {
 			if default_expr := node.class_defaults[decl] {
 				default_str := t.visit_expr(default_expr)
 				fields << t.indent_code('${field_name} ${typ} = ${default_str}', 1)
+			} else if typ.starts_with('&pyrt.ListRef[') {
+				t.add_using('pyrt')
+				fields << t.indent_code('${field_name} ${typ} = ${typ}{}', 1)
 			} else {
 				fields << t.indent_code('${field_name} ${typ}', 1)
 			}
@@ -2395,6 +2410,7 @@ pub fn (mut t VTranspiler) visit_assign(node Assign) string {
 
 	mut assigns := []string{}
 	use_temp := node.targets.len > 1 && node.value is Call
+	assignment_temp := if use_temp { t.new_tmp('assignment') } else { '' }
 
 	// Determine if RHS was an ellipsis so we can append a trailing
 	// comment at the end of the generated assignment line(s).
@@ -2407,7 +2423,7 @@ pub fn (mut t VTranspiler) visit_assign(node Assign) string {
 	}
 
 	if use_temp {
-		assigns << 'mut tmp := ${t.visit_expr(node.value)}'
+		assigns << 'mut ${assignment_temp} := ${t.visit_expr(node.value)}'
 	}
 
 	for target in node.targets {
@@ -2427,7 +2443,7 @@ pub fn (mut t VTranspiler) visit_assign(node Assign) string {
 			}
 		}
 
-		value_str := if use_temp { 'tmp' } else { t.visit_expr(node.value) }
+		value_str := if use_temp { assignment_temp } else { t.visit_expr(node.value) }
 
 		match target {
 			Tuple {
@@ -2450,7 +2466,6 @@ pub fn (mut t VTranspiler) visit_assign(node Assign) string {
 						// Direct tuple swap: x, y = y, x or a, b, c = 1, 2, 3
 						mut subtargets := []string{}
 						mut any_redefined := false
-						mut all_names_mutable := true
 						mut has_subscript_or_attr := false
 
 						// Check if all targets are mutable names (meaning they were defined earlier)
@@ -2459,22 +2474,16 @@ pub fn (mut t VTranspiler) visit_assign(node Assign) string {
 								if st.id in node.redefined_targets {
 									any_redefined = true
 								}
-								if !st.is_mutable {
-									all_names_mutable = false
-								}
 							} else if st is Subscript || st is Attribute {
 								has_subscript_or_attr = true
-							} else {
-								all_names_mutable = false
 							}
 						}
 
-						// If all names are marked mutable, this is likely a reassignment (like swap)
-						// Use = without mut prefix
+						// Mutability alone does not make the first assignment a rebinding.
 						for st in elts {
 							mut subkw := ''
 							if st is Name {
-								if !any_redefined && !all_names_mutable && !has_subscript_or_attr {
+								if !any_redefined && !has_subscript_or_attr {
 									if st.is_mutable && st.id !in node.redefined_targets {
 										subkw = 'mut '
 									}
@@ -2490,7 +2499,7 @@ pub fn (mut t VTranspiler) visit_assign(node Assign) string {
 							}
 							return false
 						})
-						op := if is_redefined || any_redefined || all_names_mutable
+						op := if is_redefined || any_redefined
 							|| has_subscript_or_attr || has_discard {
 							'='
 						} else {
@@ -2741,12 +2750,16 @@ fn (mut t VTranspiler) captured_aug_assign(node AugAssign, op_type string) strin
 		return 'py2v_unsupported_modulo_assignment_target()'
 	}
 	old := t.new_tmp('old')
-	lines << '${old} := ${target}'
+	shared_add := op_type == 'Add' && t.infer_expr_type(*node.target).starts_with('&pyrt.ListRef[')
+	lines << '${if shared_add { 'mut ' } else { '' }}${old} := ${target}'
 	value := t.visit_expr(node.value)
-	if op_type == 'Mod' {
+	if shared_add {
+		lines << '${old}.items << ${value}'
+		lines << '${target} = ${old}'
+	} else if op_type == 'Mod' {
 		lines << '${target} = ${t.modulo_expression(*node.target, node.value, old, value)}'
 	} else {
-		lines << t.visit_aug_assign_once(node, op_type, target, value)
+		lines << t.visit_aug_assign_once(node, op_type, target, value, old)
 	}
 	code := lines.join('\n')
 	if node.target is Name && target.starts_with('(*') {
@@ -2758,7 +2771,10 @@ fn (mut t VTranspiler) captured_aug_assign(node AugAssign, op_type string) strin
 // visit_aug_assign emits V code for an AugAssign statement.
 pub fn (mut t VTranspiler) visit_aug_assign(node AugAssign) string {
 	op_type := get_op_type(node.op)
-	if op_type == 'Mod' { return t.captured_aug_assign(node, op_type) }
+	if op_type == 'Mod' || (op_type in ['Pow', 'FloorDiv'] && has_list_reference(*node.target))
+		|| (op_type == 'Add' && t.infer_expr_type(*node.target).starts_with('&pyrt.ListRef[')) {
+		return t.captured_aug_assign(node, op_type)
+	}
 	// `**=` and `//=` become `target = f(target, val)`, which names the target twice. Python
 	// evaluates the target's indices once, in the order they are written, before the
 	// right-hand side. So when an index or slice bound is computed (`x[f()] **= 2`) or the
@@ -2776,7 +2792,7 @@ pub fn (mut t VTranspiler) visit_aug_assign(node AugAssign) string {
 	}
 	target := t.visit_expr(target_node)
 	val := t.visit_expr(node.value)
-	mut code := t.visit_aug_assign_once(node, op_type, target, val)
+	mut code := t.visit_aug_assign_once(node, op_type, target, val, target)
 	if node.target is Name && target.starts_with('(*') {
 		code = 'unsafe {\n${t.indent_code(code, 1)}\n}'
 	}
@@ -2784,6 +2800,16 @@ pub fn (mut t VTranspiler) visit_aug_assign(node AugAssign) string {
 		return prelude.join('\n') + '\n' + code
 	}
 	return code
+}
+
+// has_list_reference finds shared descriptors underneath a target expression.
+fn has_list_reference(target Expr) bool {
+	if get_expr_annotation(target).contains('pyrt.ListRef[') { return true }
+	return match target {
+		Subscript { has_list_reference(*target.value) }
+		Attribute { has_list_reference(*target.value) }
+		else { false }
+	}
 }
 
 // can_hoist_indices reports whether the subscripts and attributes of `target` start from a
@@ -2976,7 +3002,7 @@ fn is_plain_index(e Expr) bool {
 
 // visit_aug_assign_once emits an augmented assignment whose target and value are already
 // rendered, so that each is evaluated as written.
-fn (mut t VTranspiler) visit_aug_assign_once(node AugAssign, op_type string, target string, val string) string {
+fn (mut t VTranspiler) visit_aug_assign_once(node AugAssign, op_type string, target string, val string, old string) string {
 	// FloorDiv: V / truncates toward zero, Python // floors toward -inf
 	if op_type == 'FloorDiv' {
 		t.add_using('math')
@@ -2990,9 +3016,9 @@ fn (mut t VTranspiler) visit_aug_assign_once(node AugAssign, op_type string, tar
 		}
 		is_float := left_ann in ['f64', 'float', 'f32'] || right_ann in ['f64', 'float', 'f32']
 		if is_float {
-			return '${target} = math.floor(${target} / ${paren_right(val, 5)})'
+			return '${target} = math.floor(${old} / ${paren_right(val, 5)})'
 		}
-		return '${target} = math.divide_floored(${target}, ${val}).quot'
+		return '${target} = math.divide_floored(${old}, ${val}).quot'
 	}
 	// Pow has no V operator; expand to assignment with math function
 	if op_type == 'Pow' {
@@ -3009,9 +3035,9 @@ fn (mut t VTranspiler) visit_aug_assign_once(node AugAssign, op_type string, tar
 		// Negative exponent: Python auto-promotes to float (x **= -1 gives float)
 		is_neg_exp := node.value is UnaryOp && (node.value as UnaryOp).op is USub
 		if is_float || is_neg_exp {
-			return '${target} = math.pow(${target}, ${val})'
+			return '${target} = math.pow(${old}, ${val})'
 		}
-		return '${target} = math.powi(${target}, ${val})'
+		return '${target} = math.powi(${old}, ${val})'
 	}
 	// `xs += ys` on a list appends; V has no `+=` for arrays
 	if op_type == 'Add' && node.target is Name {
@@ -3125,7 +3151,7 @@ fn is_value_param(arg Arg) bool {
 	ann := arg.annotation or { return false }
 	expr := *ann
 	if expr is Name {
-		return expr.id in ['int', 'float', 'str', 'bool']
+		return expr.id in ['int', 'float', 'str', 'bool'] || expr.id.starts_with('&pyrt.ListRef[')
 	}
 	return false
 }
@@ -3447,7 +3473,7 @@ pub fn (mut t VTranspiler) visit_for(node For) string {
 				for k, name in target_names {
 					buf << t.indent_code('${name} ${t.bind_op(name)} ${item}[${k}]', 2)
 				}
-				body, flag := t.visit_loop_body(node.body, 2, has_else)
+				body, flag := t.visit_for_body(node, 2, has_else)
 				buf << body
 				buf << '\t}'
 				t.emit_for_else(mut buf, node.orelse, flag)
@@ -3463,7 +3489,7 @@ pub fn (mut t VTranspiler) visit_for(node For) string {
 					if fname == 'enumerate' && target_names.len == 2 && call.args.len > 0 {
 						iter0 := t.visit_for_iter(call.args[0], saved_renames)
 						buf << 'for ${target_names[0]}, ${target_names[1]} in ${iter0} {'
-						body, flag := t.visit_loop_body(node.body, 1, has_else)
+						body, flag := t.visit_for_body(node, 1, has_else)
 						buf << body
 						buf << '}'
 						t.emit_for_else(mut buf, node.orelse, flag)
@@ -3476,7 +3502,7 @@ pub fn (mut t VTranspiler) visit_for(node For) string {
 						idx := t.new_tmp('zipi')
 						buf << 'for ${idx}, ${target_names[0]} in ${left} {'
 						buf << '\t${target_names[1]} ${t.bind_op(target_names[1])} ${right}[${idx}]'
-						body, flag := t.visit_loop_body(node.body, 1, has_else)
+						body, flag := t.visit_for_body(node, 1, has_else)
 						buf << body
 						buf << '}'
 						t.emit_for_else(mut buf, node.orelse, flag)
@@ -3501,7 +3527,7 @@ pub fn (mut t VTranspiler) visit_for(node For) string {
 				// Detect if step is -1 and use i-- instead of i += -1
 				step_op := if step == '-1' { '${target}--' } else { '${target} += ${step}' }
 				buf << 'for ${target} := ${start}; ${target} < ${end}; ${step_op} {'
-				body, flag := t.visit_loop_body(node.body, 1, has_else)
+				body, flag := t.visit_for_body(node, 1, has_else)
 				buf << body
 				buf << '}'
 				t.emit_for_else(mut buf, node.orelse, flag)
@@ -3535,7 +3561,7 @@ pub fn (mut t VTranspiler) visit_for(node For) string {
 
 	// Emit for loop
 	buf << 'for ${target} in ${for_expr} {'
-	body, flag := t.visit_loop_body(node.body, 1, has_else)
+	body, flag := t.visit_for_body(node, 1, has_else)
 	buf << body
 	buf << '}'
 	t.emit_for_else(mut buf, node.orelse, flag)
@@ -3549,6 +3575,68 @@ fn (mut t VTranspiler) visit_for_iter(expr Expr, before map[string]string) strin
 	t.renamed_idents = before
 	defer { t.renamed_idents = inside }
 	return t.visit_expr(expr)
+}
+
+// loop_rebinds detects rebinding of a for-loop value inside its body.
+fn loop_rebinds(body []Stmt, name string) bool {
+	for stmt in body {
+		match stmt {
+			Assign {
+				if stmt.targets.any(name in for_target_names(it)) { return true }
+			}
+			AnnAssign {
+				if name in for_target_names(stmt.target) { return true }
+			}
+			AugAssign {
+				if name in for_target_names(*stmt.target) { return true }
+			}
+			If {
+				if loop_rebinds(stmt.body, name) || loop_rebinds(stmt.orelse, name) { return true }
+			}
+			While {
+				if loop_rebinds(stmt.body, name) { return true }
+			}
+			For {
+				if loop_rebinds(stmt.body, name) { return true }
+			}
+			else {}
+		}
+	}
+	return false
+}
+
+// visit_for_body makes a local copy of mutable loop values, preserving pointer identity
+// while keeping rebinding local instead of changing the source container's element.
+fn (mut t VTranspiler) visit_for_body(node For, level int, has_else bool) (string, string) {
+	targets := match node.target {
+		Tuple { node.target.elts }
+		List { node.target.elts }
+		else { [*node.target] }
+	}
+	mut saved := map[string]string{}
+	for target in targets {
+		if target is Name && (get_expr_annotation(target).starts_with('&pyrt.ListRef[')
+			|| loop_rebinds(node.body, target.id)) {
+			saved[target.id] = t.renamed_idents[target.id] or { '' }
+			incoming := t.visit_expr(target)
+			local := t.new_tmp('iter_value')
+			t.loop_prelude << if get_expr_annotation(target).starts_with('&pyrt.ListRef[') {
+				'mut ${local} := unsafe { ${incoming} }'
+			} else {
+				'mut ${local} := ${incoming}'
+			}
+			t.renamed_idents[target.id] = local
+		}
+	}
+	body, flag := t.visit_loop_body(node.body, level, has_else)
+	for name, previous in saved {
+		if previous == '' {
+			t.renamed_idents.delete(name)
+		} else {
+			t.renamed_idents[name] = previous
+		}
+	}
+	return body, flag
 }
 
 // LoopBreak is one loop whose body is being emitted. A loop with an `else`
@@ -5982,6 +6070,29 @@ fn without_opt(code string) (string, bool) {
 
 // visit_call binds eligible module functions before rendering their arguments.
 pub fn (mut t VTranspiler) visit_call(original Call) string {
+	if original.api == '__py2v__.list_ref_assign_slice' && original.args.len == 6 {
+		t.add_using('pyrt')
+		typ := get_expr_annotation(original.args[1])
+		elem := typ['&pyrt.ListRef['.len..typ.len - 1]
+		return 'pyrt.list_ref_assign_slice[${elem}](${original.args.map(t.visit_expr(it)).join(', ')})'
+	}
+	if original.api == '__py2v__.list_ref_slice' && original.args.len == 5 {
+		t.add_using('pyrt')
+		typ := original.v_annotation or { '' }
+		elem := typ[2..]
+		return 'pyrt.list_ref_slice[${elem}](${original.args.map(t.visit_expr(it)).join(', ')})'
+	}
+	if original.api == '__py2v__.list_ref' && original.args.len == 1 {
+		t.add_using('pyrt')
+		typ := original.v_annotation or { '' }
+		elem := typ['&pyrt.ListRef['.len..typ.len - 1]
+		value := original.args[0]
+		if value is List && value.elts.len == 0 {
+			return 'pyrt.list_ref[${elem}]([]${elem}{})'
+		}
+		return 'pyrt.list_ref[${elem}](${t.visit_expr(value)})'
+	}
+
 	if original.guard > 0 {
 		// a call that can fail, in the body of a `try` whose handlers take the error
 		code, optional := without_opt(t.visit_call(Call{
@@ -7612,6 +7723,15 @@ pub fn (mut t VTranspiler) visit_list(node List) string {
 		if parts.len == 0 {
 			return '[]'
 		}
+		if get_expr_annotation(Expr(node)).starts_with('&pyrt.ListRef[') {
+			t.add_using('pyrt')
+			typ := get_expr_annotation(Expr(node))
+			elem := typ['&pyrt.ListRef['.len..typ.len - 1]
+			if parts.len == 1 { return '(${parts[0]}).clone()' }
+			mut result := parts[0]
+			for part in parts[1..] { result = 'pyrt.list_concat[${elem}](${result}, ${part})' }
+			return result
+		}
 
 		mut result := parts[0]
 		if !result.starts_with('[') {
@@ -8839,6 +8959,7 @@ fn (mut t VTranspiler) annotation_typename(ann ?Expr) string {
 	match a {
 		Name {
 			name := a.id
+			if name.contains('pyrt.ListRef[') { t.add_using('pyrt') }
 			// A parameter that holds a class (`unit: type = int`) has no V type.
 			if name == 'type' {
 				t.generated_code_has_any_type = true
@@ -9461,6 +9582,10 @@ fn get_expr_annotation(expr Expr) string {
 
 // Infer the type of an expression for variable tracking
 fn (mut t VTranspiler) infer_expr_type(expr Expr) string {
+	reference_annotation := get_v_annotation(expr)
+	if reference_annotation.contains('pyrt.ListRef[') || (expr is Attribute && (expr as Attribute).attr == 'items' && reference_annotation.starts_with('[]')) {
+		return reference_annotation
+	}
 	if is_bool_expr(expr) {
 		return 'bool'
 	}

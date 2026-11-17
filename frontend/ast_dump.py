@@ -34,6 +34,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 import infer
 import symbols
+import list_refs
 
 
 @dataclass
@@ -189,6 +190,9 @@ class ScopeTracker(ast.NodeVisitor):
             'append', 'insert', 'remove', 'extend',
             'sort', 'reverse', 'pop', 'clear',
         }
+        if (isinstance(node.func, ast.Attribute) and node.func.attr in _MUTATING_METHODS
+                and getattr(node.func.value, "_ref_items", False)):
+            self._check_subscript_assign(node.func.value)
         # A method of a class in this file that changes its object changes the caller's
         # variable too: `c.add(1)` needs `mut c` as `c.total += 1` does.
         if (isinstance(node.func, ast.Attribute)
@@ -222,9 +226,12 @@ class ScopeTracker(ast.NodeVisitor):
         if ((isinstance(node.func, ast.Attribute) and node.func.attr == 'shuffle'
                 and isinstance(node.func.value, ast.Name) and node.func.value.id == 'random')
                 or getattr(node.func, '_math_member', '') == 'random.shuffle') \
-                and node.args and isinstance(node.args[0], ast.Name):
-            self.mutable.add(node.args[0].id)
-            self._record_assign(node.args[0].id, node)
+                and node.args:
+            if isinstance(node.args[0], ast.Name):
+                self.mutable.add(node.args[0].id)
+                self._record_assign(node.args[0].id, node)
+            elif getattr(node.args[0], '_ref_items', False):
+                self._check_subscript_assign(node.args[0])
         # `f(xs)` where f changes that parameter in place: `xs` is passed with `mut`.
         if isinstance(node.func, ast.Name) and node.func.id in self.mutating_functions \
                 and not any(isinstance(arg, ast.Starred) for arg in node.args):
@@ -236,6 +243,9 @@ class ScopeTracker(ast.NodeVisitor):
 
     def visit_Delete(self, node: ast.Delete):
         """Process del statement - don't mark as mutable since @[translated] relaxes this."""
+        for target in node.targets:
+            if isinstance(target, ast.Subscript) and getattr(target.value, '_ref_items', False):
+                self._check_subscript_assign(target)
         self.generic_visit(node)
 
     def visit_Attribute(self, node: ast.Attribute):
@@ -2488,6 +2498,8 @@ def _node_to_dict(node: ast.AST, mutable_vars: Set[str],
         if scalar:
             result["v_annotation"] = scalar
 
+    if isinstance(node, ast.expr) and getattr(node, "_runtime_annotation", ""):
+        result["v_annotation"] = node._runtime_annotation
     return result
 
 
@@ -3806,7 +3818,7 @@ def _runtime_call(name: str, args: List[ast.expr], like: ast.AST) -> ast.expr:
         if not hasattr(part, "lineno"):
             ast.copy_location(part, like)
     result_types = {"length": "int", "truth": "bool", "truth_option": "bool", "instance_truth": "bool", "truth_length": "bool", "eq": "bool", "has": "bool", "is_none": "bool",
-                    "str": "string", "to_int": "int", "to_float": "float",
+                    "str": "string", "object_identity": "int", "to_int": "int", "to_float": "float",
                     "to_str": "string", "type_name": "string", "to_bool": "bool", "elements": "list[Any]",
                     "unpack": "list[Any]"}
     call._runtime_annotation = result_types.get(name, "")
@@ -7392,6 +7404,10 @@ def process_file(file_path: str, project: Optional[ProjectFacts] = None) -> str:
         _annotate_parameters_from_calls(tree, table, facts)
     _annotate_returns(tree, facts)
     _lower_frozensets(tree, table)
+    try:
+        references = list_refs.plan(tree, table, facts)
+    except list_refs.UnsupportedListIdentity as error:
+        return json.dumps({"node_type": "Module", "body": [], "list_identity_error": str(error)})
     _lower_dynamic_values(tree, table, facts, any_lists)
     _box_mixed_displays(tree, table, facts)
     _parameterize_bare_containers(tree, table, facts)
@@ -7418,6 +7434,10 @@ def process_file(file_path: str, project: Optional[ProjectFacts] = None) -> str:
             node.id = renamed[node._binding]
     _plan_error_propagation(tree, table)
     _drop_type_checking_blocks(tree, table)
+    try:
+        list_refs.lower(tree, references, _runtime_call)
+    except list_refs.UnsupportedListIdentity as error:
+        return json.dumps({"node_type": "Module", "body": [], "list_identity_error": str(error)})
 
     for parent in ast.walk(tree):
         for child in ast.iter_child_nodes(parent):

@@ -887,16 +887,7 @@ pub fn call_method(v Value, name string, args []Value) !Value {
     if v is &Tuple { return tuple_method(v, name, args)! }
     if v is []u8 { return bytes_method(v, name, args)! }
     if v is Sequence {
-        // A typed Sequence guarantees indexed operations, not list resizing.
-        // It can expose snapshots but cannot implement append/extend safely.
-        if name == 'copy' { return Value(new_list(iter(v)!)) }
-        if name == 'count' {
-            arity(name, 'list', args, 1, 1)!
-            mut n := i64(0)
-            for item in iter(v)! { if eq(item, args[0]) { n = n + 1 } }
-            return Value(n)
-        }
-        return raise('NotImplementedError', 'typed Sequence does not support list method ${name}')
+        return sequence_invoke(v, name, args)!
     }
     return raise('AttributeError', "'${type_name(v)}' object has no attribute '${name}'")
 }
