@@ -3889,6 +3889,27 @@
     "v_result": "value"
   },
   {
+    "python": "__pyrt__.is_none",
+    "v": "is_none",
+    "module": "pyrt",
+    "kind": "function",
+    "receiver": null,
+    "raises": false,
+    "returns": "bool",
+    "params": [
+      {
+        "name": "v",
+        "type": "Any"
+      }
+    ],
+    "variadic": false,
+    "options_struct": null,
+    "options": {},
+    "status": "implemented",
+    "notes": "Tests the None singleton without value equality.",
+    "v_kind": "fn"
+  },
+  {
     "python": "__pyrt__.item_at",
     "v": "item_at",
     "module": "pyrt",

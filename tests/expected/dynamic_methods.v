@@ -32,7 +32,7 @@ fn describe(record Any, mut words []string) int {
 	name := pyrt.invoke(record, 'get', pyrt.box('name'), pyrt.box('nobody'))
 	tags := pyrt.invoke(record, 'get', pyrt.box('tags'))
 	if pyrt.truth(tags) {
-		println((pyrt.str(pyrt.invoke(name, 'upper'))).str() + ' ' + (pyrt.str(pyrt.length(tags))).str())
+		println((pyrt.str(pyrt.invoke(name, 'upper'))).str() + ' ' + (pyrt.length(tags)).str())
 	} else {
 		println('${pyrt.str(name)} no tags')
 	}

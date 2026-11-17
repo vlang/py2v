@@ -36,7 +36,7 @@ fn fill(status map[string]Any, record Any, text string) {
 	println((pyrt.str(pyrt.item_at(status['tasks'], pyrt.box('total')))).str() + ' ' + (pyrt.str(pyrt.item_at(record, pyrt.box('count')))).str() + ' ' + (pyrt.str(pyrt.item_at(record, pyrt.box('seen')))).str())
 	println('${text[..3]} ${text[1..]} ${text[1..3]}')
 	head := pyrt.slice_of(pyrt.item_at(record, pyrt.box('title')), pyrt.none_, pyrt.box(5))
-	println('${pyrt.str(head)} ${pyrt.str(pyrt.length(head))}')
+	println('${pyrt.str(head)} ${pyrt.length(head)}')
 	println(pyrt.str(pyrt.item_at(pyrt.item_at(status['tasks'], pyrt.box('names')), pyrt.box(0))))
 }
 

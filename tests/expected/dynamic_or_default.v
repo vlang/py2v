@@ -35,7 +35,7 @@ fn show(record Any, fallback string) {
 	date := pyrt.slice_of(pyrt.either(pyrt.invoke(record, 'get', pyrt.box('when')), pyrt.box('')), pyrt.none_, pyrt.box(4))
 	owner := pyrt.either(pyrt.invoke(record, 'get', pyrt.box('owner')), pyrt.box(fallback))
 	both := pyrt.both(pyrt.invoke(record, 'get', pyrt.box('name')), pyrt.box(fallback))
-	println('${pyrt.str(name)} ${pyrt.str(pyrt.length(tags))} ${pyrt.str(count)} ${pyrt.str(date)} ${pyrt.str(owner)} ${pyrt.str(both)}')
+	println('${pyrt.str(name)} ${pyrt.length(tags)} ${pyrt.str(count)} ${pyrt.str(date)} ${pyrt.str(owner)} ${pyrt.str(both)}')
 	if pyrt.truth(pyrt.invoke(record, 'get', pyrt.box('name'))) || pyrt.truth(pyrt.invoke(record, 'get', pyrt.box('owner'))) {
 		println('named')
 	}
