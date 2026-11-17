@@ -89,6 +89,14 @@ fn compare_execution(args []string) os.Result {
 	// UTF-8 mode: on Windows CPython would otherwise write its output in the console code page.
 	python_run := os.exec([args[1], '-X', 'utf8', '-I', args[2]])
 	v_run := run_generated(args[3])
+	if args.len > 5 && args[5] == 'native_alias_unsupported' && v_run.exit_code != 0 {
+		// A native mutable alias must not silently become a boxed snapshot.
+		syntax := os.exec([@VEXE, '-check-syntax', args[3]])
+		if syntax.exit_code == 0
+			&& v_run.output.contains('cannot cast `map[string]map[string]int` to `Any`') {
+			return os.Result{}
+		}
+	}
 	if python_run.exit_code == 0 && v_run.exit_code == 0
 		&& (args.len < 5 || python_run.output.len > 0)
 		&& python_run.output.replace('\r', '') == v_run.output.replace('\r', '') {
@@ -102,14 +110,22 @@ fn compare_execution(args []string) os.Result {
 
 // run_dynamic_case owns scratch paths and uses the shared execution comparison.
 fn run_dynamic_case(case_name string) os.Result {
-	root := os.join_path(os.temp_dir(), 'py2v_dynamic_${os.getpid()}_${case_name}')
+	if case_name.ends_with('_test.v') {
+		return os.exec([@VEXE, 'test', os.join_path(project_dir, case_name)])
+	}
+	case_id := case_name.replace('/', '_')
+	root := os.join_path(os.temp_dir(), 'py2v_dynamic_${os.getpid()}_${case_id}')
 	os.mkdir_all(root) or { return os.Result{ exit_code: 1, output: err.msg() } }
 	defer {
 		os.rmdir_all(root) or { panic(err) }
 	}
 	python_bin := $if windows { 'python' } $else { 'python3' }
-	return compare_execution([resolve_py2v(), python_bin, os.join_path(cases_dir, case_name + '.py'),
-		os.join_path(root, 'main.v'), 'nonempty'])
+	mut args := [resolve_py2v(), python_bin, os.join_path(cases_dir, case_name + '.py'),
+		os.join_path(root, 'main.v'), 'nonempty']
+	if case_name == 'dynamic_errors/container_alias' {
+		args << 'native_alias_unsupported'
+	}
+	return compare_execution(args)
 }
 
 const script_dir = os.dir(os.abs_path(@FILE))
@@ -205,7 +221,9 @@ init_v_run := run_generated(init_v)
 python := $if windows { 'python' } $else { 'python3' }
 
 dynamic_cases := ['dynamic_container_elements', 'dynamic_membership', 'dynamic_comprehensions',
-	'dynamic_methods', 'dynamic_or_default', 'dynamic_stores']
+	'dynamic_methods', 'dynamic_or_default', 'dynamic_stores', 'dynamic_runtime_returns',
+	'dynamic_attributes', 'dynamic_truth', 'dynamic_mixed_membership', 'dynamic_boxed_bytes',
+	'operator_operand_types', 'dynamic_errors/container_alias', 'pyrt/box_boundary_test.v']
 dynamic_results := parallel.amap(dynamic_cases, run_dynamic_case, workers: 2)
 for i, result in dynamic_results {
 	name := 'runtime execution: ' + dynamic_cases[i]

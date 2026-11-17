@@ -47,7 +47,7 @@ fn test_parser(input Any, expected Any) {
 	}
 	result := p.parse(io.BytesIO(input))
 	if result is Ok {
-		assert result.value.value == expected.value
+		assert pyrt.eq(result.value.value, (pyrt.getattr(pyrt.box(expected), 'value') or { pyrt.fail(err) }))
 	}
 }
 

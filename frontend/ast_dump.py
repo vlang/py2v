@@ -3340,13 +3340,19 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
     # are not among them), then every local that is only ever given a dynamic value.
     dynamic_bindings = set()
     dynamic_returning = set()
+    native_operators = {id(fn) for cls in ast.walk(tree) if isinstance(cls, ast.ClassDef)
+                        for fn in cls.body if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef))
+                        and _dunder_to_v_op(fn.name) in (
+                            "+", "-", "*", "/", "%", "==", "!=", "<", "<=", ">", ">=")}
     for fn in ast.walk(tree):
         if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)) or fn.name == "__init__":
             continue
         positional = fn.args.posonlyargs + fn.args.args
         for position, arg in enumerate(positional + fn.args.kwonlyargs):
-            untyped = arg.annotation is None or _unparse_expr(arg.annotation) in (
-                "Any", "object", "typing.Any")
+            # V types an unannotated operator operand as its receiver's class.
+            untyped = ((arg.annotation is None and id(fn) not in native_operators)
+                       or arg.annotation is not None and _unparse_expr(arg.annotation) in (
+                           "Any", "object", "typing.Any"))
             if untyped and not (position == 0 and arg.arg in ("self", "cls")):
                 binding_id = getattr(arg, "_binding", None)
                 if binding_id is not None:
@@ -3378,8 +3384,10 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
         if fn.args.vararg or fn.args.kwarg or fn.args.kwonlyargs or fn.args.posonlyargs:
             continue
         # Where the older return inference names a type, the backend declares that type.
-        returns_value = (fn.returns is None and not _is_void_function(fn)
-                         and not _is_generator(fn) and _infer_return_type(fn) == "")
+        returns_value = ((fn.returns is None and not _is_void_function(fn)
+                          and not _is_generator(fn) and _infer_return_type(fn) == "")
+                         or fn.returns is not None and _unparse_expr(fn.returns) in (
+                             "Any", "object", "typing.Any"))
         flags = [getattr(a, "_binding", None) in dynamic_bindings for a in fn.args.args]
         if returns_value or any(flags):
             dynamic_functions[binding_id] = flags
@@ -3468,10 +3476,10 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
                 and all(dynamic(v) or boxable(v) for v in node.values))
 
     def dynamic_method_call(node: ast.AST) -> bool:
-        """A method of a builtin type called on a value of unknown type: the runtime finds
+        """A method called on a value of unknown type: the runtime finds
         the method from what the value is when the call runs."""
         return (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
-                and node.func.attr in _builtin_method_names() and not node.keywords
+                and not node.keywords
                 and not getattr(node, "_api", "")
                 and not any(isinstance(a, ast.Starred) for a in node.args)
                 and dynamic(node.func.value))
@@ -3482,7 +3490,14 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
         if isinstance(node, ast.Name):
             return getattr(node, "_binding", None) in dynamic_bindings
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
-            return getattr(node.func, "_binding", None) in dynamic_returning
+            binding_id = getattr(node.func, "_binding", None)
+            return binding_id in dynamic_returning or binding_id in dynamic_bindings
+        if (isinstance(node, ast.Call) and not isinstance(node.func, ast.Attribute)
+                and not node.keywords and not any(isinstance(a, ast.Starred) for a in node.args)
+                and dynamic(node.func)):
+            return True
+        if isinstance(node, ast.Attribute) and isinstance(node.ctx, ast.Load):
+            return not getattr(node, "_api", "") and dynamic(node.value)
         if any_dict_get(node) or dynamic_method_call(node) or chosen_value(node):
             return True
         if isinstance(node, ast.Subscript) and not isinstance(node.slice, ast.Slice):
@@ -3537,7 +3552,7 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
                  and any(dynamic(v) for v in values)
                  and all(dynamic(v) or boxable(v) for v in values)}
         grown |= {b for b, iterable in loop_targets
-                  if b not in dynamic_bindings and dynamic(iterable)}
+                  if b not in dynamic_bindings and (dynamic(iterable) or any_list(iterable))}
         lists = {b for b, values in assigned.items()
                  if b not in other_sites and all(any_list(v) for v in values)} - any_lists
         dicts = {b for b, values in assigned.items()
@@ -3560,8 +3575,24 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
         type_id = getattr(node, "_assumed", None)
         if type_id is None:
             type_id = getattr(node, "_type", None)
-        return type_id is not None and facts.types[type_id]["k"] in (
-            "int", "float", "str", "bool", "list", "none")
+        return (type_id is not None and facts.types[type_id]["k"] in (
+            "int", "float", "str", "bool", "list", "dict", "none")) or runtime_instance(node)
+
+    def runtime_instance(node: ast.AST) -> bool:
+        named = getattr(node, "_api_returns", "")
+        if isinstance(node, ast.Name):
+            named = getattr(tree, "_runtime_binding_types", {}).get(
+                getattr(node, "_binding", None), named)
+        if _runtime_api().get(named, {}).get("dynamic_attributes", False):
+            return True
+        type_id = getattr(node, "_assumed", None)
+        if type_id is None:
+            type_id = getattr(node, "_type", None)
+        if type_id is None:
+            return False
+        typ = facts.types[type_id]
+        return typ["k"] == "instance" and _runtime_api().get(
+            typ.get("name", ""), {}).get("dynamic_attributes", False)
 
     def boxed(node: ast.expr) -> ast.expr:
         return _runtime_call("box", [node], node) if known(node) else node
@@ -3570,7 +3601,7 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
         type_id = getattr(node, "_assumed", None)
         if type_id is None:
             type_id = getattr(node, "_type", None)
-        return type_id is not None and facts.types[type_id]["k"] == "list"
+        return (type_id is not None and facts.types[type_id]["k"] == "list") or runtime_instance(node)
 
     def sequence(node: ast.AST) -> bool:
         type_id = getattr(node, "_assumed", None)
@@ -3583,7 +3614,37 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
         return (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
                 and isinstance(node.func.value, ast.Name) and node.func.value.id == "pyrt")
 
+    def fresh_boxable(node: ast.expr) -> bool:
+        # Boxing a native mutable container copies it. Only new displays, immutable leaves,
+        # and existing runtime handles can cross this boundary without losing an alias.
+        if dynamic(node) or runtime_instance(node):
+            return True
+        if _is_display(node):
+            values = node.values if isinstance(node, ast.Dict) else node.elts
+            return all(fresh_boxable(value) for value in values)
+        return isinstance(node, ast.Constant) or _truth_kind(node, facts) in (
+            "int", "float", "str", "bool", "none", "bytes")
+
+    called_attributes = {id(n.func) for n in ast.walk(tree)
+                         if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)}
+
     class Lower(ast.NodeTransformer):
+        def visit_UnaryOp(self, node: ast.UnaryOp) -> ast.AST:
+            self.generic_visit(node)
+            if isinstance(node.op, ast.Not) and dynamic(node.operand):
+                node.operand = _runtime_call("truth", [node.operand], node.operand)
+            return node
+
+        def visit_Attribute(self, node: ast.Attribute) -> ast.AST:
+            self.generic_visit(node)
+            if (isinstance(node.ctx, ast.Load) and id(node) not in called_attributes
+                    and dynamic(node.value) and not getattr(node, "_api", "")):
+                name = ast.copy_location(ast.Constant(value=node.attr), node)
+                call = _runtime_call("getattr", [node.value, name], node)
+                call._api = "builtins.getattr"
+                return call
+            return node
+
         def visit_Subscript(self, node: ast.Subscript) -> ast.AST:
             self.generic_visit(node)
             if (isinstance(node.ctx, ast.Load) and dynamic(node.value)
@@ -3671,8 +3732,8 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
                 if isinstance(node.ops[0], ast.NotEq):
                     return ast.copy_location(ast.UnaryOp(op=ast.Not(), operand=call), node)
                 return call
-            if isinstance(node.ops[0], (ast.In, ast.NotIn)) and dynamic(right):
-                call = _runtime_call("has", [right, boxed(left)], node)
+            if isinstance(node.ops[0], (ast.In, ast.NotIn)):
+                call = _runtime_call("has", [boxed(right), boxed(left)], node)
                 call._dynamic = False
                 if isinstance(node.ops[0], ast.NotIn):
                     return ast.copy_location(ast.UnaryOp(op=ast.Not(), operand=call), node)
@@ -3692,6 +3753,8 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
                              and (dynamic(node.args[0]) or any_list(node.args[0])
                                   or _truth_kind(node.args[0], facts) == "str"))
             join_plain = is_value_join and not dynamic(node.args[0])
+            is_callable = (not isinstance(node.func, ast.Attribute) and dynamic(node.func)
+                           and not node.keywords and not any(isinstance(a, ast.Starred) for a in node.args))
             self.generic_visit(node)
             if is_value_join and isinstance(node.func, ast.Attribute):
                 iterable = (_runtime_call("box", [node.args[0]], node)
@@ -3709,9 +3772,25 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
                     ast.Constant(value=None), node)
                 return _runtime_call("map_get", [node.func.value, node.args[0],
                                                  _deep_box(default)], node)
+            if is_callable:
+                args = [a if dynamic(a) or not fresh_boxable(a)
+                        else _runtime_call("box", [a], a) for a in node.args]
+                arguments = ast.copy_location(ast.List(elts=args, ctx=ast.Load()), node)
+                call = _runtime_call("call", [node.func, arguments], node)
+                call._api = "__pyrt__.call"
+                return call
             if is_method:
                 name = ast.copy_location(ast.Constant(value=node.func.attr), node)
                 args = [a if dynamic(a) else _runtime_call("box", [a], a) for a in node.args]
+                if node.func.attr not in _builtin_method_names():
+                    args = [a if dynamic(a) or not fresh_boxable(a)
+                            else _runtime_call("box", [a], a) for a in node.args]
+                    method = _runtime_call("getattr", [node.func.value, name], node)
+                    method._api = "builtins.getattr"
+                    arguments = ast.copy_location(ast.List(elts=args, ctx=ast.Load()), node)
+                    call = _runtime_call("call", [method, arguments], node)
+                    call._api = "__pyrt__.call"
+                    return call
                 call = _runtime_call("invoke", [node.func.value, name] + args, node)
                 call._invoked = True
                 return call
@@ -3719,7 +3798,8 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
                 list_flags = any_list_parameters.get(getattr(node.func, "_binding", None), [])
                 for flag, arg in zip(list_flags, node.args):
                     if flag and isinstance(arg, ast.List):
-                        arg.elts = [_deep_box(e) if _is_display(e) else e for e in arg.elts]
+                        arg.elts = [_deep_box(e) if _is_display(e) and fresh_boxable(e)
+                                    else e for e in arg.elts]
                 holds_values = any_dict_parameters.get(getattr(node.func, "_binding", None), [])
                 for flag, arg in zip(holds_values, node.args):
                     if flag and isinstance(arg, ast.Dict) and _is_display(arg):
@@ -3728,7 +3808,8 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
                 flags = dynamic_functions.get(getattr(node.func, "_binding", None))
                 if flags is not None and len(node.args) <= len(flags):
                     # A list or dict has no automatic conversion to the runtime value
-                    node.args = [_deep_box(a) if flags[i] and _is_display(a)
+                    node.args = [_deep_box(a) if flags[i] and (_is_display(a) or (
+                                     isinstance(a, ast.Constant) and a.value is None))
                                  else boxed(a) if flags[i] and container(a) else a
                                  for i, a in enumerate(node.args)]
                 if (node.func.id == "print" and getattr(node.func, "_binding", None) is None):
@@ -3750,12 +3831,15 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
                     and len(node.args) == 1 and not node.keywords and dynamic(node.args[0])):
                 # `str(x)` of a runtime value is Python's text of it, not V's
                 return _runtime_call("str", [node.args[0]], node)
+            if (isinstance(node.func, ast.Name) and node.func.id == "bool"
+                    and getattr(node.func, "_binding", None) is None
+                    and len(node.args) == 1 and not node.keywords and dynamic(node.args[0])):
+                return _runtime_call("truth", [node.args[0]], node)
             return node
 
         def visit_For(self, node: ast.For) -> ast.AST:
             self.generic_visit(node)
-            if dynamic(node.iter) and (not getattr(node.iter, "_dynamic", False)
-                                       or getattr(node.iter, "_invoked", False)):
+            if dynamic(node.iter):
                 node.iter = _runtime_call("elements", [node.iter], node.iter)
             return node
 
@@ -3773,7 +3857,7 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
         if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
             node.operand = truth(node.operand)
             return node
-        if isinstance(node, (ast.Name, ast.Subscript, ast.Call)) and dynamic(node):
+        if dynamic(node):
             return _runtime_call("truth", [node], node)
         return node
 
@@ -3812,7 +3896,12 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
     for fn in ast.walk(tree):
         if isinstance(fn, ast.FunctionDef) and getattr(fn, "_binding", None) in dynamic_returning:
             for ret in own_returns(fn):
-                if ret.value is not None and _is_display(ret.value):
+                if (fn.returns is not None and _unparse_expr(fn.returns) in (
+                        "Any", "object", "typing.Any") and ret.value is not None
+                        and not fresh_boxable(ret.value)):
+                    continue
+                if ret.value is not None and (_is_display(ret.value) or (
+                        isinstance(ret.value, ast.Constant) and ret.value.value is None)):
                     ret.value = _deep_box(ret.value)
 
     for fn in ast.walk(tree):

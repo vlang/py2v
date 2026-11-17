@@ -34,3 +34,8 @@ fn compare(a Version, b Version) bool {
 fn add(a Version, b Version) Version {
 	return a + b
 }
+
+fn main() {
+	println(if compare(py2v_new_version(1), py2v_new_version(2)) { 'True' } else { 'False' })
+	println(add(py2v_new_version(1), py2v_new_version(2)).major)
+}
