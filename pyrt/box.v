@@ -3,7 +3,12 @@ module pyrt
 // box turns typed scalars, bytes, containers, and runtime handles into Value.
 // Native arrays and maps become new containers; native bytes are copied.
 pub fn box[T](v T) Value {
-	$if T is Value {
+	$if T is ?Value || T is ?string || T is ?bool || T is ?int || T is ?i64 || T is ?f64 || T is ?[]u8 || T is ?&List || T is ?&Dict || T is ?&Set || T is ?&Tuple || T is ?Instance || T is ?Sequence {
+		if actual := v {
+			return box(actual)
+		}
+		return none_
+	} $else $if T is Value {
 		return v
 	} $else $if T is NoneType || T is Function || T is &List || T is &Dict || T is &Set || T is &Tuple {
 		return Value(v)

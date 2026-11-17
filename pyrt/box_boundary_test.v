@@ -44,3 +44,37 @@ fn test_box_function_keeps_its_callback() {
 	f := Function{ name: 'echo', call: fn (args []Value) !Value { return args[0] } }
 	assert (call(box(f), [Value('ok')]) or { panic(err) }) == Value('ok')
 }
+
+fn test_box_optional_scalars_distinguishes_absence_from_false_values() {
+	assert box(?string(none)) is NoneType
+	assert box(?string('')) == Value('')
+	assert box(?string('present')) == Value('present')
+	assert box(?int(none)) is NoneType
+	assert box(?int(0)) == Value(i64(0))
+	assert box(?i64(7)) == Value(i64(7))
+	assert box(?f64(0.0)) == Value(0.0)
+	assert box(?bool(false)) == Value(false)
+	assert box(?Value(none)) is NoneType
+	assert box(?Value(Value('present'))) == Value('present')
+}
+
+fn test_box_optional_handles_keep_identity() {
+	list := new_list([Value(1)])
+	assert box(?&List(none)) is NoneType
+	assert object_identity(box(?&List(list))) != 0
+	assert object_identity(box(?&List(list))) == object_identity(Value(list))
+	object := new_object('Record')
+	assert object_identity(box(?Instance(Instance(object)))) != 0
+	assert object_identity(box(?Instance(Instance(object)))) == object_identity(box(object))
+	sequence := &IntList{ items: [1] }
+	assert object_identity(box(?Sequence(Sequence(sequence)))) != 0
+	assert object_identity(box(?Sequence(Sequence(sequence)))) == object_identity(box(sequence))
+	assert box(?[]u8([u8(65)])) == Value([u8(65)])
+}
+
+fn test_none_singleton_test_does_not_confuse_false_values() {
+	assert is_none(none_)
+	for value in [Value(false), Value(i64(0)), Value(''), Value(new_list([]Value{}))] {
+		assert !is_none(value)
+	}
+}

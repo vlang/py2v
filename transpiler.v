@@ -2349,7 +2349,7 @@ pub fn (mut t VTranspiler) visit_assign(node Assign) string {
 									any_redefined = true
 								}
 							}
-							op := if any_redefined { '=' } else { ':=' }
+							op := if any_redefined || t.visit_expr(st) == '_' { '=' } else { ':=' }
 							// Array elements need mut for V, but a discard target
 							// must stay bare: V rejects `mut _`.
 							lhs := t.visit_expr(st)
@@ -2415,7 +2415,7 @@ pub fn (mut t VTranspiler) visit_assign(node Assign) string {
 									any_redefined = true
 								}
 							}
-							op := if any_redefined { '=' } else { ':=' }
+							op := if any_redefined || t.visit_expr(st) == '_' { '=' } else { ':=' }
 							assigns << '${subkw}${t.visit_expr(st)} ${op} ${tmp_var}[${i}]'
 						}
 					}

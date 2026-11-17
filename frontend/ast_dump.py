@@ -3209,9 +3209,10 @@ def _runtime_call(name: str, args: List[ast.expr], like: ast.AST) -> ast.expr:
     for part in ast.walk(call):
         if not hasattr(part, "lineno"):
             ast.copy_location(part, like)
-    result_types = {"length": "int", "truth": "bool", "eq": "bool", "has": "bool",
+    result_types = {"length": "int", "truth": "bool", "eq": "bool", "has": "bool", "is_none": "bool",
                     "str": "string", "to_int": "int", "to_float": "float",
-                    "to_str": "string", "to_bool": "bool", "elements": "list[Any]"}
+                    "to_str": "string", "to_bool": "bool", "elements": "list[Any]",
+                    "unpack": "list[Any]"}
     call._runtime_annotation = result_types.get(name, "")
     call._dynamic = not call._runtime_annotation
     return call
@@ -3498,6 +3499,11 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
             return True
         if isinstance(node, ast.Attribute) and isinstance(node.ctx, ast.Load):
             return not getattr(node, "_api", "") and dynamic(node.value)
+        if isinstance(node, ast.IfExp):
+            branches = (node.body, node.orelse)
+            return any(dynamic(b) for b in branches) and all(
+                dynamic(b) or _truth_kind(b, facts) in (
+                    "int", "float", "str", "bool", "none", "bytes") for b in branches)
         if any_dict_get(node) or dynamic_method_call(node) or chosen_value(node):
             return True
         if isinstance(node, ast.Subscript) and not isinstance(node.slice, ast.Slice):
@@ -3535,6 +3541,20 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
             binding_id = getattr(node.target, "_binding", None)
             if binding_id is not None and len(table.bindings[binding_id].sites) == 1:
                 loop_targets.append((binding_id, node.iter))
+
+    # Flat unpacking binds runtime values. Rebindings and nested/starred targets
+    # need their own type/assignment analysis and keep their existing paths.
+    unpackings = []
+    for node in ast.walk(tree):
+        target = (node.targets[0] if isinstance(node, ast.Assign) and len(node.targets) == 1
+                  else node.target if isinstance(node, ast.For) else None)
+        if not isinstance(target, (ast.Tuple, ast.List)) or not target.elts:
+            continue
+        bindings = [getattr(e, "_binding", None) for e in target.elts]
+        if (all(isinstance(e, ast.Name) for e in target.elts)
+                and all(e.id == "_" or b is not None and len(table.bindings[b].sites) == 1
+                        for e, b in zip(target.elts, bindings))):
+            unpackings.append((node, [b for e, b in zip(target.elts, bindings) if e.id != "_"]))
     def boxable(node: ast.AST) -> bool:
         # a value of a known plain type, None, or a display: the runtime value of it is made
         if _is_display(node) or isinstance(node, ast.Constant) and node.value is None:
@@ -3553,6 +3573,10 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
                  and all(dynamic(v) or boxable(v) for v in values)}
         grown |= {b for b, iterable in loop_targets
                   if b not in dynamic_bindings and (dynamic(iterable) or any_list(iterable))}
+        for node, bindings in unpackings:
+            source = node.iter if isinstance(node, ast.For) else node.value
+            if dynamic(source) or isinstance(node, ast.For) and any_list(source):
+                grown |= set(bindings) - dynamic_bindings
         lists = {b for b, values in assigned.items()
                  if b not in other_sites and all(any_list(v) for v in values)} - any_lists
         dicts = {b for b, values in assigned.items()
@@ -3627,8 +3651,27 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
 
     called_attributes = {id(n.func) for n in ast.walk(tree)
                          if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)}
+    unpack_nodes = {id(node) for node, _ in unpackings
+                    if dynamic(node.iter if isinstance(node, ast.For) else node.value)
+                    or isinstance(node, ast.For) and any_list(node.iter)}
+    reserved_names = {b.name for b in table.bindings}
+
+    def unpack(value: ast.expr, target: ast.expr) -> ast.expr:
+        count = ast.copy_location(ast.Constant(value=len(target.elts)), target)
+        call = _runtime_call("unpack", [value, count], value)
+        call._api = "__pyrt__.unpack"
+        return call
 
     class Lower(ast.NodeTransformer):
+        def visit_IfExp(self, node: ast.IfExp) -> ast.AST:
+            was_dynamic = dynamic(node)
+            self.generic_visit(node)
+            if was_dynamic:
+                node.body = node.body if dynamic(node.body) else _runtime_call("box", [node.body], node.body)
+                node.orelse = node.orelse if dynamic(node.orelse) else _runtime_call("box", [node.orelse], node.orelse)
+                node._dynamic = True
+            return node
+
         def visit_UnaryOp(self, node: ast.UnaryOp) -> ast.AST:
             self.generic_visit(node)
             if isinstance(node.op, ast.Not) and dynamic(node.operand):
@@ -3664,6 +3707,8 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
             stores = (isinstance(target, ast.Subscript) and not isinstance(target.slice, ast.Slice)
                       and dynamic(target.value))
             self.generic_visit(node)
+            if id(node) in unpack_nodes:
+                node.value = unpack(node.value, target)
             if (target is not None and isinstance(target, ast.Name)
                     and getattr(target, "_binding", None) in dynamic_bindings
                     and not dynamic(node.value) and boxable(node.value)):
@@ -3841,6 +3886,18 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
             self.generic_visit(node)
             if dynamic(node.iter):
                 node.iter = _runtime_call("elements", [node.iter], node.iter)
+            if id(node) in unpack_nodes:
+                number = 0
+                while f"py2v_dynamic_iter_{number}" in reserved_names:
+                    number += 1
+                name = f"py2v_dynamic_iter_{number}"
+                reserved_names.add(name)
+                item = ast.copy_location(ast.Name(id=name, ctx=ast.Load()), node.target)
+                item._dynamic = True
+                assignment = ast.copy_location(
+                    ast.Assign(targets=[node.target], value=unpack(item, node.target)), node.target)
+                node.target = ast.copy_location(ast.Name(id=name, ctx=ast.Store()), node.target)
+                node.body.insert(0, assignment)
             return node
 
         def visit_comprehension(self, node: ast.comprehension) -> ast.AST:

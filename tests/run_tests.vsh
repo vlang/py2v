@@ -92,7 +92,7 @@ fn compare_execution(args []string) os.Result {
 	if args.len > 5 && args[5] == 'native_alias_unsupported' && v_run.exit_code != 0 {
 		// A native mutable alias must not silently become a boxed snapshot.
 		syntax := os.exec([@VEXE, '-check-syntax', args[3]])
-		if syntax.exit_code == 0
+		if python_run.exit_code == 0 && python_run.output.len > 0 && syntax.exit_code == 0
 			&& v_run.output.contains('cannot cast `map[string]map[string]int` to `Any`') {
 			return os.Result{}
 		}
@@ -223,7 +223,8 @@ python := $if windows { 'python' } $else { 'python3' }
 dynamic_cases := ['dynamic_container_elements', 'dynamic_membership', 'dynamic_comprehensions',
 	'dynamic_methods', 'dynamic_or_default', 'dynamic_stores', 'dynamic_runtime_returns',
 	'dynamic_attributes', 'dynamic_truth', 'dynamic_mixed_membership', 'dynamic_boxed_bytes',
-	'dynamic_errors/container_alias', 'pyrt/box_boundary_test.v']
+	'dynamic_unpacking', 'dynamic_optional', 'dynamic_conditional', 'dynamic_errors/container_alias',
+	'pyrt/box_boundary_test.v']
 dynamic_results := parallel.amap(dynamic_cases, run_dynamic_case, workers: 2)
 for i, result in dynamic_results {
 	name := 'runtime execution: ' + dynamic_cases[i]
@@ -276,7 +277,7 @@ for name in call_results_cases {
 	execution_args << [py2v, python, os.join_path(cases_dir, name + '.py'),
 		os.join_path(call_results_root, name + '.v')]
 }
-execution_results := parallel.amap(execution_args, compare_execution)
+execution_results := parallel.amap(execution_args, compare_execution, workers: runtime.nr_jobs())
 for i, result in execution_results {
 	name := 'call results: ${call_results_cases[i]} execution'
 	if result.exit_code == 0 {

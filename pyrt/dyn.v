@@ -25,32 +25,37 @@ fn slice_bound(v Value) ?int {
 	return to_int(v)
 }
 
-// plus, minus, times, over and modulo are `a + b`, `a - b`, `a * b`, `a / b` and `a % b`.
+// plus is `a + b`.
 pub fn plus(a Value, b Value) Value {
 	return add(a, b) or { panic(err) }
 }
 
+// minus is `a - b`.
 pub fn minus(a Value, b Value) Value {
 	return sub(a, b) or { panic(err) }
 }
 
+// times is `a * b`.
 pub fn times(a Value, b Value) Value {
 	return mul(a, b) or { panic(err) }
 }
 
+// over is `a / b`.
 pub fn over(a Value, b Value) Value {
 	return truediv(a, b) or { panic(err) }
 }
 
+// modulo is `a % b`.
 pub fn modulo(a Value, b Value) Value {
 	return mod(a, b) or { panic(err) }
 }
 
-// either is `a or b` and both is `a and b`, for their value.
+// either is `a or b`, for its value.
 pub fn either(a Value, b Value) Value {
 	return if truth(a) { a } else { b }
 }
 
+// both is `a and b`, for its value.
 pub fn both(a Value, b Value) Value {
 	return if truth(a) { b } else { a }
 }
@@ -100,20 +105,22 @@ pub fn has(v Value, item Value) bool {
 	return contains(v, item) or { panic(err) }
 }
 
-// to_int, to_float, to_str and to_bool give a value of unknown type the plain type its
-// context declares, with Python's TypeError when it is something else.
+// to_int gives a runtime value the int type its context declares, raising TypeError otherwise.
 pub fn to_int(v Value) int {
 	return int(as_int(v) or { panic(err) })
 }
 
+// to_float gives a runtime value the float type its context declares, raising TypeError otherwise.
 pub fn to_float(v Value) f64 {
 	return as_float(v) or { panic(err) }
 }
 
+// to_str gives a runtime value the string type its context declares, raising TypeError otherwise.
 pub fn to_str(v Value) string {
 	return as_str(v) or { panic(err) }
 }
 
+// to_bool gives a runtime value the bool type its context declares, raising TypeError otherwise.
 pub fn to_bool(v Value) bool {
 	return as_bool(v) or { panic(err) }
 }
@@ -123,6 +130,7 @@ pub fn empty_list() Value {
 	return Value(new_list([]Value{}))
 }
 
+// empty_dict is an empty dict as a runtime value.
 pub fn empty_dict() Value {
 	return Value(new_dict())
 }
