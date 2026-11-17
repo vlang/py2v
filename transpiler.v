@@ -3297,10 +3297,10 @@ pub fn (mut t VTranspiler) visit_for(node For) string {
 				call := node.iter as Call
 				if call.func is Name {
 					n := (call.func as Name).id
-					iter_is_special = n in ['enumerate', 'zip', 'reversed']
+					iter_is_special = n in ['enumerate', 'zip']
 				}
 			}
-			if target_names.len > 2 && !iter_is_special {
+			if target_names.len > 2 || (node.target is List && !iter_is_special) {
 				seq := t.new_tmp('seq')
 				item := t.new_tmp('item')
 				buf << '${seq} := ${t.visit_for_iter(node.iter, saved_renames)}'
