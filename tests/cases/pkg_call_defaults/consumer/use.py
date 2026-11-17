@@ -1,6 +1,7 @@
 from ..provider import greet, optional, side_effect, configured, shift, flag_name, scale_value
 from .keywords import run_keywords
 from ..provider import checked_optional
+from .float_defaults import run_float_defaults
 
 
 def mark() -> int:
@@ -20,6 +21,7 @@ def run() -> None:
     run_keywords()
     checked_optional()
     checked_optional("allowed")
+    run_float_defaults()
 
 
 if __name__ == "__main__":

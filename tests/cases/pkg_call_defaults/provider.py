@@ -40,3 +40,27 @@ def checked_optional(value: str | None = None) -> None:
         if value != "allowed":
             raise ValueError("unexpected value")
         print(value)
+
+
+def zero_default(value: float = 0.0) -> float:
+    return value
+
+
+def unit_default(value: float = 1.0) -> float:
+    return value
+
+
+def negative_default(value: float = -2.0) -> float:
+    return value
+
+
+def negative_zero_default(value: float = -0.0) -> float:
+    return value
+
+
+def float_any_default(value: Any = 0.0) -> None:
+    print(value)
+
+
+def int_any_default(value: Any = 0) -> None:
+    print(value)

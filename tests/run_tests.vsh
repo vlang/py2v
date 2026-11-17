@@ -294,7 +294,7 @@ for pkg in package_fixtures {
 		report('PASS', pkg, ' (multi-module)')
 		passed++
 		if pkg == 'pkg_call_defaults' {
-			for stem in ['use', 'keywords'] {
+			for stem in ['use', 'keywords', 'float_defaults'] {
 				actual := os.read_file(os.join_path(out_dir, 'py_pkg_call_defaults_consumer', stem + '.v')) or { '' }
 				expected := os.read_file(os.join_path(expected_dir, pkg, 'consumer', stem + '.v')) or { '' }
 				golden_name := 'call defaults: package fixture ' + stem

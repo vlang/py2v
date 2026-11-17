@@ -276,3 +276,27 @@ fn test_optional_scalar_type_excludes_containers_and_references() {
 		assert !is_optional_value_type(typ)
 	}
 }
+
+fn test_imported_integral_float_defaults_keep_their_python_kind() {
+	for value in [0, 1] {
+		mut t := defaults_test_transpiler()
+		mut sig := t.registry.defaulted_functions['pkg.provider.greet']
+		sig.args.defaults = [Expr(Constant{ value: value, v_annotation: 'float' })]
+		t.registry.defaulted_functions['pkg.provider.greet'] = sig
+		assert t.visit_call(defaults_test_call()) == 'greet(7, ${value}.0)'
+	}
+}
+
+fn test_imported_float_defaults_include_negative_zero() {
+	mut t := defaults_test_transpiler()
+	mut sig := t.registry.defaulted_functions['pkg.provider.greet']
+	annotation := Expr(Name{ id: 'float' })
+	sig.args.args[1].annotation = &annotation
+	zero := Expr(Constant{ value: 0, v_annotation: 'float' })
+	sig.args.defaults = [Expr(UnaryOp{ op: USub{}, operand: &zero })]
+	t.registry.defaulted_functions['pkg.provider.greet'] = sig
+	assert t.visit_call(defaults_test_call()) == 'greet(7, -0.0)'
+	sig.args.defaults = [Expr(Constant{ value: 0, v_annotation: 'int' })]
+	t.registry.defaulted_functions['pkg.provider.greet'] = sig
+	assert t.complete_imported_call(defaults_test_call()) == none
+}

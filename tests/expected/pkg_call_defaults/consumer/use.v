@@ -20,6 +20,7 @@ pub fn run() {
 	run_keywords()
 	py_pkg_call_defaults.checked_optional(none)
 	py_pkg_call_defaults.checked_optional('allowed')
+	run_float_defaults()
 }
 
 pub fn use_main() {

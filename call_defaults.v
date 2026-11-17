@@ -108,6 +108,22 @@ fn imported_default_matches_parameter(param Arg, expr Expr) bool {
 	return false
 }
 
+// Restore the frontend's float kind when the JSON parser stored an integral float as int.
+fn imported_default_value(expr Expr) Expr {
+	if expr is UnaryOp && expr.op is USub {
+		operand := imported_default_value(*expr.operand)
+		return UnaryOp{ ...expr, operand: &operand }
+	}
+	if expr is Constant && (expr.v_annotation or { '' }) == 'float' {
+		match expr.value {
+			int { return Constant{ ...expr, value: f64(expr.value) } }
+			i64 { return Constant{ ...expr, value: f64(expr.value) } }
+			else {}
+		}
+	}
+	return expr
+}
+
 fn (mut t VTranspiler) complete_imported_call(node Call) ?Call {
 	if !t.emit_pub || node.func !is Name || node.args.any(it is Starred) {
 		return none
@@ -144,7 +160,7 @@ fn (mut t VTranspiler) complete_imported_call(node Call) ?Call {
 			continue
 		}
 		if i < first_default { return none }
-		value := sig.args.defaults[i - first_default]
+		value := imported_default_value(sig.args.defaults[i - first_default])
 		if !imported_literal_default(value)
 			|| !imported_default_matches_parameter(params[i], value) {
 			return none
