@@ -78,3 +78,52 @@ fn test_none_singleton_test_does_not_confuse_false_values() {
 		assert !is_none(value)
 	}
 }
+
+fn test_box_shared_native_list_keeps_source_and_runtime_mutation() {
+	mut source := list_ref([1])
+	first := box(source)
+	second := box(source)
+	source.items << 2
+	assert length(first) == 2
+	assert length(second) == 2
+	assert object_identity(first) == object_identity(second)
+	invoke(first, 'append', box(3))
+	set_index(second, box(0), box(9))
+	assert source.items == [9, 2, 3]
+	assert str(first) == '[9, 2, 3]'
+}
+
+fn test_box_nested_shared_native_lists_keep_element_identity() {
+	mut row := list_ref([1])
+	outer := list_ref([row])
+	boxed := box(outer)
+	copy := invoke(boxed, 'copy')
+	row.items << 2
+	assert str(copy) == '[[1, 2]]'
+	invoke(boxed, 'append', box(row))
+	assert outer.items.len == 2
+	invoke(item_at(boxed, box(1)), 'append', box(3))
+	assert row.items == [1, 2, 3]
+}
+
+fn test_shared_native_integer_list_refuses_lossy_runtime_writes() {
+	mut source := list_ref([1])
+	for value in [i64(-2147483649), i64(2147483648)] {
+		if _ := source.list_method('append', [box(value)]) {
+			assert false, 'an out-of-range integer must not be truncated'
+		} else {
+			assert err.msg().contains('py2v: runtime integer does not fit')
+		}
+		assert source.items == [1]
+	}
+	if _ := source.list_method('append', [box('x')]) {
+		assert false, 'an incompatible runtime element must not be coerced'
+	} else {
+		assert err.msg().contains('py2v: shared native list cannot hold runtime str')
+	}
+	assert source.items == [1]
+	for value in [i64(-2147483648), i64(2147483647)] {
+		source.list_method('append', [box(value)]) or { panic(err) }
+	}
+	assert source.items == [1, -2147483648, 2147483647]
+}

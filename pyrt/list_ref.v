@@ -125,7 +125,10 @@ fn list_ref_element[T](value Value) !T {
 		return value
 	} $else $if T is int {
 		if value is int { return value }
-		if value is i64 { return int(value) }
+		if value is i64 {
+			if value >= -2147483648 && value <= 2147483647 { return int(value) }
+			return raise('OverflowError', 'py2v: runtime integer does not fit shared native int list')
+		}
 	} $else $if T is i64 {
 		if value is int { return i64(value) }
 		if value is i64 { return value }

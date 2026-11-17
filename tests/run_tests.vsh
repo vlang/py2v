@@ -381,7 +381,8 @@ call_results_cases := ['dict_get_missing', 'dict_get_eager', 'dict_get_chain', '
 	'dict_local_inferred_writes', 'modulo_loop_value', 'list_name_alias', 'list_function_alias',
 	'list_field_alias', 'list_container_alias', 'list_return_alias', 'list_copy_boundary',
 	'list_identity_compare', 'list_nested_paths', 'list_slice_alias', 'list_reference_ops',
-	'list_heterogeneous_alias', 'list_delete_alias', 'list_augassign_target', 'augassign_side_effects',
+	'list_heterogeneous_alias', 'list_delete_alias', 'list_augassign_target', 'list_box_source',
+	'list_box_identity', 'list_box_mutate_only', 'list_box_widening', 'augassign_side_effects',
 	'comb_sort', 'element_store_mut', 'mut_inplace_methods', 'typing_abc_annotations']
 mut execution_args := [][]string{}
 for name in call_results_cases {
@@ -422,6 +423,28 @@ for refusal in [
 		&& refusal_python.output.trim_space() == refusal[1]
 		&& refusal_translation.output.contains(refusal[2])
 		&& refusal_run.exit_code != 0 && refusal_run.output.contains('py2v_unsupported_list_identity') {
+		report('PASS', name, '')
+		passed++
+	} else {
+		report('FAIL', name, '')
+		println(refusal_run.output)
+		failed++
+		failures << fail_line('FAIL', name, '')
+	}
+}
+for refusal in [
+	['list_box_range_refusal', '[1, 1099511627776]', 'py2v: runtime integer does not fit'],
+] {
+	refusal_source := os.join_path(cases_dir, refusal[0] + '.py')
+	refusal_translation := os.exec([py2v, refusal_source])
+	refusal_v := os.join_path(call_results_root, refusal[0] + '.v')
+	os.write_file(refusal_v, refusal_translation.output) or { panic(err) }
+	refusal_run := run_generated(refusal_v)
+	refusal_python := os.exec([python, '-X', 'utf8', '-I', refusal_source])
+	name := 'list identity: ${refusal[0]} refusal'
+	if refusal_translation.exit_code == 0 && refusal_python.exit_code == 0
+		&& refusal_python.output.trim_space() == refusal[1]
+		&& refusal_run.exit_code != 0 && refusal_run.output.contains(refusal[2]) {
 		report('PASS', name, '')
 		passed++
 	} else {
