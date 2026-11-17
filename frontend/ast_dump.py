@@ -3569,7 +3569,7 @@ def _runtime_call(name: str, args: List[ast.expr], like: ast.AST) -> ast.expr:
             ast.copy_location(part, like)
     result_types = {"length": "int", "truth": "bool", "truth_option": "bool", "instance_truth": "bool", "truth_length": "bool", "eq": "bool", "has": "bool", "is_none": "bool",
                     "str": "string", "to_int": "int", "to_float": "float",
-                    "to_str": "string", "to_bool": "bool", "elements": "list[Any]",
+                    "to_str": "string", "type_name": "string", "to_bool": "bool", "elements": "list[Any]",
                     "unpack": "list[Any]"}
     call._runtime_annotation = result_types.get(name, "")
     call._dynamic = not call._runtime_annotation
@@ -4570,6 +4570,34 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
                     if hasattr(node, name):
                         setattr(result, name, getattr(node, name))
                 return result
+            if (isinstance(node.func, ast.Name) and node.func.id == "isinstance"
+                    and getattr(node.func, "_binding", None) is None
+                    and len(node.args) == 2 and not node.keywords and dynamic(node.args[0])
+                    and not getattr(node, "_subject_class", "")
+                    and not any(scope.has_star_import for scope in table.scopes)):
+                classes = node.args[1].elts if isinstance(node.args[1], ast.Tuple) else [node.args[1]]
+                plain = ("int", "bool", "float", "str", "bytes", "list", "dict", "tuple", "set", "frozenset")
+                names: list[ast.expr] = []
+                seen: set[str] = set()
+                for cls in classes:
+                    if (not isinstance(cls, ast.Name) or cls.id not in plain
+                            or getattr(cls, "_binding", None) is not None):
+                        break
+                    if cls.id not in seen:
+                        names.append(ast.copy_location(ast.Constant(value=cls.id), cls))
+                        seen.add(cls.id)
+                    if cls.id == "int" and "bool" not in seen:
+                        names.append(ast.copy_location(ast.Constant(value="bool"), cls))
+                        seen.add("bool")
+                else:
+                    # Ask the runtime once, including for a tuple of classes. Python bool
+                    # is an int too; V's bool and integer variants are disjoint.
+                    type_name = _runtime_call("type_name", [node.args[0]], node)
+                    if not names:
+                        return ast.copy_location(ast.Compare(left=type_name, ops=[ast.Eq()],
+                            comparators=[ast.copy_location(ast.Constant(value=""), node)]), node)
+                    return ast.copy_location(ast.Compare(left=type_name, ops=[ast.In()],
+                        comparators=[ast.copy_location(ast.List(elts=names, ctx=ast.Load()), node)]), node)
             if is_dict_get and isinstance(node.func, ast.Attribute):
                 default = node.args[1] if len(node.args) == 2 else ast.copy_location(
                     ast.Constant(value=None), node)

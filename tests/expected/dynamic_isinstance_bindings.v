@@ -84,3 +84,11 @@ fn shadowed(value int, int_ Any) bool {
 fn static(value Any) bool {
 	return value is Local
 }
+
+fn dynamic(value Any, types Any) bool {
+	return py2v_unsupported_dynamic_isinstance(value, types + [int, str])
+}
+
+fn nested(value Any) bool {
+	return py2v_unsupported_dynamic_isinstance(value, [int, [str, float]])
+}
