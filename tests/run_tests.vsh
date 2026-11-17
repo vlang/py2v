@@ -90,6 +90,7 @@ fn compare_execution(args []string) os.Result {
 	python_run := os.exec([args[1], '-X', 'utf8', '-I', args[2]])
 	v_run := run_generated(args[3])
 	if python_run.exit_code == 0 && v_run.exit_code == 0
+		&& (args.len < 5 || python_run.output.len > 0)
 		&& python_run.output.replace('\r', '') == v_run.output.replace('\r', '') {
 		return os.Result{}
 	}
@@ -97,6 +98,18 @@ fn compare_execution(args []string) os.Result {
 		exit_code: 1
 		output:    'CPython (exit ${python_run.exit_code}):\n${python_run.output}\nV (exit ${v_run.exit_code}):\n${v_run.output}'
 	}
+}
+
+// run_dynamic_case owns scratch paths and uses the shared execution comparison.
+fn run_dynamic_case(case_name string) os.Result {
+	root := os.join_path(os.temp_dir(), 'py2v_dynamic_${os.getpid()}_${case_name}')
+	os.mkdir_all(root) or { return os.Result{ exit_code: 1, output: err.msg() } }
+	defer {
+		os.rmdir_all(root) or { panic(err) }
+	}
+	python_bin := $if windows { 'python' } $else { 'python3' }
+	return compare_execution([resolve_py2v(), python_bin, os.join_path(cases_dir, case_name + '.py'),
+		os.join_path(root, 'main.v'), 'nonempty'])
 }
 
 const script_dir = os.dir(os.abs_path(@FILE))
@@ -190,6 +203,23 @@ init_expected := os.read_file(os.join_path(script_dir, 'baseline', 'init_executi
 }
 init_v_run := run_generated(init_v)
 python := $if windows { 'python' } $else { 'python3' }
+
+dynamic_cases := ['dynamic_container_elements', 'dynamic_membership', 'dynamic_comprehensions',
+	'dynamic_methods', 'dynamic_or_default', 'dynamic_stores']
+dynamic_results := parallel.amap(dynamic_cases, run_dynamic_case, workers: 2)
+for i, result in dynamic_results {
+	name := 'runtime execution: ' + dynamic_cases[i]
+	if result.exit_code == 0 {
+		report('PASS', name, '')
+		passed++
+	} else {
+		report('FAIL', name, '')
+		println(result.output)
+		failed++
+		failures << fail_line('FAIL', name, '')
+	}
+}
+
 init_py_run := os.exec([python, '-B', init_source])
 init_name := 'initializers: single-file execution'
 if init_translation.exit_code == 0 && init_v_run.exit_code == 0 && init_py_run.exit_code == 0
