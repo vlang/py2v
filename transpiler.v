@@ -3585,7 +3585,7 @@ pub fn (mut t VTranspiler) visit_while(node While) string {
 		}
 	}
 
-	test := t.visit_expr(node.test)
+	test := t.if_condition(node.test)
 	buf << 'for ${test} {'
 	body, flag := t.visit_loop_body(node.body, 1, node.orelse.len > 0)
 	buf << body
@@ -7637,6 +7637,17 @@ fn (mut t VTranspiler) if_condition(test Expr) string {
 	code := t.visit_expr(test)
 	if code.starts_with('if ') || code.starts_with('(if ') {
 		return 'true && (${code})'
+	}
+	// A final capitalized constant looks like a struct type to V. Without
+	// parentheses it consumes the following block as a struct initializer.
+	mut start := code.len
+	for start > 0 && (code[start - 1].is_alnum() || code[start - 1] == `_`) {
+		start--
+	}
+	if start < code.len && code[start].is_capital() {
+		prefix := code[..start].trim_space()
+		if prefix.ends_with(' is') || prefix.ends_with(' !is') { return code }
+		return '(${code})'
 	}
 	return code
 }
