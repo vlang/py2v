@@ -22,6 +22,7 @@ pub fn run() {
 	py_pkg_call_defaults.checked_optional('allowed')
 	run_float_defaults()
 	run_local_defaults()
+	run_keyword_only_defaults()
 }
 
 pub fn use_main() {

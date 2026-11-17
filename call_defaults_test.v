@@ -321,3 +321,74 @@ fn test_local_library_defaults_still_reject_shadowed_names() {
 	t.local_idents['greet'] = 'greet'
 	assert t.complete_imported_call(defaults_test_call()) == none
 }
+
+fn test_imported_keyword_only_defaults_complete_an_empty_call() {
+	mut t := defaults_test_transpiler()
+	mut sig := t.registry.defaulted_functions['pkg.provider.greet']
+	sig.args = Arguments{
+		kwonlyargs:  [Arg{ arg: 'left' }, Arg{ arg: 'right' }]
+		kw_defaults: []?Expr{len: 2}
+	}
+	sig.args.kw_defaults[0] = Expr(Constant{ value: 5 })
+	sig.args.kw_defaults[1] = Expr(Constant{ value: 7 })
+	t.registry.defaulted_functions['pkg.provider.greet'] = sig
+	assert t.visit_call(Call{ ...defaults_test_call(), args: []Expr{} }) == 'greet(5, 7)'
+	mut registry := new_module_registry()
+	register_defaulted_functions({
+		'pkg.provider': Module{ body: [Stmt(sig)] }
+	}, mut registry)
+	assert registry.defaulted_functions.len == 1
+	sig.mutable_vars = ['left']
+	mut rejected := new_module_registry()
+	register_defaulted_functions({
+		'pkg.provider': Module{ body: [Stmt(sig)] }
+	}, mut rejected)
+	assert rejected.defaulted_functions.len == 0
+}
+
+fn test_imported_required_keyword_can_precede_a_default() {
+	mut t := defaults_test_transpiler()
+	mut sig := t.registry.defaulted_functions['pkg.provider.greet']
+	sig.args = Arguments{
+		args:        [Arg{ arg: 'value' }]
+		kwonlyargs:  [Arg{ arg: 'required' }, Arg{ arg: 'tail' }]
+		kw_defaults: []?Expr{len: 2}
+	}
+	sig.args.kw_defaults[1] = Expr(Constant{ value: 5 })
+	t.registry.defaulted_functions['pkg.provider.greet'] = sig
+	assert t.visit_call(Call{ ...defaults_test_call(), keywords: [Keyword{ arg: 'required', value: Constant{ value: 8 } }] }) == 'greet(7, 8, 5)'
+	assert t.complete_imported_call(defaults_test_call()) == none
+}
+
+fn test_imported_keyword_only_parameters_do_not_accept_positional_values() {
+	mut t := defaults_test_transpiler()
+	mut sig := t.registry.defaulted_functions['pkg.provider.greet']
+	sig.args = Arguments{
+		args:        [Arg{ arg: 'value' }]
+		kwonlyargs:  [Arg{ arg: 'first' }, Arg{ arg: 'last' }]
+		kw_defaults: []?Expr{len: 2}
+	}
+	sig.args.kw_defaults[0] = Expr(Constant{ value: 2 })
+	sig.args.kw_defaults[1] = Expr(Constant{ value: 3 })
+	t.registry.defaulted_functions['pkg.provider.greet'] = sig
+	assert t.complete_imported_call(Call{
+		...defaults_test_call()
+		args: [
+			Expr(Constant{ value: 7 }),
+			Expr(Constant{ value: 9 }),
+		]
+	}) == none
+}
+
+fn test_imported_keyword_only_defaults_leave_definition_time_expressions_alone() {
+	mut t := defaults_test_transpiler()
+	mut sig := t.registry.defaulted_functions['pkg.provider.greet']
+	sig.args = Arguments{
+		args:        [Arg{ arg: 'value' }]
+		kwonlyargs:  [Arg{ arg: 'suffix' }]
+		kw_defaults: []?Expr{len: 1}
+	}
+	sig.args.kw_defaults[0] = Expr(Name{ id: 'shared' })
+	t.registry.defaulted_functions['pkg.provider.greet'] = sig
+	assert t.complete_imported_call(defaults_test_call()) == none
+}

@@ -3,6 +3,7 @@ from .keywords import run_keywords
 from ..provider import checked_optional
 from .float_defaults import run_float_defaults
 from .local_defaults import run_local_defaults
+from .keyword_only import run_keyword_only_defaults
 
 
 def mark() -> int:
@@ -24,6 +25,7 @@ def run() -> None:
     checked_optional("allowed")
     run_float_defaults()
     run_local_defaults()
+    run_keyword_only_defaults()
 
 
 if __name__ == "__main__":

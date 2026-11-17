@@ -39,12 +39,17 @@ fn register_defaulted_functions(parsed map[string]Module, mut registry ModuleReg
 			if names[sig.name] != 1 || names['*'] > 0 || sig.decorator_list.len > 0
 				|| sig.is_generator || sig.is_class_method || sig.name in call_dispatch_names
 				|| sig.args.vararg != none || sig.args.kwarg != none
-				|| sig.args.kwonlyargs.len > 0 || sig.args.posonlyargs.len > 0
-				|| sig.args.defaults.len == 0 {
+				|| sig.args.posonlyargs.len > 0 || sig.args.kw_defaults.len != sig.args.kwonlyargs.len
+				|| (sig.args.defaults.len == 0 && !sig.args.kw_defaults.any(it != none)) {
 				continue
 			}
 			if sig.args.args.any(it.arg in ['self', 'cls']) { continue }
 			mut eligible := true
+			for param in sig.args.kwonlyargs {
+				if param.arg in sig.mutable_vars || param.arg in ['self', 'cls'] {
+					eligible = false
+				}
+			}
 			for param in sig.args.args {
 				if param.arg in sig.mutable_vars && !is_value_param(param) {
 					mut reader := new_transpiler()
@@ -156,8 +161,10 @@ fn (mut t VTranspiler) complete_imported_call(node Call) ?Call {
 	if path == '${t.current_dotted}.${name}' && node.loc.lineno <= sig.loc.end_lineno {
 		return none
 	}
-	params := sig.args.args
-	first_default := params.len - sig.args.defaults.len
+	if node.args.len > sig.args.args.len { return none }
+	mut params := sig.args.args.clone()
+	params << sig.args.kwonlyargs
+	first_default := sig.args.args.len - sig.args.defaults.len
 	// Fully supplied calls retain the existing emission, including its keyword guards.
 	if node.args.len + node.keywords.len >= params.len { return none }
 	mut keyword_values := map[int]Expr{}
@@ -183,8 +190,14 @@ fn (mut t VTranspiler) complete_imported_call(node Call) ?Call {
 			completed << supplied
 			continue
 		}
-		if i < first_default { return none }
-		value := imported_default_value(sig.args.defaults[i - first_default])
+		default_value := if i < sig.args.args.len {
+			if i < first_default { return none }
+			sig.args.defaults[i - first_default]
+		} else {
+			if i - sig.args.args.len >= sig.args.kw_defaults.len { return none }
+			sig.args.kw_defaults[i - sig.args.args.len] or { return none }
+		}
+		value := imported_default_value(default_value)
 		if !imported_literal_default(value)
 			|| !imported_default_matches_parameter(params[i], value) {
 			return none

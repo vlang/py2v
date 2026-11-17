@@ -64,3 +64,23 @@ def float_any_default(value: Any = 0.0) -> None:
 
 def int_any_default(value: Any = 0) -> None:
     print(value)
+
+
+def keyword_only_defaults(*, left: int = 5, right: int = 7) -> int:
+    return left * 10 + right
+
+
+def mixed_keyword_default(value: int = 2, *, offset: int = 3) -> int:
+    return value * 10 + offset
+
+
+def required_keyword_default(value: int, *, required: int, tail: int = 5) -> int:
+    return value * 100 + required * 10 + tail
+
+
+def keyword_none_default(*, payload: Any = None) -> str:
+    return "None" if payload is None else "value"
+
+
+def keyword_float_default(*, scale: float = 0.0) -> float:
+    return scale
