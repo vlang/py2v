@@ -1332,11 +1332,13 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 		}
 		// Check if this argument is mutable
 		if arg.arg in node.mutable_vars {
+			optional_value := !node.is_class_method && arg.arg !in node.condition_walrus_names
+				&& is_optional_value_type(typename)
 			if typename in v_value_param_types && arg.arg in node.condition_walrus_names {
 				// The walrus lowering copies this parameter itself.
-			} else if typename in v_value_param_types {
+			} else if typename in v_value_param_types || optional_value {
 				// Rebinding a number, string or bool parameter is local in Python, and V
-				// has no `mut` for these: the parameter arrives under another name and the
+				// has no `mut` for these or their options: it arrives under another name and the
 				// body starts with a mutable local that has the source's name.
 				incoming := t.new_tmp('${arg.arg}_in')
 				param_copies << 'mut ${arg_name} := ${incoming}'
@@ -2925,6 +2927,10 @@ fn generic_letters(typename string) []string {
 // v_value_param_types are the V types a parameter cannot be `mut` for.
 const v_value_param_types = ['int', 'i8', 'i16', 'i32', 'i64', 'u8', 'u16', 'u32', 'u64', 'f32',
 	'f64', 'bool', 'string', 'rune']!
+
+fn is_optional_value_type(typ string) bool {
+	return typ.starts_with('?') && typ[1..] in v_value_param_types
+}
 
 // zero_value_for returns a V zero-value expression for the named type.
 pub fn (t VTranspiler) zero_value_for(typ string) string {

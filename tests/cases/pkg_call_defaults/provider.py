@@ -31,3 +31,12 @@ def scale_value(scale: float = 1.5) -> float:
 
 def combine(first: int, second: int, tail: int = 5) -> int:
     return first * 100 + second * 10 + tail
+
+
+def checked_optional(value: str | None = None) -> None:
+    if value is None:
+        value = "allowed"
+    if value is not None:
+        if value != "allowed":
+            raise ValueError("unexpected value")
+        print(value)

@@ -33,7 +33,13 @@ fn register_defaulted_functions(parsed map[string]Module, mut registry ModuleReg
 			if sig.args.args.any(it.arg in ['self', 'cls']) { continue }
 			mut eligible := true
 			for param in sig.args.args {
-				if param.arg in sig.mutable_vars && !is_value_param(param) { eligible = false }
+				if param.arg in sig.mutable_vars && !is_value_param(param) {
+					mut reader := new_transpiler()
+					if param.arg in sig.condition_walrus_names
+						|| !is_optional_value_type(reader.init_parameter_type(param, false)) {
+						eligible = false
+					}
+				}
 			}
 			if eligible { registry.defaulted_functions['${key}.${sig.name}'] = sig }
 		}

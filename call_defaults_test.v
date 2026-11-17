@@ -232,3 +232,47 @@ fn test_imported_default_registry_excludes_unsupported_signatures() {
 		assert rejected.defaulted_functions.len == 0
 	}
 }
+
+fn test_optional_scalar_defaults_allow_local_rebinding() {
+	mut t := defaults_test_transpiler()
+	mut sig := t.registry.defaulted_functions['pkg.provider.greet']
+	text := Expr(Name{ id: 'str' })
+	nothing := Expr(Constant{ value: NoneValue{} })
+	annotation := Expr(BinOp{ left: &text, op: BitOr{}, right: &nothing })
+	sig.args.args[1].annotation = &annotation
+	sig.args.defaults = [nothing]
+	sig.mutable_vars = ['suffix']
+	mut registry := new_module_registry()
+	register_defaulted_functions({
+		'pkg.provider': Module{ body: [Stmt(sig)] }
+	}, mut registry)
+	assert registry.defaulted_functions.len == 1
+	t.registry.defaulted_functions = registry.defaulted_functions
+	assert t.visit_call(defaults_test_call()) == 'greet(7, none)'
+}
+
+fn test_optional_walrus_parameters_remain_excluded() {
+	mut t := defaults_test_transpiler()
+	mut sig := t.registry.defaulted_functions['pkg.provider.greet']
+	text := Expr(Name{ id: 'str' })
+	nothing := Expr(Constant{ value: NoneValue{} })
+	annotation := Expr(BinOp{ left: &text, op: BitOr{}, right: &nothing })
+	sig.args.args[1].annotation = &annotation
+	sig.args.defaults = [nothing]
+	sig.mutable_vars = ['suffix']
+	sig.condition_walrus_names = ['suffix']
+	mut registry := new_module_registry()
+	register_defaulted_functions({
+		'pkg.provider': Module{ body: [Stmt(sig)] }
+	}, mut registry)
+	assert registry.defaulted_functions.len == 0
+}
+
+fn test_optional_scalar_type_excludes_containers_and_references() {
+	for typ in ['?string', '?int', '?i64', '?f64', '?bool'] {
+		assert is_optional_value_type(typ)
+	}
+	for typ in ['', '?', 'string', '?Any', '?[]string', '?map[string]int', '?&Thing'] {
+		assert !is_optional_value_type(typ)
+	}
+}
