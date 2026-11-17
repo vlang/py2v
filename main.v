@@ -379,6 +379,19 @@ fn collect_module_symbols(mod Module) []string {
 	return names
 }
 
+// collect_module_values lists names emitted as module-level value declarations.
+fn collect_module_values(mod Module) []string {
+	mut names := mod.module_consts.clone()
+	for stmt in mod.body {
+		if stmt is Assign && !stmt.is_typevar_assign && stmt.targets.len == 1
+			&& stmt.targets[0] is Name {
+			name := stmt.targets[0].id
+			if name !in names { names << name }
+		}
+	}
+	return names
+}
+
 // find_python_files recursively lists .py files under root, skipping caches.
 fn find_python_files(root string) ![]string {
 	mut out := []string{}
@@ -477,10 +490,11 @@ fn translate_package(python_cmd string, ast_dump string, package_dir string, out
 		}
 		written[rel_path_v] = rel
 		info := PyModuleInfo{
-			dotted:    abs_mod_dotted
-			v_module:  v_mod
-			v_relpath: rel_path_v
-			symbols:   collect_module_symbols(mod)
+			dotted:        abs_mod_dotted
+			v_module:      v_mod
+			v_relpath:     rel_path_v
+			symbols:       collect_module_symbols(mod)
+			value_symbols: collect_module_values(mod)
 		}
 		// The source spells its own imports with the name the package has on
 		// sys.path, which is not always the name the scanner would derive from

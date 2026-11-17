@@ -441,7 +441,11 @@ pub fn (mut t VTranspiler) visit_module(node Module) string {
 				trimmed := s.trim_space()
 				if trimmed.starts_with('type ') || trimmed.starts_with('const ')
 					|| trimmed.starts_with('enum ') {
-					type_decls << s
+					type_decls << if t.emit_pub && trimmed.starts_with('const ') {
+						'pub ' + s
+					} else {
+						s
+					}
 				} else if trimmed.starts_with('pub struct ') || trimmed.starts_with('struct ') {
 					struct_decls << s
 				} else if stmt is TypeAlias {
@@ -450,7 +454,7 @@ pub fn (mut t VTranspiler) visit_module(node Module) string {
 					// Import comments and similar go before fn main()
 					comment_lines << s
 				} else if decl := module_const_decl(stmt, trimmed, node.module_consts) {
-					type_decls << decl
+					type_decls << if t.emit_pub { 'pub ' + decl } else { decl }
 				} else {
 					main_fn_body << s
 					main_fn_stmts << stmt
@@ -504,7 +508,8 @@ pub fn (mut t VTranspiler) visit_module(node Module) string {
 	if t.emit_pub && main_fn_override.len == 0 {
 		library_decls << comment_lines
 		for i, line in main_fn_body {
-			library_decls << module_scope_decl(main_fn_stmts[i], line, t.module_idents)
+			decl := module_scope_decl(main_fn_stmts[i], line, t.module_idents)
+			library_decls << if decl.starts_with('const ') { 'pub ' + decl } else { decl }
 		}
 	} else {
 		// Merge the guard-rewritten body with module-level inits.
@@ -4630,7 +4635,16 @@ fn (mut t VTranspiler) project_import_name(path string) ?string {
 	if !path.contains('.') { return none }
 	owner := t.registry.lookup(path.all_before_last('.'))
 	if owner.dotted == '' { return none }
-	name := escape_local_ident(path.all_after_last('.'))
+	symbol := path.all_after_last('.')
+	mut name := escape_local_ident(symbol)
+	if symbol in owner.value_symbols {
+		naming := VTranspiler{
+			...t
+			module_name:  owner.v_module
+			current_stem: v_file_stem(owner.v_relpath)
+		}
+		name = naming.module_value_name(symbol, naming.private_names_shared_with_siblings())
+	}
 	if owner.v_module == t.module_name { return name }
 	t.add_using(owner.v_module)
 	return '${owner.v_module}.${name}'
