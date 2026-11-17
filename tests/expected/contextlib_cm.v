@@ -40,7 +40,7 @@ fn managed_file(path Any, ch chan Any) {
 }
 
 fn open_and_read(path Any) Any {
-	if true {
+	{
 		f := managed_file(path)
 		return f.read()
 	}

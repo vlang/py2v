@@ -514,6 +514,7 @@ fn translate_package(python_cmd string, ast_dump string, package_dir string, out
 	}
 
 	register_init_constructors(parsed, mut registry)
+	register_defaulted_functions(parsed, mut registry)
 	dupes := registry.collisions()
 	if dupes.len > 0 {
 		mut keys := dupes.keys()

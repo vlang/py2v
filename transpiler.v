@@ -16,15 +16,16 @@ mut:
 	// Set when an f-string field calls the py2v_format helper.
 	uses_py2v_format bool
 	// Maps and state tracked during transpilation
-	current_class_name  string
-	current_classmethod bool
-	escaped_identifiers map[string]bool
-	extra_mut_vars      map[string]bool
-	func_defaults       map[string][]string
-	func_param_count    map[string]int
-	call_signatures     map[string]FunctionDef
-	call_before_def     map[string]bool
-	func_return_types   map[string]string
+	current_class_name   string
+	current_classmethod  bool
+	escaped_identifiers  map[string]bool
+	extra_mut_vars       map[string]bool
+	func_defaults        map[string][]string
+	func_param_count     map[string]int
+	call_signatures      map[string]FunctionDef
+	default_import_names map[string]bool
+	call_before_def      map[string]bool
+	func_return_types    map[string]string
 	// Methods whose receiver must be `mut` in V, keyed ClassName_method.
 	mut_receiver_methods        map[string]bool
 	generated_code_has_any_type bool
@@ -278,6 +279,7 @@ pub fn (mut t VTranspiler) visit_module(node Module) string {
 	mut bindings := map[string]int{}
 	mut calls := []BindingCall{}
 	count_call_bindings(node, mut bindings, mut calls, false)
+	t.default_import_names = imported_default_names(node, bindings)
 	mut signatures := map[string]FunctionDef{}
 	mut module_defs := map[string][]FunctionDef{}
 	for stmt in node.body {
@@ -2922,7 +2924,7 @@ fn generic_letters(typename string) []string {
 
 // v_value_param_types are the V types a parameter cannot be `mut` for.
 const v_value_param_types = ['int', 'i8', 'i16', 'i32', 'i64', 'u8', 'u16', 'u32', 'u64', 'f32',
-	'f64', 'bool', 'string', 'rune']
+	'f64', 'bool', 'string', 'rune']!
 
 // zero_value_for returns a V zero-value expression for the named type.
 pub fn (t VTranspiler) zero_value_for(typ string) string {
@@ -3523,11 +3525,11 @@ fn (mut t VTranspiler) visit_if_chain(node If, is_elif bool) string {
 	return buf.join('\n')
 }
 
-// visit_with emits V code for a With statement (uses `if true {}` for scoping).
+// visit_with emits a scope block so a return exits the enclosing function.
 pub fn (mut t VTranspiler) visit_with(node With) string {
 	mut buf := []string{}
 
-	buf << 'if true {'
+	buf << '{'
 	for item in node.items {
 		context := t.visit_expr(item.context_expr)
 		mut is_file_handle := false
@@ -5454,7 +5456,7 @@ fn join_conditions(parts []string, op string) string {
 const call_dispatch_names = ['range', 'print', 'bool', 'int', 'float', 'str', 'len', 'min', 'max',
 	'abs', 'round', 'floor', 'pow', 'sum', 'sorted', 'map', 'filter', 'all', 'any', 'enumerate',
 	'zip', 'open', 'input', 'type', 'id', 'getattr', 'setattr', 'hasattr', 'isinstance', 'list',
-	'tuple', 'set', 'dict', 'divmod', 'ord', 'chr', 'reversed', 'Path']
+	'tuple', 'set', 'dict', 'divmod', 'ord', 'chr', 'reversed', 'Path']!
 
 struct BindingCall {
 	call        Call
@@ -5617,7 +5619,7 @@ fn propagated_call(code string) string {
 const runtime_dispatched_methods = ['get', 'items', 'keys', 'values', 'setdefault', 'update', 'pop',
 	'copy', 'append', 'extend', 'insert', 'remove', 'sort', 'reverse', 'index', 'count', 'add',
 	'discard', 'strip', 'lstrip', 'rstrip', 'lower', 'upper', 'title', 'split', 'splitlines',
-	'startswith', 'endswith', 'replace', 'find', 'encode', 'decode', 'isdigit']
+	'startswith', 'endswith', 'replace', 'find', 'encode', 'decode', 'isdigit']!
 
 // without_opt takes the `.opt()` that ends the text of a runtime call giving a
 // `pyrt.Maybe`, so that the error handling of the call itself can be rewritten.
@@ -5656,6 +5658,9 @@ pub fn (mut t VTranspiler) visit_call(original Call) string {
 	}
 	if constructor := t.visit_init_constructor(original) {
 		return constructor
+	}
+	if completed := t.complete_imported_call(original) {
+		return t.visit_call(completed)
 	}
 	node := t.bind_module_call(original) or { original }
 	mut fname := t.visit_expr(node.func)
@@ -5701,6 +5706,12 @@ pub fn (mut t VTranspiler) visit_call(original Call) string {
 				}
 			}
 		}
+	}
+
+	// Keep the local Value alias, which carries this module's Python operators.
+	if fname == 'pyrt.map_get' {
+		t.generated_code_has_any_type = true
+		return 'Any(pyrt.map_get(${vargs.join(', ')}))'
 	}
 
 	// re module → regex module dispatch
