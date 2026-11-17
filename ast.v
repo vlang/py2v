@@ -287,6 +287,8 @@ pub mut:
 
 pub struct Attribute {
 pub mut:
+	// A first-class list append planned by the frontend, or a refusal reason.
+	bound_append string
 	value        &Expr
 	attr         string
 	ctx          ExprContext

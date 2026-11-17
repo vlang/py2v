@@ -234,6 +234,11 @@ class ScopeTracker(ast.NodeVisitor):
         """Process del statement - don't mark as mutable since @[translated] relaxes this."""
         self.generic_visit(node)
 
+    def visit_Attribute(self, node: ast.Attribute):
+        if getattr(node, "_bound_append", "") == "list":
+            self.mutable.add(node.value.id)
+        self.generic_visit(node)
+
     def _check_subscript_assign(self, target: ast.AST):
         """A store into an element or attribute makes the variable it starts from
         mutable: x[i] = ..., x[i:j] = ..., x.attr = ..., and nested stores such as
@@ -2290,6 +2295,7 @@ def _node_to_dict(node: ast.AST, mutable_vars: Set[str],
     elif isinstance(node, ast.Attribute):
         result["value"] = _node_to_dict(node.value, mutable_vars, redefined, ctx)
         result["attr"] = node.attr
+        result["bound_append"] = getattr(node, "_bound_append", "")
         result["ctx"] = {"node_type": type(node.ctx).__name__}
         if getattr(node, "_api", ""):
             result["api"] = node._api
@@ -6637,6 +6643,31 @@ def _declare_inferred_containers(tree: ast.Module, table: Optional[symbols.Symbo
     return any_lists
 
 
+def _plan_bound_appends(tree, table, facts):
+    """A saved list.append needs a closure, not the call-only << spelling.
+
+    V captures a mutable array binding. It cannot capture a Python list's identity
+    across rebinding of that name, so that case must remain an explicit refusal.
+    Unknown receivers keep their ordinary bound method, including user classes.
+    """
+    callees = {id(n.func) for n in ast.walk(tree) if isinstance(n, ast.Call)}
+    if facts is None or table is None:
+        return
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Attribute) and node.attr == "append"
+                and isinstance(node.ctx, ast.Load) and id(node) not in callees):
+            continue
+        typ = getattr(node.value, "_type", None)
+        if typ is None or facts.types[typ]["k"] != "list":
+            continue
+        binding_id = getattr(node.value, "_binding", None)
+        if (isinstance(node.value, ast.Name) and binding_id is not None
+                and not table.bindings[binding_id].rebound):
+            node._bound_append = "list"
+        else:
+            node._bound_append = "receiver_identity"
+
+
 def process_file(file_path: str, project: Optional[ProjectFacts] = None) -> str:
     """Parse, analyze, and return enriched JSON AST."""
     with open(file_path, "r", encoding="utf-8") as f:
@@ -6670,6 +6701,7 @@ def process_file(file_path: str, project: Optional[ProjectFacts] = None) -> str:
     _erase_typing_casts(tree, table)
     _expand_bool_calls(tree)
     facts = _infer_types(tree, table, project)
+    _plan_bound_appends(tree, table, facts)
     _loop_comprehensions(tree, facts)
     any_lists = _declare_inferred_containers(tree, table, facts)
     _declare_block_locals(tree, table, facts)

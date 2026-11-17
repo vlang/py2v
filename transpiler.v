@@ -629,6 +629,10 @@ fn (mut t VTranspiler) runtime_helper(kind string) string {
 // runtime_helper_declaration returns the V source of the run-time helper `kind`.
 fn runtime_helper_declaration(kind string, name string) string {
 	return match kind {
+		'append_method' {
+			'fn ${name}[T](mut items []T) fn (T) {\n' +
+				'\treturn fn [mut items] [T](value T) { items << value }\n}'
+		}
 		'true_div' {
 			'fn ${name}(a f64, b f64) f64 {\n' + '\tif b == 0 {\n' +
 				"\t\tpanic('division by zero')\n" + '\t}\n' + '\treturn a / b\n' + '}'
@@ -5883,6 +5887,10 @@ pub fn (mut t VTranspiler) visit_call(original Call) string {
 		}
 		obj := as_receiver(t.visit_expr(attr_node.value))
 		method := attr_node.attr
+		// Append's operator spelling belongs to the call, never to a bound method value.
+		if method == 'append' && vargs.len > 0 {
+			return '${obj} << ${vargs[0]}'
+		}
 
 		// An explicit `BuiltinError.__init__(self, ...)` reaches a class V has no
 		// counterpart for. Portage does exactly this to mix a builtin exception
@@ -7072,6 +7080,12 @@ fn lower_first_ascii(name string) string {
 
 // visit_attribute emits V code for attribute access (Attribute).
 pub fn (mut t VTranspiler) visit_attribute(node Attribute) string {
+	if node.bound_append == 'list' {
+		return '${t.runtime_helper('append_method')}(mut ${t.visit_expr(node.value)})'
+	}
+	if node.bound_append != '' {
+		return 'py2v_unsupported_bound_append_${node.bound_append}(${t.visit_expr(node.value)})'
+	}
 	if node.api != '' {
 		if entry := runtime_api[node.api] {
 			if entry.kind == 'constant' {
@@ -7130,11 +7144,6 @@ pub fn (mut t VTranspiler) visit_attribute(node Attribute) string {
 	result, handled := dispatch_attr(mut t, attr_path)
 	if handled {
 		return result
-	}
-
-	// Check for list.append -> <<
-	if attr == 'append' {
-		return '${value} << '
 	}
 
 	return '${value}.${attr}'

@@ -1217,6 +1217,7 @@ fn parse_call(m map[string]json2.Any) Call {
 // Parse Attribute
 fn parse_attribute(m map[string]json2.Any) Attribute {
 	return Attribute{
+		bound_append: (m['bound_append'] or { json2.Any('') }).str()
 		value:        parse_expr(map_field(m, 'value')) or {
 			&Expr(Constant{
 				value: NoneValue{}
