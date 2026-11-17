@@ -4361,7 +4361,7 @@ def _annotate_database_parameters(tree: ast.Module, table: symbols.SymbolTable,
 
 
 def _annotate_subparser_parameters(tree: ast.Module, table: symbols.SymbolTable,
-                                   api: Dict[str, Dict[str, Any]]) -> bool:
+                                   api: "dict[str, dict[str, Any]]") -> bool:
     """Recognize an untyped parameter used only to add argparse subparsers."""
     cls = "argparse._SubParsersAction"
     if cls + ".add_parser" not in api:
