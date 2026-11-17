@@ -3643,7 +3643,25 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
         def visit_Call(self, node: ast.Call) -> ast.AST:
             is_method = dynamic_method_call(node)
             is_dict_get = any_dict_get(node)
+            is_value_join = (isinstance(node.func, ast.Attribute) and node.func.attr == "join"
+                             and len(node.args) == 1 and not node.keywords
+                             and not isinstance(node.args[0], ast.Starred)
+                             and _truth_kind(node.func.value, facts) == "str"
+                             and (dynamic(node.args[0]) or any_list(node.args[0])
+                                  or _truth_kind(node.args[0], facts) == "str"))
+            join_plain = is_value_join and not dynamic(node.args[0])
             self.generic_visit(node)
+            if is_value_join and isinstance(node.func, ast.Attribute):
+                iterable = (_runtime_call("box", [node.args[0]], node)
+                            if join_plain else node.args[0])
+                call = _runtime_call("join", [boxed(node.func.value), iterable], node)
+                call._api = "__pyrt__.join"
+                result = _runtime_call("to_str", [call], node)
+                result._dynamic = False
+                for name in ("_type", "_assumed"):
+                    if hasattr(node, name):
+                        setattr(result, name, getattr(node, name))
+                return result
             if is_dict_get and isinstance(node.func, ast.Attribute):
                 default = node.args[1] if len(node.args) == 2 else ast.copy_location(
                     ast.Constant(value=None), node)
@@ -3961,7 +3979,8 @@ def _plan_error_propagation(tree: ast.Module, table: Optional[symbols.SymbolTabl
         if isinstance(call, ast.Raise):
             # a bare `raise` is planned with the handler it stands in
             return call.exc is not None and raised_class(call) != ""
-        entry = api.get(getattr(call, "_api", ""))
+        api_name = getattr(call, "_api", "")
+        entry = api.get(api_name) or api.get("__pyrt__." + api_name)
         if entry and entry.get("raises"):
             return True
         return isinstance(call.func, ast.Name) and getattr(call.func, "_binding", None) in fallible
@@ -4341,6 +4360,120 @@ def _annotate_database_parameters(tree: ast.Module, table: symbols.SymbolTable,
     return found
 
 
+def _annotate_subparser_parameters(tree: ast.Module, table: symbols.SymbolTable,
+                                   api: "dict[str, dict[str, Any]]") -> bool:
+    """Recognize an untyped parameter used only to add argparse subparsers."""
+    cls = "argparse._SubParsersAction"
+    if cls + ".add_parser" not in api:
+        return False
+
+    # Calling a method named add_parser does not establish an argparse receiver.
+    # Only specialize helpers whose visible callers pass an actual subparser action.
+    argparse_modules: Set[int] = set()
+    parser_factories: Set[int] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                binding_id = getattr(alias, "_binding", None)
+                if alias.name == "argparse" and binding_id is not None:
+                    if not table.bindings[binding_id].rebound:
+                        argparse_modules.add(binding_id)
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module == "argparse":
+            for alias in node.names:
+                binding_id = getattr(alias, "_binding", None)
+                if alias.name == "ArgumentParser" and binding_id is not None:
+                    if not table.bindings[binding_id].rebound:
+                        parser_factories.add(binding_id)
+
+    def constructs_parser(value: ast.AST) -> bool:
+        if not isinstance(value, ast.Call):
+            return False
+        func = value.func
+        if isinstance(func, ast.Name):
+            return getattr(func, "_binding", None) in parser_factories
+        return (isinstance(func, ast.Attribute) and func.attr == "ArgumentParser"
+                and isinstance(func.value, ast.Name)
+                and getattr(func.value, "_binding", None) in argparse_modules)
+
+    def constructs_action(value: ast.AST, parsers: Set[int]) -> bool:
+        if not isinstance(value, ast.Call) or not isinstance(value.func, ast.Attribute):
+            return False
+        if value.func.attr != "add_subparsers":
+            return False
+        receiver = value.func.value
+        return (isinstance(receiver, ast.Name)
+                and getattr(receiver, "_binding", None) in parsers) or constructs_parser(receiver)
+
+    assignments = [stmt for stmt in ast.walk(tree)
+                   if isinstance(stmt, (ast.Assign, ast.AnnAssign))]
+    parsers: Set[int] = set()
+    for stmt in assignments:
+        if not constructs_parser(stmt.value):
+            continue
+        targets = stmt.targets if isinstance(stmt, ast.Assign) else [stmt.target]
+        for target in targets:
+            if isinstance(target, ast.Name):
+                binding_id = getattr(target, "_binding", None)
+                if binding_id is not None and not table.bindings[binding_id].rebound:
+                    parsers.add(binding_id)
+
+    actions: Set[int] = set()
+    for stmt in assignments:
+        if not constructs_action(stmt.value, parsers):
+            continue
+        targets = stmt.targets if isinstance(stmt, ast.Assign) else [stmt.target]
+        for target in targets:
+            if isinstance(target, ast.Name):
+                binding_id = getattr(target, "_binding", None)
+                if binding_id is not None and not table.bindings[binding_id].rebound:
+                    actions.add(binding_id)
+
+    def receives_action(call: ast.Call, position: int, name: str) -> bool:
+        supplied = (call.args[position] if position < len(call.args) else
+                    next((kw.value for kw in call.keywords if kw.arg == name), None))
+        if isinstance(supplied, ast.Name):
+            return getattr(supplied, "_binding", None) in actions
+        return constructs_action(supplied, parsers)
+
+    calls: Dict[int, List[ast.Call]] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+            binding_id = getattr(node.func, "_binding", None)
+            if binding_id is not None:
+                calls.setdefault(binding_id, []).append(node)
+
+    found = False
+    for fn in ast.walk(tree):
+        if not isinstance(fn, ast.FunctionDef) or fn.decorator_list or _is_generator(fn):
+            continue
+        params = fn.args.posonlyargs + fn.args.args + fn.args.kwonlyargs
+        if not any(arg.annotation is None for arg in params):
+            continue
+        callers = calls.get(getattr(fn, "_binding", None), [])
+        nodes = list(ast.walk(fn))
+        for position, arg in enumerate(params):
+            binding_id = getattr(arg, "_binding", None)
+            if (arg.annotation is not None or arg.arg in ("self", "cls")
+                    or binding_id is None or table.bindings[binding_id].rebound):
+                continue
+            receivers = {id(node.func.value) for node in nodes
+                         if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                         and node.func.attr == "add_parser"
+                         and isinstance(node.func.value, ast.Name)
+                         and getattr(node.func.value, "_binding", None) == binding_id}
+            reads = [node for node in nodes if isinstance(node, ast.Name)
+                     and getattr(node, "_binding", None) == binding_id]
+            if not receivers or any(id(node) not in receivers for node in reads):
+                continue
+            if not callers or not all(receives_action(call, position, arg.arg)
+                                      for call in callers):
+                continue
+            arg.annotation = ast.copy_location(ast.Name(id="_SubParsersAction", ctx=ast.Load()), arg)
+            arg.annotation._api = cls
+            found = True
+    return found
+
+
 def _unquote_annotations(tree: ast.Module, table: Optional[symbols.SymbolTable]) -> None:
     """An annotation written as text (`-> list["TextContent"]`, or any annotation of a file
     with names imported under `if TYPE_CHECKING:`) is read as the expression it spells, its
@@ -4428,6 +4561,7 @@ def _mark_runtime_api(tree: ast.Module, table: Optional[symbols.SymbolTable]) ->
     imported = {b: q for b, q in imported.items() if not table.bindings[b].rebound}
     ducked = _annotate_database_parameters(tree, table, api)
     ducked = _annotate_namespace_parameters(tree, table) or ducked
+    ducked = _annotate_subparser_parameters(tree, table, api) or ducked
     if not imported and not ducked:
         return
 

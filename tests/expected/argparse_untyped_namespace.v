@@ -4,22 +4,30 @@ import flag
 import pyrt.argparse
 import pyrt
 
-fn cmd_list(args argparse.Namespace) int {
-	println(('list').str() + ' ' + (int(args.get_int('limit') or { pyrt.fail(err) })).str() + ' ' + (if args.get_bool('verbose') or { pyrt.fail(err) } {
+fn cmd_list_py(args argparse.Namespace) !int {
+	println(('list').str() + ' ' + (int(args.get_int('limit')!)).str() + ' ' + (if args.get_bool('verbose')! {
 		'True'
 	} else {
 		'False'
 	}).str())
-	if pyrt.truth(args.require('name') or { pyrt.fail(err) }) {
-		println(('name').str() + ' ' + (pyrt.str(args.require('name') or { pyrt.fail(err) })).str())
+	if pyrt.truth(args.require('name')!) {
+		println(('name').str() + ' ' + (pyrt.str(args.require('name')!)).str())
 	}
 	return 0
 }
 
-fn cmd_add(args argparse.Namespace) int {
-	total := int(args.get_int('limit') or { pyrt.fail(err) }) + 1
-	println(('add').str() + ' ' + (args.get_str('item') or { pyrt.fail(err) }).str() + ' ' + total.str())
+fn cmd_list(args argparse.Namespace) int {
+	return cmd_list_py(args) or { pyrt.fail(err) }
+}
+
+fn cmd_add_py(args argparse.Namespace) !int {
+	total := int(args.get_int('limit')!) + 1
+	println(('add').str() + ' ' + (args.get_str('item')!).str() + ' ' + total.str())
 	return 0
+}
+
+fn cmd_add(args argparse.Namespace) int {
+	return cmd_add_py(args) or { pyrt.fail(err) }
 }
 
 fn main_func_py(argv []string) !int {
@@ -29,10 +37,10 @@ fn main_func_py(argv []string) !int {
 	parser.add_argument(['--name'])!
 	parser.add_argument(['item'])!
 	args := parser.parse_args(argv)!
-	if args.get_bool('verbose') or { pyrt.fail(err) } {
-		return cmd_list(args)
+	if args.get_bool('verbose')! {
+		return cmd_list_py(args)!
 	}
-	return cmd_add(args)
+	return cmd_add_py(args)!
 }
 
 fn main_func(argv []string) int {

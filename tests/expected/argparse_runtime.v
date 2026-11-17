@@ -28,18 +28,18 @@ fn build() &argparse.ArgumentParser {
 fn main_func_py() ! {
 	parser := build_py()!
 	args := parser.parse_args(['world', '--count', '3', '--verbose', '--tag', 'a', '--tag', 'b'])!
-	for _ in []int{len: int(args.get_int('count') or { pyrt.fail(err) }), init: index} {
-		println(('hello').str() + ' ' + (args.get_str('name') or { pyrt.fail(err) }).str())
+	for _ in []int{len: int(args.get_int('count')!), init: index} {
+		println(('hello').str() + ' ' + (args.get_str('name')!).str())
 	}
-	if args.get_bool('verbose') or { pyrt.fail(err) } {
-		println(('mode').str() + ' ' + (args.get_str('mode') or { pyrt.fail(err) }).str() + ' ' + ('tags').str() + ' ' + (args.get_strings('tag') or { pyrt.fail(err) }).str())
+	if args.get_bool('verbose')! {
+		println(('mode').str() + ' ' + (args.get_str('mode')!).str() + ' ' + ('tags').str() + ' ' + (args.get_strings('tag')!).str())
 	}
 	other := parser.parse_args(['x'])!
-	println((int(other.get_int('count') or { pyrt.fail(err) })).str() + ' ' + (if other.get_bool('verbose') or { pyrt.fail(err) } {
+	println((int(other.get_int('count')!)).str() + ' ' + (if other.get_bool('verbose')! {
 		'True'
 	} else {
 		'False'
-	}).str() + ' ' + (other.get_str('mode') or { pyrt.fail(err) }).str() + ' ' + (other.get_strings('tag') or { pyrt.fail(err) }).str())
+	}).str() + ' ' + (other.get_str('mode')!).str() + ' ' + (other.get_strings('tag')!).str())
 }
 
 fn main_func() {

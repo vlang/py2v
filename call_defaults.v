@@ -15,6 +15,19 @@ fn imported_default_names(node Module, bindings map[string]int) map[string]bool 
 	return names
 }
 
+// Reuse safe module signatures for calls to definitions in this library file.
+fn (mut t VTranspiler) prepare_local_default_names(node Module) {
+	if !t.emit_pub { return }
+	for stmt in node.body {
+		if stmt is FunctionDef {
+			path := '${t.current_dotted}.${stmt.name}'
+			if path in t.registry.defaulted_functions {
+				t.default_import_names[stmt.name] = true
+			}
+		}
+	}
+}
+
 fn register_defaulted_functions(parsed map[string]Module, mut registry ModuleRegistry) {
 	for key, node in parsed {
 		mut names := map[string]int{}
@@ -26,14 +39,25 @@ fn register_defaulted_functions(parsed map[string]Module, mut registry ModuleReg
 			if names[sig.name] != 1 || names['*'] > 0 || sig.decorator_list.len > 0
 				|| sig.is_generator || sig.is_class_method || sig.name in call_dispatch_names
 				|| sig.args.vararg != none || sig.args.kwarg != none
-				|| sig.args.kwonlyargs.len > 0 || sig.args.posonlyargs.len > 0
-				|| sig.args.defaults.len == 0 {
+				|| sig.args.posonlyargs.len > 0 || sig.args.kw_defaults.len != sig.args.kwonlyargs.len
+				|| (sig.args.defaults.len == 0 && !sig.args.kw_defaults.any(it != none)) {
 				continue
 			}
 			if sig.args.args.any(it.arg in ['self', 'cls']) { continue }
 			mut eligible := true
+			for param in sig.args.kwonlyargs {
+				if param.arg in sig.mutable_vars || param.arg in ['self', 'cls'] {
+					eligible = false
+				}
+			}
 			for param in sig.args.args {
-				if param.arg in sig.mutable_vars && !is_value_param(param) { eligible = false }
+				if param.arg in sig.mutable_vars && !is_value_param(param) {
+					mut reader := new_transpiler()
+					if param.arg in sig.condition_walrus_names
+						|| !is_optional_value_type(reader.init_parameter_type(param, false)) {
+						eligible = false
+					}
+				}
 			}
 			if eligible { registry.defaulted_functions['${key}.${sig.name}'] = sig }
 		}
@@ -102,16 +126,45 @@ fn imported_default_matches_parameter(param Arg, expr Expr) bool {
 	return false
 }
 
+// Restore the frontend's float kind when the JSON parser stored an integral float as int.
+fn imported_default_value(expr Expr) Expr {
+	if expr is UnaryOp && expr.op is USub {
+		operand := imported_default_value(*expr.operand)
+		return UnaryOp{ ...expr, operand: &operand }
+	}
+	if expr is Constant && (expr.v_annotation or { '' }) == 'float' {
+		match expr.value {
+			int { return Constant{ ...expr, value: f64(expr.value) } }
+			i64 { return Constant{ ...expr, value: f64(expr.value) } }
+			else {}
+		}
+	}
+	return expr
+}
+
 fn (mut t VTranspiler) complete_imported_call(node Call) ?Call {
 	if !t.emit_pub || node.func !is Name || node.args.any(it is Starred) {
 		return none
 	}
 	name := (node.func as Name).id
 	if !t.default_import_names[name] { return none }
-	sig := t.imported_default_signature(t.init_python_path(node.func)) or { return none }
+	mut path := t.init_python_path(node.func)
+	if path == '' {
+		if name in t.local_idents || name in t.module_idents || name in t.renamed_idents
+			|| t.escaped_identifiers[name] {
+			return none
+		}
+		path = '${t.current_dotted}.${name}'
+	}
+	sig := t.imported_default_signature(path) or { return none }
 	if name != sig.name { return none }
-	params := sig.args.args
-	first_default := params.len - sig.args.defaults.len
+	if path == '${t.current_dotted}.${name}' && node.loc.lineno <= sig.loc.end_lineno {
+		return none
+	}
+	if node.args.len > sig.args.args.len { return none }
+	mut params := sig.args.args.clone()
+	params << sig.args.kwonlyargs
+	first_default := sig.args.args.len - sig.args.defaults.len
 	// Fully supplied calls retain the existing emission, including its keyword guards.
 	if node.args.len + node.keywords.len >= params.len { return none }
 	mut keyword_values := map[int]Expr{}
@@ -137,8 +190,14 @@ fn (mut t VTranspiler) complete_imported_call(node Call) ?Call {
 			completed << supplied
 			continue
 		}
-		if i < first_default { return none }
-		value := sig.args.defaults[i - first_default]
+		default_value := if i < sig.args.args.len {
+			if i < first_default { return none }
+			sig.args.defaults[i - first_default]
+		} else {
+			if i - sig.args.args.len >= sig.args.kw_defaults.len { return none }
+			sig.args.kw_defaults[i - sig.args.args.len] or { return none }
+		}
+		value := imported_default_value(default_value)
 		if !imported_literal_default(value)
 			|| !imported_default_matches_parameter(params[i], value) {
 			return none

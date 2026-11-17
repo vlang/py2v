@@ -86,7 +86,8 @@ fn compare_execution(args []string) os.Result {
 	os.write_file(args[3], translation.output) or {
 		return os.Result{ exit_code: 1, output: err.msg() }
 	}
-	python_run := os.exec([args[1], '-I', args[2]])
+	// UTF-8 mode: on Windows CPython would otherwise write its output in the console code page.
+	python_run := os.exec([args[1], '-X', 'utf8', '-I', args[2]])
 	v_run := run_generated(args[3])
 	if python_run.exit_code == 0 && v_run.exit_code == 0
 		&& python_run.output.replace('\r', '') == v_run.output.replace('\r', '') {
@@ -220,7 +221,8 @@ os.rmdir_all(init_root) or { panic(err) }
 call_results_root := os.join_path(os.temp_dir(), 'py2v_call_results_${os.getpid()}')
 os.mkdir_all(call_results_root) or { panic(err) }
 call_results_cases := ['dict_get_missing', 'dict_get_eager', 'dict_get_chain', 'dict_get_receiver',
-	'dict_get_mutating', 'dict_get_compare', 'with_return']
+	'dict_get_mutating', 'dict_get_compare', 'with_return', 'rebound_optional_params',
+	'argparse_join_value', 'join_string_iterable', 'subparser_parameter']
 mut execution_args := [][]string{}
 for name in call_results_cases {
 	execution_args << [py2v, python, os.join_path(cases_dir, name + '.py'),
@@ -293,7 +295,7 @@ for pkg in package_fixtures {
 		report('PASS', pkg, ' (multi-module)')
 		passed++
 		if pkg == 'pkg_call_defaults' {
-			for stem in ['use', 'keywords'] {
+			for stem in ['use', 'keywords', 'float_defaults', 'local_defaults', 'keyword_only'] {
 				actual := os.read_file(os.join_path(out_dir, 'py_pkg_call_defaults_consumer', stem + '.v')) or { '' }
 				expected := os.read_file(os.join_path(expected_dir, pkg, 'consumer', stem + '.v')) or { '' }
 				golden_name := 'call defaults: package fixture ' + stem
@@ -413,6 +415,21 @@ for c in single_checks {
 		passed++
 	} else {
 		report('FAIL', name, ' (exit ${res.exit_code}, expected ${c[3]})')
+		println(excerpt_n(res.output, 20))
+		failed++
+		failures << fail_line('FAIL', name, '')
+	}
+}
+for kind in ['float', 'int'] {
+	source := os.join_path(cases_dir, 'rebound_optional_${kind}.py')
+	out := os.join_path(check_root, 'numeric_${kind}.v')
+	res := os.exec([py2v, source, '--check', '-o', out])
+	name := 'optional numbers: ${kind} refuses coercion'
+	if res.exit_code == 1 && res.output.contains('mutable arguments are only allowed') {
+		report('PASS', name, '')
+		passed++
+	} else {
+		report('FAIL', name, ' (exit ${res.exit_code}, expected a numeric refusal)')
 		println(excerpt_n(res.output, 20))
 		failed++
 		failures << fail_line('FAIL', name, '')
