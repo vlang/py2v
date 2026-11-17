@@ -394,6 +394,41 @@ for pkg in package_fixtures {
 				failures << fail_line('FAIL', name, '')
 			}
 		}
+		if pkg == 'pkg_imports' {
+			generated := os.read_file(os.join_path(out_dir, 'py_pkg_imports', 'uses_bound_names.v')) or { panic(err) }
+			expected := os.read_file(os.join_path(expected_dir, pkg, 'uses_bound_names.v')) or { panic(err) }
+			fmt_seq++
+			generated_norm := normalize_v_code(generated, fmt_seq)
+			fmt_seq++
+			name := 'imports: bound names'
+			if generated_norm == normalize_v_code(expected, fmt_seq) {
+				report('PASS', name, '')
+				passed++
+			} else {
+				report('FAIL', name, '')
+				failed++
+				failures << fail_line('FAIL', name, '')
+			}
+			entry := os.join_path(out_dir, 'import_main.v')
+			os.write_file(entry, 'module main\nimport py_pkg_imports\nfn main() {\nprintln(py_pkg_imports.bound_names_total())\nprintln(py_pkg_imports.shadow_module(3))\nprintln(py_pkg_imports.shadow_import())\n}\n') or { panic(err) }
+			v_run := run_generated(entry)
+			py_run := os.exec([python, '-B', '-c',
+				'import sys; sys.path.insert(0, sys.argv[1]); from pkg_imports.uses_bound_names import bound_names_total, shadow_module, shadow_import; print(bound_names_total()); print(shadow_module(3)); print(shadow_import())',
+				cases_dir])
+			name_run := 'imports: execution'
+			if v_run.exit_code == 0 && py_run.exit_code == 0
+				&& v_run.output.replace('\r', '') == '30\n4\n4\n'
+				&& py_run.output.replace('\r', '') == '30\n4\n4\n' {
+				report('PASS', name_run, '')
+				passed++
+			} else {
+				report('FAIL', name_run, '')
+				println(excerpt_n(v_run.output, 20))
+				println(excerpt_n(py_run.output, 20))
+				failed++
+				failures << fail_line('FAIL', name_run, '')
+			}
+		}
 		if pkg == 'pkg_init_execution' {
 			entry := os.join_path(out_dir, 'constructor_main.v')
 			os.write_file(entry,

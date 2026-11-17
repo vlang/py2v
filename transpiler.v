@@ -4537,6 +4537,7 @@ pub fn (mut t VTranspiler) visit_import_from(node ImportFrom) string {
 			if target_v == '' {
 				// Not a module of this project; fall through.
 			} else if target_v != t.module_name {
+				t.imported_modules[local] = true
 				t.import_aliases[local] = target_v
 				t.import_prefixes[target_v] = true
 				continue
@@ -4617,6 +4618,24 @@ pub fn (t VTranspiler) unresolved_import_comment() string {
 		'\n// Provide one in python_to_v_import (types.v) or port the module.'
 }
 
+// project_import_name resolves an explicit Python import to the generated module.
+// Keep the imported symbol's name: a local alias is not an export of its owner.
+fn (mut t VTranspiler) project_import_name(path string) ?string {
+	if path == '' { return none }
+	if info := t.registry.by_dotted[path] {
+		if info.v_module == t.module_name { return none }
+		t.add_using(info.v_module)
+		return info.v_module
+	}
+	if !path.contains('.') { return none }
+	owner := t.registry.lookup(path.all_before_last('.'))
+	if owner.dotted == '' { return none }
+	name := escape_local_ident(path.all_after_last('.'))
+	if owner.v_module == t.module_name { return name }
+	t.add_using(owner.v_module)
+	return '${owner.v_module}.${name}'
+}
+
 // collapse_submodule_attr rewrites `mod.attr` to `attr` when `mod` was bound by
 // `from . import mod` and that submodule lands in the V module already in scope.
 //
@@ -4668,7 +4687,8 @@ fn (mut t VTranspiler) map_python_import(py_module string) string {
 	// A module belonging to the scanned project maps to a V module of the same
 	// layout, so it needs a real import rather than a "no equivalent" comment.
 	if t.registry.contains(py_module) {
-		if !t.registry.is_project_root(py_module) {
+		if !t.registry.is_project_root(py_module)
+			&& t.registry.v_module_for(py_module) != t.module_name {
 			t.add_using(t.registry.v_module_for(py_module))
 		}
 		return ''
@@ -4875,6 +4895,12 @@ pub fn (mut t VTranspiler) visit_name(node Name) string {
 	// Likewise for a module-level binding such as a constant.
 	if v_ident := t.module_idents[node.id] {
 		return v_ident
+	}
+	if t.is_bound_in_scope(node.id) && node.id in t.init_import_aliases {
+		return escape_local_ident(node.id)
+	}
+	if resolved := t.project_import_name(t.init_python_path(Expr(node))) {
+		return resolved
 	}
 	// A name bound by `from other_module import name` lives in another V
 	// module, so references must be qualified.
@@ -7010,6 +7036,9 @@ pub fn (mut t VTranspiler) visit_attribute(node Attribute) string {
 				}
 			}
 		}
+	}
+	if resolved := t.project_import_name(t.init_python_path(Expr(node))) {
+		return resolved
 	}
 	collapsed := t.collapse_submodule_attr(node)
 	if collapsed != '' {
@@ -9371,6 +9400,9 @@ pub fn (mut t VTranspiler) is_map_expr(expr Expr) bool {
 // rather than a value, in which case `name.attr(...)` is a module-level call that
 // the builtin table should translate instead of a method call.
 pub fn (t VTranspiler) is_known_module_receiver(name string) bool {
+	if name in t.local_idents || name in t.renamed_idents || t.is_bound_in_scope(name) {
+		return false
+	}
 	if t.imported_modules[name] or { false } {
 		return true
 	}
