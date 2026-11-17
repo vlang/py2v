@@ -6630,7 +6630,9 @@ pub fn (mut t VTranspiler) visit_call(original Call) string {
 					// Need to find the index first
 					return '${obj}.delete(${obj}.index(${vargs[0]}))'
 				}
-				return obj
+				// list.remove requires a value. A zero-argument call belongs to
+				// the receiver's own protocol (for example a syntax-tree node).
+				return '${obj}.remove()'
 			}
 			'pop' {
 				// For lists, V has .pop()
