@@ -29,7 +29,7 @@ import sys
 import os
 import unicodedata
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 import infer
 import symbols
@@ -5706,6 +5706,145 @@ def _loop_comprehensions(tree: ast.Module, facts: Optional[infer.TypeFacts]) -> 
         rewrite(fn.body, taken)
 
 
+@dataclass
+class _AssignmentFlow:
+    """Assignments on normal, break, and continue exits of a statement block."""
+    normal: Optional[Set[int]]
+    breaks: List[Set[int]] = field(default_factory=list)
+    continues: List[Set[int]] = field(default_factory=list)
+
+
+def _definitely_assigned_loads(fn: Union[ast.FunctionDef, ast.AsyncFunctionDef]) -> Set[int]:
+    """Return identities of eager loads assigned on every incoming normal path.
+
+    This is deliberately conservative: calls may raise before any assignment in a
+    try body, a with statement may suppress an exception, and deferred scopes do
+    not run when they are defined. Expression-side assignments are not credited.
+    """
+    safe: Set[int] = set()
+    unsafe: Set[int] = set()
+
+    def expression(node: ast.AST, assigned: Set[int]) -> None:
+        if isinstance(node, (ast.Lambda, ast.GeneratorExp)):
+            return
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
+            (safe if getattr(node, "_binding", None) in assigned else unsafe).add(id(node))
+        for child in ast.iter_child_nodes(node):
+            expression(child, assigned)
+
+    def targets(node: ast.AST) -> Set[int]:
+        return {part._binding for part in ast.walk(node)
+                if isinstance(part, ast.Name) and isinstance(part.ctx, ast.Store)
+                and hasattr(part, "_binding")}
+
+    def joined(paths: List[Set[int]]) -> Optional[Set[int]]:
+        return set.intersection(*paths) if paths else None
+
+    def block(stmts: List[ast.stmt], initial: Set[int]) -> _AssignmentFlow:
+        result = _AssignmentFlow(set(initial))
+        for stmt in stmts:
+            if result.normal is None:
+                break
+            step = statement(stmt, result.normal)
+            result.normal = step.normal
+            result.breaks.extend(step.breaks)
+            result.continues.extend(step.continues)
+        return result
+
+    def statement(stmt: ast.stmt, assigned: Set[int]) -> _AssignmentFlow:
+        current = set(assigned)
+        if isinstance(stmt, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
+            if stmt.value is not None:
+                expression(stmt.value, current)
+            lhs = stmt.targets if isinstance(stmt, ast.Assign) else [stmt.target]
+            for target in lhs:
+                expression(target, current)
+                if isinstance(stmt, ast.AugAssign) and isinstance(target, ast.Name):
+                    (safe if getattr(target, "_binding", None) in current else unsafe).add(id(target))
+                if not isinstance(stmt, ast.AnnAssign) or stmt.value is not None:
+                    current.update(targets(target))
+            return _AssignmentFlow(current)
+        if isinstance(stmt, ast.If):
+            expression(stmt.test, current)
+            yes, no = block(stmt.body, current), block(stmt.orelse, current)
+            return _AssignmentFlow(joined([p for p in (yes.normal, no.normal) if p is not None]),
+                                   yes.breaks + no.breaks, yes.continues + no.continues)
+        if isinstance(stmt, (ast.For, ast.While)):
+            certain = False
+            body_entry = set(current)
+            if isinstance(stmt, ast.For):
+                expression(stmt.iter, current)
+                expression(stmt.target, current)
+                body_entry.update(targets(stmt.target))
+                certain = (isinstance(stmt.iter, (ast.List, ast.Tuple)) and bool(stmt.iter.elts)
+                           and not any(isinstance(item, ast.Starred) for item in stmt.iter.elts))
+            else:
+                expression(stmt.test, current)
+                certain = isinstance(stmt.test, ast.Constant) and stmt.test.value is True
+            body = block(stmt.body, body_entry)
+            exhausted = [p for p in [body.normal] + body.continues if p is not None]
+            if not certain:
+                exhausted.append(current)
+            if isinstance(stmt, ast.While) and certain:
+                exhausted = []
+            end = block(stmt.orelse, joined(exhausted)) if exhausted else _AssignmentFlow(None)
+            paths = body.breaks + ([end.normal] if end.normal is not None else [])
+            return _AssignmentFlow(joined(paths), end.breaks, end.continues)
+        if isinstance(stmt, ast.Try):
+            body = block(stmt.body, current)
+            normal = block(stmt.orelse, body.normal) if body.normal is not None else _AssignmentFlow(None)
+            paths = [normal.normal] if normal.normal is not None else []
+            breaks, continues = body.breaks + normal.breaks, body.continues + normal.continues
+            for handler in stmt.handlers:
+                entry = set(current)
+                if handler.type is not None:
+                    expression(handler.type, current)
+                outcome = block(handler.body, entry)
+                paths.extend([outcome.normal] if outcome.normal is not None else [])
+                breaks.extend(outcome.breaks)
+                continues.extend(outcome.continues)
+            if stmt.finalbody:
+                # Finally also executes on exceptions and returns before the first write.
+                final = block(stmt.finalbody, current)
+                if final.normal is None:
+                    return final
+                paths = [p | final.normal for p in paths]
+                breaks.extend(final.breaks)
+                continues.extend(final.continues)
+            return _AssignmentFlow(joined(paths), breaks, continues)
+        if isinstance(stmt, (ast.With, ast.AsyncWith)):
+            entry = set(current)
+            for item in stmt.items:
+                expression(item.context_expr, entry)
+                if item.optional_vars is not None:
+                    entry.update(targets(item.optional_vars))
+            outcome = block(stmt.body, entry)
+            return _AssignmentFlow(current, outcome.breaks, outcome.continues)
+        if isinstance(stmt, (ast.Return, ast.Raise)):
+            expression(stmt, current)
+            return _AssignmentFlow(None)
+        if isinstance(stmt, ast.Break):
+            return _AssignmentFlow(None, [current])
+        if isinstance(stmt, ast.Continue):
+            return _AssignmentFlow(None, [], [current])
+        if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            return _AssignmentFlow(current)
+        expression(stmt, current)
+        return _AssignmentFlow(current)
+
+    params = {arg._binding for arg in ast.walk(fn.args) if isinstance(arg, ast.arg)
+              and hasattr(arg, "_binding")}
+    block(fn.body, params)
+    # A later loop iteration or delayed exception-name cleanup can invalidate an
+    # earlier write. Do not extend lifting for a binding that can be deleted.
+    deleted = {getattr(node, "_binding", None) for node in ast.walk(fn)
+               if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Del)}
+    handler_names = {node.name for node in ast.walk(fn) if isinstance(node, ast.ExceptHandler)}
+    invalid = {id(node) for node in ast.walk(fn) if isinstance(node, ast.Name)
+               and (getattr(node, "_binding", None) in deleted or node.id in handler_names)}
+    return safe - unsafe - invalid
+
+
 def _declare_block_locals(tree: ast.Module, table: Optional[symbols.SymbolTable],
                           facts: Optional[infer.TypeFacts],
                           dynamic_bindings: Optional[set] = None) -> None:
@@ -5730,10 +5869,19 @@ def _declare_block_locals(tree: ast.Module, table: Optional[symbols.SymbolTable]
             continue
         # each name occurrence of the function's own code, with the blocks around it
         occurrences: Dict[int, List[Tuple[Tuple[int, ...], ast.Name, Optional[ast.stmt]]]] = {}
+        eager_occurrences: Dict[int, List[Tuple[Tuple[int, ...], ast.Name, Optional[ast.stmt]]]] = {}
 
-        def walk(node: ast.AST, blocks: Tuple[int, ...], stmt: Optional[ast.stmt]) -> None:
+        def walk(node: ast.AST, blocks: Tuple[int, ...], stmt: Optional[ast.stmt],
+                 eager: Dict[int, List[Tuple[Tuple[int, ...], ast.Name, Optional[ast.stmt]]]] = eager_occurrences) -> None:
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef,
-                                 ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
+                                 ast.GeneratorExp)):
+                return
+            if isinstance(node, (ast.ListComp, ast.SetComp, ast.DictComp)):
+                for part in ast.walk(node):
+                    if isinstance(part, ast.Name) and isinstance(part.ctx, ast.Load):
+                        binding_id = getattr(part, "_binding", None)
+                        if binding_id is not None:
+                            eager.setdefault(binding_id, []).append((blocks, part, stmt))
                 return
             if isinstance(node, ast.Name):
                 binding_id = getattr(node, "_binding", None)
@@ -5763,6 +5911,7 @@ def _declare_block_locals(tree: ast.Module, table: Optional[symbols.SymbolTable]
 
         for stmt in fn.body:
             walk(stmt, (), stmt)
+        proven_loads = _definitely_assigned_loads(fn) if eager_occurrences else set()
         declarations: List[ast.stmt] = []
         for binding_id, found in occurrences.items():
             binding = table.bindings[binding_id]
@@ -5779,7 +5928,14 @@ def _declare_block_locals(tree: ast.Module, table: Optional[symbols.SymbolTable]
             if not (isinstance(stmt, ast.Assign) and len(stmt.targets) == 1 and stmt.targets[0] is first):
                 continue  # a loop variable, a `with` name, an unpacking: declared by their own form
             if all(other[:len(blocks)] == blocks for other, _, _ in found):
-                continue  # never seen outside the block that first assigns it
+                eager = eager_occurrences.get(binding_id, [])
+                if not any(other[:len(blocks)] != blocks for other, _, _ in eager):
+                    continue
+                loads = [node for _, node, site in found + eager
+                         if isinstance(node.ctx, ast.Load)
+                         or isinstance(site, ast.AugAssign) and site.target is node]
+                if not loads or any(id(node) not in proven_loads for node in loads):
+                    continue  # preserve today's output when assignment is not proven
             type_id = fact.get("assumed", fact.get("inferred"))
             text = _annotation_for_type(facts.types, type_id) if type_id is not None else None
             value: Optional[ast.expr] = None

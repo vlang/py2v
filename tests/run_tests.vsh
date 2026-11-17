@@ -310,6 +310,42 @@ for i, result in execution_results {
 }
 os.rmdir_all(call_results_root) or { panic(err) }
 
+// Definite assignment must preserve both Python results and unproven paths.
+assignment_root := os.join_path(os.temp_dir(), 'py2v_assignment_${os.getpid()}')
+os.mkdir_all(assignment_root) or { panic(err) }
+assignment_source := os.join_path(cases_dir, 'definite_assignment.py')
+assignment_translation := os.exec([py2v, assignment_source])
+assignment_v := os.join_path(assignment_root, 'main.v')
+os.write_file(assignment_v, assignment_translation.output) or { panic(err) }
+assignment_run := run_generated(assignment_v)
+assignment_python := os.exec([python, '-B', assignment_source])
+assignment_expected := '[2, 3]\n[4]\n[5]\n[7]\n[8]\n[10]\n[11]\n'
+assignment_name := 'scope: proven assignment execution'
+if assignment_translation.exit_code == 0 && assignment_run.exit_code == 0
+	&& assignment_python.exit_code == 0
+	&& assignment_run.output.replace('\r', '') == assignment_expected
+	&& assignment_python.output.replace('\r', '') == assignment_expected {
+	report('PASS', assignment_name, '')
+	passed++
+} else {
+	report('FAIL', assignment_name, '')
+	println(excerpt_n(assignment_run.output, 20))
+	failed++
+	failures << fail_line('FAIL', assignment_name, '')
+}
+os.rmdir_all(assignment_root) or { panic(err) }
+assignment_analysis := os.exec([python, '-B', os.join_path(script_dir, 'definite_assignment_test.py')])
+assignment_analysis_name := 'scope: definite assignment analysis'
+if assignment_analysis.exit_code == 0 {
+	report('PASS', assignment_analysis_name, '')
+	passed++
+} else {
+	report('FAIL', assignment_analysis_name, '')
+	println(excerpt_n(assignment_analysis.output, 20))
+	failed++
+	failures << fail_line('FAIL', assignment_analysis_name, '')
+}
+
 // An initializer that cannot start from a valid zero struct must fail visibly.
 // Keep these negative cases out of the generated-code expectation loop.
 init_errors := os.join_path(os.temp_dir(), 'py2v_init_errors_${os.getpid()}', 'main')
