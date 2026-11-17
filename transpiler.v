@@ -660,6 +660,28 @@ fn runtime_helper_declaration(kind string, name string) string {
 			'fn ${name}[T](mut items []T) fn (T) {\n' +
 				'\treturn fn [mut items] [T](value T) { items << value }\n}'
 		}
+		'generic_mod' {
+			'fn ${name}[T](a T, b T) T {\n' +
+				'\t\$if T is \$float {\n' +
+				"\t\tif b == 0 { panic('float modulo by zero') }\n" +
+				'\t\tmut r := math.fmod(f64(a), f64(b))\n' +
+				'\t\tif r != 0 {\n' +
+				'\t\t\tif (r < 0) != (b < 0) { r += f64(b) }\n' +
+				'\t\t} else { r = math.copysign(0.0, f64(b)) }\n' +
+				'\t\treturn T(r)\n' +
+				'\t} \$else \$if T is \$int {\n' +
+				'\t\treturn math.modulo_floored(a, b)\n' +
+				'\t} \$else { return a % b }\n}'
+		}
+		'float_mod' {
+			'fn ${name}(a f64, b f64) f64 {\n' +
+				"\tif b == 0 { panic('float modulo by zero') }\n" +
+				'\tmut r := math.fmod(a, b)\n' +
+				'\tif r != 0 {\n' +
+				'\t\tif (r < 0) != (b < 0) { r += b }\n' +
+				'\t} else { r = math.copysign(0.0, b) }\n' +
+				'\treturn r\n}'
+		}
 		'true_div' {
 			'fn ${name}(a f64, b f64) f64 {\n' + '\tif b == 0 {\n' +
 				"\t\tpanic('division by zero')\n" + '\t}\n' + '\treturn a / b\n' + '}'
@@ -2647,9 +2669,96 @@ fn (mut t VTranspiler) handle_starred_unpack(elts []main.Expr, value_str string)
 	return assigns.join('\n')
 }
 
+// modulo_expression uses Python's divisor-signed remainder for native numbers.
+// Dynamic values and overloaded operators keep their runtime/operator dispatch.
+fn (mut t VTranspiler) modulo_expression(left Expr, right Expr, a string, b string) string {
+	la := t.infer_expr_type(left)
+	ra := t.infer_expr_type(right)
+	if la in ['Any', 'pyrt.Value'] || ra in ['Any', 'pyrt.Value'] {
+		t.add_using('pyrt')
+		return 'pyrt.modulo(pyrt.box(${a}), pyrt.box(${b}))'
+	}
+	if la in ['f64', 'float', 'f32'] || ra in ['f64', 'float', 'f32'] {
+		t.add_using('math')
+		return '${t.runtime_helper('float_mod')}(f64(${a}), f64(${b}))'
+	}
+	if (is_v_int_type(la) || la == 'bool') && (is_v_int_type(ra) || ra == 'bool') {
+		t.add_using('math')
+		lhs := if la == 'bool' { 'int(${a})' } else { a }
+		rhs := if ra == 'bool' { 'int(${b})' } else { b }
+		return 'math.modulo_floored(${lhs}, ${rhs})'
+	}
+	if la == '' || ra == '' || generic_letters(la).len > 0 || generic_letters(ra).len > 0 {
+		t.add_using('math')
+		return '${t.runtime_helper('generic_mod')}(${a}, ${b})'
+	}
+	return '${paren_left(a, 5)} % ${paren_right(b, 5)}'
+}
+
+// captured_aug_assign captures a subscript's container and index, or an attribute's receiver,
+// before reading the old value and evaluating the right operand. The store reuses them.
+fn (mut t VTranspiler) captured_aug_assign(node AugAssign, op_type string) string {
+	mut lines := []string{}
+	mut target := t.visit_expr(*node.target)
+	if node.target is Subscript {
+		sub := node.target as Subscript
+		if sub.slice is Slice || sub.slice is Tuple {
+			return 'py2v_unsupported_modulo_assignment_target()'
+		}
+		container := t.new_tmp('container')
+		index := t.new_tmp('index')
+		if op_type == 'Mod' && t.infer_expr_type(*sub.value) in ['Any', 'pyrt.Value'] {
+			t.add_using('pyrt')
+			old := t.new_tmp('old')
+			lines << '${container} := pyrt.box(${t.visit_expr(*sub.value)})'
+			lines << '${index} := pyrt.box(${t.visit_expr(*sub.slice)})'
+			lines << '${old} := pyrt.item_at(${container}, ${index})'
+			lines << 'pyrt.set_index(${container}, ${index}, pyrt.modulo(${old}, pyrt.box(${t.visit_expr(node.value)})))'
+			return lines.join('\n')
+		}
+		lines << 'mut ${container} := &(${t.visit_expr(*sub.value)})'
+		lines << '${index} := ${t.visit_expr(*sub.slice)}'
+		// Negative indices are interpreted afresh at the store, as in Python.
+		if t.infer_expr_type(*sub.value).starts_with('[]') {
+			target = '(*${container})[if ${index} < 0 { ${container}.len + ${index} } else { ${index} }]'
+		} else {
+			target = '(*${container})[${index}]'
+		}
+	} else if node.target is Attribute {
+		attr := node.target as Attribute
+		receiver := t.new_tmp('receiver')
+		if op_type == 'Mod' && t.infer_expr_type(*attr.value) in ['Any', 'pyrt.Value'] {
+			t.add_using('pyrt')
+			old := t.new_tmp('old')
+			lines << '${receiver} := pyrt.box(${t.visit_expr(*attr.value)})'
+			lines << "${old} := pyrt.getattr(${receiver}, '${attr.attr}') or { pyrt.fail(err) }"
+			lines << "pyrt.setattr(${receiver}, '${attr.attr}', pyrt.modulo(${old}, pyrt.box(${t.visit_expr(node.value)}))) or { pyrt.fail(err) }"
+			return lines.join('\n')
+		}
+		lines << 'mut ${receiver} := &(${t.visit_expr(*attr.value)})'
+		target = '${receiver}.${attr.attr}'
+	} else if node.target !is Name {
+		return 'py2v_unsupported_modulo_assignment_target()'
+	}
+	old := t.new_tmp('old')
+	lines << '${old} := ${target}'
+	value := t.visit_expr(node.value)
+	if op_type == 'Mod' {
+		lines << '${target} = ${t.modulo_expression(*node.target, node.value, old, value)}'
+	} else {
+		lines << t.visit_aug_assign_once(node, op_type, target, value)
+	}
+	code := lines.join('\n')
+	if node.target is Name && target.starts_with('(*') {
+		return 'unsafe {\n${t.indent_code(code, 1)}\n}'
+	}
+	return code
+}
+
 // visit_aug_assign emits V code for an AugAssign statement.
 pub fn (mut t VTranspiler) visit_aug_assign(node AugAssign) string {
 	op_type := get_op_type(node.op)
+	if op_type == 'Mod' { return t.captured_aug_assign(node, op_type) }
 	// `**=` and `//=` become `target = f(target, val)`, which names the target twice. Python
 	// evaluates the target's indices once, in the order they are written, before the
 	// right-hand side. So when an index or slice bound is computed (`x[f()] **= 2`) or the
@@ -5331,12 +5440,7 @@ pub fn (mut t VTranspiler) visit_binop(node BinOp) string {
 				return convert_percent_format(fmt_str, values, value_types)
 			}
 		}
-		// V has no `%` on floats (vk:no-float-modulo)
-		if get_expr_annotation(node.left) in ['f64', 'float']
-			|| get_expr_annotation(node.right) in ['f64', 'float'] {
-			t.add_using('math')
-			return 'math.fmod(${left}, ${right})'
-		}
+		return t.modulo_expression(*node.left, *node.right, left, right)
 	}
 
 	// Path joining via / operator — Python pathlib uses / to join path segments.

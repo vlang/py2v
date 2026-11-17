@@ -1,5 +1,6 @@
 module main
 
+import math
 import pyrt
 
 type Any = pyrt.Value
@@ -55,7 +56,7 @@ fn drain(mut stack []int) int {
 fn group(numbers []int) map[int][]int {
 	mut groups := map[int][]int{}
 	for number in numbers {
-		key := number % 3
+		key := math.modulo_floored(number, 3)
 		if (key !in groups) {
 			groups[key] = []
 		}

@@ -11,7 +11,7 @@ fn get_triple() []int {
 }
 
 fn divmod_custom(a int, b int) []int {
-	return [math.divide_floored(a, b).quot, a % b]
+	return [math.divide_floored(a, b).quot, math.modulo_floored(a, b)]
 }
 
 fn main_func() {

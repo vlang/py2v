@@ -376,7 +376,8 @@ call_results_cases := ['dict_get_missing', 'dict_get_eager', 'dict_get_chain', '
 	'overload_definitions', 'parameter_bindings', 'private_method_calls',
 	'closure_capture_discriminator', 'review_nested_default', 'review_nested_default_snapshot',
 	'review_nested_default_once', 'review_nested_if', 'review_nested_loop',
-	'review_nested_literal_block', 'review_divmod_negative_float']
+	'review_nested_literal_block', 'review_divmod_negative_float', 'modulo_signed', 'modulo_float',
+	'modulo_generic', 'modulo_target_once', 'modulo_dynamic_target']
 mut execution_args := [][]string{}
 for name in call_results_cases {
 	execution_args << [py2v, python, os.join_path(cases_dir, name + '.py'),

@@ -1,5 +1,7 @@
 module main
 
+import math
+
 fn simple_generator(ch chan int) {
 	defer { ch.close() }
 	ch <- 1
@@ -42,7 +44,7 @@ fn generator_with_yield_from(ch chan int) {
 fn generator_with_condition(ch chan int) {
 	defer { ch.close() }
 	for i in []int{len: 10, init: index} {
-		if i % 2 == 0 {
+		if math.modulo_floored(i, 2) == 0 {
 			ch <- i
 		}
 	}
