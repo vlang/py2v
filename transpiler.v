@@ -629,6 +629,9 @@ fn (mut t VTranspiler) runtime_helper(kind string) string {
 // runtime_helper_declaration returns the V source of the run-time helper `kind`.
 fn runtime_helper_declaration(kind string, name string) string {
 	return match kind {
+		'isinstance_empty' {
+			'fn ${name}[T](value T) bool {\n\t_ = value\n\treturn false\n}'
+		}
 		'assign_expr' {
 			'fn ${name}[T](target &T, value T) T {\n' +
 				'\tunsafe { *target = value }\n\treturn value\n}'

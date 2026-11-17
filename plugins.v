@@ -941,7 +941,15 @@ fn isinstance_of_known_type(node Call) ?string {
 }
 
 // Handle isinstance() call
-fn visit_isinstance(args []string) (string, bool) {
+fn visit_isinstance(mut t VTranspiler, node Call, args []string) (string, bool) {
+	if node.args.len != 2 { return 'py2v_unsupported_isinstance(${args.join(', ')})', true }
+	type_expr := node.args[1]
+	if type_expr is Tuple && type_expr.elts.len == 0 {
+		return '${t.runtime_helper('isinstance_empty')}(${args[0]})', true
+	}
+	if !isinstance_static_types(type_expr) {
+		return 'py2v_unsupported_dynamic_isinstance(${args.join(', ')})', true
+	}
 	types_arg := args[1]
 	// Handle tuple of types: isinstance(x, (A, B)) → x is A || x is B
 	// visit_tuple renders Python tuples as V arrays: [A, B, ...]
@@ -961,6 +969,17 @@ fn visit_isinstance(args []string) (string, bool) {
 	// V `is` checks the static (sum-type) variant; inherited types need
 	// manual adaptation if the hierarchy is not a V sum type.
 	return '${args[0]} is ${args[1]}', true
+}
+
+fn isinstance_static_types(expr Expr) bool {
+	return match expr {
+		Name { true }
+		Attribute {
+			expr.value is Name || (expr.value is Attribute && isinstance_static_types(expr.value))
+		}
+		Tuple { expr.elts.all(it is Name || (it is Attribute && isinstance_static_types(it))) }
+		else { false }
+	}
 }
 
 // Handle list() call
@@ -1246,7 +1265,7 @@ fn dispatch_builtin_impl(mut t VTranspiler, fname string, node Call, args []stri
 			if known := isinstance_of_known_type(node) {
 				return DispatchResult{known, true, ''}
 			}
-			code, handled := visit_isinstance(args)
+			code, handled := visit_isinstance(mut t, node, args)
 			return DispatchResult{code, handled, ''}
 		}
 		'list' {
