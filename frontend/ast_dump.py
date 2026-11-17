@@ -4356,11 +4356,14 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
 
         def visit_Subscript(self, node: ast.Subscript) -> ast.AST:
             self.generic_visit(node)
+            if (isinstance(node.ctx, ast.Load) and isinstance(node.slice, ast.Tuple)
+                    and any(isinstance(axis, ast.Slice) for axis in node.slice.elts)):
+                return node  # keep the backend's explicit multi-axis refusal
             if (isinstance(node.ctx, ast.Load) and dynamic(node.value)
                     and not isinstance(node.slice, ast.Slice)):
                 return _runtime_call("item_at", [node.value, boxed(node.slice)], node)
             if (isinstance(node.ctx, ast.Load) and dynamic(node.value)
-                    and node.slice.step is None):
+                    and isinstance(node.slice, ast.Slice) and node.slice.step is None):
                 nothing = ast.copy_location(ast.Constant(value=None), node)
                 bounds = [_runtime_call("box", [bound if bound is not None else nothing], node)
                           for bound in (node.slice.lower, node.slice.upper)]
