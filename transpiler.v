@@ -6758,7 +6758,8 @@ pub fn (mut t VTranspiler) visit_call(original Call) string {
 				// A qualified callee like `sys.exit` or `logging.info` is handled by
 				// the builtin table further down; only treat it as a method call
 				// when the receiver is a plain local.
-				if attr_node.value is Name && !t.is_known_module_receiver((attr_node.value as Name).id) {
+				if attr_node.value is Name && !t.is_known_module_receiver((attr_node.value as Name).id)
+					&& !(v_method.len > 0 && v_method[0].is_capital()) {
 					// Calling a method with a `mut self` receiver mutates the local,
 					// so the local must be declared `mut`.
 					recv := (attr_node.value as Name).id
@@ -6819,6 +6820,25 @@ pub fn (mut t VTranspiler) visit_call(original Call) string {
 			emitted_ctor = '&${emitted_ctor}'
 		}
 		return t.ctor_struct_literal(emitted_ctor, fname, node, vargs)
+	}
+	if node.func is Attribute {
+		callee := node.func as Attribute
+		method := escape_leading_underscore(callee.attr)
+		if method.len > 0 && method[0].is_capital()
+			&& (vargs.len != 1 || node.keywords.len > 0) {
+			// V reads module.Type(a, b) as a cast. A constructor must have a
+			// resolved lowering; retain every operand in an explicit refusal.
+			mut operands := ["'${escape_string(fname)}'"]
+			if !(callee.value is Name && t.is_known_module_receiver(callee.value.id)) {
+				operands << t.visit_expr(callee.value)
+			}
+			operands << vargs
+			for kw in node.keywords {
+				operands << "'${escape_string(kw.arg or { '**' })}'"
+				operands << t.visit_expr(kw.value)
+			}
+			return 'py2v_unsupported_qualified_call(${operands.join(', ')})'
+		}
 	}
 
 	for kw in node.keywords {

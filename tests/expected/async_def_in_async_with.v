@@ -6,7 +6,7 @@ module main
 fn outer() int {
 	// WARNING: async with converted to sync with defer
 	{
-		contextlib.AsyncExitStack()
+		py2v_unsupported_qualified_call('contextlib.AsyncExitStack')
 		base := 5
 		py2v_capture1 := &base
 		double := fn [py2v_capture1] (x int) int {
