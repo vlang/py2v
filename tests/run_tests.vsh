@@ -351,6 +351,7 @@ for witness in [
 	['builtin_frozenset',
 		'0 2 2 2 1\nTrue False\n2 0 0\nleft\nright\nTrue\nfrozenset({1.0})\nfrozenset({-0.0})\nfrozenset({1.0})\nfrozenset({-0.0})\nFalse True\nunhashable\nmember error\nnot iterable\n'],
 	['builtin_frozenset_shadow', '22\n'],
+	['builtin_typing_cast', '1\nword\n3\nonce\n8\n9\n'],
 ] {
 	builtin_root := os.join_path(os.temp_dir(), 'py2v_builtin_${witness[0]}_${os.getpid()}')
 	os.mkdir_all(builtin_root) or { panic(err) }
@@ -375,6 +376,17 @@ for witness in [
 		failures << fail_line('FAIL', name, '')
 	}
 	os.rmdir_all(builtin_root) or { panic(err) }
+}
+cast_analysis := os.exec([python, '-B', os.join_path(script_dir, 'typing_cast_test.py')])
+cast_analysis_name := 'builtins: typing cast effects and refusal cases'
+if cast_analysis.exit_code == 0 {
+	report('PASS', cast_analysis_name, '')
+	passed++
+} else {
+	report('FAIL', cast_analysis_name, '')
+	println(excerpt_n(cast_analysis.output, 20))
+	failed++
+	failures << fail_line('FAIL', cast_analysis_name, '')
 }
 frozen_unit := os.exec([@VEXE, 'test', os.join_path(project_dir, 'pyrt', 'frozenset_from_test.v')])
 frozen_unit_name := 'builtins: immutable set identity and copying'

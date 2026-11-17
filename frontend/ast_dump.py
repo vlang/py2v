@@ -3297,6 +3297,94 @@ def _annotate_returns(tree: ast.Module, facts: Optional[infer.TypeFacts]) -> Non
             fn.returns = _annotation_node(text, fn)
 
 
+def _erase_typing_casts(tree: ast.Module, table: Optional[symbols.SymbolTable]) -> None:
+    """Erase typing's identity call only when its type argument has no runtime effect."""
+    if table is None:
+        return
+    imported: Dict[int, str] = {}
+    import_lines: Dict[int, int] = {}
+    for stmt in tree.body:
+        if isinstance(stmt, ast.Import):
+            for alias in stmt.names:
+                if alias.name in ("typing", "typing_extensions"):
+                    binding = getattr(alias, "_binding", None)
+                    if binding is not None and not table.bindings[binding].rebound:
+                        imported[binding] = alias.name
+                        import_lines[binding] = stmt.lineno
+        elif isinstance(stmt, ast.ImportFrom) and stmt.module in ("typing", "typing_extensions"):
+            for alias in stmt.names:
+                binding = getattr(alias, "_binding", None)
+                if binding is not None and not table.bindings[binding].rebound:
+                    imported[binding] = stmt.module + "." + alias.name
+                    import_lines[binding] = stmt.lineno
+
+    builtin_types = {"int", "float", "str", "bool", "bytes", "list", "dict", "set",
+                     "frozenset", "tuple", "object", "type", "complex"}
+    arities = {"list": 1, "set": 1, "frozenset": 1, "dict": 2, "type": 1,
+               "List": 1, "Set": 1, "FrozenSet": 1, "Dict": 2, "Mapping": 2,
+               "MutableMapping": 2, "Sequence": 1, "Iterable": 1, "Iterator": 1,
+               "Awaitable": 1, "Optional": 1, "Type": 1}
+    atoms = set(arities) | {"Any", "AnyStr", "NoReturn", "Never", "Callable", "Tuple", "Union"}
+
+    def qualified(node: ast.AST) -> str:
+        if isinstance(node, ast.Name):
+            return imported.get(getattr(node, "_binding", None), "")
+        if isinstance(node, ast.Attribute):
+            base = qualified(node.value)
+            return base + "." + node.attr if base else ""
+        return ""
+
+    written = {qualified(node) for node in ast.walk(tree) if isinstance(node, ast.Attribute)
+               and isinstance(node.ctx, (ast.Store, ast.Del))}
+
+    def type_name(node: ast.AST) -> str:
+        if (isinstance(node, ast.Name) and getattr(node, "_binding", None) is None
+                and node.id in builtin_types):
+            return node.id
+        name = qualified(node)
+        if name in written:
+            return ""
+        tail = name.rsplit(".", 1)[-1]
+        return tail if name.startswith(("typing.", "typing_extensions.")) and tail in atoms else ""
+
+    def pure_type(node: ast.AST) -> bool:
+        if isinstance(node, ast.Constant):
+            return node.value is None or isinstance(node.value, str)
+        if isinstance(node, (ast.Name, ast.Attribute)):
+            return bool(type_name(node))
+        if not isinstance(node, ast.Subscript):
+            return False
+        name = type_name(node.value)
+        parts = list(node.slice.elts) if isinstance(node.slice, ast.Tuple) else [node.slice]
+        if name == "Callable" and len(parts) == 2:
+            first = parts[0]
+            arguments = (isinstance(first, ast.Constant) and first.value is Ellipsis
+                         or isinstance(first, ast.List) and all(pure_type(item) for item in first.elts))
+            return arguments and pure_type(parts[1])
+        if (name in ("tuple", "Tuple") and len(parts) == 2
+                and isinstance(parts[1], ast.Constant) and parts[1].value is Ellipsis):
+            return pure_type(parts[0])
+        return (name in arities and len(parts) == arities[name]
+                or name in ("tuple", "Tuple", "Union") and bool(parts)) and all(
+                    pure_type(item) for item in parts)
+
+    class Lower(ast.NodeTransformer):
+        def visit_Call(self, node: ast.Call) -> ast.AST:
+            self.generic_visit(node)
+            name = qualified(node.func)
+            if (name in ("typing.cast", "typing_extensions.cast") and len(node.args) == 2
+                    and name not in written and not node.keywords
+                    and not isinstance(node.args[1], ast.Starred)
+                    and (isinstance(node.args[0], ast.Constant) or pure_type(node.args[0]))
+                    and all(import_lines.get(getattr(part, "_binding", None), -1) < node.lineno
+                            for expression in (node.func, node.args[0]) for part in ast.walk(expression)
+                            if isinstance(part, ast.Name))):
+                return node.args[1]
+            return node
+
+    Lower().visit(tree)
+
+
 def _lower_frozensets(tree: ast.Module, table: Optional[symbols.SymbolTable]) -> None:
     """Construct the builtin immutable set through the runtime's iterable adapter."""
     if table is None or any(binding.name == "pyrt" for binding in table.bindings):
@@ -6202,6 +6290,7 @@ def process_file(file_path: str, project: Optional[ProjectFacts] = None) -> str:
     _mark_math_members(tree, table)
     _unquote_annotations(tree, table)
     _mark_runtime_api(tree, table)
+    _erase_typing_casts(tree, table)
     facts = _infer_types(tree, table, project)
     _loop_comprehensions(tree, facts)
     any_lists = _declare_inferred_containers(tree, table, facts)
