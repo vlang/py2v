@@ -1362,7 +1362,9 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 	mut param_copies := []string{} // `mut name := incoming` for rebound value parameters
 	mut param_idx := 0
 
-	for arg in node.args.args {
+	mut positional_args := node.args.posonlyargs.clone()
+	positional_args << node.args.args
+	for arg in positional_args {
 		if arg.arg == 'self' {
 			continue
 		}
@@ -1444,11 +1446,24 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 	// Python keyword-only args come after `*args`, but V requires the variadic
 	// parameter to be last, so emit them here, before it.
 	for kwonly in node.args.kwonlyargs {
-		kwname := escape_identifier(kwonly.arg)
+		mut kwname := escape_local_decl(kwonly.arg)
+		t.local_idents[kwonly.arg] = kwname
+		t.scope_idents[escape_local_ident(kwonly.arg)] = true
+		t.param_idents[kwonly.arg] = true
 		mut kwtype := 'Any'
 		t.generated_code_has_any_type = true
 		if ann := kwonly.annotation {
 			kwtype = t.typename_from_annotation(*ann)
+		}
+		t.var_types[kwonly.arg] = kwtype
+		if kwonly.arg in node.mutable_vars {
+			if kwtype in v_value_param_types {
+				incoming := t.new_tmp('${kwonly.arg}_in')
+				param_copies << 'mut ${kwname} := ${incoming}'
+				kwname = incoming
+			} else {
+				kwname = 'mut ${kwname}'
+			}
 		}
 		// V has no default parameter values; defaults are filled in at call
 		// sites via func_defaults instead.
@@ -1476,7 +1491,12 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 		t.generated_code_has_any_type = true
 		// No trailing comment: a `//` after the last parameter would swallow the
 		// opening brace of the function body.
-		args_strs << '${escape_identifier(kwarg.arg)} map[string]Any'
+		local := escape_local_decl(kwarg.arg)
+		t.local_idents[kwarg.arg] = local
+		t.scope_idents[escape_local_ident(kwarg.arg)] = true
+		t.param_idents[kwarg.arg] = true
+		t.var_types[kwarg.arg] = 'map[string]Any'
+		args_strs << '${local} map[string]Any'
 	}
 
 	// Handle vararg (*args)
@@ -1493,7 +1513,12 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 		} else {
 			typename = '...' + typename
 		}
-		args_strs << '${escape_identifier(vararg.arg)} ${typename}'
+		local := escape_local_decl(vararg.arg)
+		t.local_idents[vararg.arg] = local
+		t.scope_idents[escape_local_ident(vararg.arg)] = true
+		t.param_idents[vararg.arg] = true
+		t.var_types[vararg.arg] = '[]' + typename.trim_left('.')
+		args_strs << '${local} ${typename}'
 	}
 
 	// For generator functions, add channel parameter
