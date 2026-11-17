@@ -86,7 +86,8 @@ fn compare_execution(args []string) os.Result {
 	os.write_file(args[3], translation.output) or {
 		return os.Result{ exit_code: 1, output: err.msg() }
 	}
-	python_run := os.exec([args[1], '-I', args[2]])
+	// UTF-8 mode: on Windows CPython would otherwise write its output in the console code page.
+	python_run := os.exec([args[1], '-X', 'utf8', '-I', args[2]])
 	v_run := run_generated(args[3])
 	if python_run.exit_code == 0 && v_run.exit_code == 0
 		&& python_run.output.replace('\r', '') == v_run.output.replace('\r', '') {
