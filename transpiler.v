@@ -280,6 +280,7 @@ pub fn (mut t VTranspiler) visit_module(node Module) string {
 	mut calls := []BindingCall{}
 	count_call_bindings(node, mut bindings, mut calls, false)
 	t.default_import_names = imported_default_names(node, bindings)
+	t.prepare_local_default_names(node)
 	mut signatures := map[string]FunctionDef{}
 	mut module_defs := map[string][]FunctionDef{}
 	for stmt in node.body {

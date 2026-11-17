@@ -15,6 +15,19 @@ fn imported_default_names(node Module, bindings map[string]int) map[string]bool 
 	return names
 }
 
+// Reuse safe module signatures for calls to definitions in this library file.
+fn (mut t VTranspiler) prepare_local_default_names(node Module) {
+	if !t.emit_pub { return }
+	for stmt in node.body {
+		if stmt is FunctionDef {
+			path := '${t.current_dotted}.${stmt.name}'
+			if path in t.registry.defaulted_functions {
+				t.default_import_names[stmt.name] = true
+			}
+		}
+	}
+}
+
 fn register_defaulted_functions(parsed map[string]Module, mut registry ModuleRegistry) {
 	for key, node in parsed {
 		mut names := map[string]int{}
@@ -130,8 +143,19 @@ fn (mut t VTranspiler) complete_imported_call(node Call) ?Call {
 	}
 	name := (node.func as Name).id
 	if !t.default_import_names[name] { return none }
-	sig := t.imported_default_signature(t.init_python_path(node.func)) or { return none }
+	mut path := t.init_python_path(node.func)
+	if path == '' {
+		if name in t.local_idents || name in t.module_idents || name in t.renamed_idents
+			|| t.escaped_identifiers[name] {
+			return none
+		}
+		path = '${t.current_dotted}.${name}'
+	}
+	sig := t.imported_default_signature(path) or { return none }
 	if name != sig.name { return none }
+	if path == '${t.current_dotted}.${name}' && node.loc.lineno <= sig.loc.end_lineno {
+		return none
+	}
 	params := sig.args.args
 	first_default := params.len - sig.args.defaults.len
 	// Fully supplied calls retain the existing emission, including its keyword guards.

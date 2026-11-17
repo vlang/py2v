@@ -300,3 +300,24 @@ fn test_imported_float_defaults_include_negative_zero() {
 	t.registry.defaulted_functions['pkg.provider.greet'] = sig
 	assert t.complete_imported_call(defaults_test_call()) == none
 }
+
+fn test_local_library_defaults_keep_the_private_function_name() {
+	mut t := defaults_test_transpiler()
+	t.current_dotted = 'pkg.provider'
+	mut sig := t.registry.defaulted_functions['pkg.provider.greet']
+	sig.name = '_greet'
+	sig.loc = Location{ lineno: 1, end_lineno: 10 }
+	t.registry.defaulted_functions['pkg.provider._greet'] = sig
+	_ = t.visit_module(Module{ body: [Stmt(sig)] })
+	callee := Expr(Name{ id: '_greet' })
+	call := Call{ ...defaults_test_call(), func: &callee, loc: Location{ lineno: 11 } }
+	assert t.visit_call(call) == "greet_(7, '!')"
+	assert t.complete_imported_call(Call{ ...call, loc: Location{ lineno: 1 } }) == none
+}
+
+fn test_local_library_defaults_still_reject_shadowed_names() {
+	mut t := defaults_test_transpiler()
+	t.current_dotted = 'pkg.provider'
+	t.local_idents['greet'] = 'greet'
+	assert t.complete_imported_call(defaults_test_call()) == none
+}

@@ -2,6 +2,7 @@ from ..provider import greet, optional, side_effect, configured, shift, flag_nam
 from .keywords import run_keywords
 from ..provider import checked_optional
 from .float_defaults import run_float_defaults
+from .local_defaults import run_local_defaults
 
 
 def mark() -> int:
@@ -22,6 +23,7 @@ def run() -> None:
     checked_optional()
     checked_optional("allowed")
     run_float_defaults()
+    run_local_defaults()
 
 
 if __name__ == "__main__":
