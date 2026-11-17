@@ -69,6 +69,7 @@ pub struct CustomError {
 }
 
 fn (mut self CustomError) init(msg Any) {
+	py2v_unsupported_super_init(msg)
 }
 
 pub fn py2v_new_custom_error(msg Any) CustomError {

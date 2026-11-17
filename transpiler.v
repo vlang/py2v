@@ -5957,7 +5957,11 @@ pub fn (mut t VTranspiler) visit_call(original Call) string {
 					}
 					return '${recv}.${base_name}.${v_method}()'
 				}
-				return ''
+				mut unresolved_args := []string{}
+				for arg in super_call.args { unresolved_args << t.visit_expr(arg) }
+				unresolved_args << vargs
+				for kw in node.keywords { unresolved_args << t.typed_literal_arg(kw.value) }
+				return 'py2v_unsupported_super_${to_symbol_ident(method)}(${unresolved_args.join(', ')})'
 			}
 		}
 
