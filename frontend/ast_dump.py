@@ -3643,7 +3643,24 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
         def visit_Call(self, node: ast.Call) -> ast.AST:
             is_method = dynamic_method_call(node)
             is_dict_get = any_dict_get(node)
+            is_value_join = (isinstance(node.func, ast.Attribute) and node.func.attr == "join"
+                             and len(node.args) == 1 and not node.keywords
+                             and not isinstance(node.args[0], ast.Starred)
+                             and _truth_kind(node.func.value, facts) == "str"
+                             and (dynamic(node.args[0]) or any_list(node.args[0])))
+            join_array = is_value_join and any_list(node.args[0]) and not dynamic(node.args[0])
             self.generic_visit(node)
+            if is_value_join and isinstance(node.func, ast.Attribute):
+                iterable = (_runtime_call("box", [node.args[0]], node)
+                            if join_array else node.args[0])
+                call = _runtime_call("join", [boxed(node.func.value), iterable], node)
+                call._api = "__pyrt__.join"
+                result = _runtime_call("to_str", [call], node)
+                result._dynamic = False
+                for name in ("_type", "_assumed"):
+                    if hasattr(node, name):
+                        setattr(result, name, getattr(node, name))
+                return result
             if is_dict_get and isinstance(node.func, ast.Attribute):
                 default = node.args[1] if len(node.args) == 2 else ast.copy_location(
                     ast.Constant(value=None), node)
@@ -3961,7 +3978,8 @@ def _plan_error_propagation(tree: ast.Module, table: Optional[symbols.SymbolTabl
         if isinstance(call, ast.Raise):
             # a bare `raise` is planned with the handler it stands in
             return call.exc is not None and raised_class(call) != ""
-        entry = api.get(getattr(call, "_api", ""))
+        api_name = getattr(call, "_api", "")
+        entry = api.get(api_name) or api.get("__pyrt__." + api_name)
         if entry and entry.get("raises"):
             return True
         return isinstance(call.func, ast.Name) and getattr(call.func, "_binding", None) in fallible
