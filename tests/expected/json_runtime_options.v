@@ -30,7 +30,7 @@ fn (a Any) < (b Any) bool {
 }
 
 fn report_py(names []string, scores map[string]int) !string {
-	payload := {
+	payload := map[string]Any{
 		'names': pyrt.box(names)
 		'count': pyrt.box(names.len)
 	}

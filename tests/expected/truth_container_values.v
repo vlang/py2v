@@ -29,7 +29,7 @@ fn (a Any) < (b Any) bool {
 }
 
 fn native_text() {
-	record := {
+	record := map[string]string{
 		'full':  'text'
 		'empty': ''
 	}

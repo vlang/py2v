@@ -3092,6 +3092,11 @@ pub fn (mut t VTranspiler) visit_ann_assign(node AnnAssign) string {
 			}
 			return '${kw}${target} ${op} ${t.zero_value_for(type_str)}'
 		}
+		// Populated annotated maps need their value type too: V otherwise infers it
+		// from the first item, rejecting subsequent heterogeneous writes.
+		if val is Dict && (val as Dict).keys.len > 0 && type_str.starts_with('map[') {
+			return '${kw}${target} ${op} ${type_str}${val_str}'
+		}
 		// An empty dict takes the annotated key and value types
 		if val is Dict && (val as Dict).keys.len == 0 && type_str.starts_with('map[')
 			&& !type_str.ends_with(']') {

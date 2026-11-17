@@ -85,7 +85,7 @@ class AnalysisContext:
         return False
 
     def native_map_annotation(self, node: ast.AnnAssign) -> Optional[str]:
-        """A populated local map keeps the concrete type of its emitted initializer."""
+        """A local map may be native only when all inferred writes keep its value type."""
         if self.table is None or self.facts is None or not isinstance(node.target, ast.Name):
             return None
         binding_id = getattr(node.target, "_binding", None)
@@ -104,7 +104,10 @@ class AnalysisContext:
         if not isinstance(node.value, ast.Dict) or not node.value.keys or None in node.value.keys:
             return None
         actual = getattr(node.value, "_represented", None)
-        return _annotation_for_type(self.facts.types, actual) if actual is not None else None
+        whole = self.facts.bindings[binding_id].get("inferred")
+        initial = _annotation_for_type(self.facts.types, actual) if actual is not None else None
+        final = _annotation_for_type(self.facts.types, whole) if whole is not None else None
+        return initial if initial == final else None
 
     def owned_names(self, scope_node: ast.AST) -> Set[str]:
         """Names the scope that `scope_node` opens binds itself: its parameters and locals."""
@@ -4413,7 +4416,8 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
     # A dict declared with values of no stated type (`dict`, `dict[str, Any]`): what a
     # subscript of it gives is a runtime value. Functions of this file returning one,
     # parameters declared as one, and names only ever given one.
-    any_dict_texts = ("dict", "Dict", "dict[str, Any]", "Dict[str, Any]", "dict[str, object]")
+    any_dict_texts = ("dict", "Dict", "dict[str, Any]", "Dict[str, Any]", "dict[str, object]",
+                      "dict[int, Any]", "Dict[int, Any]", "dict[int, object]")
 
     def any_dict_annotation(annotation: Optional[ast.AST]) -> bool:
         return annotation is not None and _unparse_expr(annotation).replace("typing.", "") in any_dict_texts
@@ -4435,6 +4439,17 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
                 if (any_dict_annotation(a.annotation) and binding_id is not None
                         and not table.bindings[binding_id].rebound):
                     any_dict_bindings.add(binding_id)
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name)
+                and any_dict_annotation(node.annotation)):
+            binding_id = getattr(node.target, "_binding", None)
+            # A fully known inferred map retains its native representation.
+            context = AnalysisContext(table=table, facts=facts)
+            native = context.native_map_annotation(node)
+            if binding_id is not None and native is None:
+                any_dict_bindings.add(binding_id)
+                if isinstance(node.value, ast.Dict):
+                    node.value.values = [_deep_box(v) for v in node.value.values]
     any_dict_functions.discard(None)
 
     def any_dict(node: ast.AST) -> bool:
@@ -7152,7 +7167,7 @@ def _declare_inferred_containers(tree: ast.Module, table: Optional[symbols.Symbo
             return ast.copy_location(new, stmt)
         if not (isinstance(stmt, ast.Assign) and len(stmt.targets) == 1
                 and isinstance(stmt.targets[0], ast.Name)
-                and _is_empty_container(stmt.value)):
+                and (_is_empty_container(stmt.value) or isinstance(stmt.value, ast.Dict))):
             return stmt
         target = stmt.targets[0]
         binding_id = getattr(target, "_binding", None)
@@ -7167,6 +7182,14 @@ def _declare_inferred_containers(tree: ast.Module, table: Optional[symbols.Symbo
         if binding.declared_global or binding.declared_nonlocal:
             return stmt
         text = _annotation_for_type(facts.types, known) if known is not None else None
+        if isinstance(stmt.value, ast.Dict) and stmt.value.keys:
+            typ = facts.types[known] if known is not None else {}
+            if typ.get("k") != "dict" or text is not None:
+                return stmt
+            key = facts.types[typ["key"]]["k"]
+            if key not in ("str", "int"):
+                return stmt
+            text = f"dict[{key}, Any]"
         if text is None:
             # The elements are not of one known type: runtime values.
             if isinstance(stmt.value, ast.Dict) or (

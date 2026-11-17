@@ -83,7 +83,7 @@ fn main_func() {
 	py2v_idx10 := index(0)
 	boxes[py2v_idx10].size = math.powi(boxes[py2v_idx10].size, 2)
 	println(boxes[0].size)
-	mut counts := {
+	mut counts := map[string]int{
 		'a': 9
 	}
 	counts['a'] = 10

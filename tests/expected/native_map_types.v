@@ -29,14 +29,14 @@ fn (a Any) < (b Any) bool {
 }
 
 fn local_text() {
-	records := {
+	records := map[string]string{
 		'title': 'ada'
 	}
 	println((records['title'] or { '' }).to_upper())
 }
 
 fn nested_int() {
-	records := {
+	records := map[int]map[string]string{
 		1: {
 			'title': 'bea'
 		}
@@ -45,7 +45,7 @@ fn nested_int() {
 }
 
 fn nested_lookup() {
-	records := {
+	records := map[string]map[string]string{
 		'entry': {
 			'title': 'gia'
 		}
@@ -58,7 +58,7 @@ fn shared_value() {
 	original := {
 		'count': 1
 	}
-	mut records := {
+	mut records := map[string]map[string]int{
 		'row': original
 	}
 	records['row']['count'] = 2
@@ -82,10 +82,10 @@ fn explicit_runtime(records map[string]Any) {
 }
 
 fn runtime_local(value Any) Any {
-	records := {
-		'entry': value
+	records := map[string]Any{
+		'entry': pyrt.box(value)
 	}
-	return records['entry'] or { '' }
+	return Any(pyrt.map_get(records, 'entry', pyrt.box('')))
 }
 
 fn empty_runtime() map[string]Any {
@@ -95,20 +95,20 @@ fn empty_runtime() map[string]Any {
 }
 
 fn declared_float() {
-	records := {
+	records := map[string]f64{
 		'value': 1.5
 	}
 	println(records['value'])
 }
 
 fn rebound() {
-	mut records := {
-		'title': 'jay'
+	mut records := map[string]Any{
+		'title': pyrt.box('jay')
 	}
 	records = {
 		'title': 'kay'
 	}
-	println(records['title'])
+	println(pyrt.str(records['title']))
 }
 
 fn bare_return() map[string]string {

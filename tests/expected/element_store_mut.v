@@ -42,7 +42,7 @@ fn main_func() {
 	mut a := [int(1), 2]
 	a[0] += 1
 	println(a)
-	mut counts := {
+	mut counts := map[string]int{
 		'x': 1
 	}
 	counts['x'] += 1
@@ -58,7 +58,7 @@ fn main_func() {
 	mut points := [py2v_new_point(1), py2v_new_point(2)]
 	points[0].x = 7
 	println(points[0].x)
-	mut lists := {
+	mut lists := map[string][]int{
 		'a': [1, 2]
 	}
 	lists['a'][1] = 9
