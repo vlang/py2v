@@ -1308,7 +1308,8 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 	}
 	// @classmethod / @staticmethod: emit as free function named ClassName_funcname
 	if node.is_class_method && node.decorator_kind in ['classmethod', 'staticmethod'] {
-		emit_name = '${emitted_class_name(node.class_name)}_${node.name}'
+		member := if node.dunder_op.starts_with('py2v_overload_') { emit_name } else { node.name }
+		emit_name = '${emitted_class_name(node.class_name)}_${member}'
 		dunder_comment = '// @${node.decorator_kind}\n'
 	}
 
@@ -1656,6 +1657,9 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 		body_lines << t.indent_code(param_copies.join('\n'), 1)
 	}
 	body_lines << t.visit_body_stmts(body_stmts, 1)
+	if node.dunder_op.starts_with('py2v_overload_') {
+		body_lines << "\tpanic('typing.overload stub is not callable')"
+	}
 	condition_declarations := t.condition_walrus_declarations()
 	if condition_declarations != '' {
 		body_lines.prepend(t.indent_code(condition_declarations, 1))

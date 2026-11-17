@@ -1270,6 +1270,32 @@ def _detect_decorator_kind(decorator_list) -> str:
     return ""
 
 
+def _plan_overload_definitions(tree):
+    """Retain typing overload bodies under distinct, non-operator names.
+
+    Python replaces each @overload definition with a non-callable stub. Only the
+    concrete implementation owns the public method or operator spelling in V.
+    """
+    used = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)}
+    used.update(n.name for n in ast.walk(tree)
+                if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)))
+    serial = 0
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if not any((isinstance(d, ast.Name) and d.id == "overload")
+                   or (isinstance(d, ast.Attribute) and d.attr == "overload")
+                   for d in node.decorator_list):
+            continue
+        while True:
+            serial += 1
+            name = f"py2v_overload_{serial}_{node.name.strip('_')}"
+            if name not in used:
+                break
+        used.add(name)
+        node._overload_name = name
+
+
 # Mapping of Python dunder names to their V operator/method equivalents.
 _DUNDER_V_OP: Dict[str, str] = {
     "__add__": "+",
@@ -1623,7 +1649,7 @@ def _initializer_field_types(node: ast.ClassDef, declarations: Dict[str, str],
     Forwarding initializers retain their old field types, including Any, so an
     existing successful program keeps the same observable representation.
     """
-    initializer = next((method for method in node.body
+    initializer = next((method for method in reversed(node.body)
                         if isinstance(method, (ast.FunctionDef, ast.AsyncFunctionDef))
                         and method.name == "__init__"), None)
     if initializer is None or _forwarding_initializer(initializer):
@@ -2072,7 +2098,7 @@ def _node_to_dict(node: ast.AST, mutable_vars: Set[str],
         result["is_class_method"] = getattr(node, "_is_class_method", False)
         result["class_name"] = getattr(node, "_class_name", "")
         result["decorator_kind"] = _detect_decorator_kind(node.decorator_list)
-        result["dunder_op"] = _dunder_to_v_op(node.name)
+        result["dunder_op"] = getattr(node, "_overload_name", _dunder_to_v_op(node.name))
         inferred_ret = _infer_return_type(node)
         if inferred_ret:
             result["v_annotation"] = inferred_ret
@@ -6812,6 +6838,7 @@ def process_file(file_path: str, project: Optional[ProjectFacts] = None) -> str:
         source = f.read()
 
     tree = ast.parse(source, filename=file_path)
+    _plan_overload_definitions(tree)
 
     # Mark the walrus `if` tests the transpiler may hoist, before the
     # `__main__` guard becomes a function, so its block counts as module level
