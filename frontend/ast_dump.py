@@ -3647,12 +3647,13 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
                              and len(node.args) == 1 and not node.keywords
                              and not isinstance(node.args[0], ast.Starred)
                              and _truth_kind(node.func.value, facts) == "str"
-                             and (dynamic(node.args[0]) or any_list(node.args[0])))
-            join_array = is_value_join and any_list(node.args[0]) and not dynamic(node.args[0])
+                             and (dynamic(node.args[0]) or any_list(node.args[0])
+                                  or _truth_kind(node.args[0], facts) == "str"))
+            join_plain = is_value_join and not dynamic(node.args[0])
             self.generic_visit(node)
             if is_value_join and isinstance(node.func, ast.Attribute):
                 iterable = (_runtime_call("box", [node.args[0]], node)
-                            if join_array else node.args[0])
+                            if join_plain else node.args[0])
                 call = _runtime_call("join", [boxed(node.func.value), iterable], node)
                 call._api = "__pyrt__.join"
                 result = _runtime_call("to_str", [call], node)
