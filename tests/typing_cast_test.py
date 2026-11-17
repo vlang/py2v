@@ -29,6 +29,10 @@ class TypingCastTest(unittest.TestCase):
             "from typing import cast\nanswer = cast('unknown type', 1)",
             "from typing import cast\nanswer = cast(str | None, 1)",
             "from typing import cast\nanswer = cast(None | (str | int), 1)",
+            "from typing import cast\nanswer = cast(list['TextContent'], 1)",
+            "from typing import cast\nanswer = cast(tuple['bad syntax !', ...], 1)",
+            "from typing import cast, Optional\nanswer = cast(Optional, 1)",
+            "from typing import cast, List\nanswer = cast(List[list['bad syntax !']], 1)",
         ]
         for source in sources:
             with self.subTest(source=source):
@@ -54,6 +58,9 @@ class TypingCastTest(unittest.TestCase):
             "from typing import cast\nanswer = cast((None | None) | int, 1)",
             "from typing import cast\nanswer = cast(UserType | None, 1)",
             "from typing import cast\nstr = custom\nanswer = cast(str | None, 1)",
+            "from typing import cast, Optional, Union\nanswer = cast(Optional[Union], 1)",
+            "from typing import cast, Callable, Optional\nanswer = cast(Callable[[Optional], int], 1)",
+            "from typing import cast, Tuple\nanswer = cast(Tuple['bad syntax !', ...], 1)",
         ]
         for source in sources:
             with self.subTest(source=source):
@@ -66,6 +73,7 @@ class TypingCastTest(unittest.TestCase):
     def test_typing_arguments_can_raise_before_cast(self) -> None:
         from typing import List, Optional, cast
         invalid_reference = "bad syntax !"
+        self.assertEqual(cast(list[invalid_reference], 1), 1)
         with self.assertRaises(SyntaxError):
             cast(List[invalid_reference], 1)
         with self.assertRaises(TypeError):

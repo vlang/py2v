@@ -353,6 +353,7 @@ for witness in [
 	['builtin_frozenset_shadow', '22\n'],
 	['builtin_typing_cast', '1\nword\n3\nonce\n8\n9\n'],
 	['builtin_typing_union_cast', '1\nword\n2\n3\n7\n'],
+	['builtin_typing_forward_cast', '1\n2\n3\n4\n5\n'],
 	['builtin_exit_shadow', '22\n'],
 ] {
 	builtin_root := os.join_path(os.temp_dir(), 'py2v_builtin_${witness[0]}_${os.getpid()}')

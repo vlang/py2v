@@ -3422,29 +3422,37 @@ def _erase_typing_casts(tree: ast.Module, table: Optional[symbols.SymbolTable]) 
             return native_union(node.left) and native_union(node.right)
         return False
 
+    def checked_type(node: ast.AST) -> bool:
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return False
+        if isinstance(node, (ast.Name, ast.Attribute)) and type_name(node) in ("Optional", "Union"):
+            return False
+        return pure_type(node)
+
     def pure_type(node: ast.AST) -> bool:
         if isinstance(node, ast.Constant):
-            return node.value is None
+            return node.value is None or isinstance(node.value, str)
         if isinstance(node, (ast.Name, ast.Attribute)):
-            name = type_name(node)
-            return bool(name) and name not in ("Optional", "Union")
+            return bool(type_name(node))
         if isinstance(node, ast.BinOp):
             return sys.version_info >= (3, 10) and native_union(node)
         if not isinstance(node, ast.Subscript):
             return False
         name = type_name(node.value)
         parts = list(node.slice.elts) if isinstance(node.slice, ast.Tuple) else [node.slice]
+        # Builtin aliases store parameters without typing's ForwardRef validation.
+        parameter = pure_type if name in builtin_types else checked_type
         if name == "Callable" and len(parts) == 2:
             first = parts[0]
             arguments = (isinstance(first, ast.Constant) and first.value is Ellipsis
-                         or isinstance(first, ast.List) and all(pure_type(item) for item in first.elts))
-            return arguments and pure_type(parts[1])
+                         or isinstance(first, ast.List) and all(checked_type(item) for item in first.elts))
+            return arguments and checked_type(parts[1])
         if (name in ("tuple", "Tuple") and len(parts) == 2
                 and isinstance(parts[1], ast.Constant) and parts[1].value is Ellipsis):
-            return pure_type(parts[0])
+            return parameter(parts[0])
         return (name in arities and len(parts) == arities[name]
                 or name in ("tuple", "Tuple", "Union") and bool(parts)) and all(
-                    pure_type(item) for item in parts)
+                    parameter(item) for item in parts)
 
     class Lower(ast.NodeTransformer):
         def visit_Call(self, node: ast.Call) -> ast.AST:
