@@ -44,6 +44,9 @@ class TypingCastTest(unittest.TestCase):
             "import typing\ntyping.cast = other\nanswer = typing.cast(float, 1)",
             "import typing\ndel typing.Any\nanswer = typing.cast(typing.Any, 1)",
             "answer = cast(float, 1)\nfrom typing import cast",
+            "from .typing import cast\nanswer = cast(float, 1)",
+            "from typing import cast, List\nanswer = cast(List['bad syntax !'], 1)",
+            "from typing import cast, List, Optional\nanswer = cast(List[Optional], 1)",
         ]
         for source in sources:
             with self.subTest(source=source):
@@ -52,6 +55,14 @@ class TypingCastTest(unittest.TestCase):
     def test_value_call_is_preserved_once(self) -> None:
         value = self.transformed_value("from typing import cast\nanswer = cast(int, produce())")
         self.assertEqual(ast.dump(value), ast.dump(ast.parse("produce()", mode="eval").body))
+
+    def test_typing_arguments_can_raise_before_cast(self) -> None:
+        from typing import List, Optional, cast
+        invalid_reference = "bad syntax !"
+        with self.assertRaises(SyntaxError):
+            cast(List[invalid_reference], 1)
+        with self.assertRaises(TypeError):
+            cast(List[Optional], 1)
 
 
 if __name__ == "__main__":

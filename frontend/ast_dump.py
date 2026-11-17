@@ -3311,7 +3311,8 @@ def _erase_typing_casts(tree: ast.Module, table: Optional[symbols.SymbolTable]) 
                     if binding is not None and not table.bindings[binding].rebound:
                         imported[binding] = alias.name
                         import_lines[binding] = stmt.lineno
-        elif isinstance(stmt, ast.ImportFrom) and stmt.module in ("typing", "typing_extensions"):
+        elif (isinstance(stmt, ast.ImportFrom) and stmt.level == 0
+              and stmt.module in ("typing", "typing_extensions")):
             for alias in stmt.names:
                 binding = getattr(alias, "_binding", None)
                 if binding is not None and not table.bindings[binding].rebound:
@@ -3349,9 +3350,10 @@ def _erase_typing_casts(tree: ast.Module, table: Optional[symbols.SymbolTable]) 
 
     def pure_type(node: ast.AST) -> bool:
         if isinstance(node, ast.Constant):
-            return node.value is None or isinstance(node.value, str)
+            return node.value is None
         if isinstance(node, (ast.Name, ast.Attribute)):
-            return bool(type_name(node))
+            name = type_name(node)
+            return bool(name) and name not in ("Optional", "Union")
         if not isinstance(node, ast.Subscript):
             return False
         name = type_name(node.value)
