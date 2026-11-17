@@ -2906,6 +2906,8 @@ fn (mut t VTranspiler) visit_aug_assign_once(node AugAssign, op_type string, tar
 
 // visit_ann_assign emits V code for an AnnAssign statement.
 pub fn (mut t VTranspiler) visit_ann_assign(node AnnAssign) string {
+	was_bound := node.target is Name && t.is_bound_in_scope(node.target.id)
+	if node.target is Name { t.note_scope_binding(node.target.id) }
 	target := t.visit_expr(node.target)
 	type_str := t.typename_from_annotation(*node.annotation)
 
@@ -2921,8 +2923,8 @@ pub fn (mut t VTranspiler) visit_ann_assign(node AnnAssign) string {
 	is_attr := node.target is Attribute
 	is_condition_local := node.target is Name
 		&& t.condition_walrus_vars[(node.target as Name).id]
-	if is_condition_local { kw = '' }
-	op := if is_attr || is_condition_local { '=' } else { ':=' }
+	if is_condition_local || was_bound { kw = '' }
+	op := if is_attr || is_condition_local || was_bound { '=' } else { ':=' }
 
 	// Track variable type from annotation
 	if node.target is Name && type_str != '' {
@@ -3167,7 +3169,8 @@ fn for_target_is_mutable(target Expr, name string) bool {
 		return (target as Name).id == name && (target as Name).is_mutable
 	}
 	if target is Tuple || target is List {
-		for e in (target as Tuple).elts {
+		elts := if target is Tuple { target.elts } else { (target as List).elts }
+		for e in elts {
 			if e is Name && (e as Name).id == name {
 				return (e as Name).is_mutable
 			}
@@ -3180,7 +3183,8 @@ fn for_target_is_mutable(target Expr, name string) bool {
 fn for_target_names(target Expr) []string {
 	if target is Tuple || target is List {
 		mut out := []string{}
-		for e in (target as Tuple).elts {
+		elts := if target is Tuple { target.elts } else { (target as List).elts }
+		for e in elts {
 			if e is Name {
 				out << (e as Name).id
 			}
@@ -3216,6 +3220,7 @@ fn (t VTranspiler) bind_op(v_name string) string {
 
 // visit_for emits V code for a For loop.
 pub fn (mut t VTranspiler) visit_for(node For) string {
+	saved_renames := t.renamed_idents.clone()
 	// V rejects reusing an iteration variable name in a nested loop, and
 	// Python allows it freely. Bind the inner loop to a fresh name and record
 	// the rename so the body refers to the variable it actually declares.
@@ -3251,9 +3256,7 @@ pub fn (mut t VTranspiler) visit_for(node For) string {
 		t.renamed_idents[name] = fresh
 	}
 	defer {
-		for name, _ in rename {
-			t.renamed_idents.delete(name)
-		}
+		t.renamed_idents = saved_renames
 		for fresh in bound {
 			t.loop_idents.delete(fresh)
 		}
@@ -3300,7 +3303,7 @@ pub fn (mut t VTranspiler) visit_for(node For) string {
 			if target_names.len > 2 && !iter_is_special {
 				seq := t.new_tmp('seq')
 				item := t.new_tmp('item')
-				buf << '${seq} := ${t.visit_expr(node.iter)}'
+				buf << '${seq} := ${t.visit_for_iter(node.iter, saved_renames)}'
 				buf << 'for ${item} in ${seq} {'
 				for k, name in target_names {
 					buf << t.indent_code('${name} ${t.bind_op(name)} ${item}[${k}]', 2)
@@ -3319,7 +3322,7 @@ pub fn (mut t VTranspiler) visit_for(node For) string {
 				if call.func is Name {
 					fname := (call.func as Name).id
 					if fname == 'enumerate' && target_names.len == 2 && call.args.len > 0 {
-						iter0 := t.visit_expr(call.args[0])
+						iter0 := t.visit_for_iter(call.args[0], saved_renames)
 						buf << 'for ${target_names[0]}, ${target_names[1]} in ${iter0} {'
 						body, flag := t.visit_loop_body(node.body, 1, has_else)
 						buf << body
@@ -3329,8 +3332,8 @@ pub fn (mut t VTranspiler) visit_for(node For) string {
 					}
 					// zip(a, b) => for i, x in a { y := b[i]; ... }
 					if fname == 'zip' && target_names.len == 2 && call.args.len >= 2 {
-						left := t.visit_expr(call.args[0])
-						right := t.visit_expr(call.args[1])
+						left := t.visit_for_iter(call.args[0], saved_renames)
+						right := t.visit_for_iter(call.args[1], saved_renames)
 						idx := t.new_tmp('zipi')
 						buf << 'for ${idx}, ${target_names[0]} in ${left} {'
 						buf << '\t${target_names[1]} ${t.bind_op(target_names[1])} ${right}[${idx}]'
@@ -3352,9 +3355,9 @@ pub fn (mut t VTranspiler) visit_for(node For) string {
 		if call.func is Name {
 			fname := (call.func as Name).id
 			if fname == 'range' && call.args.len == 3 {
-				start := t.visit_expr(call.args[0])
-				end := t.visit_expr(call.args[1])
-				step := t.visit_expr(call.args[2])
+				start := t.visit_for_iter(call.args[0], saved_renames)
+				end := t.visit_for_iter(call.args[1], saved_renames)
+				step := t.visit_for_iter(call.args[2], saved_renames)
 				// For range with step, use traditional C-style for loop
 				// Detect if step is -1 and use i-- instead of i += -1
 				step_op := if step == '-1' { '${target}--' } else { '${target} += ${step}' }
@@ -3365,20 +3368,20 @@ pub fn (mut t VTranspiler) visit_for(node For) string {
 				t.emit_for_else(mut buf, node.orelse, flag)
 				return buf.join('\n')
 			} else if fname == 'range' && call.args.len == 2 {
-				start := t.visit_expr(call.args[0])
-				end := t.visit_expr(call.args[1])
+				start := t.visit_for_iter(call.args[0], saved_renames)
+				end := t.visit_for_iter(call.args[1], saved_renames)
 				for_expr = '[]int{len: ${paren_left(end, 4)} - ${paren_right(start, 4)}, init: index + ${paren_right(start, 4)}}'
 			} else if fname == 'range' && call.args.len == 1 {
-				end := t.visit_expr(call.args[0])
+				end := t.visit_for_iter(call.args[0], saved_renames)
 				for_expr = '[]int{len: ${end}, init: index}'
 			} else {
-				for_expr = t.visit_expr(node.iter)
+				for_expr = t.visit_for_iter(node.iter, saved_renames)
 			}
 		} else {
-			for_expr = t.visit_expr(node.iter)
+			for_expr = t.visit_for_iter(node.iter, saved_renames)
 		}
 	} else {
-		for_expr = t.visit_expr(node.iter)
+		for_expr = t.visit_for_iter(node.iter, saved_renames)
 	}
 
 	// Track the type of the loop target variable based on the iterator type
@@ -3399,6 +3402,14 @@ pub fn (mut t VTranspiler) visit_for(node For) string {
 	t.emit_for_else(mut buf, node.orelse, flag)
 
 	return buf.join('\n')
+}
+
+// visit_for_iter reads the iterable before the loop target rebinds its names.
+fn (mut t VTranspiler) visit_for_iter(expr Expr, before map[string]string) string {
+	inside := t.renamed_idents
+	t.renamed_idents = before
+	defer { t.renamed_idents = inside }
+	return t.visit_expr(expr)
 }
 
 // LoopBreak is one loop whose body is being emitted. A loop with an `else`

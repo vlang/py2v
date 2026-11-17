@@ -33,7 +33,7 @@ fn collect(path Any) Any {
 }
 
 fn first_existing(mut path Any) Any {
-	for path_ in pyrt.elements(collect(path_)) {
+	for path_ in pyrt.elements(collect(path)) {
 		println(pyrt.str(path_))
 	}
 	return path
