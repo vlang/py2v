@@ -304,6 +304,14 @@ fn parse_expr(m map[string]json2.Any) ?&Expr {
 }
 
 // Parse FunctionDef
+fn string_map_field(m map[string]json2.Any, field string) map[string]string {
+	mut result := map[string]string{}
+	for key, value in (m[field] or { json2.Any(map[string]json2.Any{}) }).as_map() {
+		result[key] = value.str()
+	}
+	return result
+}
+
 fn parse_function_def(m map[string]json2.Any) FunctionDef {
 	mut body := []Stmt{}
 	if raw_body := m['body'] {
@@ -328,6 +336,12 @@ fn parse_function_def(m map[string]json2.Any) FunctionDef {
 		}
 	}
 	return FunctionDef{
+		is_nested:              (m['is_nested'] or { json2.Any(false) }).bool()
+		is_recursive:           (m['is_recursive'] or { json2.Any(false) }).bool()
+		capture_names:          (m['capture_names'] or { json2.Any([]json2.Any{}) }).as_array().map(it.str())
+		capture_mutable:        (m['capture_mutable'] or { json2.Any([]json2.Any{}) }).as_array().map(it.str())
+		capture_refusal:        (m['capture_refusal'] or { json2.Any('') }).str()
+		capture_types:          string_map_field(m, 'capture_types')
 		raises:                 (m['raises'] or { json2.Any(false) }).bool()
 		name:                   m['name'] or { json2.Any('') }.str()
 		args:                   parse_arguments(m['args'] or { json2.Any(map[string]json2.Any{}) })
@@ -352,6 +366,12 @@ fn parse_function_def(m map[string]json2.Any) FunctionDef {
 fn parse_async_function_def(m map[string]json2.Any) AsyncFunctionDef {
 	fd := parse_function_def(m)
 	return AsyncFunctionDef{
+		is_nested:              fd.is_nested
+		is_recursive:           fd.is_recursive
+		capture_names:          fd.capture_names
+		capture_mutable:        fd.capture_mutable
+		capture_refusal:        fd.capture_refusal
+		capture_types:          fd.capture_types
 		name:                   fd.name
 		args:                   fd.args
 		body:                   fd.body

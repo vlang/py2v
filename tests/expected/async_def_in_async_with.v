@@ -3,16 +3,15 @@ module main
 // TODO(py2v): no V equivalent for import asyncio
 // Provide one in python_to_v_import (types.v) or port the module.
 
-fn double(x int) int {
-	return (x + base) * 2
-}
-
 fn outer() int {
 	// WARNING: async with converted to sync with defer
 	{
 		contextlib.AsyncExitStack()
 		base := 5
-		// pass
+		py2v_capture1 := &base
+		double := fn [py2v_capture1] (x int) int {
+			return (x + (*py2v_capture1)) * 2
+		}
 		return double(1)
 	}
 }

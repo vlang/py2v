@@ -2,18 +2,25 @@ module main
 
 fn make_counter() fn () int {
 	mut count := 0
-	increment := fn [mut count] () int {
-		count += 1
-		return count
+	py2v_capture1 := &count
+	increment := fn [py2v_capture1] () int {
+		unsafe {
+			(*py2v_capture1) += 1
+		}
+		return *py2v_capture1
 	}
 	return increment
 }
 
 fn make_adder(n int) fn (int) int {
 	mut total := 0
-	add := fn [mut total, n] (x int) int {
-		total += x + n
-		return total
+	py2v_capture2 := &n
+	py2v_capture3 := &total
+	add := fn [py2v_capture2, py2v_capture3] (x int) int {
+		unsafe {
+			(*py2v_capture3) += x + (*py2v_capture2)
+		}
+		return *py2v_capture3
 	}
 	return add
 }

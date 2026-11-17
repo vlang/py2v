@@ -456,15 +456,21 @@ pub mut:
 // Statements
 pub struct FunctionDef {
 pub mut:
-	name           string
-	args           Arguments
-	body           []Stmt
-	decorator_list []Expr
-	returns        ?&Expr
-	type_comment   ?string
-	loc            Location
-	is_generator   bool
-	is_void        bool
+	is_nested       bool
+	capture_names   []string
+	capture_mutable []string
+	capture_refusal string
+	capture_types   map[string]string
+	is_recursive    bool
+	name            string
+	args            Arguments
+	body            []Stmt
+	decorator_list  []Expr
+	returns         ?&Expr
+	type_comment    ?string
+	loc             Location
+	is_generator    bool
+	is_void         bool
 	// raises: the function returns a V result (`!T`); see the frontend's error plan.
 	raises                 bool
 	mutable_vars           []string
@@ -478,6 +484,12 @@ pub mut:
 
 pub struct AsyncFunctionDef {
 pub mut:
+	is_nested              bool
+	capture_names          []string
+	capture_mutable        []string
+	capture_refusal        string
+	capture_types          map[string]string
+	is_recursive           bool
 	name                   string
 	args                   Arguments
 	body                   []Stmt

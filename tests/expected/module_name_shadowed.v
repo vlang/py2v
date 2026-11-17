@@ -17,16 +17,14 @@ fn twice(n int) int {
 	return count * 2
 }
 
-fn inner(count int) int {
-	return count + 1
-}
-
-fn other() int {
-	count := 10
-	return count * 3
-}
-
 fn outer() int {
+	inner := fn (count int) int {
+		return count + 1
+	}
+	other := fn () int {
+		count := 10
+		return count * 3
+	}
 	return inner(1) + other()
 }
 

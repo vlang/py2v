@@ -45,12 +45,10 @@ fn factorial(n int) int {
 	return n * factorial(n - 1)
 }
 
-// @wraps: unsupported decorator — remove or implement manually
-fn wrapper(kwargs map[string]Any, args ...Any) Any {
-	return func(...args, kwargs)
-}
-
 fn my_decorator(func Any) fn () Any {
+	wrapper := py2v_unsupported_closure_decorator(fn (func Any, kwargs map[string]Any, args ...Any) Any {
+		return func(...args, kwargs)
+	}, wraps(func))
 	return wrapper
 }
 

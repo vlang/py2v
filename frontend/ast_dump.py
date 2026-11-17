@@ -1973,12 +1973,19 @@ def _node_to_dict(node: ast.AST, mutable_vars: Set[str],
 
     elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
         result["name"] = node.name
+        result["is_nested"] = getattr(node, "_is_nested", False)
+        result["is_recursive"] = getattr(node, "_is_recursive", False)
+        result["capture_names"] = getattr(node, "_capture_names", [])
+        result["capture_mutable"] = getattr(node, "_capture_mutable", [])
+        result["capture_types"] = getattr(node, "_capture_types", {})
+        result["capture_refusal"] = getattr(node, "_capture_refusal", "")
         result["condition_walrus_names"] = getattr(node, "_condition_walrus_names", [])
 
         # Compute mutable vars within this function FIRST
         tracker = ScopeTracker()
         tracker.visit(node)
-        func_mutable = tracker.mutable | ctx.rebound_parameters(node)
+        func_mutable = (tracker.mutable | ctx.rebound_parameters(node)
+                        | set(getattr(node, "_captured_mutable", [])))
         result["mutable_vars"] = sorted(func_mutable)
 
         # Build a local var_annotation map including parameter annotations so
@@ -6716,6 +6723,64 @@ def _declare_inferred_containers(tree: ast.Module, table: Optional[symbols.Symbo
     return any_lists
 
 
+def _plan_closures(tree, table, facts):
+    """Keep nested definitions at their execution site with lexical captures.
+
+    Symbol identities exclude module names, builtins, inner locals, and class types.
+    Mutably captured bindings remain mutable in their owning function as well.
+    """
+    if table is None or facts is None:
+        return
+    binding_facts = {b["id"]: b for b in facts.bindings}
+    for fn in ast.walk(tree):
+        if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        scope_id = getattr(fn, "_scope_id", None)
+        if scope_id is None:
+            continue
+        parent = table.scopes[scope_id].parent
+        if parent is None or table.scopes[parent].kind not in ("function", "lambda"):
+            continue
+        fn._is_nested = True
+        ancestors = set()
+        while parent is not None:
+            if table.scopes[parent].kind in ("function", "lambda"):
+                ancestors.add(parent)
+            parent = table.scopes[parent].parent
+        captures = {}
+        for part in ast.walk(fn):
+            if not isinstance(part, ast.Name):
+                continue
+            bid = getattr(part, "_binding", None)
+            if bid is None:
+                continue
+            binding = table.bindings[bid]
+            if binding.scope not in ancestors or binding.kind in ("class", "import"):
+                continue
+            if bid == getattr(fn, "_binding", None):
+                fn._is_recursive = True
+                continue
+            captures[binding.name] = binding
+        fn._capture_names = sorted(captures)
+        fn._capture_mutable = []
+        fn._capture_types = {}
+        for name, binding in captures.items():
+            info = binding_facts.get(binding.id, {})
+            typ = next((info.get(key) for key in ("declared", "assumed", "inferred")
+                        if info.get(key) is not None), None)
+            if typ is not None:
+                fn._capture_types[name] = _annotation_for_type(facts.types, typ) or "Any"
+            if binding.rebound and (binding.kind == "function"
+                                    or typ is not None and facts.types[typ]["k"] == "callable"):
+                fn._capture_refusal = "rebound_function"
+            if binding.rebound or binding.declared_nonlocal:
+                fn._capture_mutable.append(name)
+                owner = table.scopes[binding.scope]._node
+                if owner is not None:
+                    owner._captured_mutable = sorted(set(
+                        getattr(owner, "_captured_mutable", [])) | {name})
+
+
 def _plan_bound_appends(tree, table, facts):
     """A saved list.append needs a closure, not the call-only << spelling.
 
@@ -6774,6 +6839,7 @@ def process_file(file_path: str, project: Optional[ProjectFacts] = None) -> str:
     _erase_typing_casts(tree, table)
     _expand_bool_calls(tree)
     facts = _infer_types(tree, table, project)
+    _plan_closures(tree, table, facts)
     _lower_named_dunder_operations(tree, facts)
     _plan_bound_appends(tree, table, facts)
     _loop_comprehensions(tree, facts)

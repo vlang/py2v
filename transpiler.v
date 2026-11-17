@@ -929,8 +929,7 @@ pub fn (mut t VTranspiler) visit_expr(expr Expr) string {
 	}
 }
 
-// visit_function_def_or_closure dispatches to an inline closure when the
-// function declares nonlocal variables, otherwise hoists it as a normal function.
+// visit_function_def_or_closure keeps lexical function definitions inside their owner.
 fn (mut t VTranspiler) visit_function_def_or_closure(node FunctionDef) string {
 	mut nl_names := []string{}
 	for stmt in node.body {
@@ -938,221 +937,253 @@ fn (mut t VTranspiler) visit_function_def_or_closure(node FunctionDef) string {
 			nl_names << (stmt as Nonlocal).names
 		}
 	}
-	if nl_names.len > 0 {
+	if node.is_nested || nl_names.len > 0 {
 		return t.visit_closure_from_funcdef(node, nl_names)
 	}
 	return t.visit_function_def(node)
 }
 
-// visit_closure_from_funcdef emits a nested FunctionDef that uses nonlocal
-// variables as an inline V closure variable with a mut capture list.
+// visit_closure_from_funcdef keeps a nested definition at the point Python binds it.
+// The frontend supplies lexical captures; collecting names from generated code would
+// accidentally capture modules, builtins, and locals of the inner function.
 fn (mut t VTranspiler) visit_closure_from_funcdef(node FunctionDef, nl_names []string) string {
-	// This older closure emitter has its own capture/binding model. Do not
-	// accidentally apply an enclosing function's condition plan to its body.
+	name := escape_local_decl(node.name)
+	bind := t.bind_op(name)
+	saved_types := t.var_types.clone()
+	saved_locals := t.local_idents.clone()
+	saved_scope := t.scope_idents.clone()
+	saved_params := t.param_idents.clone()
+	saved_renames := t.renamed_idents.clone()
+	saved_loops := t.loop_idents.clone()
+	saved_loop_prelude := t.loop_prelude.clone()
+	saved_breaks := t.loop_breaks.clone()
+	saved_escaped := t.escaped_identifiers.clone()
 	saved_condition_vars := t.condition_walrus_vars
+	saved_condition_types := t.condition_walrus_types
+	saved_condition_initial := t.condition_walrus_initial
 	saved_condition_order := t.condition_walrus_order
-	t.condition_walrus_vars = map[string]bool{}
-	t.condition_walrus_order = []string{}
-	defer {
-		t.condition_walrus_vars = saved_condition_vars
-		t.condition_walrus_order = saved_condition_order
-	}
+	saved_return_count := t.current_return_count
+	saved_result := t.fn_returns_result
 	saved_init_aliases := t.init_import_aliases.clone()
 	saved_init_captures := t.init_capture_locals.clone()
-	for name, _ in init_function_capture_names(node) { t.init_capture_locals[name] = true }
-	saved_classmethod := t.current_classmethod
-	t.current_classmethod = false
-	// Collect locally declared names (params + assigned vars) so we know what is "outer"
-	mut local_names := map[string]bool{}
-	for arg in node.args.args {
-		local_names[arg.arg] = true
-	}
-	// Also collect names assigned inside the closure body
-	for stmt in node.body {
-		collect_assigned_names(stmt, mut local_names)
+	defer {
+		t.var_types = saved_types
+		t.local_idents = saved_locals
+		t.local_idents[node.name] = name
+		t.scope_idents = saved_scope
+		t.scope_idents[name] = true
+		t.param_idents = saved_params
+		t.renamed_idents = saved_renames
+		t.loop_idents = saved_loops
+		t.loop_prelude = saved_loop_prelude
+		t.loop_breaks = saved_breaks
+		t.escaped_identifiers = saved_escaped
+		t.condition_walrus_vars = saved_condition_vars
+		t.condition_walrus_types = saved_condition_types
+		t.condition_walrus_initial = saved_condition_initial
+		t.condition_walrus_order = saved_condition_order
+		t.current_return_count = saved_return_count
+		t.fn_returns_result = saved_result
+		t.init_import_aliases = saved_init_aliases
+		t.init_capture_locals = saved_init_captures
+		t.init_capture_locals[node.name] = true
 	}
 
-	// Collect names referenced in the body that are not local → outer free variables
-	mut referenced := map[string]bool{}
-	for stmt in node.body {
-		collect_referenced_names(stmt, mut referenced)
-	}
-
-	// Outer free vars: referenced but not local and not built-in keywords
-	mut outer_free := []string{}
-	v_builtins := ['true', 'false', 'none', 'println', 'print', 'len', 'cap']
-	for name, _ in referenced {
-		if name !in local_names && name !in v_builtins && name !in nl_names {
-			// A class is a type: `fn [Token] ()` names a variable that does not exist.
-			if name in t.module_class_names || name in t.known_classes
-				|| name in t.imported_classes {
-				continue
-			}
-			outer_free << name
-		}
-	}
-	outer_free.sort()
-
-	// Build capture list: nonlocal vars → "mut <name>", outer free vars → "<name>"
 	mut captures := []string{}
-	for name in nl_names {
-		captures << 'mut ${name}'
+	mut capture_params := []string{}
+	mut capture_locals := map[string]string{}
+	mut capture_setup := []string{}
+	mut default_values := []string{}
+	mut refusal := node.capture_refusal
+	capture_names := if node.is_nested { node.capture_names } else { nl_names }
+	for expr in node.args.defaults {
+		default_values << t.visit_expr(expr)
+		if expr !is Constant { refusal = 'nonliteral_default' }
 	}
-	for name in outer_free {
-		captures << name
+	for decorator in node.decorator_list {
+		default_values << t.visit_expr(decorator)
+		refusal = 'decorator'
 	}
-	capture_list := captures.join(', ')
-
-	// Build parameter list (skip 'self' for regular nested functions)
-	mut params := []string{}
-	for arg in node.args.args {
-		if arg.arg == 'self' {
-			continue
+	for py_name in capture_names {
+		if py_name in saved_loops || py_name in saved_renames {
+			refusal = 'loop_capture'
+		} else if py_name !in saved_locals && py_name !in saved_types && !t.is_bound_in_scope(py_name)
+			&& !(py_name == 'self' && t.current_class_name != '') {
+			refusal = 'forward_capture'
 		}
-		ptype := t.typename_from_annotation(arg.annotation)
-		if ptype != '' {
-			params << '${arg.arg} ${ptype}'
+	}
+	for py_name in capture_names {
+		local := t.visit_name(Name{ id: py_name })
+		mut typ := t.map_type(node.capture_types[py_name] or { saved_types[py_name] })
+		if typ == '' || typ == 'auto' { typ = 'Any' }
+		if typ.contains('Any') { t.generated_code_has_any_type = true }
+		if refusal != '' {
+			formal := escape_local_decl(py_name)
+			capture_params << '${formal} ${typ}'
+			capture_locals[py_name] = formal
 		} else {
-			params << arg.arg
+			// V's `mut` scalar capture is a copy. Capture the address instead so
+			// siblings, nonlocal writes, and the enclosing function share one binding.
+			pointer := t.new_tmp('capture')
+			capture_setup << '${pointer} := &(${local})'
+			captures << pointer
+			capture_locals[py_name] = '(*${pointer})'
 		}
 	}
 
-	// Return type
-	mut ret_type := ''
-	if ret := node.returns {
-		ret_type = v_return_type(t.typename_from_annotation(*ret))
-	} else if node.v_annotation != '' {
-		// Use inferred return type from frontend analysis
-		ret_type = t.map_type(node.v_annotation)
-		if ret_type == 'auto' {
-			ret_type = 'Any'
-			t.generated_code_has_any_type = true
+	t.local_idents = capture_locals.clone()
+	t.scope_idents = map[string]bool{}
+	for py_name, _ in capture_locals { t.scope_idents[escape_local_ident(py_name)] = true }
+	t.param_idents = map[string]bool{}
+	t.renamed_idents = map[string]string{}
+	t.loop_idents = map[string]bool{}
+	t.loop_prelude = []string{}
+	t.loop_breaks = []LoopBreak{}
+	t.escaped_identifiers = map[string]bool{}
+	t.condition_walrus_vars = map[string]bool{}
+	t.condition_walrus_types = map[string]string{}
+	t.condition_walrus_initial = map[string]string{}
+	t.condition_walrus_order = []string{}
+	t.current_return_count = 0
+	t.fn_returns_result = false
+	t.init_capture_locals = init_function_capture_names(node)
+	for py_name in capture_names { t.init_capture_locals[py_name] = true }
+
+	mut params := node.args.posonlyargs.clone()
+	params << node.args.args
+	params << node.args.kwonlyargs
+	mut declarations := []string{}
+	mut param_types := []string{}
+	mut copies := []string{}
+	mut mut_indices := []int{}
+	for i, arg in params {
+		local := escape_local_decl(arg.arg)
+		mut typ := t.typename_from_annotation(arg.annotation)
+		if typ == '' { typ = t.map_type(arg.v_annotation) }
+		if typ == '' || typ == 'auto' { typ = 'Any' }
+		if typ.contains('Any') { t.generated_code_has_any_type = true }
+		t.local_idents[arg.arg] = local
+		t.scope_idents[local] = true
+		t.param_idents[arg.arg] = true
+		t.var_types[arg.arg] = typ
+		mut incoming := local
+		if arg.arg in node.mutable_vars {
+			if typ in v_value_param_types {
+				incoming = t.new_tmp('${arg.arg}_in')
+				copies << 'mut ${local} := ${incoming}'
+			} else {
+				incoming = 'mut ${local}'
+				mut_indices << i
+			}
 		}
+		declarations << '${incoming} ${typ}'
+		param_types << typ
 	}
-	if ret_type == '' {
-		ret_type = 'Any'
+	if kwarg := node.args.kwarg {
+		local := escape_local_decl(kwarg.arg)
+		t.local_idents[kwarg.arg] = local
+		declarations << '${local} map[string]Any'
 		t.generated_code_has_any_type = true
 	}
+	if node.is_generator {
+		typ := t.infer_generator_yield_type(node.body)
+		declarations << 'ch chan ${typ}'
+		t.generator_yield_types[node.name] = typ
+	}
+	if vararg := node.args.vararg {
+		local := escape_local_decl(vararg.arg)
+		mut typ := t.typename_from_annotation(vararg.annotation)
+		if typ == '' {
+			typ = 'Any'
+			t.generated_code_has_any_type = true
+		}
+		t.local_idents[vararg.arg] = local
+		declarations << '${local} ...${typ}'
+	}
+	mut ret := ''
+	if !node.is_void && !node.is_generator {
+		if annotation := node.returns {
+			ret = v_return_type(t.typename_from_annotation(*annotation))
+		} else {
+			ret = t.map_type(node.v_annotation)
+			if ret == '' || ret == 'auto' { ret = 'Any' }
+		}
+		if ret.contains('Any') { t.generated_code_has_any_type = true }
+		if ret.starts_with('(') { t.current_return_count = ret.count(',') + 1 }
+	}
+	t.func_return_types[node.name] = ret
+	t.func_param_types[node.name] = param_types
+	t.mut_param_indices[node.name] = mut_indices
+	mut closure_defaults := []string{}
+	for expr in node.args.defaults {
+		closure_defaults << t.visit_expr(expr)
+	}
+	t.func_defaults[node.name] = closure_defaults
+	t.func_param_count[node.name] = node.args.posonlyargs.len + node.args.args.len
+	mut prefix := ''
+	if node.is_recursive {
+		if refusal == '' {
+			prefix = "mut ${name} := fn (${declarations.join(', ')}) ${ret} { panic('uninitialized recursive closure') }\n"
+			captures << 'mut ${name}'
+			t.local_idents[node.name] = name
+		} else {
+			capture_params << '${name} fn (${param_types.join(', ')}) ${ret}'
+		}
+	}
+	// A nested definition's signature belongs to this lexical scope. Keep the
+	// current function's metadata, and discard metadata introduced by its body.
+	saved_nested_defaults := t.func_defaults.clone()
+	saved_nested_counts := t.func_param_count.clone()
+	saved_nested_params := t.func_param_types.clone()
+	saved_nested_returns := t.func_return_types.clone()
+	saved_nested_mut := t.mut_param_indices.clone()
+	saved_nested_generators := t.generator_yield_types.clone()
+	defer {
+		t.func_defaults = saved_nested_defaults
+		t.func_param_count = saved_nested_counts
+		t.func_param_types = saved_nested_params
+		t.func_return_types = saved_nested_returns
+		t.mut_param_indices = saved_nested_mut
+		t.generator_yield_types = saved_nested_generators
+	}
 
-	// Build body (skip nonlocal declarations)
-	mut body_lines := []string{}
-	for stmt in node.body {
-		if stmt is Nonlocal {
+	// Defaults use the parent context; the nested body owns its cleanup state.
+	saved_finally := t.exit_finally_bodies.clone()
+	saved_defer_depth := t.defer_depth
+	t.exit_finally_bodies = [][]Stmt{}
+	t.defer_depth = 0
+	defer {
+		t.exit_finally_bodies = saved_finally
+		t.defer_depth = saved_defer_depth
+	}
+
+	t.prepare_condition_walruses(node.condition_walrus_names, params)
+	mut body := []string{}
+	if node.is_generator { body << 'defer { ch.close() }' }
+	body << copies
+	for i, stmt in node.body {
+		if stmt is Nonlocal { continue }
+		if i == 0 && stmt is ExprStmt && stmt.value is Constant && stmt.value.value is string {
 			continue
 		}
-		result := t.visit_stmt(stmt)
-		for line in result.split('\n') {
-			if line.len > 0 {
-				body_lines << '\t${line}'
-			}
-		}
+		body << t.visit_stmt(stmt)
 	}
-	body := body_lines.join('\n')
-
-	mut sig := if capture_list.len > 0 {
-		'fn [${capture_list}] (${params.join(', ')})'
-	} else {
-		'fn (${params.join(', ')})'
+	condition_declarations := t.condition_walrus_declarations()
+	if condition_declarations != '' { body.prepend(condition_declarations) }
+	body_code := t.indent_code(body.filter(it != '').join('\n'), 1)
+	if refusal != '' {
+		// Keep the entire implementation as a function argument. The unresolved call
+		// refuses unsupported capture timing instead of omitting the function's body.
+		capture_params << declarations
+		defaults := if default_values.len > 0 { ', ' + default_values.join(', ') } else { '' }
+		return '${name} ${bind} py2v_unsupported_closure_${refusal}(fn (${capture_params.join(', ')}) ${ret} {\n${body_code}\n}${defaults})'
 	}
-	if ret_type != '' {
-		sig += ' ${ret_type}'
+	if capture_setup.len > 0 {
+		prefix += capture_setup.join('\n') + '\n'
 	}
-	t.init_import_aliases = saved_init_aliases.clone()
-	t.init_capture_locals = saved_init_captures.clone()
-	t.init_capture_locals[node.name] = true
-	t.current_classmethod = saved_classmethod
-	return '${node.name} := ${sig} {\n${body}\n}'
-}
-
-// collect_assigned_names gathers all names assigned at the top level of a statement.
-fn collect_assigned_names(stmt Stmt, mut names map[string]bool) {
-	match stmt {
-		Assign {
-			for t in stmt.targets {
-				if t is Name {
-					names[(t as Name).id] = true
-				}
-			}
-		}
-		AnnAssign {
-			if stmt.target is Name {
-				names[(stmt.target as Name).id] = true
-			}
-		}
-		For {
-			if stmt.target is Name {
-				names[(stmt.target as Name).id] = true
-			}
-		}
-		else {}
-	}
-}
-
-// collect_referenced_names gathers all Name ids referenced in a statement tree.
-fn collect_referenced_names(stmt Stmt, mut names map[string]bool) {
-	match stmt {
-		Assign {
-			collect_expr_names(stmt.value, mut names)
-		}
-		AugAssign {
-			collect_expr_names(stmt.value, mut names)
-			collect_expr_names(stmt.target, mut names)
-		}
-		Return {
-			if val := stmt.value {
-				collect_expr_names(val, mut names)
-			}
-		}
-		ExprStmt {
-			collect_expr_names(stmt.value, mut names)
-		}
-		If {
-			collect_expr_names(stmt.test, mut names)
-			for s in stmt.body {
-				collect_referenced_names(s, mut names)
-			}
-			for s in stmt.orelse {
-				collect_referenced_names(s, mut names)
-			}
-		}
-		While {
-			collect_expr_names(stmt.test, mut names)
-			for s in stmt.body {
-				collect_referenced_names(s, mut names)
-			}
-		}
-		else {}
-	}
-}
-
-// collect_expr_names gathers all Name ids referenced in an expression tree.
-fn collect_expr_names(expr Expr, mut names map[string]bool) {
-	match expr {
-		Name {
-			names[expr.id] = true
-		}
-		BinOp {
-			collect_expr_names(expr.left, mut names)
-			collect_expr_names(expr.right, mut names)
-		}
-		Call {
-			collect_expr_names(expr.func, mut names)
-			for a in expr.args {
-				collect_expr_names(a, mut names)
-			}
-		}
-		Attribute {
-			collect_expr_names(expr.value, mut names)
-		}
-		Subscript {
-			collect_expr_names(expr.value, mut names)
-			collect_expr_names(expr.slice, mut names)
-		}
-		UnaryOp {
-			collect_expr_names(expr.operand, mut names)
-		}
-		else {}
-	}
+	capture_text := if captures.len > 0 { ' [${captures.join(', ')}]' } else { '' }
+	op := if node.is_recursive { '=' } else { bind }
+	return '${prefix}${name} ${op} fn${capture_text} (${declarations.join(', ')}) ${ret} {\n${body_code}\n}'
 }
 
 // visit_function_def emits V code for a Python FunctionDef node.
@@ -1509,6 +1540,23 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 		}
 	}
 
+	// A nested definition's signature belongs to this lexical scope. Keep the
+	// current function's metadata, and discard metadata introduced by its body.
+	saved_nested_defaults := t.func_defaults.clone()
+	saved_nested_counts := t.func_param_count.clone()
+	saved_nested_params := t.func_param_types.clone()
+	saved_nested_returns := t.func_return_types.clone()
+	saved_nested_mut := t.mut_param_indices.clone()
+	saved_nested_generators := t.generator_yield_types.clone()
+	defer {
+		t.func_defaults = saved_nested_defaults
+		t.func_param_count = saved_nested_counts
+		t.func_param_types = saved_nested_params
+		t.func_return_types = saved_nested_returns
+		t.mut_param_indices = saved_nested_mut
+		t.generator_yield_types = saved_nested_generators
+	}
+
 	// Process body - separate nested function definitions
 	mut nested_fndefs := []string{}
 	mut body_stmts := []Stmt{}
@@ -1536,7 +1584,7 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 						nl_names << (inner_stmt as Nonlocal).names
 					}
 				}
-				if nl_names.len > 0 {
+				if stmt.is_nested || nl_names.len > 0 {
 					// Emit as an inline closure variable with a mut capture list.
 					body_stmts << Stmt(stmt)
 				} else {
@@ -1544,7 +1592,11 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 				}
 			}
 			AsyncFunctionDef {
-				nested_fndefs << t.visit_async_function_def(stmt)
+				if stmt.is_nested {
+					body_stmts << Stmt(stmt)
+				} else {
+					nested_fndefs << t.visit_async_function_def(stmt)
+				}
 			}
 			else {
 				body_stmts << stmt
@@ -1683,6 +1735,12 @@ pub fn (mut t VTranspiler) visit_async_function_def(node AsyncFunctionDef) strin
 		none
 	}
 	fd := FunctionDef{
+		is_nested:              node.is_nested
+		is_recursive:           node.is_recursive
+		capture_names:          node.capture_names
+		capture_mutable:        node.capture_mutable
+		capture_refusal:        node.capture_refusal
+		capture_types:          node.capture_types
 		name:                   node.name
 		args:                   node.args
 		body:                   node.body
@@ -1704,7 +1762,7 @@ pub fn (mut t VTranspiler) visit_async_function_def(node AsyncFunctionDef) strin
 			''
 		}
 	}
-	return t.visit_function_def(fd)
+	return t.visit_function_def_or_closure(fd)
 }
 
 // visit_protocol_class emits a V interface for a Python Protocol class.
@@ -2475,7 +2533,13 @@ pub fn (mut t VTranspiler) visit_assign(node Assign) string {
 		assigns[assigns.len - 1] = '${assigns[assigns.len - 1]}${trailing_comment}'
 	}
 
-	return assigns.join('\n')
+	code := assigns.join('\n')
+	for target in node.targets {
+		if target is Name && (t.local_idents[target.id] or { '' }).starts_with('(*') {
+			return 'unsafe {\n${t.indent_code(code, 1)}\n}'
+		}
+	}
+	return code
 }
 
 // handle_starred_unpack handles starred unpacking in assignments
@@ -2549,7 +2613,10 @@ pub fn (mut t VTranspiler) visit_aug_assign(node AugAssign) string {
 	}
 	target := t.visit_expr(target_node)
 	val := t.visit_expr(node.value)
-	code := t.visit_aug_assign_once(node, op_type, target, val)
+	mut code := t.visit_aug_assign_once(node, op_type, target, val)
+	if node.target is Name && target.starts_with('(*') {
+		code = 'unsafe {\n${t.indent_code(code, 1)}\n}'
+	}
 	if prelude.len > 0 {
 		return prelude.join('\n') + '\n' + code
 	}
@@ -9776,6 +9843,7 @@ fn (mut t VTranspiler) hoist_in_stmt(stmt Stmt, mut out []string) Stmt {
 	// stay an inline closure so it captures by reference.
 	if stmt is FunctionDef {
 		fd := stmt as FunctionDef
+		if fd.is_nested { return stmt }
 		for inner in fd.body {
 			if inner is Nonlocal {
 				return stmt
@@ -9785,6 +9853,7 @@ fn (mut t VTranspiler) hoist_in_stmt(stmt Stmt, mut out []string) Stmt {
 		return Stmt(Pass{})
 	}
 	if stmt is AsyncFunctionDef {
+		if stmt.is_nested { return stmt }
 		out << t.visit_async_function_def(stmt as AsyncFunctionDef)
 		return Stmt(Pass{})
 	}
