@@ -7477,9 +7477,27 @@ fn (mut t VTranspiler) if_condition(test Expr) string {
 // visit_ifexp emits V code for inline if-expressions (IfExp).
 pub fn (mut t VTranspiler) visit_ifexp(node IfExp) string {
 	test := t.visit_expr(node.test)
-	body := t.visit_expr(node.body)
-	orelse := t.visit_expr(node.orelse)
+	body := t.ifexp_value(*node.body)
+	orelse := t.ifexp_value(*node.orelse)
 	return 'if ${test} { ${body} } else { ${orelse} }'
+}
+
+// ifexp_value retains the float type of integral literals in a value choice.
+// json2 can decode 0.0 as an integer; an int first branch would truncate 2.5.
+fn (mut t VTranspiler) ifexp_value(expr Expr) string {
+	if expr is Constant && (expr.v_annotation or { '' }) == 'float' {
+		code := t.visit_constant(expr)
+		return if code.contains('.') || code.contains('e') || code.contains('E') {
+			code
+		} else {
+			'${code}.0'
+		}
+	}
+	if expr is UnaryOp && (expr.op is UAdd || expr.op is USub) && expr.operand is Constant
+		&& ((expr.operand as Constant).v_annotation or { '' }) == 'float' {
+		return op_to_symbol(get_unary_op_type(expr.op)) + t.ifexp_value(expr.operand)
+	}
+	return t.visit_expr(expr)
 }
 
 // visit_lambda emits V code for lambda expressions (Lambda).

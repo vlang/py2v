@@ -195,7 +195,9 @@ dynamic_cases := ['dynamic_container_elements', 'dynamic_membership', 'dynamic_c
 	'dynamic_methods', 'dynamic_or_default', 'dynamic_stores', 'dynamic_runtime_returns',
 	'dynamic_attributes', 'dynamic_truth', 'dynamic_mixed_membership', 'dynamic_boxed_bytes',
 	'dynamic_unpacking', 'dynamic_optional', 'dynamic_conditional', 'native_map_types',
-	'truth_container_values', 'truth_optional_values', 'truth_dynamic_negation', 'truth_dynamic_lazy']
+	'truth_container_values', 'truth_optional_values', 'truth_dynamic_negation', 'truth_dynamic_lazy',
+	'truth_optional_instances', 'truth_runtime_lists', 'truth_optional_calls', 'truth_optional_dynamic',
+	'truth_literals', 'truth_storage_default']
 dynamic_root := os.join_path(os.temp_dir(), 'py2v_dynamic_${os.getpid()}')
 os.mkdir_all(dynamic_root) or { panic(err) }
 mut dynamic_args := [][]string{}
