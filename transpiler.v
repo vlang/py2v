@@ -629,6 +629,26 @@ fn (mut t VTranspiler) runtime_helper(kind string) string {
 // runtime_helper_declaration returns the V source of the run-time helper `kind`.
 fn runtime_helper_declaration(kind string, name string) string {
 	return match kind {
+		'divmod_int', 'divmod_float', 'divmod_value' {
+			typ := if kind == 'divmod_int' {
+				'int'
+			} else if kind == 'divmod_float' {
+				'f64'
+			} else {
+				'pyrt.Value'
+			}
+			values := if kind == 'divmod_int' {
+				'pyrt.to_int(q), pyrt.to_int(r)'
+			} else if kind == 'divmod_float' {
+				'pyrt.to_float(q), pyrt.to_float(r)'
+			} else {
+				'q, r'
+			}
+			'fn ${name}[A, B](a A, b B) []${typ} {\n' +
+				'\tleft := pyrt.box(a)\n\tright := pyrt.box(b)\n' +
+				'\tq := pyrt.floordiv(left, right) or { panic(err) }\n' +
+				'\tr := pyrt.mod(left, right) or { panic(err) }\n\treturn [${values}]\n}'
+		}
 		'append_method' {
 			'fn ${name}[T](mut items []T) fn (T) {\n' +
 				'\treturn fn [mut items] [T](value T) { items << value }\n}'

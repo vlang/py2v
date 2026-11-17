@@ -996,8 +996,19 @@ fn visit_dict_fn(args []string) (string, bool) {
 }
 
 // Handle divmod() call
-fn visit_divmod(args []string) (string, bool) {
-	return '(${paren_left(args[0], 5)} / ${paren_right(args[1], 5)}, ${paren_left(args[0], 5)} % ${paren_right(args[1], 5)})', true
+fn visit_divmod(mut t VTranspiler, node Call, args []string) (string, bool) {
+	if args.len != 2 { return '', false }
+	left := t.infer_expr_type(node.args[0])
+	right := t.infer_expr_type(node.args[1])
+	kind := if is_v_int_type(left) && is_v_int_type(right) {
+		'divmod_int'
+	} else if left in ['int', 'f64', 'f32'] && right in ['int', 'f64', 'f32'] {
+		'divmod_float'
+	} else {
+		'divmod_value'
+	}
+	t.add_using('pyrt')
+	return '${t.runtime_helper(kind)}(${args.join(', ')})', true
 }
 
 // Handle ord() call - get unicode code point of character
@@ -1274,7 +1285,7 @@ fn dispatch_builtin_impl(mut t VTranspiler, fname string, node Call, args []stri
 			return DispatchResult{code, handled, ''}
 		}
 		'divmod' {
-			code, handled := visit_divmod(args)
+			code, handled := visit_divmod(mut t, node, args)
 			return DispatchResult{code, handled, ''}
 		}
 		'sys.exit' {
