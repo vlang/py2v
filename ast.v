@@ -462,7 +462,7 @@ pub mut:
 	capture_names   []string
 	capture_mutable []string
 	capture_refusal string
-	capture_types   map[string]string
+	capture_types   map[string]string // JSON uses name/annotation records for arbitrary Python names.
 	is_recursive    bool
 	name            string
 	args            Arguments
@@ -490,7 +490,7 @@ pub mut:
 	capture_names          []string
 	capture_mutable        []string
 	capture_refusal        string
-	capture_types          map[string]string
+	capture_types          map[string]string // JSON uses name/annotation records for arbitrary Python names.
 	is_recursive           bool
 	name                   string
 	args                   Arguments

@@ -328,7 +328,7 @@ call_results_cases := ['dict_get_missing', 'dict_get_eager', 'dict_get_chain', '
 	'closure_exit_finally', 'bound_append', 'conditional_condition', 'conditional_map', 'custom_remove',
 	'divmod_value', 'empty_isinstance', 'expression_walrus', 'independent_dunders',
 	'local_identifier_encoding', 'loop_scope_bindings', 'loop_unpack_targets', 'overload_definitions',
-	'parameter_bindings', 'private_method_calls']
+	'parameter_bindings', 'private_method_calls', 'closure_capture_discriminator']
 mut execution_args := [][]string{}
 for name in call_results_cases {
 	execution_args << [py2v, python, os.join_path(cases_dir, name + '.py'),
@@ -857,11 +857,11 @@ os.rmdir_all(frontend_root) or { panic(err) }
 // These are repository-authored fixtures, never third-party corpus programs.
 parser_root := os.join_path(os.temp_dir(), 'py2v_parser_${os.getpid()}')
 os.mkdir_all(parser_root) or { panic(err) }
-execution_cases := ['bound_append', 'conditional_condition', 'conditional_map', 'custom_remove',
-	'divmod_value', 'empty_isinstance', 'expression_walrus', 'independent_dunders',
-	'local_identifier_encoding', 'loop_scope_bindings', 'loop_unpack_targets', 'nested_closures',
-	'overload_definitions', 'parameter_bindings', 'private_method_calls', 'nonlocal_closure',
-	'nested_functions', 'closure_uses_class']
+execution_cases := ['bound_append', 'closure_capture_discriminator', 'conditional_condition',
+	'conditional_map', 'custom_remove', 'divmod_value', 'empty_isinstance', 'expression_walrus',
+	'independent_dunders', 'local_identifier_encoding', 'loop_scope_bindings', 'loop_unpack_targets',
+	'nested_closures', 'overload_definitions', 'parameter_bindings', 'private_method_calls',
+	'nonlocal_closure', 'nested_functions', 'closure_uses_class']
 syntax_cases := ['annotation_syntax', 'bound_append_rebound', 'dynamic_isinstance', 'dynamic_slice_axes',
 	'generator_value_context', 'independent_dunder_chain', 'qualified_constant_conditions',
 	'unresolved_qualified_call', 'unsupported_closure_capture', 'unsupported_expression_walrus',

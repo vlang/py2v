@@ -2033,7 +2033,12 @@ def _node_to_dict(node: ast.AST, mutable_vars: Set[str],
         result["is_recursive"] = getattr(node, "_is_recursive", False)
         result["capture_names"] = getattr(node, "_capture_names", [])
         result["capture_mutable"] = getattr(node, "_capture_mutable", [])
-        result["capture_types"] = getattr(node, "_capture_types", {})
+        # json2.Any treats a dictionary key named `_type` as a discriminator.
+        # Python binding names are data, so encode them as record values.
+        result["capture_types"] = [
+            {"name": name, "annotation": annotation}
+            for name, annotation in sorted(getattr(node, "_capture_types", {}).items())
+        ]
         result["capture_refusal"] = getattr(node, "_capture_refusal", "")
         result["condition_walrus_names"] = getattr(node, "_condition_walrus_names", [])
 

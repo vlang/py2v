@@ -303,11 +303,13 @@ fn parse_expr(m map[string]json2.Any) ?&Expr {
 	}
 }
 
-// Parse FunctionDef
-fn string_map_field(m map[string]json2.Any, field string) map[string]string {
+// capture_types_field reads binding names as values, never json2 discriminator keys.
+fn capture_types_field(m map[string]json2.Any) map[string]string {
 	mut result := map[string]string{}
-	for key, value in (m[field] or { json2.Any(map[string]json2.Any{}) }).as_map() {
-		result[key] = value.str()
+	for entry in (m['capture_types'] or { json2.Any([]json2.Any{}) }).as_array() {
+		record := entry.as_map()
+		name := (record['name'] or { json2.Any('') }).str()
+		result[name] = (record['annotation'] or { json2.Any('') }).str()
 	}
 	return result
 }
@@ -341,7 +343,7 @@ fn parse_function_def(m map[string]json2.Any) FunctionDef {
 		capture_names:          (m['capture_names'] or { json2.Any([]json2.Any{}) }).as_array().map(it.str())
 		capture_mutable:        (m['capture_mutable'] or { json2.Any([]json2.Any{}) }).as_array().map(it.str())
 		capture_refusal:        (m['capture_refusal'] or { json2.Any('') }).str()
-		capture_types:          string_map_field(m, 'capture_types')
+		capture_types:          capture_types_field(m)
 		raises:                 (m['raises'] or { json2.Any(false) }).bool()
 		name:                   m['name'] or { json2.Any('') }.str()
 		args:                   parse_arguments(m['args'] or { json2.Any(map[string]json2.Any{}) })
