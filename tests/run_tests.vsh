@@ -99,6 +99,26 @@ fn compare_execution(args []string) os.Result {
 	}
 }
 
+// check_parser formats and syntax-checks one fixture in its own temporary directory.
+fn check_parser(args []string) os.Result {
+	translated := os.exec([args[0], args[1]])
+	if translated.exit_code != 0 {
+		return translated
+	}
+	os.mkdir_all(os.dir(args[2])) or {
+		return os.Result{ exit_code: 1, output: err.msg() }
+	}
+	os.write_file(args[2], translated.output) or {
+		return os.Result{ exit_code: 1, output: err.msg() }
+	}
+	formatted := os.exec([@VEXE, 'fmt', '-w', args[2]])
+	syntax := os.exec([@VEXE, '-check-syntax', args[2]])
+	return os.Result{
+		exit_code: if formatted.exit_code == 0 && syntax.exit_code == 0 { 0 } else { 1 }
+		output:    formatted.output + syntax.output
+	}
+}
+
 const script_dir = os.dir(os.abs_path(@FILE))
 const project_dir = os.dir(script_dir)
 const cases_dir = os.join_path(script_dir, 'cases')
@@ -297,15 +317,18 @@ if init_translation.output.contains('p := Plain{}')
 }
 os.rmdir_all(init_root) or { panic(err) }
 
-// A dictionary get result may be None. Defaults run even for existing keys and
-// can change the dictionary before its value is read. Each case gets its own binary.
+// Call results and syntax lowerings must preserve CPython's observable output.
+// Each case gets its own generated source and binary.
 call_results_root := os.join_path(os.temp_dir(), 'py2v_call_results_${os.getpid()}')
 os.mkdir_all(call_results_root) or { panic(err) }
 call_results_cases := ['dict_get_missing', 'dict_get_eager', 'dict_get_chain', 'dict_get_receiver',
 	'dict_get_mutating', 'dict_get_compare', 'with_return', 'rebound_optional_params',
 	'argparse_join_value', 'join_string_iterable', 'subparser_parameter', 'nested_closures',
 	'nested_functions', 'nonlocal_closure', 'closure_uses_class', 'module_name_shadowed',
-	'closure_exit_finally']
+	'closure_exit_finally', 'bound_append', 'conditional_condition', 'conditional_map', 'custom_remove',
+	'divmod_value', 'empty_isinstance', 'expression_walrus', 'independent_dunders',
+	'local_identifier_encoding', 'loop_scope_bindings', 'loop_unpack_targets', 'overload_definitions',
+	'parameter_bindings', 'private_method_calls']
 mut execution_args := [][]string{}
 for name in call_results_cases {
 	execution_args << [py2v, python, os.join_path(cases_dir, name + '.py'),
@@ -828,6 +851,42 @@ for c in [['an elif chain of 120 branches', elif_py, 'x == 119'],
 	}
 }
 os.rmdir_all(frontend_root) or { panic(err) }
+
+// Parser regressions must survive V's formatter and syntax checker. Execute the
+// supported lowerings too: a parseable closure can still capture the wrong state.
+// These are repository-authored fixtures, never third-party corpus programs.
+parser_root := os.join_path(os.temp_dir(), 'py2v_parser_${os.getpid()}')
+os.mkdir_all(parser_root) or { panic(err) }
+execution_cases := ['bound_append', 'conditional_condition', 'conditional_map', 'custom_remove',
+	'divmod_value', 'empty_isinstance', 'expression_walrus', 'independent_dunders',
+	'local_identifier_encoding', 'loop_scope_bindings', 'loop_unpack_targets', 'nested_closures',
+	'overload_definitions', 'parameter_bindings', 'private_method_calls', 'nonlocal_closure',
+	'nested_functions', 'closure_uses_class']
+syntax_cases := ['annotation_syntax', 'bound_append_rebound', 'dynamic_isinstance', 'dynamic_slice_axes',
+	'generator_value_context', 'independent_dunder_chain', 'qualified_constant_conditions',
+	'unresolved_qualified_call', 'unsupported_closure_capture', 'unsupported_expression_walrus',
+	'unsupported_format_fields', 'unsupported_super_value']
+mut parser_cases := execution_cases.clone()
+parser_cases << syntax_cases
+mut parser_args := [][]string{}
+for case_name in parser_cases {
+	parser_args << [py2v, os.join_path(cases_dir, case_name + '.py'),
+		os.join_path(parser_root, case_name, 'main.v')]
+}
+parser_results := parallel.amap(parser_args, check_parser, workers: runtime.nr_jobs())
+for i, result in parser_results {
+	name := 'parser regression: ' + parser_cases[i]
+	if result.exit_code == 0 {
+		report('PASS', name, '')
+		passed++
+	} else {
+		report('FAIL', name, '')
+		println(excerpt_n(result.output, 25))
+		failed++
+		failures << fail_line('FAIL', name, '')
+	}
+}
+os.rmdir_all(parser_root) or { panic(err) }
 
 println('')
 println('----------------------------------------')
