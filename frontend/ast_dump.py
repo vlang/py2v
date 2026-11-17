@@ -4622,8 +4622,9 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
                     call = _runtime_call("call", [method, arguments], node)
                     call._api = "__pyrt__.call"
                     return call
-                call = _runtime_call("invoke", [node.func.value, name] + args, node)
-                call._invoked = True
+                arguments = ast.copy_location(ast.List(elts=args, ctx=ast.Load()), node)
+                call = _runtime_call("call_method", [node.func.value, name, arguments], node)
+                call._api = "__pyrt__.call_method"
                 return call
             if isinstance(node.func, ast.Name) and not node.keywords:
                 list_flags = any_list_parameters.get(getattr(node.func, "_binding", None), [])

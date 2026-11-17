@@ -44,7 +44,7 @@ fn typed_label(value Label) string {
 }
 
 fn name_py(value Any) !string {
-	return pyrt.to_str(pyrt.invoke(pyrt.getattr(pyrt.box(value), 'label')!, 'upper'))
+	return pyrt.to_str(pyrt.call_method(pyrt.box(pyrt.getattr(pyrt.box(value), 'label')!), 'upper', [])!)
 }
 
 fn name(value Any) string {
@@ -61,7 +61,7 @@ fn first(value Any) string {
 
 fn words_py(value Any) ! {
 	for word in pyrt.elements(pyrt.getattr(pyrt.box(value), 'words')!) {
-		println(pyrt.str(pyrt.invoke(word, 'upper')))
+		println(pyrt.str(pyrt.call_method(pyrt.box(word), 'upper', [])!))
 	}
 }
 

@@ -119,6 +119,23 @@ fn check_parser(args []string) os.Result {
 	}
 }
 
+// compare_uncaught_execution requires matching exception classes, messages and exit status.
+fn compare_uncaught_execution(args []string) os.Result {
+	result := compare_execution(args[..4])
+	want := args[4]
+	parts := result.output.replace('\r', '').split('\nV (exit 1):\n')
+	if result.exit_code == 1 && parts.len == 2
+		&& parts[0].starts_with('CPython (exit 1):\n')
+		&& parts[0].trim_space().split_into_lines().last() == want
+		&& parts[1].trim_space() == want {
+		return os.Result{}
+	}
+	return os.Result{
+		exit_code: 1
+		output:    'Expected ${want}\n${result.output}'
+	}
+}
+
 const script_dir = os.dir(os.abs_path(@FILE))
 const project_dir = os.dir(script_dir)
 const cases_dir = os.join_path(script_dir, 'cases')
@@ -220,7 +237,7 @@ dynamic_cases := ['dynamic_container_elements', 'dynamic_membership', 'dynamic_c
 	'truth_literals', 'truth_storage_default', 'truth_mixed_list_body', 'truth_mixed_list_else',
 	'truth_mixed_list_default', 'truth_boxed_floats', 'mixed_display_dynamic', 'json_runtime_options',
 	'truth_bool_context', 'truth_optional_returns', 'truth_native_objects', 'truth_local_class_hooks',
-	'dynamic_isinstance']
+	'dynamic_isinstance', 'dynamic_method_errors']
 dynamic_root := os.join_path(os.temp_dir(), 'py2v_dynamic_${os.getpid()}')
 os.mkdir_all(dynamic_root) or { panic(err) }
 mut dynamic_args := [][]string{}
@@ -240,6 +257,27 @@ for i, result in dynamic_results {
 			continue
 		}
 	}
+	if result.exit_code == 0 {
+		report('PASS', name, '')
+		passed++
+	} else {
+		report('FAIL', name, '')
+		println(result.output)
+		failed++
+		failures << fail_line('FAIL', name, '')
+	}
+}
+uncaught_cases := ['dynamic_method_uncaught_type', 'dynamic_method_uncaught_attr']
+uncaught_messages := ['TypeError: sequence item 0: expected str instance, int found',
+	"AttributeError: 'int' object has no attribute 'append'"]
+mut uncaught_args := [][]string{}
+for i, name in uncaught_cases {
+	uncaught_args << [py2v, python, os.join_path(cases_dir, name + '.py'),
+		os.join_path(dynamic_root, name + '.v'), uncaught_messages[i]]
+}
+uncaught_results := parallel.amap(uncaught_args, compare_uncaught_execution, workers: 2)
+for i, result in uncaught_results {
+	name := 'runtime exception: ' + uncaught_cases[i]
 	if result.exit_code == 0 {
 		report('PASS', name, '')
 		passed++

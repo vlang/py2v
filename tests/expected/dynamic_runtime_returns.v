@@ -68,14 +68,14 @@ fn invoke_from_list(callbacks []Any) Any {
 }
 
 fn main() {
-	println(pyrt.str(pyrt.invoke(pyrt.item_at(payload(), pyrt.box('name')), 'upper')))
+	println(pyrt.str((pyrt.call_method(pyrt.box(pyrt.item_at(payload(), pyrt.box('name'))), 'upper', []) or { pyrt.fail(err) })))
 	println(pyrt.str(pyrt.item_at(pyrt.item_at(payload(), pyrt.box('words')), pyrt.box(0))))
 	for word in pyrt.elements(pyrt.item_at(payload(), pyrt.box('words'))) {
-		println(pyrt.str(pyrt.invoke(word, 'upper')))
+		println(pyrt.str((pyrt.call_method(pyrt.box(word), 'upper', []) or { pyrt.fail(err) })))
 	}
 	println(if pyrt.has(payload(), pyrt.box('name')) { 'True' } else { 'False' })
 	println(pyrt.length(words()))
-	println(pyrt.str(pyrt.box(pyrt.elements(words()).map(pyrt.invoke(it, 'upper')))))
-	println(pyrt.str(pyrt.invoke(text(), 'strip')))
+	println(pyrt.str(pyrt.box(pyrt.elements(words()).map((pyrt.call_method(pyrt.box(it), 'upper', []) or { pyrt.fail(err) })))))
+	println(pyrt.str((pyrt.call_method(pyrt.box(text()), 'strip', []) or { pyrt.fail(err) })))
 	println(pyrt.str(nothing()))
 }

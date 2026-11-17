@@ -60,18 +60,22 @@ fn show2(flag bool) {
 	println(pyrt.str(result))
 }
 
-fn pick(flag bool, record Any) {
+fn pick_py(flag bool, record Any) ! {
 	mut value := pyrt.none_
 	mut extra := pyrt.none_
 	value = pyrt.item_at(record, pyrt.box('key'))
 	// except handlers are not translated: see the TODO(py2v) note above
 	//   except KeyError: 1 statement(s) need an `or { ... }` equivalent
 	if flag {
-		extra = pyrt.invoke(record, 'get', pyrt.box('other'))
+		extra = pyrt.call_method(pyrt.box(record), 'get', [pyrt.box('other')])!
 	} else {
 		extra = value
 	}
 	println('${pyrt.str(value)} ${pyrt.str(extra)}')
+}
+
+fn pick(flag bool, record Any) {
+	pick_py(flag, record) or { pyrt.fail(err) }
 }
 
 fn main() {

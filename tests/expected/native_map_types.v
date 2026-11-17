@@ -65,12 +65,20 @@ fn shared_value() {
 	println(original['count'])
 }
 
+fn bare_parameter_py(records map[string]string) ! {
+	println(pyrt.str(pyrt.call_method(pyrt.box(records['title']), 'upper', [])!))
+}
+
 fn bare_parameter(records map[string]string) {
-	println(pyrt.str(pyrt.invoke(records['title'], 'upper')))
+	bare_parameter_py(records) or { pyrt.fail(err) }
+}
+
+fn explicit_runtime_py(records map[string]Any) ! {
+	println(pyrt.str(pyrt.call_method(pyrt.box(Any(pyrt.map_get(records, 'title', pyrt.box('')))), 'upper', [])!))
 }
 
 fn explicit_runtime(records map[string]Any) {
-	println(pyrt.str(pyrt.invoke(Any(pyrt.map_get(records, 'title', pyrt.box(''))), 'upper')))
+	explicit_runtime_py(records) or { pyrt.fail(err) }
 }
 
 fn runtime_local(value Any) Any {
@@ -121,8 +129,8 @@ fn main() {
 		'title': 'dot'
 	})
 	println(pyrt.str(runtime_local('hop')))
-	println(pyrt.str(pyrt.invoke(Any(pyrt.map_get(empty_runtime(), 'title', pyrt.box(''))), 'upper')))
+	println(pyrt.str((pyrt.call_method(pyrt.box(Any(pyrt.map_get(empty_runtime(), 'title', pyrt.box('')))), 'upper', []) or { pyrt.fail(err) })))
 	declared_float()
 	rebound()
-	println(pyrt.str(pyrt.invoke(bare_return()['title'], 'upper')))
+	println(pyrt.str((pyrt.call_method(pyrt.box(bare_return()['title']), 'upper', []) or { pyrt.fail(err) })))
 }

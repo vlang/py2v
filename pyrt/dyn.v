@@ -177,6 +177,11 @@ pub fn fail(err IError) {
 		eprintln(str(code))
 		exit(1)
 	}
+	if err is PyError {
+		message := err.msg()
+		eprintln(if message == '' { err.class_name } else { '${err.class_name}: ${message}' })
+		exit(1)
+	}
 	panic(err)
 }
 

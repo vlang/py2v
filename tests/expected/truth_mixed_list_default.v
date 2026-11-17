@@ -33,14 +33,18 @@ fn marker(value int) int {
 	return value
 }
 
-fn report(flag bool, value Any) {
+fn report_py(flag bool, value Any) ! {
 	selected := if flag { value } else { pyrt.empty_list() }
 	result := if pyrt.truth(selected) { selected } else { pyrt.box([pyrt.box(marker(1))]) }
-	pyrt.invoke(result, 'append', pyrt.box(2))
+	pyrt.call_method(pyrt.box(result), 'append', [pyrt.box(2)])!
 	println(pyrt.str(selected))
 	println(pyrt.str(value))
 	println(pyrt.str(result))
 	println(pyrt.str(if pyrt.truth(selected) { selected } else { pyrt.empty_list() }))
+}
+
+fn report(flag bool, value Any) {
+	report_py(flag, value) or { pyrt.fail(err) }
 }
 
 fn main() {
