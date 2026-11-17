@@ -3297,6 +3297,140 @@ def _annotate_returns(tree: ast.Module, facts: Optional[infer.TypeFacts]) -> Non
             fn.returns = _annotation_node(text, fn)
 
 
+def _lower_frozensets(tree: ast.Module, table: Optional[symbols.SymbolTable]) -> None:
+    """Construct the builtin immutable set through the runtime's iterable adapter."""
+    if table is None or any(binding.name == "pyrt" for binding in table.bindings):
+        return
+    if not any(isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+               and node.func.id == "frozenset" and getattr(node.func, "_binding", None) is None
+               for node in ast.walk(tree)):
+        return
+    frozen_bindings: Set[int] = set()
+    proven_reads: Set[int] = set()
+    origins: Dict[int, ast.expr] = {}
+    module_statements = {id(stmt) for stmt in tree.body}
+    for fn in ast.walk(tree):
+        if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            proven_reads.update(_definitely_assigned_loads(fn))
+    for stmt in ast.walk(tree):
+        if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1:
+            target, value = stmt.targets[0], stmt.value
+        elif isinstance(stmt, ast.AnnAssign) and stmt.value is not None:
+            target, value = stmt.target, stmt.value
+        else:
+            continue
+        binding = getattr(target, "_binding", None) if isinstance(target, ast.Name) else None
+        if binding is not None and not table.bindings[binding].rebound:
+            if table.bindings[binding].scope != 0 or id(stmt) in module_statements:
+                origins[binding] = value
+
+    def literal_origin(node: ast.Name) -> Optional[ast.expr]:
+        current: ast.expr = node
+        seen: Set[int] = set()
+        while isinstance(current, ast.Name):
+            binding = getattr(current, "_binding", None)
+            if binding is None or binding in seen or binding not in origins:
+                return None
+            seen.add(binding)
+            value = origins[binding]
+            if id(current) not in proven_reads and not (
+                    table.bindings[binding].scope == 0
+                    and (value.lineno, value.col_offset) < (current.lineno, current.col_offset)):
+                return None
+            current = value
+        if isinstance(current, ast.Constant) and isinstance(current.value, float):
+            return current
+        if (isinstance(current, ast.UnaryOp) and isinstance(current.op, (ast.USub, ast.UAdd))
+                and isinstance(current.operand, ast.Constant) and isinstance(current.operand.value, float)):
+            return current
+        return None
+
+    def hashable_literal(node: ast.AST) -> bool:
+        if isinstance(node, ast.Constant):
+            return node.value is None or isinstance(node.value, (bool, int, float, str, bytes))
+        if isinstance(node, ast.Tuple):
+            return all(hashable_literal(item) for item in node.elts)
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.USub, ast.UAdd)):
+            return isinstance(node.operand, ast.Constant) and type(node.operand.value) in (int, float)
+        return bool(getattr(node, "_frozen_literal", False))
+
+    def literal_iterable(node: ast.AST) -> bool:
+        if isinstance(node, ast.Constant):
+            return isinstance(node.value, (str, bytes))
+        if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
+            return all(hashable_literal(item) for item in node.elts)
+        return False
+
+    def boxed(node: ast.expr) -> ast.expr:
+        # Recover readonly float literals only through proven assignments.
+        if isinstance(node, ast.Name):
+            literal = literal_origin(node)
+            if literal is not None:
+                return boxed(copy.deepcopy(literal))
+        if isinstance(node, ast.Constant) and isinstance(node.value, float):
+            number = _runtime_call("to_float", [_runtime_call("box", [node], node)], node)
+            return _runtime_call("box", [number], node)
+        if (isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.USub, ast.UAdd))
+                and isinstance(node.operand, ast.Constant) and isinstance(node.operand.value, float)):
+            number = _runtime_call("to_float", [_runtime_call("box", [node.operand], node)], node)
+            signed = ast.copy_location(ast.UnaryOp(op=node.op, operand=number), node)
+            return _runtime_call("box", [signed], node)
+        if isinstance(node, (ast.List, ast.Tuple, ast.Set)) and not any(
+                isinstance(item, ast.Starred) for item in node.elts):
+            items = ast.copy_location(ast.List(elts=[boxed(item) for item in node.elts],
+                                               ctx=ast.Load()), node)
+            packed = items if items.elts else _runtime_call(
+                "elements", [_runtime_call("empty_list", [], node)], node)
+            if isinstance(node, ast.Tuple):
+                return _runtime_call("Value", [_runtime_call("new_tuple", [packed], node)], node)
+            if isinstance(node, ast.Set):
+                made = _runtime_call("new_set", [packed], node)
+                made._api = "__pyrt__.new_set"
+                return _runtime_call("Value", [made], node)
+            return _runtime_call("box", [items], node)
+        return _deep_box(node)
+
+    class Lower(ast.NodeTransformer):
+        def visit_Call(self, node: ast.Call) -> ast.AST:
+            self.generic_visit(node)
+            if not (isinstance(node.func, ast.Name) and node.func.id == "frozenset"
+                    and getattr(node.func, "_binding", None) is None
+                    and len(node.args) <= 1 and not node.keywords
+                    and not any(isinstance(arg, ast.Starred) for arg in node.args)):
+                return node
+            iterable = node.args[0] if node.args else ast.copy_location(
+                ast.List(elts=[], ctx=ast.Load()), node)
+            literal = literal_iterable(iterable)
+            result = _runtime_call("frozenset_from", [boxed(iterable)], node)
+            result._api = "__pyrt__.frozenset_from"
+            result._frozen_literal = literal
+            return result
+
+    Lower().visit(tree)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and isinstance(node.value, ast.Call) and getattr(
+                node.value, "_api", "") == "__pyrt__.frozenset_from":
+            frozen_bindings.update(getattr(target, "_binding", -1) for target in node.targets
+                                   if isinstance(target, ast.Name))
+
+    class Membership(ast.NodeTransformer):
+        def visit_Compare(self, node: ast.Compare) -> ast.AST:
+            self.generic_visit(node)
+            if len(node.ops) != 1 or not isinstance(node.ops[0], (ast.In, ast.NotIn)):
+                return node
+            right = node.comparators[0]
+            if not (isinstance(right, ast.Name) and getattr(right, "_binding", None) in frozen_bindings
+                    or isinstance(right, ast.Call) and getattr(right, "_api", "") == "__pyrt__.frozenset_from"):
+                return node
+            call = _runtime_call("item_in", [boxed(node.left), right], node)
+            call._api = "__pyrt__.item_in"
+            if isinstance(node.ops[0], ast.NotIn):
+                return ast.copy_location(ast.UnaryOp(op=ast.Not(), operand=call), node)
+            return call
+
+    Membership().visit(tree)
+
+
 def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable],
                           facts: Optional[infer.TypeFacts],
                           any_lists: Optional[set] = None) -> None:
@@ -4001,6 +4135,8 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
 
 def _constant_display(node: ast.AST, constants: set) -> bool:
     """Whether a value is built only from literals and names of module constants."""
+    if getattr(node, "_frozen_literal", False):
+        return True
     if isinstance(node, ast.Constant):
         return not isinstance(node.value, (bytes, complex)) and node.value is not Ellipsis
     if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
@@ -6078,6 +6214,7 @@ def process_file(file_path: str, project: Optional[ProjectFacts] = None) -> str:
     if project is None:
         _annotate_parameters_from_calls(tree, table, facts)
     _annotate_returns(tree, facts)
+    _lower_frozensets(tree, table)
     _lower_dynamic_values(tree, table, facts, any_lists)
     _box_mixed_displays(tree, table, facts)
     _parameterize_bare_containers(tree, table, facts)

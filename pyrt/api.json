@@ -1,5 +1,38 @@
 [
   {
+    "python": "__pyrt__.frozenset_from",
+    "v": "frozenset_from",
+    "module": "pyrt",
+    "kind": "function",
+    "raises": true,
+    "returns": "Any",
+    "params": [
+      {"name": "iterable", "type": "Any"}
+    ],
+    "status": "implemented",
+    "notes": "Build an immutable set from an iterable; return an existing frozenset unchanged.",
+    "v_kind": "fn",
+    "v_result": "result",
+    "v_returns": "!Value"
+  },
+  {
+    "python": "__pyrt__.item_in",
+    "v": "item_in",
+    "module": "pyrt",
+    "kind": "function",
+    "raises": true,
+    "returns": "bool",
+    "params": [
+      {"name": "item", "type": "Any"},
+      {"name": "container", "type": "Any"}
+    ],
+    "status": "implemented",
+    "notes": "Membership with the item argument evaluated before the container.",
+    "v_kind": "fn",
+    "v_result": "result",
+    "v_returns": "!bool"
+  },
+  {
     "python": "__pyrt__.Completion",
     "v": "Completion",
     "module": "pyrt",

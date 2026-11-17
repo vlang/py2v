@@ -346,6 +346,48 @@ if assignment_analysis.exit_code == 0 {
 	failures << fail_line('FAIL', assignment_analysis_name, '')
 }
 
+// Compile each builtin witness once and compare its output with CPython.
+for witness in [
+	['builtin_frozenset',
+		'0 2 2 2 1\nTrue False\n2 0 0\nleft\nright\nTrue\nfrozenset({1.0})\nfrozenset({-0.0})\nfrozenset({1.0})\nfrozenset({-0.0})\nFalse True\nunhashable\nmember error\nnot iterable\n'],
+	['builtin_frozenset_shadow', '22\n'],
+] {
+	builtin_root := os.join_path(os.temp_dir(), 'py2v_builtin_${witness[0]}_${os.getpid()}')
+	os.mkdir_all(builtin_root) or { panic(err) }
+	source := os.join_path(cases_dir, witness[0] + '.py')
+	translated := os.exec([py2v, source])
+	generated := os.join_path(builtin_root, 'main.v')
+	binary := os.join_path(builtin_root, 'probe' + $if windows { '.exe' } $else { '' })
+	os.write_file(generated, translated.output) or { panic(err) }
+	built := os.exec([@VEXE, '-path', project_dir + '|@vlib|@vmodules', '-o', binary, generated])
+	native := if built.exit_code == 0 { os.exec([binary]) } else { built }
+	cpython := os.exec([python, '-B', source])
+	name := 'builtins: ${witness[0]} execution'
+	if translated.exit_code == 0 && native.exit_code == 0 && cpython.exit_code == 0
+		&& native.output.replace('\r', '') == witness[1]
+		&& cpython.output.replace('\r', '') == witness[1] {
+		report('PASS', name, '')
+		passed++
+	} else {
+		report('FAIL', name, '')
+		println(excerpt_n(native.output, 20))
+		failed++
+		failures << fail_line('FAIL', name, '')
+	}
+	os.rmdir_all(builtin_root) or { panic(err) }
+}
+frozen_unit := os.exec([@VEXE, 'test', os.join_path(project_dir, 'pyrt', 'frozenset_from_test.v')])
+frozen_unit_name := 'builtins: immutable set identity and copying'
+if frozen_unit.exit_code == 0 {
+	report('PASS', frozen_unit_name, '')
+	passed++
+} else {
+	report('FAIL', frozen_unit_name, '')
+	println(excerpt_n(frozen_unit.output, 20))
+	failed++
+	failures << fail_line('FAIL', frozen_unit_name, '')
+}
+
 // An initializer that cannot start from a valid zero struct must fail visibly.
 // Keep these negative cases out of the generated-code expectation loop.
 init_errors := os.join_path(os.temp_dir(), 'py2v_init_errors_${os.getpid()}', 'main')
