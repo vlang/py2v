@@ -22,6 +22,8 @@ pub const v_type_map = {
 	'set':      '[]Any'
 	'Set':      '[]Any'
 	'object':   'Any'
+	'type':     'Any'
+	'Type':     'Any'
 	'float':    'f64'
 	'i16':      'i16'
 	'i32':      'int'
@@ -241,6 +243,14 @@ pub fn map_type_except(typename string, classes []string) string {
 	}
 	if classes.any(typename.starts_with('${it}[')) {
 		return typename
+	}
+	for wrapper in ['ClassVar[', 'Final['] {
+		if typename.starts_with(wrapper) && typename.ends_with(']') {
+			return map_type_except(typename[wrapper.len..typename.len - 1], classes)
+		}
+	}
+	if typename.starts_with('type[') || typename.starts_with('Type[') {
+		return 'Any'
 	}
 	// Check if it's a container type (uppercase or PEP 585 lowercase)
 	if typename.starts_with('List[') || typename.starts_with('list[')

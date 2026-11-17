@@ -8681,10 +8681,17 @@ fn (mut t VTranspiler) annotation_typename(ann ?Expr) string {
 			subscripted := *a.value
 			value := if subscripted is Name
 				&& subscripted.id in ['list', 'List', 'set', 'Set', 'Dict', 'Callable',
-					'MutableSequence'] {
+					'MutableSequence', 'type', 'Type'] {
 				subscripted.id
 			} else {
 				t.annotation_typename(subscripted)
+			}
+			if value in ['ClassVar', 'Final'] {
+				return t.annotation_typename(*a.slice)
+			}
+			if value in ['type', 'Type'] {
+				t.generated_code_has_any_type = true
+				return 'Any'
 			}
 
 			// Union[A, B, ...] → V named sum type comment; inline use emits first type
@@ -8743,7 +8750,9 @@ fn (mut t VTranspiler) annotation_typename(ann ?Expr) string {
 				return 'fn (Any) Any'
 			}
 
-			index := t.annotation_typename(*a.slice)
+			raw_index := t.annotation_typename(*a.slice)
+			index := if raw_index == '' { 'Any' } else { raw_index }
+			if raw_index == '' { t.generated_code_has_any_type = true }
 
 			// A class of this module named Sequence or Iterable stays that class.
 			mapped := if value in t.abc_named_classes() {
@@ -8827,12 +8836,21 @@ fn (mut t VTranspiler) annotation_typename(ann ?Expr) string {
 				if a.slice is Tuple {
 					kvs := (a.slice as Tuple).elts
 					if kvs.len == 2 {
-						k := t.annotation_typename(kvs[0])
-						v := t.annotation_typename(kvs[1])
+						mut k := t.annotation_typename(kvs[0])
+						mut v := t.annotation_typename(kvs[1])
+						if k == '' {
+							k = 'Any'
+							t.generated_code_has_any_type = true
+						}
+						if v == '' {
+							v = 'Any'
+							t.generated_code_has_any_type = true
+						}
 						return 'map[${k}]${v}'
 					}
 				}
-				return 'map[${index}]'
+				t.generated_code_has_any_type = true
+				return 'map[${index}]Any'
 			}
 			// User-defined generic (e.g. Stack[T]) — emit Name[T] style only when
 			// the base type is a user class name (PascalCase/UpperCase start) and the
