@@ -3386,6 +3386,18 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
             return getattr(node.func, "_binding", None) in any_dict_functions
         return isinstance(node, ast.Name) and getattr(node, "_binding", None) in any_dict_bindings
 
+    def any_dict_get(node: ast.AST) -> bool:
+        """A string-keyed dictionary's get returns a runtime value, including None."""
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "get" and any_dict(node.func.value)
+                and not node.keywords and len(node.args) in (1, 2)
+                and not any(isinstance(a, ast.Starred) for a in node.args)):
+            return False
+        key_type = getattr(node.args[0], "_assumed", getattr(node.args[0], "_type", None))
+        if key_type is None or facts.types[key_type]["k"] != "str":
+            return False
+        return len(node.args) == 1 or dynamic(node.args[1]) or boxable(node.args[1])
+
     # `a or b` and `a and b` used as conditions keep V's operators; used for their value,
     # with a value of unknown type first, the runtime chooses.
     tested_values = set()
@@ -3439,7 +3451,7 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
             return getattr(node, "_binding", None) in dynamic_bindings
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
             return getattr(node.func, "_binding", None) in dynamic_returning
-        if dynamic_method_call(node) or chosen_value(node):
+        if any_dict_get(node) or dynamic_method_call(node) or chosen_value(node):
             return True
         if isinstance(node, ast.Subscript) and not isinstance(node.slice, ast.Slice):
             return dynamic(node.value) or any_list(node.value) or any_dict(node.value)
@@ -3609,6 +3621,15 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
             left, right = node.left, node.comparators[0]
             if not (dynamic(left) or dynamic(right)):
                 return node
+            if isinstance(node.ops[0], (ast.Is, ast.IsNot)):
+                value = (left if isinstance(right, ast.Constant) and right.value is None
+                         else right if isinstance(left, ast.Constant) and left.value is None
+                         else None)
+                if value is not None:
+                    call = _runtime_call("is_none", [value], node)
+                    if isinstance(node.ops[0], ast.IsNot):
+                        return ast.copy_location(ast.UnaryOp(op=ast.Not(), operand=call), node)
+                    return call
             if isinstance(node.ops[0], (ast.Eq, ast.NotEq)):
                 call = _runtime_call("eq", [boxed(left), boxed(right)], node)
                 if isinstance(node.ops[0], ast.NotEq):
@@ -3621,7 +3642,13 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
 
         def visit_Call(self, node: ast.Call) -> ast.AST:
             is_method = dynamic_method_call(node)
+            is_dict_get = any_dict_get(node)
             self.generic_visit(node)
+            if is_dict_get and isinstance(node.func, ast.Attribute):
+                default = node.args[1] if len(node.args) == 2 else ast.copy_location(
+                    ast.Constant(value=None), node)
+                return _runtime_call("map_get", [node.func.value, node.args[0],
+                                                 _deep_box(default)], node)
             if is_method:
                 name = ast.copy_location(ast.Constant(value=node.func.attr), node)
                 args = [a if dynamic(a) else _runtime_call("box", [a], a) for a in node.args]

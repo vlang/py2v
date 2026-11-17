@@ -35,6 +35,8 @@ pub mut:
 	init_constructors map[string]InitConstructor
 	// Explicit module-level import bindings, for constructor re-exports.
 	init_import_bindings map[string]string
+	// Module function signatures used to fill omitted scalar defaults.
+	defaulted_functions map[string]FunctionDef
 	// class_bases_by_path maps `module.Class` to its base class names, so a
 	// struct literal built in another module can fill the embedded bases.
 	class_bases_by_path map[string][]string

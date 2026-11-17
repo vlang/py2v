@@ -9,7 +9,7 @@ fn double(x int) int {
 
 fn outer() int {
 	// WARNING: async with converted to sync with defer
-	if true {
+	{
 		contextlib.AsyncExitStack()
 		base := 5
 		// pass

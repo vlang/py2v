@@ -61,7 +61,7 @@ pub fn py2v_new_mock_file(name string) MockFile {
 }
 
 fn show() {
-	if true {
+	{
 		f := py2v_new_mock_file('test.txt')
 		println(f.read())
 	}

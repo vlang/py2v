@@ -1,6 +1,9 @@
 #!/usr/bin/env -S v
 
 import os
+import arrays.parallel
+import time
+import runtime
 
 // Unified py2v test runner.
 //
@@ -67,11 +70,32 @@ fn excerpt_n(text string, n int) string {
 // run_generated separates compiler diagnostics from the program's output.
 fn run_generated(source string) os.Result {
 	bin := source + $if windows { '.exe' } $else { '.bin' }
-	build := os.exec([@VEXE, '-o', bin, source])
+	build := os.exec([@VEXE, '-path', '@vlib|${project_dir}|@vmodules', '-o', bin, source])
 	if build.exit_code != 0 {
 		return build
 	}
 	return os.exec([bin])
+}
+
+// compare_execution checks observable output against CPython, beyond fixture text.
+fn compare_execution(args []string) os.Result {
+	translation := os.exec([args[0], args[2]])
+	if translation.exit_code != 0 {
+		return translation
+	}
+	os.write_file(args[3], translation.output) or {
+		return os.Result{ exit_code: 1, output: err.msg() }
+	}
+	python_run := os.exec([args[1], '-I', args[2]])
+	v_run := run_generated(args[3])
+	if python_run.exit_code == 0 && v_run.exit_code == 0
+		&& python_run.output.replace('\r', '') == v_run.output.replace('\r', '') {
+		return os.Result{}
+	}
+	return os.Result{
+		exit_code: 1
+		output:    'CPython (exit ${python_run.exit_code}):\n${python_run.output}\nV (exit ${v_run.exit_code}):\n${v_run.output}'
+	}
 }
 
 const script_dir = os.dir(os.abs_path(@FILE))
@@ -79,7 +103,7 @@ const project_dir = os.dir(script_dir)
 const cases_dir = os.join_path(script_dir, 'cases')
 const expected_dir = os.join_path(script_dir, 'expected')
 const package_fixtures = ['pkg_imports', 'pkg_lib_main', 'pkg_multi', 'pkg_multi2', 'pkg_true_div',
-	'pkg_init_execution', 'pkg_private_names']
+	'pkg_init_execution', 'pkg_private_names', 'pkg_call_defaults']!
 
 mut py2v := resolve_py2v()
 
@@ -94,6 +118,7 @@ if !os.exists(py2v) {
 	}
 }
 
+suite_watch := time.new_stopwatch()
 println('Running tests...')
 println('')
 
@@ -190,6 +215,32 @@ if init_translation.output.contains('p := Plain{}')
 }
 os.rmdir_all(init_root) or { panic(err) }
 
+// A dictionary get result may be None. Defaults run even for existing keys and
+// can change the dictionary before its value is read. Each case gets its own binary.
+call_results_root := os.join_path(os.temp_dir(), 'py2v_call_results_${os.getpid()}')
+os.mkdir_all(call_results_root) or { panic(err) }
+call_results_cases := ['dict_get_missing', 'dict_get_eager', 'dict_get_chain', 'dict_get_receiver',
+	'dict_get_mutating', 'dict_get_compare', 'with_return']
+mut execution_args := [][]string{}
+for name in call_results_cases {
+	execution_args << [py2v, python, os.join_path(cases_dir, name + '.py'),
+		os.join_path(call_results_root, name + '.v')]
+}
+execution_results := parallel.amap(execution_args, compare_execution)
+for i, result in execution_results {
+	name := 'call results: ${call_results_cases[i]} execution'
+	if result.exit_code == 0 {
+		report('PASS', name, '')
+		passed++
+	} else {
+		report('FAIL', name, '')
+		println(result.output)
+		failed++
+		failures << fail_line('FAIL', name, '')
+	}
+}
+os.rmdir_all(call_results_root) or { panic(err) }
+
 // An initializer that cannot start from a valid zero struct must fail visibly.
 // Keep these negative cases out of the generated-code expectation loop.
 init_errors := os.join_path(os.temp_dir(), 'py2v_init_errors_${os.getpid()}', 'main')
@@ -241,6 +292,39 @@ for pkg in package_fixtures {
 	} else {
 		report('PASS', pkg, ' (multi-module)')
 		passed++
+		if pkg == 'pkg_call_defaults' {
+			for stem in ['use', 'keywords'] {
+				actual := os.read_file(os.join_path(out_dir, 'py_pkg_call_defaults_consumer', stem + '.v')) or { '' }
+				expected := os.read_file(os.join_path(expected_dir, pkg, 'consumer', stem + '.v')) or { '' }
+				golden_name := 'call defaults: package fixture ' + stem
+				if actual.len > 0 && expected.len > 0 && actual.replace('\r', '') == expected.replace('\r', '') {
+					report('PASS', golden_name, '')
+					passed++
+				} else {
+					report('FAIL', golden_name, '')
+					failed++
+					failures << fail_line('FAIL', golden_name, '')
+				}
+			}
+			entry := os.join_path(out_dir, 'defaults_main.v')
+			os.write_file(entry, 'module main\n\nimport py_pkg_call_defaults_consumer\n\nfn main() {\n\tpy_pkg_call_defaults_consumer.run()\n}\n') or { panic(err) }
+			v_run := run_generated(entry)
+			py_run := os.exec([python, '-I', '-B', '-c',
+				'import sys; sys.path.insert(0, sys.argv[1]); from pkg_call_defaults.consumer.use import run; run()',
+				cases_dir])
+			name := 'call defaults: package execution'
+			if v_run.exit_code == 0 && py_run.exit_code == 0 && py_run.output.len > 0
+				&& v_run.output.replace('\r', '') == py_run.output.replace('\r', '') {
+				report('PASS', name, '')
+				passed++
+			} else {
+				report('FAIL', name, '')
+				println(excerpt_n(v_run.output, 20))
+				println(excerpt_n(py_run.output, 20))
+				failed++
+				failures << fail_line('FAIL', name, '')
+			}
+		}
 		if pkg == 'pkg_init_execution' {
 			entry := os.join_path(out_dir, 'constructor_main.v')
 			os.write_file(entry,
@@ -460,6 +544,7 @@ println('')
 println('----------------------------------------')
 println('Summary: ' + passed.str() + ' passed, ' + failed.str() +
 	' failed, ' + skipped.str() + ' skipped')
+println('Timing: ${suite_watch.elapsed().milliseconds()} ms; execution jobs: ${runtime.nr_jobs()}')
 
 if failures.len > 0 {
 	println('')
