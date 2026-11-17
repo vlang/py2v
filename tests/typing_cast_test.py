@@ -3,6 +3,7 @@ import ast
 from pathlib import Path
 import sys
 import unittest
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "frontend"))
 import ast_dump
@@ -26,6 +27,8 @@ class TypingCastTest(unittest.TestCase):
             "from typing import cast, Any\nanswer = cast(dict[str, Any], 1)",
             "from typing import cast, Callable, Any\nanswer = cast(Callable[..., Any], 1)",
             "from typing import cast\nanswer = cast('unknown type', 1)",
+            "from typing import cast\nanswer = cast(str | None, 1)",
+            "from typing import cast\nanswer = cast(None | (str | int), 1)",
         ]
         for source in sources:
             with self.subTest(source=source):
@@ -47,6 +50,10 @@ class TypingCastTest(unittest.TestCase):
             "from .typing import cast\nanswer = cast(float, 1)",
             "from typing import cast, List\nanswer = cast(List['bad syntax !'], 1)",
             "from typing import cast, List, Optional\nanswer = cast(List[Optional], 1)",
+            "from typing import cast\nanswer = cast(None | None, 1)",
+            "from typing import cast\nanswer = cast((None | None) | int, 1)",
+            "from typing import cast\nanswer = cast(UserType | None, 1)",
+            "from typing import cast\nstr = custom\nanswer = cast(str | None, 1)",
         ]
         for source in sources:
             with self.subTest(source=source):
@@ -63,6 +70,30 @@ class TypingCastTest(unittest.TestCase):
             cast(List[invalid_reference], 1)
         with self.assertRaises(TypeError):
             cast(List[Optional], 1)
+
+    def test_union_requires_python_support(self) -> None:
+        with mock.patch.object(ast_dump.sys, "version_info", (3, 9)):
+            value = self.transformed_value("from typing import cast\nanswer = cast(str | None, 1)")
+            self.assertIsInstance(value, ast.Call)
+
+    def test_union_can_run_custom_code(self) -> None:
+        from typing import cast
+        effects: list[str] = []
+
+        class Meta(type):
+            def __or__(cls, other: object) -> type:
+                effects.append("type")
+                return cls
+
+        class Claimed(metaclass=Meta):
+            pass
+
+        def produce() -> int:
+            effects.append("value")
+            return 4
+
+        self.assertEqual(cast(Claimed | None, produce()), 4)
+        self.assertEqual(effects, ["type", "value"])
 
 
 if __name__ == "__main__":

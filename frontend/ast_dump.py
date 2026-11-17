@@ -3411,12 +3411,25 @@ def _erase_typing_casts(tree: ast.Module, table: Optional[symbols.SymbolTable]) 
         tail = name.rsplit(".", 1)[-1]
         return tail if name.startswith(("typing.", "typing_extensions.")) and tail in atoms else ""
 
+    def native_union(node: ast.AST) -> bool:
+        if isinstance(node, ast.Name):
+            return type_name(node) in builtin_types
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
+            if isinstance(node.left, ast.Constant) and node.left.value is None:
+                return native_union(node.right)
+            if isinstance(node.right, ast.Constant) and node.right.value is None:
+                return native_union(node.left)
+            return native_union(node.left) and native_union(node.right)
+        return False
+
     def pure_type(node: ast.AST) -> bool:
         if isinstance(node, ast.Constant):
             return node.value is None
         if isinstance(node, (ast.Name, ast.Attribute)):
             name = type_name(node)
             return bool(name) and name not in ("Optional", "Union")
+        if isinstance(node, ast.BinOp):
+            return sys.version_info >= (3, 10) and native_union(node)
         if not isinstance(node, ast.Subscript):
             return False
         name = type_name(node.value)

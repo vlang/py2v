@@ -352,6 +352,7 @@ for witness in [
 		'0 2 2 2 1\nTrue False\n2 0 0\nleft\nright\nTrue\nfrozenset({1.0})\nfrozenset({-0.0})\nfrozenset({1.0})\nfrozenset({-0.0})\nFalse True\nunhashable\nmember error\nnot iterable\n'],
 	['builtin_frozenset_shadow', '22\n'],
 	['builtin_typing_cast', '1\nword\n3\nonce\n8\n9\n'],
+	['builtin_typing_union_cast', '1\nword\n2\n3\n7\n'],
 	['builtin_exit_shadow', '22\n'],
 ] {
 	builtin_root := os.join_path(os.temp_dir(), 'py2v_builtin_${witness[0]}_${os.getpid()}')
