@@ -6862,6 +6862,46 @@ def _plan_bound_appends(tree, table, facts):
             node._bound_append = "receiver_identity"
 
 
+def _encode_local_identifiers(tree, table):
+    """Give non-ASCII and underscore-digit locals collision-free V spellings.
+
+    Work on lexical binding identities, not text, so strings and attributes keep
+    their Python values. Exported names, parameters, and captured bindings are
+    outside this local-only rewrite.
+    """
+    if table is None:
+        return False
+    used = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)}
+    renamed = {}
+    for binding in table.bindings:
+        name = binding.name
+        if (table.scopes[binding.scope].kind != "function" or binding.is_param
+                or binding.captured or binding.kind in ("class", "function", "import")):
+            continue
+        if name.isascii() and not name.lstrip("_")[:1].isdigit():
+            continue
+        candidate = "py2v_ident_" + "_".join(f"{ord(c):x}" for c in name)
+        while candidate in used:
+            candidate += "_"
+        used.add(candidate)
+        renamed[binding.id] = candidate
+    if not renamed:
+        return False
+    by_scope = {}
+    for binding in table.bindings:
+        if binding.id in renamed:
+            by_scope.setdefault(binding.scope, {})[binding.name] = renamed[binding.id]
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and getattr(node, "_binding", None) in renamed:
+            node.id = renamed[node._binding]
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            scope = getattr(node, "_scope_id", None)
+            names = getattr(node, "_condition_walrus_names", [])
+            replacements = by_scope.get(scope, {})
+            node._condition_walrus_names = [replacements.get(n, n) for n in names]
+    return bool(renamed)
+
+
 def process_file(file_path: str, project: Optional[ProjectFacts] = None) -> str:
     """Parse, analyze, and return enriched JSON AST."""
     with open(file_path, "r", encoding="utf-8") as f:
@@ -6892,6 +6932,8 @@ def process_file(file_path: str, project: Optional[ProjectFacts] = None) -> str:
     table = _resolve_bindings(tree)
     _mark_math_members(tree, table)
     _unquote_annotations(tree, table)
+    if _encode_local_identifiers(tree, table):
+        table = _resolve_bindings(tree)
     _mark_runtime_api(tree, table)
     _lower_exit_statements(tree, table)
     _erase_typing_casts(tree, table)
