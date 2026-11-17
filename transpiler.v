@@ -13,6 +13,8 @@ mut:
 	comp_depth int
 	// Above zero while emitting the body of a `defer` block.
 	defer_depth int
+	// An uncaught SystemExit must execute pending finally bodies before exiting.
+	exit_finally_bodies [][]Stmt
 	// Set when an f-string field calls the py2v_format helper.
 	uses_py2v_format bool
 	// Maps and state tracked during transpilation
@@ -3639,6 +3641,23 @@ pub fn (mut t VTranspiler) visit_raise(node Raise) string {
 				return 'return ${made}'
 			}
 			if exits {
+				if t.exit_finally_bodies.len > 0 {
+					// Evaluate the exit argument once, before the cleanup's side effects.
+					name := t.new_tmp('py2v_exit')
+					mut lines := ['${name} := ${made}']
+					saved_finally := t.exit_finally_bodies.clone()
+					for i := saved_finally.len - 1; i >= 0; i-- {
+						// A new exit in this cleanup supersedes the old one, but must
+						// still execute the finalizers enclosing this cleanup.
+						t.exit_finally_bodies = saved_finally[..i].clone()
+						for stmt in saved_finally[i] {
+							lines << t.visit_stmt(stmt)
+						}
+					}
+					t.exit_finally_bodies = saved_finally
+					lines << 'pyrt.fail(${name})'
+					return lines.join('\n')
+				}
 				return 'pyrt.fail(${made})'
 			}
 		}
@@ -3744,8 +3763,14 @@ pub fn (mut t VTranspiler) visit_try(node Try) string {
 		t.emit_try_finally_defer(mut buf, node.finalbody)
 	}
 
+	if node.finalbody.len > 0 {
+		t.exit_finally_bodies << node.finalbody
+	}
 	for stmt in node.body {
 		buf << t.visit_stmt(stmt)
+	}
+	if node.finalbody.len > 0 {
+		t.exit_finally_bodies.pop()
 	}
 	if finally_in_defer {
 		for stmt in node.finalbody {

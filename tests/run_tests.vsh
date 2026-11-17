@@ -351,6 +351,7 @@ for witness in [
 	['builtin_frozenset',
 		'0 2 2 2 1\nTrue False\n2 0 0\nleft\nright\nTrue\nfrozenset({1.0})\nfrozenset({-0.0})\nfrozenset({1.0})\nfrozenset({-0.0})\nFalse True\nunhashable\nmember error\nnot iterable\n'],
 	['builtin_frozenset_shadow', '22\n'],
+	['builtin_frozenset_mutable_member', 'True\nTrue\nFalse\n'],
 	['builtin_typing_cast', '1\nword\n3\nonce\n8\n9\n'],
 	['builtin_typing_union_cast', '1\nword\n2\n3\n7\n'],
 	['builtin_typing_forward_cast', '1\n2\n3\n4\n5\n'],
@@ -390,17 +391,25 @@ exit_binary := os.join_path(exit_root, 'probe' + $if windows { '.exe' } $else { 
 os.write_file(exit_generated, exit_translated.output) or { panic(err) }
 exit_built := os.exec([@VEXE, '-path', project_dir + '|@vlib|@vmodules', '-o', exit_binary,
 	exit_generated])
-for mode in ['caught', 'zero', 'int', 'true', 'false', 'none', 'message'] {
+for mode in ['caught', 'zero', 'int', 'true', 'false', 'none', 'message', 'direct_finally',
+	'sys_finally', 'nested_finally', 'nested_cleanups'] {
 	native := if exit_built.exit_code == 0 { os.exec([exit_binary, mode]) } else { exit_built }
 	cpython := os.exec([python, '-B', exit_source, mode])
 	expected_status := match mode {
 		'int' { 7 }
-		'true', 'message' { 1 }
+		'sys_finally' { 4 }
+		'nested_finally' { 3 }
+		'nested_cleanups' { 2 }
+		'true', 'message', 'direct_finally' { 1 }
 		else { 0 }
 	}
 	expected_output := match mode {
 		'caught' { 'caught 3\nbase message\ndefault\nnone\n' }
 		'message' { 'message\n' }
+		'direct_finally' { 'direct cleanup\ndirect message\n' }
+		'sys_finally' { 'argument evaluated\nsys cleanup\n' }
+		'nested_finally' { 'outer cleanup\n' }
+		'nested_cleanups' { 'inner cleanup\nouter cleanup\n' }
 		else { '' }
 	}
 	name := 'builtins: exit ${mode}'

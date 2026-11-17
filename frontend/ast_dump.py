@@ -3299,7 +3299,25 @@ def _annotate_returns(tree: ast.Module, facts: Optional[infer.TypeFacts]) -> Non
 
 def _lower_exit_statements(tree: ast.Module, table: Optional[symbols.SymbolTable]) -> None:
     """A resolved exit statement raises SystemExit with its original argument."""
-    if table is None or any(binding.name == "SystemExit" for binding in table.bindings):
+    if table is None:
+        return
+    builtin_imports = {
+        getattr(alias, "_binding", None)
+        for stmt in ast.walk(tree)
+        if isinstance(stmt, ast.ImportFrom) and stmt.module == "builtins" and stmt.level == 0
+        for alias in stmt.names if alias.name == "SystemExit"
+    }
+    for stmt in ast.walk(tree):
+        if not isinstance(stmt, ast.Raise) or stmt.exc is None:
+            continue
+        name = stmt.exc.func if isinstance(stmt.exc, ast.Call) else stmt.exc
+        if (isinstance(name, ast.Name) and name.id == "SystemExit"
+                and getattr(name, "_binding", None) is not None
+                and getattr(name, "_binding") not in builtin_imports):
+            # The runtime currently treats the *spelling* SystemExit as the
+            # built-in exception. Do not silently exit for a user-defined name.
+            raise SyntaxError(f"py2v cannot lower shadowed SystemExit at line {stmt.lineno}")
+    if any(binding.name == "SystemExit" for binding in table.bindings):
         return
     imported: Dict[int, str] = {}
     import_lines: Dict[int, int] = {}
@@ -3337,7 +3355,9 @@ def _lower_exit_statements(tree: ast.Module, table: Optional[symbols.SymbolTable
 
     class Lower(ast.NodeTransformer):
         def visit_Try(self, node: ast.Try) -> ast.AST:
-            return node if node.finalbody else self.generic_visit(node)
+            # A bare finally can be run before the exit. Catching SystemExit
+            # still requires guarded exception lowering.
+            return node if node.finalbody and node.handlers else self.generic_visit(node)
 
         def visit_With(self, node: ast.With) -> ast.AST:
             return node

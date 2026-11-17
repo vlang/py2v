@@ -3,6 +3,59 @@ module main
 import os
 import pyrt
 
+fn exit_argument() int {
+	println('argument evaluated')
+	return 4
+}
+
+fn direct_finally() {
+	defer {
+		println('direct cleanup')
+	}
+	py2v_py2v_exit1 := pyrt.raise('SystemExit', 'direct message')
+	println('direct cleanup')
+	pyrt.fail(py2v_py2v_exit1)
+}
+
+fn sys_finally() {
+	defer {
+		println('sys cleanup')
+	}
+	py2v_py2v_exit2 := IError(pyrt.exception('SystemExit', [pyrt.box(exit_argument())]))
+	println('sys cleanup')
+	pyrt.fail(py2v_py2v_exit2)
+}
+
+fn nested_finally() {
+	defer {
+		println('outer cleanup')
+	}
+	defer {
+		py2v_py2v_exit3 := IError(pyrt.exception('SystemExit', [pyrt.box(3)]))
+		println('outer cleanup')
+		pyrt.fail(py2v_py2v_exit3)
+	}
+	py2v_py2v_exit4 := IError(pyrt.exception('SystemExit', [pyrt.box(2)]))
+	py2v_py2v_exit5 := IError(pyrt.exception('SystemExit', [pyrt.box(3)]))
+	println('outer cleanup')
+	pyrt.fail(py2v_py2v_exit5)
+	println('outer cleanup')
+	pyrt.fail(py2v_py2v_exit4)
+}
+
+fn nested_cleanups() {
+	defer {
+		println('outer cleanup')
+	}
+	defer {
+		println('inner cleanup')
+	}
+	py2v_py2v_exit6 := IError(pyrt.exception('SystemExit', [pyrt.box(2)]))
+	println('inner cleanup')
+	println('outer cleanup')
+	pyrt.fail(py2v_py2v_exit6)
+}
+
 fn caught_py() ! {
 	mut py2v_err_4 := ?IError(none)
 	py2v_try_4: for {
@@ -76,5 +129,13 @@ fn main() {
 		pyrt.fail(IError(pyrt.exception('SystemExit', [pyrt.none_])))
 	} else if mode == 'message' {
 		pyrt.fail(pyrt.raise('SystemExit', 'message'))
+	} else if mode == 'direct_finally' {
+		direct_finally()
+	} else if mode == 'sys_finally' {
+		sys_finally()
+	} else if mode == 'nested_finally' {
+		nested_finally()
+	} else if mode == 'nested_cleanups' {
+		nested_cleanups()
 	}
 }

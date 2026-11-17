@@ -12,5 +12,8 @@ pub fn frozenset_from(iterable Value) !Value {
 
 // item_in preserves Python's left-to-right membership operand evaluation order.
 pub fn item_in(item Value, container Value) !bool {
+	if container is &Set && item is &Set && !item.frozen {
+		return contains(container, frozenset_of(item.items)!)!
+	}
 	return contains(container, item)!
 }
