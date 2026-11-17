@@ -419,6 +419,21 @@ for c in single_checks {
 		failures << fail_line('FAIL', name, '')
 	}
 }
+for kind in ['float', 'int'] {
+	source := os.join_path(cases_dir, 'rebound_optional_${kind}.py')
+	out := os.join_path(check_root, 'numeric_${kind}.v')
+	res := os.exec([py2v, source, '--check', '-o', out])
+	name := 'optional numbers: ${kind} refuses coercion'
+	if res.exit_code == 1 && res.output.contains('mutable arguments are only allowed') {
+		report('PASS', name, '')
+		passed++
+	} else {
+		report('FAIL', name, ' (exit ${res.exit_code}, expected a numeric refusal)')
+		println(excerpt_n(res.output, 20))
+		failed++
+		failures << fail_line('FAIL', name, '')
+	}
+}
 os.rmdir_all(check_root) or { panic(err) }
 
 // A compiler that exits non-zero without printing a V diagnostic must still fail

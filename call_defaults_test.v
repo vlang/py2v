@@ -269,10 +269,11 @@ fn test_optional_walrus_parameters_remain_excluded() {
 }
 
 fn test_optional_scalar_type_excludes_containers_and_references() {
-	for typ in ['?string', '?int', '?i64', '?f64', '?bool'] {
+	for typ in ['?string', '?bool'] {
 		assert is_optional_value_type(typ)
 	}
-	for typ in ['', '?', 'string', '?Any', '?[]string', '?map[string]int', '?&Thing'] {
+	for typ in ['', '?', 'string', '?int', '?i64', '?f64', '?rune', '?Any', '?[]string',
+		'?map[string]int', '?&Thing'] {
 		assert !is_optional_value_type(typ)
 	}
 }

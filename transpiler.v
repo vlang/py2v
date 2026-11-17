@@ -2930,7 +2930,8 @@ const v_value_param_types = ['int', 'i8', 'i16', 'i32', 'i64', 'u8', 'u16', 'u32
 	'f64', 'bool', 'string', 'rune']!
 
 fn is_optional_value_type(typ string) bool {
-	return typ.starts_with('?') && typ[1..] in v_value_param_types
+	// Numeric options can coerce a supplied Python int to float or the reverse.
+	return typ in ['?string', '?bool']
 }
 
 // zero_value_for returns a V zero-value expression for the named type.

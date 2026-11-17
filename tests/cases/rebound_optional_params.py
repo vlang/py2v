@@ -5,20 +5,6 @@ def text(value: str | None = None) -> None:
         print(value)
 
 
-def number(value: int | None = None) -> None:
-    if value is None:
-        value = 7
-    if value is not None:
-        print(value)
-
-
-def fraction(value: float | None = None) -> None:
-    if value is None:
-        value = 1.5
-    if value is not None:
-        print(value)
-
-
 def flag(value: bool | None = None) -> None:
     if value is None:
         value = True
@@ -35,8 +21,6 @@ def overwrite(value: str | None = None) -> None:
 
 text()
 text("given")
-number()
-fraction()
 flag()
 caller = "original"
 overwrite(caller)
