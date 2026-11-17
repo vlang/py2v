@@ -1528,20 +1528,22 @@ fn parse_await(m map[string]json2.Any) Await {
 // Parse Yield
 fn parse_yield(m map[string]json2.Any) Yield {
 	return Yield{
-		value: parse_optional_expr(m['value'] or { json2.Any(json2.Null{}) })
-		loc:   parse_location(m)
+		used_as_value: m['used_as_value'] or { json2.Any(false) }.bool()
+		value:         parse_optional_expr(m['value'] or { json2.Any(json2.Null{}) })
+		loc:           parse_location(m)
 	}
 }
 
 // Parse YieldFrom
 fn parse_yield_from(m map[string]json2.Any) YieldFrom {
 	return YieldFrom{
-		value: parse_expr(map_field(m, 'value')) or {
+		used_as_value: m['used_as_value'] or { json2.Any(false) }.bool()
+		value:         parse_expr(map_field(m, 'value')) or {
 			&Expr(Constant{
 				value: NoneValue{}
 			})
 		}
-		loc:   parse_location(m)
+		loc:           parse_location(m)
 	}
 }
 

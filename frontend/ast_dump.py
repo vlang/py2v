@@ -2371,9 +2371,11 @@ def _node_to_dict(node: ast.AST, mutable_vars: Set[str],
 
     elif isinstance(node, ast.Yield):
         result["value"] = _node_to_dict(node.value, mutable_vars, redefined, ctx) if node.value else None
+        result["used_as_value"] = getattr(node, "_used_as_value", False)
 
     elif isinstance(node, ast.YieldFrom):
         result["value"] = _node_to_dict(node.value, mutable_vars, redefined, ctx)
+        result["used_as_value"] = getattr(node, "_used_as_value", False)
 
     elif isinstance(node, ast.Compare):
         result["left"] = _node_to_dict(node.left, mutable_vars, redefined, ctx)
@@ -6960,6 +6962,11 @@ def process_file(file_path: str, project: Optional[ProjectFacts] = None) -> str:
     _mark_module_constants(tree, table)
     _plan_error_propagation(tree, table)
     _drop_type_checking_blocks(tree)
+
+    for parent in ast.walk(tree):
+        for child in ast.iter_child_nodes(parent):
+            if isinstance(child, (ast.Yield, ast.YieldFrom)):
+                child._used_as_value = not isinstance(parent, ast.Expr)
 
     # Detect class methods
     _detect_class_methods(tree)

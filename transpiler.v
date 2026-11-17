@@ -7964,6 +7964,10 @@ pub fn (mut t VTranspiler) visit_await(node Await) string {
 
 // visit_yield emits V code for yield expressions (Yield).
 pub fn (mut t VTranspiler) visit_yield(node Yield) string {
+	if node.used_as_value {
+		value := if val := node.value { t.visit_expr(val) } else { 'none' }
+		return 'py2v_unsupported_generator_send(${value})'
+	}
 	if val := node.value {
 		return 'ch <- ${t.visit_expr(val)}'
 	}
@@ -7973,6 +7977,9 @@ pub fn (mut t VTranspiler) visit_yield(node Yield) string {
 // visit_yield_from emits V code for yield-from expressions (YieldFrom).
 pub fn (mut t VTranspiler) visit_yield_from(node YieldFrom) string {
 	gen_expr := t.visit_expr(node.value)
+	if node.used_as_value {
+		return 'py2v_unsupported_yield_from_result(${gen_expr})'
+	}
 	gen_var := t.new_tmp('gen')
 
 	mut buf := []string{}

@@ -411,14 +411,16 @@ pub mut:
 
 pub struct Yield {
 pub mut:
-	value ?&Expr
-	loc   Location
+	value         ?&Expr
+	loc           Location
+	used_as_value bool
 }
 
 pub struct YieldFrom {
 pub mut:
-	value &Expr
-	loc   Location
+	value         &Expr
+	loc           Location
+	used_as_value bool
 }
 
 pub struct FormattedValue {
