@@ -629,6 +629,10 @@ fn (mut t VTranspiler) runtime_helper(kind string) string {
 // runtime_helper_declaration returns the V source of the run-time helper `kind`.
 fn runtime_helper_declaration(kind string, name string) string {
 	return match kind {
+		'assign_expr' {
+			'fn ${name}[T](target &T, value T) T {\n' +
+				'\tunsafe { *target = value }\n\treturn value\n}'
+		}
 		'divmod_int', 'divmod_float', 'divmod_value' {
 			typ := if kind == 'divmod_int' {
 				'int'
@@ -8164,11 +8168,15 @@ pub fn (mut t VTranspiler) visit_joined_str(node JoinedStr) string {
 }
 
 // visit_named_expr handles NamedExpr (walrus operator) usage.
-// When used standalone, just emit as assignment expression.
+// V has no assignment expression. Update a previously bound name through a
+// helper that yields the assigned value, preserving surrounding evaluation order.
 pub fn (mut t VTranspiler) visit_named_expr(node NamedExpr) string {
 	target := t.visit_expr(node.target)
 	value := t.visit_expr(node.value)
-	return '(${target} := ${value})'
+	if node.target is Name && t.is_bound_in_scope(node.target.id) {
+		return '${t.runtime_helper('assign_expr')}(&(${target}), ${value})'
+	}
+	return "py2v_unsupported_assignment_expression('${escape_string(target)}', ${value})"
 }
 
 // has_walrus_in_compare checks if a Compare expression has a NamedExpr (walrus) as its left operand
