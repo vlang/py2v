@@ -486,8 +486,8 @@ def _infer_return_type(node: ast.FunctionDef) -> str:
             saw_none_return = True
             continue
 
-        # Comparisons and boolean ops always return bool.
-        if isinstance(expr, (ast.Compare, ast.BoolOp)):
+        # Comparisons return bool; boolean operations return a selected operand.
+        if isinstance(expr, ast.Compare):
             return_types.add("bool")
             continue
 
@@ -2845,7 +2845,7 @@ def _choose_boolop_values(tree: ast.Module, facts: Optional[infer.TypeFacts]) ->
     """`a or b` and `a and b` used for their value, not as a condition, become the choice
     Python makes: `a if a else b` and `b if a else a` (`name = given or "default"`). V's
     `||` and `&&` take and give bool only. Done when every operand has the same known
-    str, int, float or list type and each one but the last is a plain name or an attribute
+    str, int, float, list or dict type and each one but the last is a plain name or an attribute
     of one, so that reading it twice is safe; `_state_truth_tests` then states the test."""
     if facts is None:
         return
@@ -2868,8 +2868,24 @@ def _choose_boolop_values(tree: ast.Module, facts: Optional[infer.TypeFacts]) ->
         elif isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
             mark(node.operand)
 
+    def empty(node: ast.expr) -> bool:
+        return (isinstance(node, ast.List) and not node.elts
+                or isinstance(node, ast.Dict) and not node.keys)
+
+    def annotation(type_id: int) -> Optional[str]:
+        item = facts.types[type_id]
+        if item["k"] in ("dynamic", "unknown"):
+            return "Any"
+        if item["k"] == "list":
+            inner = annotation(item["elem"])
+            return f"list[{inner}]" if inner else None
+        if item["k"] == "dict":
+            key, value = annotation(item["key"]), annotation(item["value"])
+            return f"dict[{key}, {value}]" if key in ("str", "int") and value else None
+        return _annotation_for_type(facts.types, type_id)
+
     def spelled(node: ast.expr, or_none: bool = False) -> Optional[str]:
-        type_id = getattr(node, "_assumed", None)
+        type_id = getattr(node, "_represented", getattr(node, "_assumed", None))
         if type_id is None:
             type_id = getattr(node, "_type", None)
         if type_id is not None and or_none and facts.types[type_id]["k"] == "union":
@@ -2878,9 +2894,9 @@ def _choose_boolop_values(tree: ast.Module, facts: Optional[infer.TypeFacts]) ->
                        if facts.types[m]["k"] != "none"]
             if len(members) == 1 and len(facts.types[type_id]["members"]) == 2:
                 type_id = members[0]
-        if type_id is None or facts.types[type_id]["k"] not in ("str", "int", "float", "list"):
+        if type_id is None or facts.types[type_id]["k"] not in ("str", "int", "float", "list", "dict"):
             return None
-        return _annotation_for_type(facts.types, type_id)
+        return annotation(type_id)
 
     def plain(node: ast.expr) -> bool:
         return isinstance(node, ast.Name) or (
@@ -2891,14 +2907,23 @@ def _choose_boolop_values(tree: ast.Module, facts: Optional[infer.TypeFacts]) ->
             self.generic_visit(node)
             if id(node) in tested:
                 return node
-            kinds = {spelled(value) for value in node.values}
+            kinds = {spelled(value) for value in node.values if not empty(value)}
             if isinstance(node.op, ast.Or) and (len(kinds) != 1 or None in kinds):
                 # `given or "default"` where the earlier values may be None: the last one,
                 # which is not, decides the type
-                kinds = {spelled(value, or_none=True) for value in node.values[:-1]}
-                kinds.add(spelled(node.values[-1]))
+                kinds = {spelled(value, or_none=True) for value in node.values[:-1]
+                         if not empty(value)}
+                if not empty(node.values[-1]):
+                    kinds.add(spelled(node.values[-1]))
             if len(kinds) != 1 or None in kinds or not all(plain(v) for v in node.values[:-1]):
                 return node
+            text = next(iter(kinds))
+            for value in node.values:
+                if empty(value):
+                    if (isinstance(value, ast.List) and not text.startswith("list[")
+                            or isinstance(value, ast.Dict) and not text.startswith("dict[")):
+                        return node
+                    value._runtime_annotation = text
             result = node.values[-1]
             for value in reversed(node.values[:-1]):
                 again = copy.deepcopy(value)
@@ -2922,9 +2947,12 @@ def _state_truth_tests(tree: ast.Module, table: Optional[symbols.SymbolTable],
                        facts: Optional[infer.TypeFacts]) -> None:
     """Write the test Python makes when a str, number or container is used as a condition:
     `if name:` becomes `if name != "":`, `if not items:` becomes `if not len(items) > 0:`.
-    V conditions are bool only. A value of unknown type is left as written."""
+    V conditions are bool only. Dynamic storage is left for runtime truth lowering."""
     if table is None or facts is None:
         return
+    context = AnalysisContext(table=table, facts=facts)
+    native_maps = {getattr(n.target, "_binding", None) for n in ast.walk(tree)
+                   if isinstance(n, ast.AnnAssign) and context.native_map_annotation(n)}
     len_is_builtin = not any(b.name == "len" for b in table.bindings)
     # Classes whose instances can be false: they define their own truth or length.
     falsy_classes = {cls.name for cls in ast.walk(tree) if isinstance(cls, ast.ClassDef)
@@ -2934,7 +2962,7 @@ def _state_truth_tests(tree: ast.Module, table: Optional[symbols.SymbolTable],
     def optional_instance(node: ast.expr) -> bool:
         """Whether the value is None or an instance of a class of this file that is always
         true: then its truth is `is not None`."""
-        type_id = getattr(node, "_assumed", None)
+        type_id = getattr(node, "_represented", getattr(node, "_assumed", None))
         if type_id is None:
             type_id = getattr(node, "_type", None)
         if type_id is None or facts.types[type_id]["k"] != "union":
@@ -2993,7 +3021,7 @@ def _state_truth_tests(tree: ast.Module, table: Optional[symbols.SymbolTable],
             return ""
         # Either layer may show it: where a branch looks unreachable to the annotated
         # layer, the evidence layer still has the declared union.
-        for layer in ("_assumed", "_type"):
+        for layer in ("_represented", "_assumed", "_type"):
             type_id = getattr(node, layer, None)
             if type_id is None or facts.types[type_id]["k"] != "union":
                 continue
@@ -3013,6 +3041,11 @@ def _state_truth_tests(tree: ast.Module, table: Optional[symbols.SymbolTable],
             return node
         if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
             node.operand = stated(node.operand)
+            return node
+        represented = getattr(node, "_represented", None)
+        if (represented is not None and facts.types[represented]["k"] == "dynamic"
+                and not any(isinstance(n, ast.Name) and getattr(n, "_binding", None) in native_maps
+                            for n in ast.walk(node))):
             return node
         plain = optional_plain(node)
         if plain:
@@ -3827,7 +3860,9 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
 
     def chosen_value(node: ast.AST) -> bool:
         return (isinstance(node, ast.BoolOp) and id(node) not in tested_values
-                and all(runs_free(v) for v in node.values[1:]) and dynamic(node.values[0])
+                and (all(isinstance(v, (ast.Name, ast.Constant)) for v in node.values[:-1])
+                     or all(runs_free(v) for v in node.values[1:]))
+                and dynamic(node.values[0])
                 and all(dynamic(v) or boxable(v) for v in node.values))
 
     def dynamic_method_call(node: ast.AST) -> bool:
@@ -4028,8 +4063,8 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
 
         def visit_UnaryOp(self, node: ast.UnaryOp) -> ast.AST:
             self.generic_visit(node)
-            if isinstance(node.op, ast.Not) and dynamic(node.operand):
-                node.operand = _runtime_call("truth", [node.operand], node.operand)
+            if isinstance(node.op, ast.Not):
+                node.operand = truth(node.operand)
             return node
 
         def visit_Attribute(self, node: ast.Attribute) -> ast.AST:
@@ -4100,9 +4135,24 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
 
         def visit_BoolOp(self, node: ast.BoolOp) -> ast.AST:
             chosen = chosen_value(node)
+            lazy = all(isinstance(v, (ast.Name, ast.Constant)) for v in node.values[:-1])
             self.generic_visit(node)
             if not chosen:
                 return node
+            if lazy:
+                result = node.values[-1]
+                if not dynamic(result):
+                    result = _deep_box(result)
+                for value in reversed(node.values[:-1]):
+                    selected = value if dynamic(value) else _deep_box(value)
+                    test = _runtime_call("truth", [selected], value)
+                    if isinstance(node.op, ast.Or):
+                        result = ast.IfExp(test=test, body=copy.deepcopy(selected), orelse=result)
+                    else:
+                        result = ast.IfExp(test=test, body=result, orelse=copy.deepcopy(selected))
+                    ast.copy_location(result, node)
+                    result._dynamic = True
+                return result
             name = "either" if isinstance(node.op, ast.Or) else "both"
             result = node.values[0]
             for value in node.values[1:]:
@@ -4268,11 +4318,20 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
         if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
             node.operand = truth(node.operand)
             return node
-        if dynamic(node):
+        represented = getattr(node, "_represented", None)
+        storage_dynamic = (represented is not None
+                           and facts.types[represented]["k"] == "dynamic"
+                           and not any(isinstance(n, ast.Name)
+                                       and getattr(n, "_binding", None) in native_maps
+                                       for n in ast.walk(node)))
+        if dynamic(node) or storage_dynamic:
             return _runtime_call("truth", [node], node)
         return node
 
     # Truth tests first: they look at names and subscripts as written.
+    context = AnalysisContext(table=table, facts=facts)
+    native_maps = {getattr(n.target, "_binding", None) for n in ast.walk(tree)
+                   if isinstance(n, ast.AnnAssign) and context.native_map_annotation(n)}
     for node in ast.walk(tree):
         if isinstance(node, (ast.If, ast.While, ast.IfExp, ast.Assert)):
             if not any(isinstance(n, ast.NamedExpr) for n in ast.walk(node.test)):

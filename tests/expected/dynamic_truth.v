@@ -38,7 +38,7 @@ fn invert(value bool) bool {
 }
 
 fn combined(left Any, right int) {
-	if !pyrt.eq(pyrt.plus(left, pyrt.box(right)), 0) {
+	if pyrt.truth(pyrt.plus(left, pyrt.box(right))) {
 		println('nonzero')
 	} else {
 		println('zero')

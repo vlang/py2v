@@ -32,8 +32,8 @@ fn show(value Any, enabled bool) {
 	selected := if enabled { pyrt.item_at(value, pyrt.box(0)) } else { pyrt.none_ }
 	println(pyrt.str(selected))
 	println(if pyrt.truth(selected) { 'True' } else { 'False' })
-	println(if !(!pyrt.is_none(selected) && !pyrt.eq(selected, '')) { 'True' } else { 'False' })
-	if !pyrt.is_none(selected) && !pyrt.eq(selected, '') {
+	println(if !pyrt.truth(selected) { 'True' } else { 'False' })
+	if pyrt.truth(selected) {
 		println(pyrt.str(pyrt.invoke(selected, 'upper')))
 	}
 	println(if pyrt.is_none(selected) { 'True' } else { 'False' })

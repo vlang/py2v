@@ -7259,6 +7259,16 @@ pub fn (mut t VTranspiler) visit_slice(node Slice) string {
 
 // visit_list emits V code for list literals (List).
 pub fn (mut t VTranspiler) visit_list(node List) string {
+	if node.elts.len == 0 {
+		annotation := node.v_annotation or { '' }
+		if annotation.starts_with('list[') {
+			typ := map_type(annotation)
+			if typ.contains('Any') {
+				t.generated_code_has_any_type = true
+			}
+			return '${typ}{}'
+		}
+	}
 	// Check for starred elements
 	has_starred := node.elts.any(fn (e Expr) bool {
 		return e is Starred
@@ -7367,6 +7377,14 @@ pub fn (mut t VTranspiler) visit_tuple(node Tuple) string {
 // visit_dict emits V code for dict literals (Dict).
 pub fn (mut t VTranspiler) visit_dict(node Dict) string {
 	if node.keys.len == 0 {
+		annotation := node.v_annotation or { '' }
+		if annotation.starts_with('dict[') {
+			typ := map_type(annotation)
+			if typ.contains('Any') {
+				t.generated_code_has_any_type = true
+			}
+			return '${typ}{}'
+		}
 		// V has no untyped empty map literal; fall back to a string-keyed map,
 		// which is what Python code almost always means for `{}`.
 		t.generated_code_has_any_type = true
