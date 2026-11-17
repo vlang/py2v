@@ -29,6 +29,7 @@ import sys
 import os
 import unicodedata
 from dataclasses import dataclass, field
+from string import Formatter
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 import infer
@@ -1294,6 +1295,35 @@ def _plan_overload_definitions(tree):
                 break
         used.add(name)
         node._overload_name = name
+
+
+def _refuse_unsupported_format_fields(tree):
+    """Do not paste Python conversions or nested specs into V interpolation.
+
+    Keep the template and every argument in the established unresolved-call
+    refusal. The old formatter treated !r as an identifier and a nested closing
+    brace as the end of the field, corrupting the remainder of the V function.
+    """
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "format" and isinstance(node.func.value, ast.Constant)
+                and isinstance(node.func.value.value, str)):
+            continue
+        try:
+            fields = list(Formatter().parse(node.func.value.value))
+            unsupported = any(conversion is not None or any(c in spec for c in "{}#")
+                              for _, field, spec, conversion in fields if field is not None)
+        except ValueError:
+            unsupported = True
+        if not unsupported:
+            continue
+        arguments = [node.func.value] + node.args
+        for keyword in node.keywords:
+            arguments += [ast.Constant(value=keyword.arg or "**"), keyword.value]
+        node.func = ast.copy_location(ast.Name(id="py2v_unsupported_str_format", ctx=ast.Load()),
+                                      node.func)
+        node.args = arguments
+        node.keywords = []
 
 
 # Mapping of Python dunder names to their V operator/method equivalents.
@@ -6839,6 +6869,7 @@ def process_file(file_path: str, project: Optional[ProjectFacts] = None) -> str:
 
     tree = ast.parse(source, filename=file_path)
     _plan_overload_definitions(tree)
+    _refuse_unsupported_format_fields(tree)
 
     # Mark the walrus `if` tests the transpiler may hoist, before the
     # `__main__` guard becomes a function, so its block counts as module level
