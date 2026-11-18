@@ -199,7 +199,7 @@ dynamic_cases := ['dynamic_container_elements', 'dynamic_membership', 'dynamic_c
 	'truth_optional_instances', 'truth_runtime_lists', 'truth_optional_calls', 'truth_optional_dynamic',
 	'truth_literals', 'truth_storage_default', 'truth_mixed_list_body', 'truth_mixed_list_else',
 	'truth_mixed_list_default', 'truth_boxed_floats', 'mixed_display_dynamic', 'json_runtime_options',
-	'truth_bool_context']
+	'truth_bool_context', 'truth_optional_returns']
 dynamic_root := os.join_path(os.temp_dir(), 'py2v_dynamic_${os.getpid()}')
 os.mkdir_all(dynamic_root) or { panic(err) }
 mut dynamic_args := [][]string{}

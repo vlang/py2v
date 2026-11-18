@@ -3850,6 +3850,29 @@
     "v_result": "value"
   },
   {
+    "python": "__pyrt__.truth_option",
+    "v": "truth_option",
+    "module": "pyrt",
+    "kind": "function",
+    "receiver": null,
+    "raises": false,
+    "returns": "bool",
+    "params": [
+      {
+        "name": "value",
+        "type": "Any | None"
+      }
+    ],
+    "variadic": false,
+    "options_struct": null,
+    "options": {},
+    "status": "implemented",
+    "notes": "Generic option adapter in pyrt/dyn.v; preserves runtime aliases.",
+    "v_kind": "fn",
+    "v_returns": "bool",
+    "v_result": "value"
+  },
+  {
     "python": "__pyrt__.hash_key",
     "v": "hash_key",
     "module": "pyrt",

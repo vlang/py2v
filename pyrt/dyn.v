@@ -80,6 +80,14 @@ pub fn has_text(a ?string) bool {
 	return (a or { '' }) != ''
 }
 
+// truth_option tests an optional runtime value without evaluating its source twice.
+pub fn truth_option[T](value ?T) bool {
+	if actual := value {
+		return truth(box(actual))
+	}
+	return false
+}
+
 // text_or is `a or b` where a may be None and b is text.
 pub fn text_or(a ?string, b string) string {
 	if found := a {

@@ -1,5 +1,19 @@
 module pyrt
 
+type TruthOptionAlias = Value
+
+fn test_truth_option_alias_values() {
+	assert !truth_option(?TruthOptionAlias(none))
+	falsey := [none_, box(0), box(''), box([]int{})]
+	for value in falsey {
+		assert !truth_option(?TruthOptionAlias(TruthOptionAlias(value)))
+	}
+	truthy := [box(1), box('text'), box([1])]
+	for value in truthy {
+		assert truth_option(?TruthOptionAlias(TruthOptionAlias(value)))
+	}
+}
+
 fn test_value_truth_names_lengths_iteration() {
 	check_value_truth_names_lengths_iteration() or {
 		// harness: no unexpected result errors.
@@ -79,7 +93,7 @@ fn check_value_truth_names_lengths_iteration() ! {
 	assert got_23 == 2
 	got_24 := Value(new_list(iter(Value('é🙂'))!))
 	// python: repr(list('é🙂')) == "['é', '🙂']"
-	assert repr(got_24) == '[\'é\', \'🙂\']'
+	assert repr(got_24) == "['é', '🙂']"
 	got_25 := type_name(Value([]u8{}))
 	// python: (type(b'').__name__) == 'bytes'
 	assert got_25 == 'bytes'
@@ -175,7 +189,7 @@ fn check_value_truth_names_lengths_iteration() ! {
 	assert got_55 == 1
 	got_56 := Value(new_list(iter(value_test_dict([Value('x')], [Value(i64(1))])!)!))
 	// python: repr(list({'x': 1})) == "['x']"
-	assert repr(got_56) == '[\'x\']'
+	assert repr(got_56) == "['x']"
 	got_57 := type_name(Value(new_set([]Value{})!))
 	// python: (type(set()).__name__) == 'set'
 	assert got_57 == 'set'
@@ -241,7 +255,7 @@ fn test_value_typed_sequence() {
 }
 
 fn check_value_typed_sequence() ! {
-	mut typed := &IntList{items: [1, 2, 3]}
+	mut typed := &IntList{ items: [1, 2, 3] }
 	boxed := Value(Sequence(typed))
 	setitem(boxed, Value(i64(-1)), Value(i64(7)))!
 	typed.items[0] = 5
@@ -316,7 +330,7 @@ fn check_value_instances_and_functions() ! {
 	assert repr(got_88) == '5'
 	got_89 := getattr(f, '__name__')!
 	// python: repr(exec_result("def sum_two(a,b): return a+b", "sum_two.__name__")) == "'sum_two'"
-	assert repr(got_89) == '\'sum_two\''
+	assert repr(got_89) == "'sum_two'"
 	got_90 := eq(f, f)
 	// python: ((lambda f:f==f)(lambda:None)) == True
 	assert got_90 == true
@@ -350,28 +364,28 @@ fn check_value_value_errors() ! {
 		return call(Value(i64(1)), []Value{})!
 	})
 	// python: error_text(lambda: (1)()) == "TypeError|'int' object is not callable"
-	assert got_94 == 'TypeError|\'int\' object is not callable'
+	assert got_94 == "TypeError|'int' object is not callable"
 	got_95 := value_test_error(fn () !Value {
 		return getattr(Value(i64(1)), 'x')!
 	})
 	// python: error_text(lambda: getattr(1,'x')) == "AttributeError|'int' object has no attribute 'x'"
-	assert got_95 == 'AttributeError|\'int\' object has no attribute \'x\''
+	assert got_95 == "AttributeError|'int' object has no attribute 'x'"
 	got_96 := value_test_error(fn () !Value {
 		setattr(Value(i64(1)), 'x', none_)!
-	return none_
+		return none_
 	})
 	// python: error_text(lambda: setattr(1,'x',None)) == "AttributeError|'int' object has no attribute 'x' and no __dict__ for setting new attributes"
-	assert got_96 == 'AttributeError|\'int\' object has no attribute \'x\' and no __dict__ for setting new attributes'
+	assert got_96 == "AttributeError|'int' object has no attribute 'x' and no __dict__ for setting new attributes"
 	got_97 := value_test_error(fn () !Value {
 		return Value(new_list(iter(Value(i64(1)))!))
 	})
 	// python: error_text(lambda: iter(1)) == "TypeError|'int' object is not iterable"
-	assert got_97 == 'TypeError|\'int\' object is not iterable'
+	assert got_97 == "TypeError|'int' object is not iterable"
 	got_98 := value_test_error(fn () !Value {
 		return getattr(Value(Instance(new_object('Example'))), 'missing')!
 	})
 	// python: error_text(lambda: exec_result("class Example: pass\no=Example()", "o.missing")) == "AttributeError|'Example' object has no attribute 'missing'"
-	assert got_98 == 'AttributeError|\'Example\' object has no attribute \'missing\''
+	assert got_98 == "AttributeError|'Example' object has no attribute 'missing'"
 }
 
 struct ValueTestCell {
@@ -386,6 +400,7 @@ fn value_test_error(callback fn () !Value) string {
 	}
 	return '<no error>'
 }
+
 fn value_test_dict(keys []Value, values []Value) !Value {
 	d := Value(new_dict())
 	for i, key in keys { setitem(d, key, values[i])! }

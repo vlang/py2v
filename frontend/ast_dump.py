@@ -3365,7 +3365,7 @@ def _runtime_call(name: str, args: List[ast.expr], like: ast.AST) -> ast.expr:
     for part in ast.walk(call):
         if not hasattr(part, "lineno"):
             ast.copy_location(part, like)
-    result_types = {"length": "int", "truth": "bool", "eq": "bool", "has": "bool", "is_none": "bool",
+    result_types = {"length": "int", "truth": "bool", "truth_option": "bool", "eq": "bool", "has": "bool", "is_none": "bool",
                     "str": "string", "to_int": "int", "to_float": "float",
                     "to_str": "string", "to_bool": "bool", "elements": "list[Any]",
                     "unpack": "list[Any]"}
@@ -3776,6 +3776,48 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
     any_lists = any_lists or set()
 
     inferred_bindings = {b["id"]: b.get("inferred") for b in facts.bindings}
+
+    def optional_dynamic_annotation(annotation: Optional[ast.expr]) -> bool:
+        text = _unparse_expr(annotation).replace("typing.", "").replace(" ", "") if annotation else ""
+        return text in ("Optional[Any]", "Any|None", "None|Any",
+                        "Optional[object]", "object|None", "None|object")
+
+    optional_functions = {fn._binding for fn in ast.walk(tree)
+                          if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef))
+                          and getattr(fn, "_binding", None) is not None
+                          and not table.bindings[fn._binding].rebound
+                          and optional_dynamic_annotation(fn.returns)}
+    optional_bindings = set()
+    optional_aliases: dict[int, set[int]] = {}
+    for stmt in ast.walk(tree):
+        if isinstance(stmt, ast.arg) and optional_dynamic_annotation(stmt.annotation):
+            optional_bindings.add(getattr(stmt, "_binding", None))
+        target = (stmt.targets[0] if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1
+                  else stmt.target if isinstance(stmt, ast.AnnAssign) else None)
+        binding = getattr(target, "_binding", None) if isinstance(target, ast.Name) else None
+        if binding is None:
+            continue
+        if isinstance(stmt, ast.AnnAssign) and optional_dynamic_annotation(stmt.annotation):
+            optional_bindings.add(binding)
+        if isinstance(stmt.value, ast.Call) and isinstance(stmt.value.func, ast.Name):
+            if getattr(stmt.value.func, "_binding", None) in optional_functions:
+                optional_bindings.add(binding)
+        elif isinstance(stmt.value, ast.Name):
+            source = getattr(stmt.value, "_binding", None)
+            if source is not None:
+                optional_aliases.setdefault(source, set()).add(binding)
+    optional_bindings.discard(None)
+    pending = list(optional_bindings)
+    while pending:
+        for alias in optional_aliases.get(pending.pop(), ()):
+            if alias not in optional_bindings:
+                optional_bindings.add(alias)
+                pending.append(alias)
+
+    def optional_value(node: ast.AST) -> bool:
+        return (isinstance(node, ast.Name) and getattr(node, "_binding", None) in optional_bindings
+                or isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                and getattr(node.func, "_binding", None) in optional_functions)
 
     def any_list_annotation(annotation: Optional[ast.AST], binding_id: Optional[int] = None) -> bool:
         if annotation is None:
@@ -4429,6 +4471,8 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
                            and not any(isinstance(n, ast.Name)
                                        and getattr(n, "_binding", None) in native_maps
                                        for n in ast.walk(node)))
+        if optional_value(node):
+            return _runtime_call("truth_option", [node], node)
         if dynamic(node) or storage_dynamic:
             return _runtime_call("truth", [node], node)
         return node
