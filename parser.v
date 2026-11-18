@@ -138,11 +138,12 @@ fn parse_module(m map[string]json2.Any) !Module {
 		}
 	}
 	return Module{
-		body:                   body
-		loc:                    parse_location(m)
-		docstring_comment:      docstring
-		condition_walrus_names: (m['condition_walrus_names'] or { json2.Any([]json2.Any{}) }).as_array().map(it.str())
-		module_consts:          (m['module_consts'] or { json2.Any([]json2.Any{}) }).as_array().map(it.str())
+		list_identity_module_errors: (m['list_identity_module_errors'] or { json2.Any([]json2.Any{}) }).as_array().map(it.str())
+		body:                        body
+		loc:                         parse_location(m)
+		docstring_comment:           docstring
+		condition_walrus_names:      (m['condition_walrus_names'] or { json2.Any([]json2.Any{}) }).as_array().map(it.str())
+		module_consts:               (m['module_consts'] or { json2.Any([]json2.Any{}) }).as_array().map(it.str())
 	}
 }
 
@@ -235,7 +236,8 @@ fn parse_stmt(m map[string]json2.Any) ?Stmt {
 		}
 		'Pass' {
 			return Stmt(Pass{
-				loc: parse_location(m)
+				loc:                 parse_location(m)
+				list_identity_error: (m['list_identity_error'] or { json2.Any('') }).str()
 			})
 		}
 		'Break' {
@@ -1386,13 +1388,14 @@ fn parse_ifexp(m map[string]json2.Any) IfExp {
 // Parse Lambda
 fn parse_lambda(m map[string]json2.Any) Lambda {
 	mut lam := Lambda{
-		args: parse_arguments(m['args'] or { json2.Any(map[string]json2.Any{}) })
-		body: parse_expr(map_field(m, 'body')) or {
+		list_identity_error: (m['list_identity_error'] or { json2.Any('') }).str()
+		args:                parse_arguments(m['args'] or { json2.Any(map[string]json2.Any{}) })
+		body:                parse_expr(map_field(m, 'body')) or {
 			&Expr(Constant{
 				value: NoneValue{}
 			})
 		}
-		loc:  parse_location(m)
+		loc:                 parse_location(m)
 	}
 	if ann := parse_type_annotation(m) {
 		lam.v_annotation = ann

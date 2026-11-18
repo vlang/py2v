@@ -1,5 +1,7 @@
 module main
 
+import math
+
 fn test_python(iterations int) {
 	mut iteration := 0
 	mut total := f64(0)
@@ -9,7 +11,7 @@ fn test_python(iterations int) {
 	for iteration < iterations {
 		mut innerloop := 0
 		for innerloop < 100 {
-			total += array[(iteration + innerloop) % array_length]
+			total += array[math.modulo_floored(iteration + innerloop, array_length)]
 			innerloop += 1
 		}
 		iteration += 1

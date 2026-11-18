@@ -31,7 +31,7 @@ fn lookup(table map[string]int, key string) int {
 fn main() {
 	nums := [int(3), 4, 5]
 	words := ['a', 'abc', 'ab']
-	table := {
+	table := map[string]int{
 		'x': 7
 	}
 	println(total(nums))

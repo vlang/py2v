@@ -41,6 +41,6 @@ fn get_value() int {
 
 fn main() {
 	result := make_pair('hello', 10)
-	println(result)
+	println(pyrt.str(pyrt.box(result)))
 	println(get_value())
 }

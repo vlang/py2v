@@ -163,9 +163,11 @@ pub type Stmt = Pass
 // Module is the root node
 pub struct Module {
 pub mut:
-	body              []Stmt
-	loc               Location
-	docstring_comment ?string
+	// Module-level unprovable aliases require an explicit import-time boundary.
+	list_identity_module_errors []string
+	body                        []Stmt
+	loc                         Location
+	docstring_comment           ?string
 	// source_words lists the words of the source as py2v may emit them; temps avoid them.
 	source_words           []string
 	condition_walrus_names []string
@@ -360,12 +362,13 @@ pub mut:
 
 pub struct Lambda {
 pub mut:
-	args         Arguments
-	body         &Expr
-	loc          Location
-	v_annotation ?string
-	inlinable    bool
-	body_src     ?string
+	list_identity_error string
+	args                Arguments
+	body                &Expr
+	loc                 Location
+	v_annotation        ?string
+	inlinable           bool
+	body_src            ?string
 }
 
 pub struct ListComp {
@@ -740,7 +743,8 @@ pub mut:
 
 pub struct Pass {
 pub mut:
-	loc Location
+	loc                 Location
+	list_identity_error string
 }
 
 pub struct Break {

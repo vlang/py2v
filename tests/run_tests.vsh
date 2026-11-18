@@ -77,11 +77,28 @@ fn run_generated(source string) os.Result {
 	return os.exec([bin])
 }
 
+// translate_source separates generated source from diagnostic reports on stderr.
+fn translate_source(py2v string, source string) os.Result {
+	mut process := os.new_process(py2v)
+	process.set_args([source])
+	process.set_redirect_stdio()
+	defer { process.close() }
+	process.run()
+	diagnostics_thread := spawn process.stderr_slurp()
+	output := process.stdout_slurp()
+	diagnostics := diagnostics_thread.wait()
+	process.wait()
+	return os.Result{
+		exit_code: process.code
+		output:    if process.code == 0 { output } else { output + diagnostics }
+	}
+}
+
 // compare_execution checks observable output against CPython, beyond fixture text.
 fn compare_execution(args []string) os.Result {
 	// A package supplies its prepared entry point with an empty translator path.
 	if args[0] != '' {
-		translation := os.exec([args[0], args[2]])
+		translation := translate_source(args[0], args[2])
 		if translation.exit_code != 0 {
 			return translation
 		}
@@ -173,6 +190,12 @@ mut skipped := 0
 mut failures := []string{}
 mut verbose := os.getenv('VERBOSE') == '1'
 mut fmt_seq := 0
+python := $if windows { 'python' } $else { 'python3' }
+// Cases written in syntax only CPython 3.15 parses. The frontend runs under the same
+// interpreter (main.v), so where that is older they cannot translate and are skipped.
+newer_syntax_cases := ['dict_unpack_typechecking']
+python_parses_newer := os.exec([python, '-c',
+	'import sys; sys.exit(0 if sys.version_info >= (3, 15) else 1)']).exit_code == 0
 
 for entry in case_names {
 	case_name := entry.trim_string_right('.py')
@@ -184,8 +207,13 @@ for entry in case_names {
 		skipped++
 		continue
 	}
+	if case_name in newer_syntax_cases && !python_parses_newer {
+		report('SKIP', case_name, ' (needs Python 3.15 syntax)')
+		skipped++
+		continue
+	}
 
-	res := os.exec([py2v, case_path])
+	res := translate_source(py2v, case_path)
 	if res.exit_code != 0 {
 		report('FAIL', case_name, ' (transpilation error)')
 		failed++
@@ -229,7 +257,6 @@ init_expected := os.read_file(os.join_path(script_dir, 'baseline', 'init_executi
 	panic(err)
 }
 init_v_run := run_generated(init_v)
-python := $if windows { 'python' } $else { 'python3' }
 
 dynamic_cases := ['dynamic_container_elements', 'dynamic_membership', 'dynamic_comprehensions',
 	'dynamic_methods', 'dynamic_or_default', 'dynamic_stores', 'dynamic_runtime_returns',
@@ -376,21 +403,152 @@ call_results_cases := ['dict_get_missing', 'dict_get_eager', 'dict_get_chain', '
 	'overload_definitions', 'parameter_bindings', 'private_method_calls',
 	'closure_capture_discriminator', 'review_nested_default', 'review_nested_default_snapshot',
 	'review_nested_default_once', 'review_nested_if', 'review_nested_loop',
-	'review_nested_literal_block', 'review_divmod_negative_float']
+	'review_nested_literal_block', 'review_divmod_negative_float', 'modulo_signed', 'modulo_float',
+	'modulo_generic', 'modulo_target_once', 'modulo_dynamic_target', 'dict_local_any_writes',
+	'dict_local_inferred_writes', 'modulo_loop_value', 'list_name_alias', 'list_function_alias',
+	'list_field_alias', 'list_container_alias', 'list_return_alias', 'list_copy_boundary',
+	'list_identity_compare', 'list_nested_paths', 'list_slice_alias', 'list_reference_ops',
+	'list_heterogeneous_alias', 'list_delete_alias', 'list_augassign_target', 'list_box_source',
+	'list_box_identity', 'list_box_mutate_only', 'list_box_widening', 'augassign_side_effects',
+	'comb_sort', 'element_store_mut', 'mut_inplace_methods', 'typing_abc_annotations',
+	'dict_unpack_typechecking', 'list_box_any_id', 'list_alias_iter_reorder', 'list_alias_slice_reverse',
+	'list_alias_slice_delete', 'list_slice_step_assign', 'list_slice_step_delete',
+	'list_slice_unit_step_resize', 'list_slice_unit_step_grow', 'list_frozenset_alias',
+	'dict_widen_local', 'dict_widen_reassign', 'list_scoped_refusal']
 mut execution_args := [][]string{}
+mut execution_names := []string{}
 for name in call_results_cases {
+	if name in newer_syntax_cases && !python_parses_newer {
+		report('SKIP', 'call results: ${name} execution', ' (needs Python 3.15 syntax)')
+		skipped++
+		continue
+	}
+	execution_names << name
 	execution_args << [py2v, python, os.join_path(cases_dir, name + '.py'),
 		os.join_path(call_results_root, name + '.v')]
 }
 execution_results := parallel.amap(execution_args, compare_execution, workers: runtime.nr_jobs())
 for i, result in execution_results {
-	name := 'call results: ${call_results_cases[i]} execution'
+	name := 'call results: ${execution_names[i]} execution'
 	if result.exit_code == 0 {
 		report('PASS', name, '')
 		passed++
 	} else {
 		report('FAIL', name, '')
 		println(result.output)
+		failed++
+		failures << fail_line('FAIL', name, '')
+	}
+}
+// Calling the isolated refusal must fail while its unrelated neighbor still runs.
+scoped_source := os.join_path(call_results_root, 'list_scoped_refusal.v')
+scoped_code := os.read_file(scoped_source) or { panic(err) }
+scoped_refused := os.join_path(call_results_root, 'list_scoped_refused.v')
+scoped_targets := ['refused', 'refused_groups', 'refused_lambda_callback', 'refused_caller',
+	'refused_default', 'refused_received']
+mut scoped_dispatch := []string{}
+for target in scoped_targets {
+	scoped_dispatch << "\tif os.args[1] == '${target}' {\n\t\t${target}()\n\t\treturn\n\t}"
+}
+scoped_dispatch << "\tpanic('unknown refusal target')"
+driver_code := scoped_code.replace('module main\n', 'module main\n\nimport os\n')
+	.replace('\tunrelated()\n', scoped_dispatch.join('\n') + '\n')
+os.write_file(scoped_refused, driver_code) or {
+	panic(err)
+}
+scoped_binary := scoped_refused + $if windows { '.exe' } $else { '.bin' }
+scoped_build := os.exec([@VEXE, '-path', '@vlib|${project_dir}|@vmodules', '-o', scoped_binary,
+	scoped_refused])
+mut scoped_runs := [][]string{}
+for target in scoped_targets { scoped_runs << [scoped_binary, target] }
+scoped_results := parallel.amap(scoped_runs, os.exec, workers: runtime.nr_jobs())
+for i, scoped_run in scoped_results {
+	name := 'list identity: ${scoped_targets[i]} fails loudly'
+	if scoped_build.exit_code == 0 && scoped_run.exit_code != 0
+		&& scoped_run.output.contains('V panic: py2v_unsupported_list_identity') {
+		report('PASS', name, '')
+		passed++
+	} else {
+		report('FAIL', name, '')
+		println(scoped_build.output + scoped_run.output)
+		failed++
+		failures << fail_line('FAIL', name, '')
+	}
+}
+
+// An unprovable module-level list also blocks an importing package explicitly.
+scoped_package := os.join_path(call_results_root, 'scope_pkg')
+scoped_output := os.join_path(call_results_root, 'scope_out')
+os.mkdir_all(scoped_package) or { panic(err) }
+os.mkdir_all(scoped_output) or { panic(err) }
+os.write_file(os.join_path(scoped_package, '__init__.py'), os.read_file(os.join_path(cases_dir,
+	'list_scoped_escape_refusal.py')) or { panic(err) }) or { panic(err) }
+scoped_package_translation := os.exec([py2v, '--package', scoped_package, '-o', scoped_output])
+scoped_entry := os.join_path(scoped_output, 'main.v')
+os.write_file(scoped_entry, 'module main\nimport py_scope_pkg\nfn main() { py_scope_pkg.unrelated() }\n') or {
+	panic(err)
+}
+scoped_import := run_generated(scoped_entry)
+if scoped_package_translation.exit_code == 0 && scoped_import.exit_code != 0
+	&& scoped_import.output.contains('py2v_unsupported_list_identity_module')
+	&& scoped_package_translation.output.contains('module-level list refusal') {
+	report('PASS', 'list identity: module-level package refusal', '')
+	passed++
+} else {
+	report('FAIL', 'list identity: module-level package refusal', '')
+	println(scoped_package_translation.output + scoped_import.output)
+	failed++
+	failures << fail_line('FAIL', 'list identity: module-level package refusal', '')
+}
+// Refused identity operations must fail loudly with an explicit boundary diagnostic.
+for refusal in [
+	['list_identity_refusal', '[1, 2, 3]', 'during iteration'],
+	['list_iteration_call_refusal', '[1, 2, 3]', 'during iteration'],
+	['list_iteration_aug_refusal', '[1, 2, 3]', 'during iteration'],
+	['list_iteration_slice_refusal', '[4, 5, 6] [1, 5, 6]', 'during iteration'],
+	['list_comprehension_refusal', '[1, 2, 3]', 'during iteration'],
+	['list_enumerate_refusal', '[1, 2, 3] [1, 2, 3]', 'during iteration'],
+	['list_call_refusal', '[1, 2]', 'unresolved call'],
+	['list_scoped_escape_refusal', '42', 'ordering comparison'],
+] {
+	refusal_source := os.join_path(cases_dir, refusal[0] + '.py')
+	refusal_translation := translate_source(py2v, refusal_source)
+	refusal_v := os.join_path(call_results_root, refusal[0] + '.v')
+	os.write_file(refusal_v, refusal_translation.output) or { panic(err) }
+	refusal_run := run_generated(refusal_v)
+	refusal_python := os.exec([python, '-X', 'utf8', '-I', refusal_source])
+	name := 'list identity: ${refusal[0]} refusal'
+	if refusal_translation.exit_code == 0 && refusal_python.exit_code == 0
+		&& refusal_python.output.trim_space() == refusal[1]
+		&& refusal_translation.output.contains(refusal[2])
+		&& refusal_run.exit_code != 0 && refusal_run.output.contains('py2v_unsupported_list_identity') {
+		report('PASS', name, '')
+		passed++
+	} else {
+		report('FAIL', name, '')
+		println(refusal_run.output)
+		failed++
+		failures << fail_line('FAIL', name, '')
+	}
+}
+for refusal in [
+	['list_box_range_refusal', '[1, 1099511627776]', 'py2v: runtime integer does not fit'],
+] {
+	refusal_source := os.join_path(cases_dir, refusal[0] + '.py')
+	refusal_translation := os.exec([py2v, refusal_source])
+	refusal_v := os.join_path(call_results_root, refusal[0] + '.v')
+	os.write_file(refusal_v, refusal_translation.output) or { panic(err) }
+	refusal_run := run_generated(refusal_v)
+	refusal_python := os.exec([python, '-X', 'utf8', '-I', refusal_source])
+	name := 'list identity: ${refusal[0]} refusal'
+	if refusal_translation.exit_code == 0 && refusal_python.exit_code == 0
+		&& refusal_python.output.trim_space() == refusal[1]
+		&& refusal_run.exit_code != 0 && refusal_run.output.contains(refusal[2]) {
+		report('PASS', name, '')
+		passed++
+	} else {
+		report('FAIL', name, '')
+		println(refusal_run.output)
 		failed++
 		failures << fail_line('FAIL', name, '')
 	}

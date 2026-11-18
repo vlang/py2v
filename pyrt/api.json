@@ -5479,6 +5479,27 @@
     "v_result": "value"
   },
   {
+    "python": "__pyrt__.same_object",
+    "v": "same_object",
+    "module": "pyrt",
+    "kind": "function",
+    "receiver": null,
+    "raises": false,
+    "returns": "bool",
+    "params": [
+      { "name": "left", "type": "Any" },
+      { "name": "right", "type": "Any" }
+    ],
+    "variadic": false,
+    "options_struct": null,
+    "options": {},
+    "status": "implemented",
+    "notes": "Compare identity tokens of reference-backed values; preserve scalar equality fallback.",
+    "v_kind": "fn",
+    "v_returns": "bool",
+    "v_result": "value"
+  },
+  {
     "python": "__pyrt__.object_identity",
     "v": "object_identity",
     "module": "pyrt",

@@ -29,20 +29,20 @@ fn (a Any) < (b Any) bool {
 	return pyrt.lt(a, b) or { panic(err) }
 }
 
-fn report_py(names []string, scores map[string]int) !string {
-	payload := {
+fn report_py(names &pyrt.ListRef[string], scores map[string]int) !string {
+	payload := map[string]Any{
 		'names': pyrt.box(names)
-		'count': pyrt.box(names.len)
+		'count': pyrt.box(names.items.len)
 	}
 	return json.dumps(pyrt.box(payload), indent: 2)! + json.dumps(pyrt.box(scores), sort_keys: true)! + json.dumps(pyrt.box(names))!
 }
 
-fn report(names []string, scores map[string]int) string {
+fn report(names &pyrt.ListRef[string], scores map[string]int) string {
 	return report_py(names, scores) or { pyrt.fail(err) }
 }
 
 fn main() {
-	println(report(['b', 'a'], map[string]int{
+	println(report(pyrt.list_ref[string](['b', 'a']), map[string]int{
 		'z': 1
 		'y': 2
 	}))

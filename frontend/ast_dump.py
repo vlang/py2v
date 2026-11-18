@@ -34,6 +34,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 import infer
 import symbols
+import list_refs
 
 
 @dataclass
@@ -85,7 +86,7 @@ class AnalysisContext:
         return False
 
     def native_map_annotation(self, node: ast.AnnAssign) -> Optional[str]:
-        """A populated local map keeps the concrete type of its emitted initializer."""
+        """A local map may be native only when all inferred writes keep its value type."""
         if self.table is None or self.facts is None or not isinstance(node.target, ast.Name):
             return None
         binding_id = getattr(node.target, "_binding", None)
@@ -104,7 +105,10 @@ class AnalysisContext:
         if not isinstance(node.value, ast.Dict) or not node.value.keys or None in node.value.keys:
             return None
         actual = getattr(node.value, "_represented", None)
-        return _annotation_for_type(self.facts.types, actual) if actual is not None else None
+        whole = self.facts.bindings[binding_id].get("inferred")
+        initial = _annotation_for_type(self.facts.types, actual) if actual is not None else None
+        final = _annotation_for_type(self.facts.types, whole) if whole is not None else None
+        return initial if initial == final else None
 
     def owned_names(self, scope_node: ast.AST) -> Set[str]:
         """Names the scope that `scope_node` opens binds itself: its parameters and locals."""
@@ -186,6 +190,9 @@ class ScopeTracker(ast.NodeVisitor):
             'append', 'insert', 'remove', 'extend',
             'sort', 'reverse', 'pop', 'clear',
         }
+        if (isinstance(node.func, ast.Attribute) and node.func.attr in _MUTATING_METHODS
+                and getattr(node.func.value, "_ref_items", False)):
+            self._check_subscript_assign(node.func.value)
         # A method of a class in this file that changes its object changes the caller's
         # variable too: `c.add(1)` needs `mut c` as `c.total += 1` does.
         if (isinstance(node.func, ast.Attribute)
@@ -219,9 +226,12 @@ class ScopeTracker(ast.NodeVisitor):
         if ((isinstance(node.func, ast.Attribute) and node.func.attr == 'shuffle'
                 and isinstance(node.func.value, ast.Name) and node.func.value.id == 'random')
                 or getattr(node.func, '_math_member', '') == 'random.shuffle') \
-                and node.args and isinstance(node.args[0], ast.Name):
-            self.mutable.add(node.args[0].id)
-            self._record_assign(node.args[0].id, node)
+                and node.args:
+            if isinstance(node.args[0], ast.Name):
+                self.mutable.add(node.args[0].id)
+                self._record_assign(node.args[0].id, node)
+            elif getattr(node.args[0], '_ref_items', False):
+                self._check_subscript_assign(node.args[0])
         # `f(xs)` where f changes that parameter in place: `xs` is passed with `mut`.
         if isinstance(node.func, ast.Name) and node.func.id in self.mutating_functions \
                 and not any(isinstance(arg, ast.Starred) for arg in node.args):
@@ -233,6 +243,9 @@ class ScopeTracker(ast.NodeVisitor):
 
     def visit_Delete(self, node: ast.Delete):
         """Process del statement - don't mark as mutable since @[translated] relaxes this."""
+        for target in node.targets:
+            if isinstance(target, ast.Subscript) and getattr(target.value, '_ref_items', False):
+                self._check_subscript_assign(target)
         self.generic_visit(node)
 
     def visit_Attribute(self, node: ast.Attribute):
@@ -2010,6 +2023,9 @@ def _node_to_dict(node: ast.AST, mutable_vars: Set[str],
     var_annotations = ctx.var_annotations
     result: Dict[str, Any] = {}
     result["node_type"] = type(node).__name__
+    refusal = getattr(node, '_list_identity_error', '')
+    if refusal and isinstance(node, ast.Lambda):
+        result['list_identity_error'] = refusal
 
     # Location info
     for attr in ("lineno", "col_offset", "end_lineno", "end_col_offset"):
@@ -2020,6 +2036,10 @@ def _node_to_dict(node: ast.AST, mutable_vars: Set[str],
 
     # Handle specific node types
     if isinstance(node, ast.Module):
+        result['list_identity_module_errors'] = [
+            item._list_identity_error for item in ast.walk(node)
+            if getattr(item, '_list_identity_error', '')
+            and not isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda))]
         result["condition_walrus_names"] = getattr(node, "_condition_walrus_names", [])
         result["module_consts"] = getattr(node, "_module_consts", [])
         result["body"] = [_node_to_dict(n, mutable_vars, redefined, ctx) for n in node.body]
@@ -2119,10 +2139,11 @@ def _node_to_dict(node: ast.AST, mutable_vars: Set[str],
         # Serialised after local_ann so an inferred parameter type can ride along.
         result["args"] = _arguments_to_dict(node.args, func_mutable, local_ann)
 
-        result["body"] = [_node_to_dict(n, func_mutable, redefined,
+        result["body"] = ([{'node_type': 'Pass', 'list_identity_error': refusal}]
+                          if refusal else [_node_to_dict(n, func_mutable, redefined,
                                         AnalysisContext(local_ann, ctx.func_ret_annotations,
                                                         ctx.slots_by_class, ctx.field_types,
-                                                        table=ctx.table, facts=ctx.facts)) for n in node.body]
+                                                        table=ctx.table, facts=ctx.facts)) for n in node.body])
         result["decorator_list"] = [_node_to_dict(d, mutable_vars, redefined, ctx) for d in node.decorator_list]
         result["returns"] = _node_to_dict(node.returns, mutable_vars, redefined, ctx) if node.returns else None
         result["type_comment"] = getattr(node, "type_comment", None)
@@ -2485,6 +2506,8 @@ def _node_to_dict(node: ast.AST, mutable_vars: Set[str],
         if scalar:
             result["v_annotation"] = scalar
 
+    if isinstance(node, ast.expr) and getattr(node, "_runtime_annotation", ""):
+        result["v_annotation"] = node._runtime_annotation
     return result
 
 
@@ -3803,7 +3826,8 @@ def _runtime_call(name: str, args: List[ast.expr], like: ast.AST) -> ast.expr:
         if not hasattr(part, "lineno"):
             ast.copy_location(part, like)
     result_types = {"length": "int", "truth": "bool", "truth_option": "bool", "instance_truth": "bool", "truth_length": "bool", "eq": "bool", "has": "bool", "is_none": "bool",
-                    "str": "string", "to_int": "int", "to_float": "float",
+                    "str": "string", "object_identity": "int", "same_object": "bool",
+                    "to_int": "int", "to_float": "float",
                     "to_str": "string", "type_name": "string", "to_bool": "bool", "elements": "list[Any]",
                     "unpack": "list[Any]"}
     call._runtime_annotation = result_types.get(name, "")
@@ -4413,7 +4437,8 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
     # A dict declared with values of no stated type (`dict`, `dict[str, Any]`): what a
     # subscript of it gives is a runtime value. Functions of this file returning one,
     # parameters declared as one, and names only ever given one.
-    any_dict_texts = ("dict", "Dict", "dict[str, Any]", "Dict[str, Any]", "dict[str, object]")
+    any_dict_texts = ("dict", "Dict", "dict[str, Any]", "Dict[str, Any]", "dict[str, object]",
+                      "dict[int, Any]", "Dict[int, Any]", "dict[int, object]")
 
     def any_dict_annotation(annotation: Optional[ast.AST]) -> bool:
         return annotation is not None and _unparse_expr(annotation).replace("typing.", "") in any_dict_texts
@@ -4435,6 +4460,17 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
                 if (any_dict_annotation(a.annotation) and binding_id is not None
                         and not table.bindings[binding_id].rebound):
                     any_dict_bindings.add(binding_id)
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name)
+                and any_dict_annotation(node.annotation)):
+            binding_id = getattr(node.target, "_binding", None)
+            # A fully known inferred map retains its native representation.
+            context = AnalysisContext(table=table, facts=facts)
+            native = context.native_map_annotation(node)
+            if binding_id is not None and native is None:
+                any_dict_bindings.add(binding_id)
+                if isinstance(node.value, ast.Dict):
+                    node.value.values = [_deep_box(v) for v in node.value.values]
     any_dict_functions.discard(None)
 
     def any_dict(node: ast.AST) -> bool:
@@ -4820,9 +4856,11 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
                          else None)
                 if value is not None:
                     call = _runtime_call("is_none", [value], node)
-                    if isinstance(node.ops[0], ast.IsNot):
-                        return ast.copy_location(ast.UnaryOp(op=ast.Not(), operand=call), node)
-                    return call
+                else:
+                    call = _runtime_call("same_object", [boxed(left), boxed(right)], node)
+                if isinstance(node.ops[0], ast.IsNot):
+                    return ast.copy_location(ast.UnaryOp(op=ast.Not(), operand=call), node)
+                return call
             if isinstance(node.ops[0], (ast.Eq, ast.NotEq)):
                 call = _runtime_call("eq", [boxed(left), boxed(right)], node)
                 if isinstance(node.ops[0], ast.NotEq):
@@ -7152,7 +7190,7 @@ def _declare_inferred_containers(tree: ast.Module, table: Optional[symbols.Symbo
             return ast.copy_location(new, stmt)
         if not (isinstance(stmt, ast.Assign) and len(stmt.targets) == 1
                 and isinstance(stmt.targets[0], ast.Name)
-                and _is_empty_container(stmt.value)):
+                and (_is_empty_container(stmt.value) or isinstance(stmt.value, ast.Dict))):
             return stmt
         target = stmt.targets[0]
         binding_id = getattr(target, "_binding", None)
@@ -7167,6 +7205,14 @@ def _declare_inferred_containers(tree: ast.Module, table: Optional[symbols.Symbo
         if binding.declared_global or binding.declared_nonlocal:
             return stmt
         text = _annotation_for_type(facts.types, known) if known is not None else None
+        if isinstance(stmt.value, ast.Dict) and stmt.value.keys:
+            typ = facts.types[known] if known is not None else {}
+            if typ.get("k") != "dict" or text is not None:
+                return stmt
+            key = facts.types[typ["key"]]["k"]
+            if key not in ("str", "int"):
+                return stmt
+            text = f"dict[{key}, Any]"
         if text is None:
             # The elements are not of one known type: runtime values.
             if isinstance(stmt.value, ast.Dict) or (
@@ -7369,32 +7415,67 @@ def process_file(file_path: str, project: Optional[ProjectFacts] = None) -> str:
         _annotate_parameters_from_calls(tree, table, facts)
     _annotate_returns(tree, facts)
     _lower_frozensets(tree, table)
-    _lower_dynamic_values(tree, table, facts, any_lists)
-    _box_mixed_displays(tree, table, facts)
-    _parameterize_bare_containers(tree, table, facts)
-    _mark_module_constants(tree, table)
-    # Backend comprehension substitution must not rename V's implicit error binding.
-    err_bindings = {getattr(target, "_binding", None)
-                    for node in ast.walk(tree) if isinstance(node, ast.comprehension)
-                    for target in ast.walk(node.target)
-                    if isinstance(target, ast.Name) and target.id == "err"}
-    err_bindings.discard(None)
-    reserved = {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)}
-    if table is not None:
-        reserved.update(binding.name for binding in table.bindings)
-        reserved.update(_v_spelling(binding.name) for binding in table.bindings)
-    renamed: Dict[int, str] = {}
-    number = 0
-    for binding in sorted(err_bindings):
-        while f"py2v_comp_err_{number}" in reserved:
-            number += 1
-        renamed[binding] = f"py2v_comp_err_{number}"
-        reserved.add(renamed[binding])
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Name) and getattr(node, "_binding", None) in renamed:
-            node.id = renamed[node._binding]
-    _plan_error_propagation(tree, table)
-    _drop_type_checking_blocks(tree, table)
+    original = tree
+    source_nodes = list(ast.walk(original))
+    for index, node in enumerate(source_nodes):
+        node._list_refusal_id = index
+    needs_copy = facts is not None and (
+        any(item.get('k') == 'list' for item in facts.types)
+        or any(isinstance(node, (ast.List, ast.ListComp)) for node in source_nodes))
+    while True:
+        # The analyses keep AST object identities. Snapshot attributes while
+        # preserving every AST node, then restore those same objects on failure.
+        memo = {id(node): node for node in source_nodes}
+        snapshot = [(node, copy.deepcopy(vars(node), memo)) for node in source_nodes] if needs_copy else []
+        tree = original
+        try:
+            references = list_refs.plan(tree, table, facts)
+            # Dynamic lowering adds lifted lists to its input set. Start each retry fresh.
+            _lower_dynamic_values(tree, table, facts, any_lists.copy())
+            _box_mixed_displays(tree, table, facts)
+            _parameterize_bare_containers(tree, table, facts)
+            _mark_module_constants(tree, table)
+            # Backend comprehension substitution must not rename V's implicit error binding.
+            err_bindings = {getattr(target, "_binding", None)
+                            for node in ast.walk(tree) if isinstance(node, ast.comprehension)
+                            for target in ast.walk(node.target)
+                            if isinstance(target, ast.Name) and target.id == "err"}
+            err_bindings.discard(None)
+            reserved = {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)}
+            if table is not None:
+                reserved.update(binding.name for binding in table.bindings)
+                reserved.update(_v_spelling(binding.name) for binding in table.bindings)
+            renamed: Dict[int, str] = {}
+            number = 0
+            for binding in sorted(err_bindings):
+                while f"py2v_comp_err_{number}" in reserved:
+                    number += 1
+                renamed[binding] = f"py2v_comp_err_{number}"
+                reserved.add(renamed[binding])
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Name) and getattr(node, "_binding", None) in renamed:
+                    node.id = renamed[node._binding]
+            _plan_error_propagation(tree, table)
+            _drop_type_checking_blocks(tree, table)
+            list_refs.lower(tree, references, _runtime_call)
+            break
+        except list_refs.UnsupportedListIdentity as error:
+            scopes, group_nodes = error.planner.refusal_scopes(error)
+            for node, attributes in snapshot:
+                vars(node).clear()
+                vars(node).update(attributes)
+            progressed = False
+            for node in source_nodes:
+                if node._list_refusal_id in group_nodes and not getattr(node, '_list_group_refused', False):
+                    node._list_group_refused = True
+                    progressed = True
+                name = scopes.get(node._list_refusal_id)
+                if name is not None and not getattr(node, '_list_identity_error', ''):
+                    reason = str(error).removeprefix('py2v:').strip()
+                    node._list_identity_error = f'{name}: {reason}'
+                    progressed = True
+            if not progressed:
+                raise RuntimeError(f'cannot narrow list identity refusal: {error}') from error
 
     for parent in ast.walk(tree):
         for child in ast.iter_child_nodes(parent):

@@ -17,7 +17,7 @@ fn is_prime(number int) bool {
 		return false
 	}
 	for i in []int{len: int(math.sqrti(number)) + 1 - 2, init: index + 2} {
-		if number % i == 0 {
+		if math.modulo_floored(number, i) == 0 {
 			return false
 		}
 	}

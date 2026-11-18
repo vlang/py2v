@@ -30,10 +30,10 @@ fn (a Any) < (b Any) bool {
 }
 
 fn describe_py(record Any, label string) !string {
-	summary := {
+	summary := map[string]Any{
 		'label': pyrt.box(label)
-		'name':  pyrt.call_method(pyrt.box(record), 'get', [pyrt.box('name')])!
-		'count': pyrt.item_at(record, pyrt.box('count'))
+		'name':  pyrt.box(pyrt.call_method(pyrt.box(record), 'get', [pyrt.box('name')])!)
+		'count': pyrt.box(pyrt.item_at(record, pyrt.box('count')))
 		'tags':  pyrt.box([pyrt.box('a'), pyrt.box('b')])
 		'ok':    pyrt.box(true)
 	}

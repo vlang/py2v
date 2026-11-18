@@ -1,5 +1,7 @@
 module main
 
+import pyrt
+
 pub struct Point {
 pub mut:
 	x int
@@ -17,22 +19,22 @@ pub fn py2v_new_point(x int) Point {
 
 pub struct Box {
 pub mut:
-	items []int
+	items &pyrt.ListRef[int] = &pyrt.ListRef[int]{}
 }
 
-fn (mut self Box) init(items []int) {
+fn (mut self Box) init(items &pyrt.ListRef[int]) {
 	self.items = items
 }
 
 fn (mut self Box) put() {
-	self.items[0] = 5
+	self.items.items[0] = 5
 }
 
 fn (mut self Box) bump() {
-	self.items[1] += 5
+	self.items.items[1] += 5
 }
 
-pub fn py2v_new_box(items []int) Box {
+pub fn py2v_new_box(items &pyrt.ListRef[int]) Box {
 	mut py2v_instance := Box{}
 	py2v_instance.init(items)
 	return py2v_instance
@@ -42,7 +44,7 @@ fn main_func() {
 	mut a := [int(1), 2]
 	a[0] += 1
 	println(a)
-	mut counts := {
+	mut counts := map[string]int{
 		'x': 1
 	}
 	counts['x'] += 1
@@ -51,14 +53,14 @@ fn main_func() {
 	grid[0][1] = 5
 	grid[1][0] *= 3
 	println(grid)
-	mut b := py2v_new_box([1, 2])
+	mut b := py2v_new_box(pyrt.list_ref[int]([1, 2]))
 	b.put()
 	b.bump()
-	println(b.items)
+	println(pyrt.str(pyrt.box(b.items)))
 	mut points := [py2v_new_point(1), py2v_new_point(2)]
 	points[0].x = 7
 	println(points[0].x)
-	mut lists := {
+	mut lists := map[string][]int{
 		'a': [1, 2]
 	}
 	lists['a'][1] = 9

@@ -30,7 +30,7 @@ fn main_func_py() ! {
 	other.write_text('x')!
 	names := (target.parent().iterdir() or { pyrt.fail(err) }).map(it.name()).sorted()
 	println(names)
-	println(target.parent().glob('*.txt')!.len)
+	println(target.parent().glob('*.txt')!.clone().len)
 	println(if target.str().ends_with('notes.txt') { 'True' } else { 'False' })
 	other.unlink()!
 	println(if other.exists() { 'True' } else { 'False' })

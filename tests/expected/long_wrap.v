@@ -29,7 +29,7 @@ fn (a Any) < (b Any) bool {
 }
 
 fn build(a int, b int, c int, d int, e int, f int, g int, h int, i int, j int, k int, l int) Any {
-	items := [
+	items := pyrt.list_ref[string]([
 		'aaaaaaaaaa',
 		'bbbbbbbbbb',
 		'cccccccccc',
@@ -44,7 +44,7 @@ fn build(a int, b int, c int, d int, e int, f int, g int, h int, i int, j int, k
 		'llllllllll',
 		'mmmmmmmmmm',
 		'nnnnnnnnnn',
-	]
+	])
 	text := 'prefix-${a}-${b}-${c}-${d}-${e}-${f}-${g}-${h}-${i}-${j}-${k}-${l}-suffix'
 	return [items, text]
 }

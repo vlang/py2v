@@ -3,19 +3,19 @@ module main
 import arrays
 
 fn parse(line string) []int {
-	return line.split(' ').map(it.int())
+	return line.split(' ').map(it.int()).clone()
 }
 
 fn halves(line string) []f64 {
-	return line.split(',').map(it.f64())
+	return line.split(',').map(it.f64()).clone()
 }
 
 fn texts(numbers []int) []string {
-	return numbers.map(it.str())
+	return numbers.map(it.str()).clone()
 }
 
 fn whole(values []f64) []int {
-	return values.map(int(it))
+	return values.map(int(it)).clone()
 }
 
 fn pair(line string) int {

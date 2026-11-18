@@ -1,6 +1,7 @@
 module main
 
 import pyrt
+import math
 
 type Any = pyrt.Value
 
@@ -28,19 +29,21 @@ fn (a Any) < (b Any) bool {
 	return pyrt.lt(a, b) or { panic(err) }
 }
 
-fn sorted_copy(values []int) []int {
-	mut result := values[..]
+fn sorted_copy(values &pyrt.ListRef[int]) []int {
+	mut result := pyrt.list_ref_slice[int](values, 0, 0, false, false)
 	result.sort(a < b)
 	return result
 }
 
-fn sort_in_place(mut values []int) []int {
-	values.sort(a < b)
+fn sort_in_place(py2v_values_in1 &pyrt.ListRef[int]) &pyrt.ListRef[int] {
+	mut values := unsafe { py2v_values_in1 }
+	values.items.sort(a < b)
 	return values
 }
 
-fn swap_ends(mut values []int) []int {
-	values[0], values[values.len - 1] = values[values.len - 1], values[0]
+fn swap_ends(py2v_values_in2 &pyrt.ListRef[int]) &pyrt.ListRef[int] {
+	mut values := unsafe { py2v_values_in2 }
+	values.items[0], values.items[values.items.len - 1] = values.items[values.items.len - 1], values.items[0]
 	return values
 }
 
@@ -55,7 +58,7 @@ fn drain(mut stack []int) int {
 fn group(numbers []int) map[int][]int {
 	mut groups := map[int][]int{}
 	for number in numbers {
-		key := number % 3
+		key := math.modulo_floored(number, 3)
 		if (key !in groups) {
 			groups[key] = []
 		}
@@ -78,13 +81,13 @@ fn gather() []int {
 }
 
 fn main() {
-	mut unsorted := [5, 3, 9, 1]
+	mut unsorted := pyrt.list_ref[int]([5, 3, 9, 1])
 	println(sorted_copy(unsorted))
-	println(sort_in_place(mut unsorted))
-	mut letters := [4, 5, 6]
-	letters.reverse_in_place()
-	println(letters)
-	println(swap_ends(mut letters))
+	println(pyrt.str(pyrt.box(sort_in_place(unsorted))))
+	mut letters := pyrt.list_ref[int]([4, 5, 6])
+	letters.items.reverse_in_place()
+	println(pyrt.str(pyrt.box(letters)))
+	println(pyrt.str(pyrt.box(swap_ends(letters))))
 	mut pending := [1, 2, 3]
 	println('${drain(mut pending)} ${pending.len}')
 	println(group([1, 2, 3, 4, 5, 6, 7]))

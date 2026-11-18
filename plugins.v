@@ -206,6 +206,13 @@ fn visit_print(mut t VTranspiler, node Call, args []string) (string, bool) {
 			parts << bool_to_python_str(arg_str)
 			continue
 		}
+		// Native maps with runtime values need Python's recursive representation.
+		if inferred.starts_with('map[') && (inferred.ends_with(']Any')
+			|| inferred.ends_with(']pyrt.Value')) {
+			t.add_using('pyrt')
+			parts << 'pyrt.str(pyrt.box(${arg_str}))'
+			continue
+		}
 
 		// Keep other expressions for the final print expression below.
 		parts << arg_str
@@ -784,6 +791,10 @@ fn build_typed_lambda_closure(mut t VTranspiler, lam Lambda, iter Expr) string {
 		ret_type = inferred
 	}
 	// Render body expression
+	if lam.list_identity_error != '' {
+		return 'fn (${params.join(', ')}) ${ret_type} {\n' +
+			t.indent_code(t.list_identity_refusal(lam.list_identity_error), 1) + '\n}'
+	}
 	body := t.visit_expr(lam.body)
 	stripped := strip_outer_parens(body)
 	return 'fn (${params.join(', ')}) ${ret_type} {\n\treturn ${stripped}\n}'
