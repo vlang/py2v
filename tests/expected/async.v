@@ -14,7 +14,8 @@ fn show_async() {
 	// async for lowered to goroutine + channel
 	py2v_ch1 := chan int{}
 	go async_gen(py2v_ch1)
-	for val in py2v_ch1 {
+	for {
+		val := <-py2v_ch1 or { break }
 		println(val)
 	}
 }

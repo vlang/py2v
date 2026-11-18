@@ -34,7 +34,7 @@ mut:
 	global_vars                 map[string]bool
 	has_global_decl             bool
 	mut_param_indices           map[string][]int
-	generator_yield_types       map[string]string   // generator function -> its channel element type
+	generator_signatures        map[string]GeneratorSignature
 	func_param_types            map[string][]string // module function -> the V types of its parameters
 	var_types                   map[string]string
 	// State for the if-condition lowering, saved separately for each scope.
@@ -106,9 +106,8 @@ mut:
 	// emitted, its parameters included. V rejects a `for` variable that
 	// shadows any of them, not only an enclosing iteration variable, so Python's
 	// habit of rebinding a parameter inside a loop has to be given a fresh name.
-	scope_idents map[string]bool
-	// param_idents holds the parameters of the function being emitted. A loop
-	// that rebinds one cannot assign to it, so it only gets a fresh name.
+	scope_idents map[string]string
+	// param_idents records whether a parameter has an assignable local binding.
 	param_idents map[string]bool
 	// loop_prelude holds the lines the next loop body starts with: the
 	// assignments that keep a rebound local in step with its fresh loop name.
@@ -187,6 +186,9 @@ fn emitted_class_name(name string) string {
 		}
 		return trimmed[0].ascii_str().to_upper() + trimmed[1..]
 	}
+	if name != '' && name[0] >= `a` && name[0] <= `z` {
+		return 'Py2v_${name}'
+	}
 	return name
 }
 
@@ -210,7 +212,7 @@ pub fn new_transpiler() VTranspiler {
 		imported_modules:            map[string]bool{}
 		import_prefixes:             map[string]bool{}
 		loop_idents:                 map[string]bool{}
-		scope_idents:                map[string]bool{}
+		scope_idents:                map[string]string{}
 		unmapped_modules:            map[string]bool{}
 		unmapped_calls:              []string{}
 		exception_handlers:          []string{}
@@ -798,6 +800,10 @@ pub fn (mut t VTranspiler) indent_code(code string, level int) string {
 
 // visit_body_stmts visits a list of statements and returns an indented block string.
 pub fn (mut t VTranspiler) visit_body_stmts(stmts []Stmt, level int) string {
+	saved_bindings := if level > 0 { t.scope_idents.clone() } else { map[string]string{} }
+	defer {
+		if level > 0 { t.scope_idents = saved_bindings }
+	}
 	mut parts := []string{}
 	for stmt in stmts {
 		s := t.visit_stmt(stmt)
@@ -1026,7 +1032,7 @@ fn (mut t VTranspiler) visit_closure_from_funcdef(node FunctionDef, nl_names []s
 		t.local_idents = saved_locals
 		t.local_idents[node.name] = name
 		t.scope_idents = saved_scope
-		t.scope_idents[name] = true
+		t.scope_idents[name] = node.name
 		t.param_idents = saved_params
 		t.renamed_idents = saved_renames
 		t.loop_idents = saved_loops
@@ -1097,8 +1103,8 @@ fn (mut t VTranspiler) visit_closure_from_funcdef(node FunctionDef, nl_names []s
 	}
 
 	t.local_idents = capture_locals.clone()
-	t.scope_idents = map[string]bool{}
-	for py_name, _ in capture_locals { t.scope_idents[escape_local_ident(py_name)] = true }
+	t.scope_idents = map[string]string{}
+	for py_name, spelling in capture_locals { t.scope_idents[spelling] = py_name }
 	t.param_idents = map[string]bool{}
 	t.renamed_idents = map[string]string{}
 	t.loop_idents = map[string]bool{}
@@ -1128,8 +1134,8 @@ fn (mut t VTranspiler) visit_closure_from_funcdef(node FunctionDef, nl_names []s
 		if typ == '' || typ == 'auto' { typ = 'Any' }
 		if typ.contains('Any') { t.generated_code_has_any_type = true }
 		t.local_idents[arg.arg] = local
-		t.scope_idents[local] = true
-		t.param_idents[arg.arg] = true
+		t.scope_idents[local] = arg.arg
+		t.param_idents[arg.arg] = arg.arg in node.mutable_vars
 		t.var_types[arg.arg] = typ
 		mut incoming := local
 		if arg.arg in node.mutable_vars {
@@ -1152,8 +1158,12 @@ fn (mut t VTranspiler) visit_closure_from_funcdef(node FunctionDef, nl_names []s
 	}
 	if node.is_generator {
 		typ := t.infer_generator_yield_type(node.body)
-		declarations << 'ch chan ${typ}'
-		t.generator_yield_types[node.name] = typ
+		if node.args.vararg != none {
+			declarations.prepend('ch chan ${typ}')
+		} else {
+			declarations << 'ch chan ${typ}'
+		}
+		t.generator_signatures[node.name] = GeneratorSignature{typ, node.args.vararg != none}
 	}
 	if vararg := node.args.vararg {
 		local := escape_local_decl(vararg.arg)
@@ -1198,14 +1208,14 @@ fn (mut t VTranspiler) visit_closure_from_funcdef(node FunctionDef, nl_names []s
 	saved_nested_params := t.func_param_types.clone()
 	saved_nested_returns := t.func_return_types.clone()
 	saved_nested_mut := t.mut_param_indices.clone()
-	saved_nested_generators := t.generator_yield_types.clone()
+	saved_nested_generators := t.generator_signatures.clone()
 	defer {
 		t.func_defaults = saved_nested_defaults
 		t.func_param_count = saved_nested_counts
 		t.func_param_types = saved_nested_params
 		t.func_return_types = saved_nested_returns
 		t.mut_param_indices = saved_nested_mut
-		t.generator_yield_types = saved_nested_generators
+		t.generator_signatures = saved_nested_generators
 	}
 
 	// Defaults use the parent context; the nested body owns its cleanup state.
@@ -1333,7 +1343,7 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 	t.var_types = func_var_types.clone()
 	// A parameter or local of an enclosing function is not in scope here.
 	saved_scope_idents := t.scope_idents
-	t.scope_idents = map[string]bool{}
+	t.scope_idents = map[string]string{}
 	saved_param_idents := t.param_idents
 	t.param_idents = map[string]bool{}
 
@@ -1434,8 +1444,7 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 		}
 		// A parameter is already bound, so a `for` variable of the same name
 		// must take a fresh one.
-		t.scope_idents[escape_local_ident(arg.arg)] = true
-		t.param_idents[arg.arg] = true
+		t.param_idents[arg.arg] = arg.arg in node.mutable_vars
 
 		mut typename := ''
 		if ann := arg.annotation {
@@ -1455,6 +1464,7 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 
 		mut arg_name := escape_local_decl(arg.arg)
 		t.local_idents[arg.arg] = arg_name
+		t.scope_idents[arg_name] = arg.arg
 		// Track identifiers escaped due to built-in type name conflicts
 		if arg.arg in v_builtin_types {
 			t.escaped_identifiers[arg.arg] = true
@@ -1463,9 +1473,11 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 		if arg.arg in node.mutable_vars {
 			optional_value := !node.is_class_method && arg.arg !in node.condition_walrus_names
 				&& is_optional_value_type(typename)
+			local_value := typename in ['', 'Any'] && for_rebinds_parameter(node.body, arg.arg)
 			if typename in v_value_param_types && arg.arg in node.condition_walrus_names {
 				// The walrus lowering copies this parameter itself.
-			} else if typename in v_value_param_types || optional_value || typename.starts_with('&pyrt.ListRef[') {
+			} else if typename in v_value_param_types || optional_value || local_value
+				|| typename.starts_with('&pyrt.ListRef[') {
 				// Rebinding a number, string or bool parameter is local in Python, and V
 				// has no `mut` for these or their options: it arrives under another name and the
 				// body starts with a mutable local that has the source's name.
@@ -1512,8 +1524,8 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 	for kwonly in node.args.kwonlyargs {
 		mut kwname := escape_local_decl(kwonly.arg)
 		t.local_idents[kwonly.arg] = kwname
-		t.scope_idents[escape_local_ident(kwonly.arg)] = true
-		t.param_idents[kwonly.arg] = true
+		t.scope_idents[kwname] = kwonly.arg
+		t.param_idents[kwonly.arg] = kwonly.arg in node.mutable_vars
 		mut kwtype := 'Any'
 		t.generated_code_has_any_type = true
 		if ann := kwonly.annotation {
@@ -1560,8 +1572,8 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 		// opening brace of the function body.
 		local := escape_local_decl(kwarg.arg)
 		t.local_idents[kwarg.arg] = local
-		t.scope_idents[escape_local_ident(kwarg.arg)] = true
-		t.param_idents[kwarg.arg] = true
+		t.scope_idents[local] = kwarg.arg
+		t.param_idents[kwarg.arg] = false
 		t.var_types[kwarg.arg] = 'map[string]Any'
 		args_strs << '${local} map[string]Any'
 	}
@@ -1582,8 +1594,8 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 		}
 		local := escape_local_decl(vararg.arg)
 		t.local_idents[vararg.arg] = local
-		t.scope_idents[escape_local_ident(vararg.arg)] = true
-		t.param_idents[vararg.arg] = true
+		t.scope_idents[local] = vararg.arg
+		t.param_idents[vararg.arg] = false
 		t.var_types[vararg.arg] = '[]' + typename.trim_left('.')
 		args_strs << '${local} ${typename}'
 	}
@@ -1591,8 +1603,14 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 	// For generator functions, add channel parameter
 	if node.is_generator {
 		yield_type := t.infer_generator_yield_type(node.body)
-		t.generator_yield_types[node.name] = yield_type
-		args_strs << 'ch chan ${yield_type}'
+		channel_first := node.args.vararg != none
+		if channel_first {
+			// V requires the remaining Python arguments to be last.
+			args_strs.prepend('ch chan ${yield_type}')
+		} else {
+			args_strs << 'ch chan ${yield_type}'
+		}
+		t.generator_signatures[node.name] = GeneratorSignature{yield_type, channel_first}
 	}
 
 	// A function names its generic types; a method takes them from its receiver.
@@ -1643,14 +1661,14 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 	saved_nested_params := t.func_param_types.clone()
 	saved_nested_returns := t.func_return_types.clone()
 	saved_nested_mut := t.mut_param_indices.clone()
-	saved_nested_generators := t.generator_yield_types.clone()
+	saved_nested_generators := t.generator_signatures.clone()
 	defer {
 		t.func_defaults = saved_nested_defaults
 		t.func_param_count = saved_nested_counts
 		t.func_param_types = saved_nested_params
 		t.func_return_types = saved_nested_returns
 		t.mut_param_indices = saved_nested_mut
-		t.generator_yield_types = saved_nested_generators
+		t.generator_signatures = saved_nested_generators
 	}
 
 	// Process body - separate nested function definitions
@@ -2290,8 +2308,8 @@ pub fn (mut t VTranspiler) visit_assign(node Assign) string {
 		}
 	}
 	for target in node.targets {
-		if target is Name {
-			t.note_scope_binding((target as Name).id)
+		for name in for_target_names(target) {
+			t.note_scope_binding(name)
 		}
 	}
 	// Literal[v1, v2, ...] assignment — emit a const block or enum as documentation.
@@ -3272,16 +3290,11 @@ pub fn (t VTranspiler) zero_value_for(typ string) string {
 // by an enclosing loop, so that nesting a Python loop over the same variable
 // name still compiles.
 fn (t VTranspiler) fresh_loop_ident(name string, pending map[string]string) string {
-	mut taken := map[string]bool{}
-	for k, _ in pending {
-		taken[k] = true
-	}
-	// A plain `for {}` binds no iteration variable, so the candidate name can
-	// be declared in the body without V reading it as a redefinition.
+	taken := pending.values()
 	mut n := 0
 	for {
 		candidate := if n == 0 { '${name}_' } else { '${name}_${n}' }
-		if !(candidate in t.loop_idents) && !(candidate in taken) {
+		if candidate !in t.loop_idents && candidate !in t.scope_idents && candidate !in taken {
 			return candidate
 		}
 		n++
@@ -3392,17 +3405,55 @@ fn for_target_names(target Expr) []string {
 	return []
 }
 
+// for_rebinds_parameter finds a loop target in the current function.
+fn for_rebinds_parameter(body []Stmt, name string) bool {
+	for stmt in body {
+		match stmt {
+			For, AsyncFor {
+				if name in for_target_names(stmt.target) || for_rebinds_parameter(stmt.body, name)
+					|| for_rebinds_parameter(stmt.orelse, name) {
+					return true
+				}
+			}
+			If, While {
+				if for_rebinds_parameter(stmt.body, name) || for_rebinds_parameter(stmt.orelse, name) {
+					return true
+				}
+			}
+			With, AsyncWith {
+				if for_rebinds_parameter(stmt.body, name) { return true }
+			}
+			Try {
+				if for_rebinds_parameter(stmt.body, name) || for_rebinds_parameter(stmt.orelse, name)
+					|| for_rebinds_parameter(stmt.finalbody, name)
+					|| stmt.handlers.any(for_rebinds_parameter(it.body, name)) {
+					return true
+				}
+			}
+			Match {
+				if stmt.cases.any(for_rebinds_parameter(it.body, name)) { return true }
+			}
+			else {}
+		}
+	}
+	return false
+}
+
 // note_scope_binding records the V spelling a Python name is bound to in the
 // function currently being emitted.
 fn (mut t VTranspiler) note_scope_binding(py_name string) {
-	v := t.renamed_idents[py_name] or { escape_local_ident(py_name) }
-	t.scope_idents[v] = true
+	t.scope_idents[t.binding_spelling(py_name)] = py_name
+}
+
+// binding_spelling returns the V identifier for a local Python binding.
+fn (t VTranspiler) binding_spelling(py_name string) string {
+	return t.renamed_idents[py_name] or { t.local_idents[py_name] or { escape_local_ident(py_name) } }
 }
 
 // is_bound_in_scope reports whether `py_name` is already a parameter or local of
 // the function being emitted.
 fn (t VTranspiler) is_bound_in_scope(py_name string) bool {
-	return t.scope_idents[escape_local_ident(py_name)]
+	return t.scope_idents[t.binding_spelling(py_name)] == py_name
 }
 
 // bind_op returns the operator that binds `v_name`. V rejects a second
@@ -3410,31 +3461,33 @@ fn (t VTranspiler) is_bound_in_scope(py_name string) bool {
 // loop target that shadows an existing name rebinds that same variable rather
 // than introducing a new one, so this has to be an assignment.
 fn (t VTranspiler) bind_op(v_name string) string {
-	return if t.scope_idents[v_name] { '=' } else { ':=' }
+	return if v_name in t.scope_idents { '=' } else { ':=' }
 }
 
 // visit_for emits V code for a For loop.
 pub fn (mut t VTranspiler) visit_for(node For) string {
 	saved_renames := t.renamed_idents.clone()
-	// V rejects reusing an iteration variable name in a nested loop, and
-	// Python allows it freely. Bind the inner loop to a fresh name and record
-	// the rename so the body refers to the variable it actually declares.
 	mut rename := map[string]string{}
+	mut writebacks := map[string]string{}
 	for name in for_target_names(node.target) {
-		// V rejects a `for` variable that shadows anything already bound in the
-		// enclosing scope, which in Python is an ordinary way to rebind a name.
-		if name in t.loop_idents || escape_local_ident(name) in t.scope_idents {
+		spelling := t.binding_spelling(name)
+		if spelling in t.loop_idents || spelling in t.scope_idents {
 			fresh := if t.condition_walrus_vars[name] {
 				t.new_tmp('walrus_iter')
 			} else {
 				t.fresh_loop_ident(name, rename)
 			}
-			// Python rebinds the existing local on every iteration, and code after
-			// the loop reads its last value. Only a mutable local can take that
-			// assignment: not a parameter, and not an enclosing loop variable.
-			if name !in t.loop_idents && name !in t.param_idents && name !in t.renamed_idents
+			if spelling in t.scope_idents && !t.is_bound_in_scope(name) {
+				// A later reference to this Python name must never read a
+				// different binding that happened to share the V spelling.
+				t.local_idents[name] = fresh
+			}
+			// Only write back to the same Python binding. Distinct names can
+			// acquire the same V spelling when a parameter is lowercased.
+			if t.is_bound_in_scope(name) && (t.param_idents[name] or { true })
 				&& !t.condition_walrus_vars[name] && for_target_is_mutable(node.target, name) {
-				t.loop_prelude << '${escape_local_ident(name)} = ${fresh}'
+				writebacks[name] = spelling
+				t.loop_prelude << '${spelling} = ${fresh}'
 			}
 			rename[name] = fresh
 		}
@@ -3443,7 +3496,7 @@ pub fn (mut t VTranspiler) visit_for(node For) string {
 	// loop reusing the same Python name is free to keep it.
 	mut bound := []string{}
 	for name in for_target_names(node.target) {
-		fresh := rename[name] or { name }
+		fresh := rename[name] or { t.binding_spelling(name) }
 		t.loop_idents[fresh] = true
 		bound << fresh
 	}
@@ -3503,10 +3556,10 @@ pub fn (mut t VTranspiler) visit_for(node For) string {
 				for k, name in target_names {
 					buf << t.indent_code('${name} ${t.bind_op(name)} ${item}[${k}]', 2)
 				}
-				body, flag := t.visit_for_body(node, 2, has_else)
+				body, flag := t.visit_for_body(node, 2, has_else, writebacks)
 				buf << body
 				buf << '\t}'
-				t.emit_for_else(mut buf, node.orelse, flag)
+				t.emit_for_else(mut buf, node.orelse, flag, saved_renames)
 				return buf.join('\n')
 			}
 			target = target_names.join(', ')
@@ -3519,10 +3572,10 @@ pub fn (mut t VTranspiler) visit_for(node For) string {
 					if fname == 'enumerate' && target_names.len == 2 && call.args.len > 0 {
 						iter0 := t.visit_for_iter(call.args[0], saved_renames)
 						buf << 'for ${target_names[0]}, ${target_names[1]} in ${iter0} {'
-						body, flag := t.visit_for_body(node, 1, has_else)
+						body, flag := t.visit_for_body(node, 1, has_else, writebacks)
 						buf << body
 						buf << '}'
-						t.emit_for_else(mut buf, node.orelse, flag)
+						t.emit_for_else(mut buf, node.orelse, flag, saved_renames)
 						return buf.join('\n')
 					}
 					// zip(a, b) => for i, x in a { y := b[i]; ... }
@@ -3532,10 +3585,10 @@ pub fn (mut t VTranspiler) visit_for(node For) string {
 						idx := t.new_tmp('zipi')
 						buf << 'for ${idx}, ${target_names[0]} in ${left} {'
 						buf << '\t${target_names[1]} ${t.bind_op(target_names[1])} ${right}[${idx}]'
-						body, flag := t.visit_for_body(node, 1, has_else)
+						body, flag := t.visit_for_body(node, 1, has_else, writebacks)
 						buf << body
 						buf << '}'
-						t.emit_for_else(mut buf, node.orelse, flag)
+						t.emit_for_else(mut buf, node.orelse, flag, saved_renames)
 						return buf.join('\n')
 					}
 				}
@@ -3557,10 +3610,10 @@ pub fn (mut t VTranspiler) visit_for(node For) string {
 				// Detect if step is -1 and use i-- instead of i += -1
 				step_op := if step == '-1' { '${target}--' } else { '${target} += ${step}' }
 				buf << 'for ${target} := ${start}; ${target} < ${end}; ${step_op} {'
-				body, flag := t.visit_for_body(node, 1, has_else)
+				body, flag := t.visit_for_body(node, 1, has_else, writebacks)
 				buf << body
 				buf << '}'
-				t.emit_for_else(mut buf, node.orelse, flag)
+				t.emit_for_else(mut buf, node.orelse, flag, saved_renames)
 				return buf.join('\n')
 			} else if fname == 'range' && call.args.len == 2 {
 				start := t.visit_for_iter(call.args[0], saved_renames)
@@ -3591,10 +3644,10 @@ pub fn (mut t VTranspiler) visit_for(node For) string {
 
 	// Emit for loop
 	buf << 'for ${target} in ${for_expr} {'
-	body, flag := t.visit_for_body(node, 1, has_else)
+	body, flag := t.visit_for_body(node, 1, has_else, writebacks)
 	buf << body
 	buf << '}'
-	t.emit_for_else(mut buf, node.orelse, flag)
+	t.emit_for_else(mut buf, node.orelse, flag, saved_renames)
 
 	return buf.join('\n')
 }
@@ -3627,7 +3680,10 @@ fn loop_rebinds(body []Stmt, name string) bool {
 				if loop_rebinds(stmt.body, name) { return true }
 			}
 			For {
-				if loop_rebinds(stmt.body, name) { return true }
+				if name in for_target_names(stmt.target) || loop_rebinds(stmt.body, name)
+					|| loop_rebinds(stmt.orelse, name) {
+					return true
+				}
 			}
 			else {}
 		}
@@ -3637,17 +3693,25 @@ fn loop_rebinds(body []Stmt, name string) bool {
 
 // visit_for_body makes a local copy of mutable loop values, preserving pointer identity
 // while keeping rebinding local instead of changing the source container's element.
-fn (mut t VTranspiler) visit_for_body(node For, level int, has_else bool) (string, string) {
+fn (mut t VTranspiler) visit_for_body(node For, level int, has_else bool, writebacks map[string]string) (string, string) {
 	targets := match node.target {
 		Tuple { node.target.elts }
 		List { node.target.elts }
 		else { [*node.target] }
 	}
 	mut saved := map[string]string{}
+	mut locals := []string{}
+	defer {
+		for local in locals { t.scope_idents.delete(local) }
+	}
 	for target in targets {
 		if target is Name && (get_expr_annotation(target).starts_with('&pyrt.ListRef[')
 			|| loop_rebinds(node.body, target.id)) {
 			saved[target.id] = t.renamed_idents[target.id] or { '' }
+			if binding := writebacks[target.id] {
+				t.renamed_idents[target.id] = binding
+				continue
+			}
 			incoming := t.visit_expr(target)
 			local := t.new_tmp('iter_value')
 			t.loop_prelude << if get_expr_annotation(target).starts_with('&pyrt.ListRef[') {
@@ -3656,6 +3720,8 @@ fn (mut t VTranspiler) visit_for_body(node For, level int, has_else bool) (strin
 				'mut ${local} := ${incoming}'
 			}
 			t.renamed_idents[target.id] = local
+			t.note_scope_binding(target.id)
+			locals << local
 		}
 	}
 	body, flag := t.visit_loop_body(node.body, level, has_else)
@@ -3725,22 +3791,11 @@ fn (mut t VTranspiler) visit_break() string {
 
 // emit_for_else emits the else of a for loop after its body. buf[0] holds the
 // flag declaration visit_for wrote; a loop without a break keeps it as is.
-fn (mut t VTranspiler) emit_for_else(mut buf []string, orelse []Stmt, flag string) {
+fn (mut t VTranspiler) emit_for_else(mut buf []string, orelse []Stmt, flag string, before map[string]string) {
 	if orelse.len == 0 {
 		return
 	}
-	mut condition_renames := map[string]string{}
-	for name in t.condition_walrus_order {
-		if iter := t.renamed_idents[name] {
-			if t.loop_idents[iter] {
-				condition_renames[name] = iter
-				t.renamed_idents.delete(name)
-			}
-		}
-	}
-	defer {
-		for name, iter in condition_renames { t.renamed_idents[name] = iter }
-	}
+	t.renamed_idents = before.clone()
 	if flag == '' {
 		buf << 'if has_break != true {'
 	} else {
@@ -3749,6 +3804,11 @@ fn (mut t VTranspiler) emit_for_else(mut buf []string, orelse []Stmt, flag strin
 	}
 	buf << t.visit_body_stmts(orelse, 1)
 	buf << '}'
+}
+
+struct GeneratorSignature {
+	yield_type    string
+	channel_first bool
 }
 
 // visit_async_for emits V code for an AsyncFor loop (converted to sync).
@@ -3769,18 +3829,26 @@ pub fn (mut t VTranspiler) visit_async_for(node AsyncFor) string {
 		buf << '// async for lowered to goroutine + channel'
 		// The channel has the element type its producer was declared with
 		mut elem_type := t.infer_iter_elem_type(node.iter)
+		mut channel_first := false
 		if iter_call.func is Name {
-			elem_type = t.generator_yield_types[(iter_call.func as Name).id] or { elem_type }
+			if sig := t.generator_signatures[iter_call.func.id] {
+				elem_type = sig.yield_type
+				channel_first = sig.channel_first
+			}
 		}
 		ch_type := if elem_type.len > 0 { elem_type } else { 'Any' }
 		if ch_type == 'Any' {
 			t.generated_code_has_any_type = true
 		}
 		buf << '${ch} := chan ${ch_type}{}'
-		mut all_args := producer_args.clone()
-		all_args << ch
-		buf << 'go ${producer}(${all_args.join(', ')})'
-		buf << 'for ${target} in ${ch} {'
+		if channel_first {
+			producer_args.prepend(ch)
+		} else {
+			producer_args << ch
+		}
+		buf << 'go ${producer}(${producer_args.join(', ')})'
+		buf << 'for {'
+		buf << '\t${target} := <-${ch} or { break }'
 		body, _ := t.visit_loop_body(node.body, 1, false)
 		buf << body
 		buf << '}'
@@ -7138,29 +7206,34 @@ pub fn (mut t VTranspiler) visit_call(original Call) string {
 			is_ctor = false
 		}
 	}
-	if is_ctor {
+	if is_ctor && (ctor_lookup == fname || ctor_lookup == emitted_class_name(ctor_lookup)
+		|| (node.args.len == 0 && node.keywords.len == 0)) {
 		// Keep the module qualifier: `Box{}` would refer to nothing when the
 		// class lives in another V module.
-		mut emitted_ctor := if ctor_lookup == fname {
-			emitted_class_name(fname)
-		} else {
-			fname
+		mut emitted_ctor := emitted_class_name(ctor_lookup)
+		if ctor_lookup != fname {
+			emitted_ctor = '${fname.all_before_last('.')}.${emitted_ctor}'
 		}
 		if ctor_lookup in t.ref_classes {
 			emitted_ctor = '&${emitted_ctor}'
 		}
 		return t.ctor_struct_literal(emitted_ctor, fname, node, vargs)
 	}
-	if node.func is Attribute {
-		callee := node.func as Attribute
-		method := escape_leading_underscore(callee.attr)
-		if method.len > 0 && method[0].is_capital()
-			&& (vargs.len != 1 || node.keywords.len > 0) {
+	if node.func is Attribute || (node.func is Name && fname.contains('.')
+		&& t.registry.dotted_for_v_module(fname.all_before_last('.')) != '') {
+		method := if node.func is Attribute {
+			escape_leading_underscore(node.func.attr)
+		} else {
+			ctor_lookup
+		}
+		if is_ctor || (method.len > 0 && method[0].is_capital()
+			&& (vargs.len != 1 || node.keywords.len > 0)) {
 			// V reads module.Type(a, b) as a cast. A constructor must have a
 			// resolved lowering; retain every operand in an explicit refusal.
 			mut operands := ["'${escape_string(fname)}'"]
-			if !(callee.value is Name && t.is_known_module_receiver(callee.value.id)) {
-				operands << t.visit_expr(callee.value)
+			if node.func is Attribute && !(node.func.value is Name
+				&& t.is_known_module_receiver(node.func.value.id)) {
+				operands << t.visit_expr(node.func.value)
 			}
 			operands << vargs
 			for kw in node.keywords {
