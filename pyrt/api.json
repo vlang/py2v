@@ -3873,6 +3873,29 @@
     "v_result": "value"
   },
   {
+    "python": "__pyrt__.instance_truth",
+    "v": "instance_truth",
+    "module": "pyrt",
+    "kind": "function",
+    "receiver": null,
+    "raises": false,
+    "returns": "bool",
+    "params": [
+      {
+        "name": "value",
+        "type": "Any"
+      }
+    ],
+    "variadic": false,
+    "options_struct": null,
+    "options": {},
+    "status": "implemented",
+    "notes": "For native functions and proven non-nullable instances without truth hooks.",
+    "v_kind": "fn",
+    "v_returns": "bool",
+    "v_result": "value"
+  },
+  {
     "python": "__pyrt__.hash_key",
     "v": "hash_key",
     "module": "pyrt",

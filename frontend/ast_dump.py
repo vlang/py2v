@@ -3113,6 +3113,16 @@ def _state_truth_tests(tree: ast.Module, table: Optional[symbols.SymbolTable],
             return ""
         return declared_optional_field(node)
 
+    def native_always_true(node: ast.expr) -> bool:
+        type_id = getattr(node, "_represented", getattr(node, "_assumed", None))
+        if type_id is None:
+            type_id = getattr(node, "_type", None)
+        if type_id is None:
+            return False
+        item = facts.types[type_id]
+        return (item["k"] == "callable" or item["k"] == "instance"
+                and item.get("name") in ("pathlib.Path", "sqlite3.Connection", "sqlite3.Cursor", "re.Match"))
+
     def stated(node: ast.expr) -> ast.expr:
         if (isinstance(node, ast.Constant) and node.value is None
                 or isinstance(node, (ast.List, ast.Tuple)) and not node.elts):
@@ -3123,6 +3133,8 @@ def _state_truth_tests(tree: ast.Module, table: Optional[symbols.SymbolTable],
         if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
             node.operand = stated(node.operand)
             return node
+        if runtime_available and native_always_true(node):
+            return _runtime_call("instance_truth", [node], node)
         plain = optional_plain(node)
         represented = getattr(node, "_represented", None)
         if (represented is not None and facts.types[represented]["k"] == "dynamic"
@@ -3365,7 +3377,7 @@ def _runtime_call(name: str, args: List[ast.expr], like: ast.AST) -> ast.expr:
     for part in ast.walk(call):
         if not hasattr(part, "lineno"):
             ast.copy_location(part, like)
-    result_types = {"length": "int", "truth": "bool", "truth_option": "bool", "eq": "bool", "has": "bool", "is_none": "bool",
+    result_types = {"length": "int", "truth": "bool", "truth_option": "bool", "instance_truth": "bool", "eq": "bool", "has": "bool", "is_none": "bool",
                     "str": "string", "to_int": "int", "to_float": "float",
                     "to_str": "string", "to_bool": "bool", "elements": "list[Any]",
                     "unpack": "list[Any]"}

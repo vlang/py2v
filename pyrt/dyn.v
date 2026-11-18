@@ -88,6 +88,11 @@ pub fn truth_option[T](value ?T) bool {
 	return false
 }
 
+// instance_truth evaluates a value proven always truthy without invoking it.
+pub fn instance_truth[T](value T) bool {
+	return true
+}
+
 // text_or is `a or b` where a may be None and b is text.
 pub fn text_or(a ?string, b string) string {
 	if found := a {
