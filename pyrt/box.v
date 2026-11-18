@@ -48,3 +48,14 @@ pub fn box[T](v T) Value {
 		$compile_error('pyrt.box: no Value form for this type')
 	}
 }
+
+// same_object compares runtime references by identity, retaining value equality only
+// for scalar variants whose original object identity has already been erased.
+pub fn same_object(a Value, b Value) bool {
+	left := object_identity(a)
+	right := object_identity(b)
+	if left != 0 || right != 0 {
+		return left != 0 && left == right
+	}
+	return a == b
+}

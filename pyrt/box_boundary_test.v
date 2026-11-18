@@ -127,3 +127,14 @@ fn test_shared_native_integer_list_refuses_lossy_runtime_writes() {
 	}
 	assert source.items == [1, -2147483648, 2147483647]
 }
+
+fn test_same_object_uses_boxed_reference_identity() {
+	mut a := list_ref([1])
+	b := list_ref([1])
+	first := box(a)
+	assert same_object(first, first)
+	assert same_object(first, box(a))
+	assert !same_object(first, box(b))
+	assert same_object(Value(1), Value(1))
+	assert !same_object(Value(1), Value(2))
+}

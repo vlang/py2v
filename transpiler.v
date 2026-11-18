@@ -2403,7 +2403,12 @@ pub fn (mut t VTranspiler) visit_assign(node Assign) string {
 			n := target as Name
 			inferred := t.infer_expr_type(node.value)
 			if inferred.len > 0 {
-				t.var_types[n.id] = inferred
+				previous := t.var_types[n.id] or { '' }
+				// A rebinding does not change the declared type of a native Any map.
+				if !(n.id in node.redefined_targets && previous.starts_with('map[')
+					&& previous.ends_with(']Any')) {
+					t.var_types[n.id] = inferred
+				}
 			}
 		}
 	}

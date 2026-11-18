@@ -402,7 +402,7 @@ class Plan:
                         self.bad_calls.append(node)
                 elif isinstance(node.func, ast.Name) and node.func.id in (
                         'print', 'len', 'sum', 'min', 'max', 'sorted', 'reversed', 'enumerate', 'zip',
-                        'list', 'tuple', 'set', 'all', 'any', 'bool', 'str', 'repr', 'int', 'float', 'isinstance',
+                        'list', 'tuple', 'set', 'frozenset', 'all', 'any', 'bool', 'str', 'repr', 'int', 'float', 'isinstance',
                         'map', 'filter'):
                     if node.func.id in ('list', 'sorted') and node.args:
                         self.union(self.child(self.key(node)), self.child(self.key(node.args[0])))
@@ -509,7 +509,7 @@ class Plan:
         return result if 'pyrt.ListRef[' in result else ''
 
     def validate(self):
-        resize = {'append', 'extend', 'insert', 'pop', 'remove', 'clear', 'reverse', 'sort'}
+        resize = {'append', 'extend', 'insert', 'pop', 'remove', 'clear'}
         effects = defaultdict(set)
         calls = []
 
@@ -622,8 +622,8 @@ class Plan:
                     body = node.body
                 else:
                     parent = self.parents[id(node)]
-                    body = ([parent.key, parent.value] if isinstance(parent, ast.DictComp)
-                            else [parent.elt])
+                    body = ([part for part in (parent.key, parent.value) if part is not None]
+                            if isinstance(parent, ast.DictComp) else [parent.elt])
                     body += [cond for gen in parent.generators for cond in gen.ifs]
                 for stmt in body:
                     for call in ast.walk(stmt):
@@ -734,8 +734,6 @@ def lower(tree, chosen, runtime_call):
             if len(node.targets) == 1 and isinstance(node.targets[0], ast.Subscript):
                 target = node.targets[0]
                 if isinstance(target.slice, ast.Slice) and ref(target.value):
-                    if target.slice.step is not None:
-                        raise UnsupportedListIdentity('py2v: shared-list slice assignment with a step is not supported')
                     value = self.visit(node.value)
                     if ref(value):
                         value = items(value)
@@ -746,6 +744,10 @@ def lower(tree, chosen, runtime_call):
                         ast.Constant(value=bounds.lower is not None),
                         ast.Constant(value=bounds.upper is not None)], node)
                     call._api = '__py2v__.list_ref_assign_slice'
+                    if bounds.step is not None:
+                        call.args.insert(4, self.visit(bounds.step))
+                        call.func.attr = 'list_ref_assign_slice_step'
+                        call._api = '__py2v__.list_ref_assign_slice_step'
                     call._dynamic = False
                     return ast.copy_location(ast.Expr(value=call), node)
             self.generic_visit(node)
@@ -761,24 +763,48 @@ def lower(tree, chosen, runtime_call):
                         annotation=ast.Name(id=typ, ctx=ast.Load()), value=node.value, simple=0), node)
             return node
 
+        def visit_Delete(self, node):
+            statements = []
+            for target in node.targets:
+                if (isinstance(target, ast.Subscript) and isinstance(target.slice, ast.Slice)
+                        and ref(target.value)):
+                    bounds = target.slice
+                    name = ('list_ref_delete_slice_step' if bounds.step is not None
+                            else 'list_ref_delete_slice')
+                    args = [self.visit(target.value),
+                            self.visit(bounds.lower) if bounds.lower is not None else ast.Constant(value=0),
+                            self.visit(bounds.upper) if bounds.upper is not None else ast.Constant(value=0)]
+                    if bounds.step is not None:
+                        args.append(self.visit(bounds.step))
+                    args += [ast.Constant(value=bounds.lower is not None),
+                             ast.Constant(value=bounds.upper is not None)]
+                    call = runtime_call(name, args, node)
+                    call._api = '__py2v__.' + name
+                    call._dynamic = False
+                    statements.append(ast.copy_location(ast.Expr(value=call), node))
+                else:
+                    statements.append(ast.copy_location(ast.Delete(targets=[self.visit(target)]), node))
+            return statements
+
         def visit_Subscript(self, node):
             was_ref = ref(node.value)
             self.generic_visit(node)
             if was_ref:
-                if isinstance(node.ctx, ast.Del) and isinstance(node.slice, ast.Slice):
-                    raise UnsupportedListIdentity('py2v: shared-list slice deletion is not supported')
                 if isinstance(node.ctx, ast.Store) and isinstance(node.slice, ast.Slice):
                     raise UnsupportedListIdentity('py2v: shared-list slice assignment is not supported')
                 node.value = items(node.value)
                 if isinstance(node.slice, ast.Slice):
-                    if node.slice.step is not None:
-                        raise UnsupportedListIdentity('py2v: shared-list slicing with a step is not supported')
                     bounds = node.slice
-                    copied = runtime_call('list_ref_slice', [node.value.value,
-                        bounds.lower or ast.Constant(value=0), bounds.upper or ast.Constant(value=0),
-                        ast.Constant(value=bounds.lower is not None),
-                        ast.Constant(value=bounds.upper is not None)], node)
-                    copied._api = '__py2v__.list_ref_slice'
+                    name = 'list_ref_slice_step' if bounds.step is not None else 'list_ref_slice'
+                    args = [node.value.value,
+                            bounds.lower or ast.Constant(value=0),
+                            bounds.upper or ast.Constant(value=0)]
+                    if bounds.step is not None:
+                        args.append(bounds.step)
+                    args += [ast.Constant(value=bounds.lower is not None),
+                             ast.Constant(value=bounds.upper is not None)]
+                    copied = runtime_call(name, args, node)
+                    copied._api = '__py2v__.' + name
                     copied._runtime_annotation = node.value._runtime_annotation
                     copied._dynamic = False
                     return wrap(copied, node) if ref(node) else copied
@@ -826,7 +852,7 @@ def lower(tree, chosen, runtime_call):
                     node.args = [runtime_call('str', [runtime_call('box', [a], a)], a)
                                  if ref(a) else a for a in node.args]
                 elif name in ('len', 'sum', 'min', 'max', 'sorted', 'reversed', 'enumerate', 'zip',
-                              'list', 'tuple', 'set', 'all', 'any', 'bool'):
+                              'list', 'tuple', 'set', 'frozenset', 'all', 'any', 'bool'):
                     if name == 'bool' and node.args and ref(node.args[0]):
                         return runtime_call('truth', [runtime_call('box', [node.args[0]], node)], node)
                     node.args = [items(a) if ref(a) else a for a in node.args]

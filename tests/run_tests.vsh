@@ -383,7 +383,10 @@ call_results_cases := ['dict_get_missing', 'dict_get_eager', 'dict_get_chain', '
 	'list_identity_compare', 'list_nested_paths', 'list_slice_alias', 'list_reference_ops',
 	'list_heterogeneous_alias', 'list_delete_alias', 'list_augassign_target', 'list_box_source',
 	'list_box_identity', 'list_box_mutate_only', 'list_box_widening', 'augassign_side_effects',
-	'comb_sort', 'element_store_mut', 'mut_inplace_methods', 'typing_abc_annotations']
+	'comb_sort', 'element_store_mut', 'mut_inplace_methods', 'typing_abc_annotations',
+	'dict_unpack_typechecking', 'list_box_any_id', 'list_alias_iter_reorder', 'list_alias_slice_reverse',
+	'list_alias_slice_delete', 'list_slice_step_assign', 'list_slice_step_delete',
+	'list_frozenset_alias', 'dict_widen_local', 'dict_widen_reassign']
 mut execution_args := [][]string{}
 for name in call_results_cases {
 	execution_args << [py2v, python, os.join_path(cases_dir, name + '.py'),

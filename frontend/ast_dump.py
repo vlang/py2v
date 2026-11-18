@@ -3818,7 +3818,8 @@ def _runtime_call(name: str, args: List[ast.expr], like: ast.AST) -> ast.expr:
         if not hasattr(part, "lineno"):
             ast.copy_location(part, like)
     result_types = {"length": "int", "truth": "bool", "truth_option": "bool", "instance_truth": "bool", "truth_length": "bool", "eq": "bool", "has": "bool", "is_none": "bool",
-                    "str": "string", "object_identity": "int", "to_int": "int", "to_float": "float",
+                    "str": "string", "object_identity": "int", "same_object": "bool",
+                    "to_int": "int", "to_float": "float",
                     "to_str": "string", "type_name": "string", "to_bool": "bool", "elements": "list[Any]",
                     "unpack": "list[Any]"}
     call._runtime_annotation = result_types.get(name, "")
@@ -4847,9 +4848,11 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
                          else None)
                 if value is not None:
                     call = _runtime_call("is_none", [value], node)
-                    if isinstance(node.ops[0], ast.IsNot):
-                        return ast.copy_location(ast.UnaryOp(op=ast.Not(), operand=call), node)
-                    return call
+                else:
+                    call = _runtime_call("same_object", [boxed(left), boxed(right)], node)
+                if isinstance(node.ops[0], ast.IsNot):
+                    return ast.copy_location(ast.UnaryOp(op=ast.Not(), operand=call), node)
+                return call
             if isinstance(node.ops[0], (ast.Eq, ast.NotEq)):
                 call = _runtime_call("eq", [boxed(left), boxed(right)], node)
                 if isinstance(node.ops[0], ast.NotEq):

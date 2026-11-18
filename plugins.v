@@ -206,6 +206,13 @@ fn visit_print(mut t VTranspiler, node Call, args []string) (string, bool) {
 			parts << bool_to_python_str(arg_str)
 			continue
 		}
+		// Native maps with runtime values need Python's recursive representation.
+		if inferred.starts_with('map[') && (inferred.ends_with(']Any')
+			|| inferred.ends_with(']pyrt.Value')) {
+			t.add_using('pyrt')
+			parts << 'pyrt.str(pyrt.box(${arg_str}))'
+			continue
+		}
 
 		// Keep other expressions for the final print expression below.
 		parts << arg_str

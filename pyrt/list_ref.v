@@ -72,6 +72,104 @@ pub fn list_ref_assign_slice[T](replacement []T, list &ListRef[T], start int, st
 	unsafe { list.items = result }
 }
 
+// list_ref_indices normalizes Python slice bounds, including a negative step.
+fn list_ref_indices(length int, start int, stop int, step int, has_start bool, has_stop bool) []int {
+	if step == 0 { panic('slice step cannot be zero') }
+	mut slice_start := if has_start {
+		start
+	} else if step > 0 {
+		0
+	} else {
+		length - 1
+	}
+	mut slice_stop := if has_stop {
+		stop
+	} else if step > 0 {
+		length
+	} else {
+		-1
+	}
+	if has_start {
+		if slice_start < 0 { slice_start += length }
+	}
+	if has_stop {
+		if slice_stop < 0 { slice_stop += length }
+	}
+	if step > 0 {
+		slice_start = if slice_start < 0 {
+			0
+		} else if slice_start > length {
+			length
+		} else {
+			slice_start
+		}
+		slice_stop = if slice_stop < 0 {
+			0
+		} else if slice_stop > length {
+			length
+		} else {
+			slice_stop
+		}
+	} else {
+		slice_start = if slice_start < -1 {
+			-1
+		} else if slice_start >= length {
+			length - 1
+		} else {
+			slice_start
+		}
+		slice_stop = if slice_stop < -1 {
+			-1
+		} else if slice_stop >= length {
+			length - 1
+		} else {
+			slice_stop
+		}
+	}
+	mut indices := []int{}
+	if step > 0 {
+		for i := slice_start; i < slice_stop; i += step { indices << i }
+	} else {
+		for i := slice_start; i > slice_stop; i += step { indices << i }
+	}
+	return indices
+}
+
+// list_ref_slice_step copies a stepped slice without sharing its outer descriptor.
+pub fn list_ref_slice_step[T](list &ListRef[T], start int, stop int, step int, has_start bool, has_stop bool) []T {
+	indices := list_ref_indices(list.items.len, start, stop, step, has_start, has_stop)
+	mut result := []T{cap: indices.len}
+	for index in indices { result << list.items[index] }
+	return result
+}
+
+// list_ref_delete_slice removes an interval through the shared descriptor.
+pub fn list_ref_delete_slice[T](list &ListRef[T], start int, stop int, has_start bool, has_stop bool) {
+	list_ref_delete_slice_step(list, start, stop, 1, has_start, has_stop)
+}
+
+// list_ref_delete_slice_step removes selected indices through the shared descriptor.
+pub fn list_ref_delete_slice_step[T](list &ListRef[T], start int, stop int, step int, has_start bool, has_stop bool) {
+	length := list.items.len
+	indices := list_ref_indices(length, start, stop, step, has_start, has_stop)
+	mut removed := []bool{len: length}
+	for index in indices { removed[index] = true }
+	mut result := []T{cap: length - indices.len}
+	for index, element in list.items {
+		if !removed[index] { result << element }
+	}
+	unsafe { list.items = result }
+}
+
+// list_ref_assign_slice_step assigns elements into a stepped selection in place.
+pub fn list_ref_assign_slice_step[T](replacement []T, list &ListRef[T], start int, stop int, step int, has_start bool, has_stop bool) {
+	indices := list_ref_indices(list.items.len, start, stop, step, has_start, has_stop)
+	if indices.len != replacement.len {
+		panic('attempt to assign sequence of size ${replacement.len} to extended slice of size ${indices.len}')
+	}
+	for i, index in indices { list.items[index] = replacement[i] }
+}
+
 // len returns the current shared descriptor's length.
 pub fn (list &ListRef[T]) len() int {
 	return list.items.len
