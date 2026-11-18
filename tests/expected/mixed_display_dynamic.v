@@ -37,7 +37,8 @@ fn describe_py(record Any, label string) !string {
 		'tags':  pyrt.box([pyrt.box('a'), pyrt.box('b')])
 		'ok':    pyrt.box(true)
 	}
-	row := [pyrt.box(label), pyrt.item_at(record, pyrt.box('count')), pyrt.box(1.5)]
+	row := [pyrt.box(label), pyrt.item_at(record, pyrt.box('count')),
+		pyrt.box(pyrt.to_float(pyrt.box(1.5)))]
 	return json.dumps(pyrt.box(summary))! + ' ' + json.dumps(pyrt.box(row))!
 }
 

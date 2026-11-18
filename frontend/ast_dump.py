@@ -4829,6 +4829,14 @@ def _deep_box(node: ast.expr) -> ast.expr:
     every level: the runtime value of a dict holds runtime values, not V maps."""
     if getattr(node, "_dynamic", False):
         return node
+    if isinstance(node, ast.Constant) and isinstance(node.value, float):
+        number = _runtime_call("to_float", [_runtime_call("box", [node], node)], node)
+        return _runtime_call("box", [number], node)
+    if (isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.USub, ast.UAdd))
+            and isinstance(node.operand, ast.Constant) and isinstance(node.operand.value, float)):
+        number = _runtime_call("to_float", [_runtime_call("box", [node.operand], node)], node)
+        signed = ast.copy_location(ast.UnaryOp(op=node.op, operand=number), node)
+        return _runtime_call("box", [signed], node)
     if _is_display(node):
         if isinstance(node, ast.Dict):
             node.values = [_deep_box(v) for v in node.values]
