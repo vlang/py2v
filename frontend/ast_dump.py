@@ -1284,6 +1284,56 @@ def _detect_decorator_kind(decorator_list) -> str:
     return ""
 
 
+def _drop_overwritten_class_bindings(tree: ast.Module) -> None:
+    """Drop plain class members overwritten before anything can read them."""
+    for cls in ast.walk(tree):
+        if not isinstance(cls, ast.ClassDef) or cls.bases or cls.keywords or cls.decorator_list:
+            continue
+        methods = [stmt for stmt in cls.body if isinstance(stmt, ast.FunctionDef)]
+        if len(methods) == len({stmt.name for stmt in methods}):
+            continue
+        plain: dict[ast.stmt, str] = {}
+        aliases: dict[ast.stmt, tuple[str, str]] = {}
+        defined: set[str] = set()
+        for stmt in cls.body:
+            if isinstance(stmt, ast.FunctionDef):
+                args = stmt.args
+                if (not stmt.decorator_list and stmt.returns is None and not args.defaults
+                        and not any(args.kw_defaults)
+                        and all(arg.annotation is None for arg in _all_args(args))
+                        and not getattr(stmt, "type_params", [])):
+                    plain[stmt] = stmt.name
+                    defined.add(stmt.name)
+                    continue
+            if (isinstance(stmt, ast.Assign) and len(stmt.targets) == 1
+                    and isinstance(stmt.targets[0], ast.Name)
+                    and isinstance(stmt.value, ast.Name) and stmt.value.id in defined):
+                aliases[stmt] = stmt.targets[0].id, stmt.value.id
+                defined.add(stmt.targets[0].id)
+                continue
+            defined.clear()
+
+        later_writes: set[str] = set()
+        discarded: set[ast.stmt] = set()
+        for stmt in reversed(cls.body):
+            if stmt in plain:
+                name = plain[stmt]
+                if name in later_writes:
+                    discarded.add(stmt)
+                later_writes.add(name)
+            elif stmt in aliases:
+                target, source = aliases[stmt]
+                if target in later_writes:
+                    discarded.add(stmt)
+                else:
+                    later_writes.discard(source)
+                    later_writes.add(target)
+            else:
+                later_writes.clear()
+        if discarded:
+            cls.body = [stmt for stmt in cls.body if stmt not in discarded]
+
+
 def _plan_overload_definitions(tree):
     """Retain typing overload bodies under distinct, non-operator names.
 
@@ -1354,11 +1404,11 @@ _DUNDER_V_OP: Dict[str, str] = {
     "__gt__": "py_gt",
     "__ge__": "py_ge",
     "__str__": "str",
-    "__repr__": "repr",
+    "__repr__": "py2v_dunder_repr",
     "__len__": "len",
-    "__getitem__": "index",
+    "__getitem__": "py2v_dunder_getitem",
     "__setitem__": "index_set",
-    "__contains__": "contains",
+    "__contains__": "py2v_dunder_contains",
     "__neg__": "py_neg",
     "__pos__": "py_pos",
     "__invert__": "py_invert",
@@ -7369,6 +7419,7 @@ def process_file(file_path: str, project: Optional[ProjectFacts] = None) -> str:
         source = f.read()
 
     tree = ast.parse(source, filename=file_path)
+    _drop_overwritten_class_bindings(tree)
     _plan_overload_definitions(tree)
     _refuse_unsupported_format_fields(tree)
 

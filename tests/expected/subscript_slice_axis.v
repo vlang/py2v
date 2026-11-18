@@ -32,7 +32,7 @@ pub struct Grid {
 }
 
 // NOTE: Tuple[slice, int] — define a struct with named fields
-fn (self Grid) index(key []Any) string {
+fn (self Grid) py2v_dunder_getitem(key []Any) string {
 	return '${key[0].start}:${key[1]}'
 }
 

@@ -27,7 +27,7 @@ fn (self Vector) str() string {
 	return 'Vector(${self.x}, ${self.y})'
 }
 
-fn (self Vector) repr() string {
+fn (self Vector) py2v_dunder_repr() string {
 	return 'Vector(${self.x}, ${self.y})'
 }
 

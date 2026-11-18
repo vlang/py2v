@@ -6,6 +6,7 @@ module main
 struct InitConstructor {
 	class_name             string
 	factory_name           string
+	method_name            string
 	defining_module        string
 	init                   FunctionDef
 	unsupported            string
@@ -105,6 +106,9 @@ fn (mut t VTranspiler) init_parameter_type(param Arg, keyword_only bool) string 
 	mut typ := ''
 	if ann := param.annotation {
 		typ = t.typename_from_annotation(*ann)
+		if typ == '' && keyword_only {
+			typ = '?Any'
+		}
 	}
 	// This is the same fallback as visit_function_def. That emitter currently
 	// uses frontend parameter inference only for ordinary parameters.
@@ -161,7 +165,7 @@ fn (mut t VTranspiler) emit_init_factory(info InitConstructor) string {
 	ref := if info.class_name in t.ref_classes { '&' } else { '' }
 	return 'pub fn ${factory}(${declarations.join(', ')}) ${ref}${class_type} {\n' +
 		'\tmut ${instance} := ${ref}${class_type}{}\n' +
-		'\t${instance}.init(${forwarded.join(', ')})\n' +
+		'\t${instance}.${info.method_name}(${forwarded.join(', ')})\n' +
 		'\treturn ${instance}\n}'
 }
 

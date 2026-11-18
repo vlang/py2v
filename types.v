@@ -371,7 +371,10 @@ pub const python_dunder_method_names = {
 	'__del__':       'del'
 	// Numeric protocol hooks. V has no reserved spellings for these, and they
 	// read better as explicit conversion methods than as mangled names.
-	'__int__':       'to_int'
+	'__int__':       'py2v_dunder_int'
+	'__repr__':      'py2v_dunder_repr'
+	'__getitem__':   'py2v_dunder_getitem'
+	'__contains__':  'py2v_dunder_contains'
 	'__float__':     'to_float'
 	'__bool__':      'to_bool'
 	'__index__':     'to_index'
@@ -400,6 +403,14 @@ pub fn escape_leading_underscore(name string) string {
 	if name == '_' {
 		return name
 	}
+	// Reserve the prefix used below, including spellings reached by moving
+	// leading underscores, so a Python name cannot shadow an encoded one.
+	if name.trim_left('_').starts_with('py2v_numeric_') {
+		return 'py2v_numeric_${name}'
+	}
+	if name.trim_left('_').starts_with('py2v_dunder_') {
+		return 'py2v_dunder_${name}'
+	}
 	if name == '' || name[0] != `_` {
 		return name
 	}
@@ -411,6 +422,9 @@ pub fn escape_leading_underscore(name string) string {
 	if rest.len == 0 {
 		// All-underscore name such as `__`: V cannot express this, so use `_`.
 		return '_'
+	}
+	if rest[0].is_digit() {
+		return 'py2v_numeric${name}'
 	}
 	// `lead` underscores move to the end: `_foo` -> `foo_`, `__foo` -> `foo__`.
 	return '${rest}${'_'.repeat(lead)}'

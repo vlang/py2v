@@ -2226,6 +2226,7 @@ pub fn (mut t VTranspiler) visit_class_def(node ClassDef) string {
 	}
 
 	// Process body (methods)
+	init_method := init_method_name(node)
 	mut methods := []string{}
 	mut static_fns := []string{}
 	for stmt in node.body {
@@ -2235,6 +2236,9 @@ pub fn (mut t VTranspiler) visit_class_def(node ClassDef) string {
 				mut fd := stmt
 				fd.is_class_method = true
 				fd.class_name = node.name
+				if fd.name == '__init__' && fd.dunder_op == '' {
+					fd.dunder_op = init_method
+				}
 				// The method emitter handles ordinary parameters; preserve the
 				// initializer's positional-only parameters in that signature too.
 				if fd.name == '__init__' && fd.args.posonlyargs.len > 0 {
@@ -6302,6 +6306,7 @@ pub fn (mut t VTranspiler) visit_call(original Call) string {
 		if method == '__init__' && attr_node.value is Name {
 			recv := (attr_node.value as Name).id
 			if recv in t.known_classes {
+				init_method := t.emitted_init_method(recv)
 				// V reaches an embedded base through the receiver, so an explicit
 				// `Base.__init__(self, x)` becomes `self.Base.init(x)`: the
 				// receiver is implicit in V and must not be forwarded.
@@ -6310,9 +6315,9 @@ pub fn (mut t VTranspiler) visit_call(original Call) string {
 					base_args = base_args[1..]
 				}
 				if base_args.len > 0 {
-					return 'self.${emitted_class_name(recv)}.init(${base_args.join(', ')})'
+					return 'self.${emitted_class_name(recv)}.${init_method}(${base_args.join(', ')})'
 				}
-				return 'self.${emitted_class_name(recv)}.init()'
+				return 'self.${emitted_class_name(recv)}.${init_method}()'
 			}
 			if !t.is_known_module_receiver(recv) {
 				t.note_unmapped_call(fname)
@@ -6329,11 +6334,16 @@ pub fn (mut t VTranspiler) visit_call(original Call) string {
 				if base_name.len > 0 {
 					// Base methods are emitted under their V spelling, so a
 					// `super().__init__(...)` must target the base's `init`.
-					v_method := python_dunder_method_names[method] or { method }
+					base := t.class_base_names[t.current_class_name][0]
+					v_method := if method == '__init__' {
+						t.emitted_init_method(base)
+					} else {
+						python_dunder_method_names[method] or { method }
+					}
 					// A base method with a `mut self` receiver needs the embedded
 					// value itself declared mutable at the call site.
 					mut recv := 'self'
-					if t.mut_receiver_methods['${base_name}_${v_method}'] {
+					if method == '__init__' || t.mut_receiver_methods['${base_name}_${v_method}'] {
 						recv = 'mut self'
 					}
 					if vargs.len > 0 {
@@ -6975,6 +6985,9 @@ pub fn (mut t VTranspiler) visit_call(original Call) string {
 				return obj
 			}
 			'index' {
+				if t.infer_expr_type(attr_node.value) in t.known_classes {
+					return '${obj}.index(${vargs.join(', ')})'
+				}
 				// Python list.index() / str.index() raise ValueError if not found
 				if vargs.len > 0 {
 					return "${obj}.index(${vargs[0]}) or { panic('value not found') }"
