@@ -7,13 +7,13 @@ fn show_py(conn &sqlite3.Connection) ! {
 	conn.execute('CREATE TABLE t (n INTEGER, name TEXT)')!
 	conn.execute("INSERT INTO t VALUES (1, 'a'), (2, 'b')")!
 	rows := conn.execute('SELECT n, name FROM t ORDER BY n')!.fetchall()
-	ids := rows.map(it.get_item(0) or { pyrt.fail(err) })
+	ids := rows.map(it.get_item(0)!)
 	names := rows.map({
-		'id':   it.get_item(0) or { pyrt.fail(err) }
-		'name': it.get_item(1) or { pyrt.fail(err) }
+		'id':   it.get_item(0)!
+		'name': it.get_item(1)!
 	})
 	println('${pyrt.str(pyrt.box(ids))} ${names.len}')
-	firsts := (conn.execute('SELECT n, name FROM t WHERE n > 1') or { pyrt.fail(err) }).fetchall().filter(pyrt.truth(it.get_item(0) or { pyrt.fail(err) })).map(it.get_item(1) or { pyrt.fail(err) })
+	firsts := conn.execute('SELECT n, name FROM t WHERE n > 1')!.fetchall().filter(pyrt.truth(it.get_item(0)!)).map(it.get_item(1)!)
 	println(pyrt.str(pyrt.box(firsts)))
 }
 

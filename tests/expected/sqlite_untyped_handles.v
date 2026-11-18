@@ -48,7 +48,7 @@ fn add(conn &sqlite3.Connection, title string) {
 
 fn titles_py(cur &sqlite3.Cursor) ![]Any {
 	cur.execute('SELECT title FROM notes ORDER BY id')!
-	return cur.fetchall().map(it.get_item(0) or { pyrt.fail(err) })
+	return cur.fetchall().map(it.get_item(0)!)
 }
 
 fn titles(cur &sqlite3.Cursor) []Any {

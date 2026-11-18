@@ -4853,6 +4853,12 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
             is_callable = (not isinstance(node.func, ast.Attribute) and dynamic(node.func)
                            and not node.keywords and not any(isinstance(a, ast.Starred) for a in node.args))
             self.generic_visit(node)
+            # Method lowering can change a native optional-string result to Value.
+            if (isinstance(node.func, ast.Attribute)
+                    and isinstance(node.func.value, ast.Name) and node.func.value.id == "pyrt"
+                    and node.func.attr == "has_text" and len(node.args) == 1
+                    and getattr(node.args[0], "_api", "") == "__pyrt__.call_method"):
+                return _runtime_call("truth", node.args, node)
             if is_value_join and isinstance(node.func, ast.Attribute):
                 iterable = (_runtime_call("box", [node.args[0]], node)
                             if join_plain else node.args[0])
@@ -5140,7 +5146,7 @@ def _plan_error_propagation(tree: ast.Module, table: Optional[symbols.SymbolTabl
         candidates[binding_id] = stmt
 
     closed = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef,
-              ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)
+              ast.DictComp, ast.GeneratorExp)
     loops = (ast.For, ast.AsyncFor, ast.While)
 
     def leaves_loop(stmts: List[ast.stmt]) -> bool:
@@ -7328,6 +7334,26 @@ def process_file(file_path: str, project: Optional[ProjectFacts] = None) -> str:
     _box_mixed_displays(tree, table, facts)
     _parameterize_bare_containers(tree, table, facts)
     _mark_module_constants(tree, table)
+    # Backend comprehension substitution must not rename V's implicit error binding.
+    err_bindings = {getattr(target, "_binding", None)
+                    for node in ast.walk(tree) if isinstance(node, ast.comprehension)
+                    for target in ast.walk(node.target)
+                    if isinstance(target, ast.Name) and target.id == "err"}
+    err_bindings.discard(None)
+    reserved = {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)}
+    if table is not None:
+        reserved.update(binding.name for binding in table.bindings)
+        reserved.update(_v_spelling(binding.name) for binding in table.bindings)
+    renamed: Dict[int, str] = {}
+    number = 0
+    for binding in sorted(err_bindings):
+        while f"py2v_comp_err_{number}" in reserved:
+            number += 1
+        renamed[binding] = f"py2v_comp_err_{number}"
+        reserved.add(renamed[binding])
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and getattr(node, "_binding", None) in renamed:
+            node.id = renamed[node._binding]
     _plan_error_propagation(tree, table)
     _drop_type_checking_blocks(tree, table)
 
