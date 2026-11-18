@@ -79,12 +79,15 @@ fn run_generated(source string) os.Result {
 
 // compare_execution checks observable output against CPython, beyond fixture text.
 fn compare_execution(args []string) os.Result {
-	translation := os.exec([args[0], args[2]])
-	if translation.exit_code != 0 {
-		return translation
-	}
-	os.write_file(args[3], translation.output) or {
-		return os.Result{ exit_code: 1, output: err.msg() }
+	// A package supplies its prepared entry point with an empty translator path.
+	if args[0] != '' {
+		translation := os.exec([args[0], args[2]])
+		if translation.exit_code != 0 {
+			return translation
+		}
+		os.write_file(args[3], translation.output) or {
+			return os.Result{ exit_code: 1, output: err.msg() }
+		}
 	}
 	// UTF-8 mode: on Windows CPython would otherwise use the console code page.
 	python_run := os.exec([args[1], '-X', 'utf8', '-I', args[2]])
@@ -141,7 +144,7 @@ const project_dir = os.dir(script_dir)
 const cases_dir = os.join_path(script_dir, 'cases')
 const expected_dir = os.join_path(script_dir, 'expected')
 const package_fixtures = ['pkg_imports', 'pkg_lib_main', 'pkg_multi', 'pkg_multi2', 'pkg_true_div',
-	'pkg_init_execution', 'pkg_private_names', 'pkg_call_defaults']!
+	'pkg_init_execution', 'pkg_private_names', 'pkg_call_defaults', 'pkg_type_only']!
 
 mut py2v := resolve_py2v()
 
@@ -237,7 +240,8 @@ dynamic_cases := ['dynamic_container_elements', 'dynamic_membership', 'dynamic_c
 	'truth_literals', 'truth_storage_default', 'truth_mixed_list_body', 'truth_mixed_list_else',
 	'truth_mixed_list_default', 'truth_boxed_floats', 'mixed_display_dynamic', 'json_runtime_options',
 	'truth_bool_context', 'truth_optional_returns', 'truth_native_objects', 'truth_local_class_hooks',
-	'dynamic_isinstance', 'dynamic_method_errors', 'empty_set_runtime', 'runtime_field_types']
+	'dynamic_isinstance', 'dynamic_method_errors', 'empty_set_runtime', 'runtime_field_types',
+	'dynamic_locals']
 dynamic_root := os.join_path(os.temp_dir(), 'py2v_dynamic_${os.getpid()}')
 os.mkdir_all(dynamic_root) or { panic(err) }
 mut dynamic_args := [][]string{}
@@ -595,6 +599,45 @@ for pkg in package_fixtures {
 	} else {
 		report('PASS', pkg, ' (multi-module)')
 		passed++
+		if pkg == 'pkg_type_only' {
+			for fixture in ['acyclic/consumer', 'cycle_b/consumer', 'model/holder'] {
+				module_name := 'py_pkg_type_only_' + fixture.all_before_last('/')
+				actual := os.read_file(os.join_path(out_dir, module_name,
+					fixture.all_after_last('/') + '.v')) or { '' }
+				expected := os.read_file(os.join_path(expected_dir, pkg, fixture + '.v')) or { '' }
+				name := 'type-only imports: fixture ' + fixture
+				if actual.len > 0 && expected.len > 0 && actual.replace('\r', '') == expected.replace('\r', '') {
+					report('PASS', name, '')
+					passed++
+				} else {
+					report('FAIL', name, '')
+					failed++
+					failures << fail_line('FAIL', name, '')
+				}
+			}
+			python_root := os.join_path(out_dir, 'python')
+			for source in os.walk_ext(pkg_dir, '.py') {
+				relative := source[pkg_dir.len..].trim_left('/\\')
+				destination := os.join_path(python_root, pkg, relative)
+				os.mkdir_all(os.dir(destination)) or { panic(err) }
+				os.cp(source, destination) or { panic(err) }
+			}
+			driver := os.join_path(python_root, 'driver.py')
+			os.write_file(driver, 'import sys\nfrom pathlib import Path\nsys.path.insert(0, str(Path(__file__).parent))\nfrom pkg_type_only.main import total\nprint(total())\n') or { panic(err) }
+			entry := os.join_path(out_dir, 'type_only_main.v')
+			os.write_file(entry, 'module main\n\nimport py_pkg_type_only\n\nfn main() {\n\tprintln(py_pkg_type_only.total())\n}\n') or { panic(err) }
+			result := compare_execution(['', python, driver, entry])
+			name := 'type-only imports: execution'
+			if result.exit_code == 0 {
+				report('PASS', name, '')
+				passed++
+			} else {
+				report('FAIL', name, '')
+				println(result.output)
+				failed++
+				failures << fail_line('FAIL', name, '')
+			}
+		}
 		if pkg == 'pkg_call_defaults' {
 			for stem in ['use', 'keywords', 'float_defaults', 'local_defaults', 'keyword_only'] {
 				actual := os.read_file(os.join_path(out_dir, 'py_pkg_call_defaults_consumer', stem + '.v')) or { '' }

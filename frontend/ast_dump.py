@@ -2806,6 +2806,238 @@ class ProjectFacts:
     is_package: bool = False
 
 
+def _type_checking_tests(tree: ast.Module, table: symbols.SymbolTable) -> Set[int]:
+    """Resolve TYPE_CHECKING through stable imports, including aliases."""
+    imported: Dict[int, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.level == 0 and node.module == "typing":
+            for alias in node.names:
+                if alias.name == "TYPE_CHECKING":
+                    imported[getattr(alias, "_binding", -1)] = "typing.TYPE_CHECKING"
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "typing":
+                    imported[getattr(alias, "_binding", -1)] = "typing"
+    imported = {key: value for key, value in imported.items()
+                if key >= 0 and not table.bindings[key].rebound}
+
+    def qualified(node: ast.AST) -> str:
+        if isinstance(node, ast.Name):
+            return imported.get(getattr(node, "_binding", -1), "")
+        if isinstance(node, ast.Attribute):
+            base = qualified(node.value)
+            return base + "." + node.attr if base else ""
+        return ""
+
+    attribute_written = any(isinstance(node, ast.Attribute)
+                            and isinstance(node.ctx, (ast.Store, ast.Del))
+                            and qualified(node) == "typing.TYPE_CHECKING"
+                            for node in ast.walk(tree))
+    return {id(node.test) for node in ast.walk(tree)
+            if isinstance(node, ast.If) and qualified(node.test) == "typing.TYPE_CHECKING"
+            and (not attribute_written or isinstance(node.test, ast.Name))}
+
+
+def _project_type_imports(parsed: List[Tuple[str, bool, ast.Module, symbols.SymbolTable]],
+                          root: str) -> Dict[str, List[Dict[str, str]]]:
+    """Keep type-only bindings and accept edges only while V modules stay acyclic."""
+    modules = {name for name, _, _, _ in parsed}
+    prefix = os.path.basename(os.path.abspath(root)) + "."
+    aliases = {name: name for name in modules}
+    for name in sorted(modules):
+        other = name[len(prefix):] if name.startswith(prefix) else prefix + name
+        aliases.setdefault(other, name)
+
+    def canonical(path: str) -> str:
+        parts = path.split(".")
+        for size in range(len(parts), 0, -1):
+            base = aliases.get(".".join(parts[:size]))
+            if base is not None:
+                return ".".join([base] + parts[size:])
+        return ""
+
+    owners: Dict[str, str] = {}
+    classes: Set[str] = set()
+    imports: Dict[str, List[Tuple[str, str, bool]]] = {}
+    dependencies: Dict[str, List[str]] = {}
+    packages = {name for name, is_package, _, _ in parsed if is_package}
+    exports: Dict[str, str] = {}
+    for name, is_package, tree, table in parsed:
+        package = name if is_package else name.rpartition(".")[0]
+        # Exactly the package merge and byte sanitization used by v_module_for_pkg.
+        package = package or prefix[:-1]
+        owners[name] = "py_" + ("".join(
+            chr(ch) if 65 <= ch <= 90 or 97 <= ch <= 122 or 48 <= ch <= 57 else "_"
+            for ch in package.encode("utf-8")).lstrip("_") or "root")
+        tests = _type_checking_tests(tree, table)
+        imports[name] = []
+        dependencies[name] = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ClassDef):
+                binding = getattr(node, "_binding", -1)
+                if binding >= 0 and table.scopes[table.bindings[binding].scope].kind == "module":
+                    classes.add(name + "." + node.name)
+
+        def collect(node: ast.AST, type_only: bool = False, *, name: str = name,
+                    package: str = package, tests: Set[int] = tests,
+                    table: symbols.SymbolTable = table) -> None:
+            if isinstance(node, ast.If) and id(node.test) in tests:
+                for child in node.body:
+                    collect(child, True)
+                for child in node.orelse:
+                    collect(child, type_only)
+                return
+            if isinstance(node, (ast.Import, ast.ImportFrom)):
+                base = ""
+                if isinstance(node, ast.ImportFrom):
+                    if node.level:
+                        components = package.split(".")
+                        base = ".".join(components[:len(components) - node.level + 1])
+                        if node.module:
+                            base = ".".join(part for part in (base, node.module) if part)
+                    else:
+                        base = node.module or ""
+                for alias in node.names:
+                    if alias.name == "*":
+                        # Star imports still create a runtime dependency.
+                        imports[name].append(("", canonical(base), type_only))
+                        if not type_only:
+                            dependencies[name].append(canonical(base) or base)
+                        continue
+                    dependency = (base + "." + alias.name if isinstance(node, ast.ImportFrom)
+                                  else alias.name)
+                    if not type_only:
+                        dependencies[name].append(canonical(dependency) or dependency)
+                    target = (base + "." + alias.name if isinstance(node, ast.ImportFrom)
+                              else alias.name if alias.asname else alias.name.split(".")[0])
+                    local = alias.asname or alias.name.split(".")[0]
+                    binding = getattr(alias, "_binding", -1)
+                    stable = (binding >= 0 and not table.bindings[binding].rebound
+                              and table.scopes[table.bindings[binding].scope].kind == "module")
+                    imports[name].append((local if stable else "", canonical(target) or target,
+                                          type_only))
+                    if stable:
+                        exports[name + "." + local] = canonical(target) or target
+                return
+            for child in ast.iter_child_nodes(node):
+                collect(child, type_only)
+
+        collect(tree)
+
+    def owner(target: str) -> str:
+        return target if target in modules else target.rpartition(".")[0]
+
+    def resolved(target: str) -> str:
+        seen: Set[str] = set()
+        while target not in seen:
+            if target in classes or target in modules:
+                return target
+            seen.add(target)
+            target = exports.get(target, "")
+        return ""
+
+    graph: Dict[str, Set[str]] = {value: set() for value in owners.values()}
+    for name, entries in dependencies.items():
+        for target in entries:
+            module = owner(target)
+            if module in owners and owners[module] != owners[name]:
+                graph[owners[name]].add(owners[module])
+
+    def reaches(start: str, goal: str) -> bool:
+        pending = [start]
+        seen: Set[str] = set()
+        while pending:
+            current = pending.pop()
+            if current == goal:
+                return True
+            if current not in seen:
+                seen.add(current)
+                pending.extend(graph[current] - seen)
+        return False
+
+    result: Dict[str, List[Dict[str, str]]] = {}
+    for name in sorted(imports):
+        result[name] = []
+        for local, target, type_only in sorted(imports[name]):
+            if not type_only or not local:
+                continue
+            target = resolved(target) or target
+            module = owner(target)
+            status = "unresolved"
+            if (target in _runtime_classes() or target.split(".")[0] in (
+                    *_RUNTIME_API_MODULES, "os", "typing")):
+                status = "runtime"
+            elif target in classes or target in modules and target not in packages:
+                source, destination = owners[name], owners[module]
+                if source == destination or not reaches(destination, source):
+                    status = "acyclic"
+                    if source != destination:
+                        graph[source].add(destination)
+                else:
+                    status = "cycle"
+            result[name].append({"name": local, "target": target, "status": status})
+    return result
+
+
+def _retain_type_imports(tree: ast.Module, table: Optional[symbols.SymbolTable],
+                         project: Optional[ProjectFacts]) -> None:
+    """Only annotations consume type imports; cyclic or missing classes stay dynamic."""
+    if table is None or project is None or project.module_name is None:
+        return
+    entries = project.externals.get(project.module_name, {}).get("type_imports", [])
+    blocked = {entry["name"] for entry in entries
+               if entry["status"] in ("cycle", "unresolved")}
+    bindings = {binding.id for binding in table.bindings if binding.name in blocked
+                and not binding.rebound and table.scopes[binding.scope].kind == "module"}
+    accepted = {entry["name"]: entry["target"] for entry in entries
+                if entry["status"] == "acyclic"}
+    targets = {binding.id: accepted[binding.name] for binding in table.bindings
+               if binding.name in accepted and not binding.rebound
+               and table.scopes[binding.scope].kind == "module"}
+
+    def qualified(node: ast.AST) -> str:
+        if isinstance(node, ast.Name):
+            return targets.get(getattr(node, "_binding", -1), "")
+        if isinstance(node, ast.Attribute):
+            base = qualified(node.value)
+            return base + "." + node.attr if base else ""
+        return ""
+
+    class Fallback(ast.NodeTransformer):
+        @staticmethod
+        def blocked_root(node: ast.AST) -> bool:
+            while isinstance(node, ast.Attribute):
+                node = node.value
+            return isinstance(node, ast.Name) and getattr(node, "_binding", -1) in bindings
+
+        def visit_Name(self, node: ast.Name) -> ast.AST:
+            if getattr(node, "_binding", -1) in bindings:
+                return ast.copy_location(ast.Name(id="Any", ctx=ast.Load()), node)
+            if target := qualified(node):
+                node._api = "__project_type__." + target
+            return node
+
+        def visit_Attribute(self, node: ast.Attribute) -> ast.AST:
+            if self.blocked_root(node):
+                return ast.copy_location(ast.Name(id="Any", ctx=ast.Load()), node)
+            if target := qualified(node):
+                node._api = "__project_type__." + target
+            return self.generic_visit(node)
+
+        def visit_Subscript(self, node: ast.Subscript) -> ast.AST:
+            if self.blocked_root(node.value):
+                return ast.copy_location(ast.Name(id="Any", ctx=ast.Load()), node)
+            return self.generic_visit(node)
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.arg) and node.annotation is not None:
+            node.annotation = Fallback().visit(node.annotation)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.returns is not None:
+            node.returns = Fallback().visit(node.returns)
+        elif isinstance(node, ast.AnnAssign):
+            node.annotation = Fallback().visit(node.annotation)
+
+
 def _project_files(root: str) -> List[Tuple[str, str, bool]]:
     """Every Python file under root with its dotted module name, named as inference names
     them, so a summary and the file it describes agree."""
@@ -2851,6 +3083,9 @@ def write_summaries(root: str, out_path: str) -> None:
         if settled:
             break
     prefix = os.path.basename(os.path.abspath(root)) + "."
+    type_imports = _project_type_imports(parsed, root)
+    for name in summaries:
+        summaries[name]["type_imports"] = type_imports.get(name, [])
     for name in list(summaries):
         other = name[len(prefix):] if name.startswith(prefix) else prefix + name
         summaries.setdefault(other, summaries[name])
@@ -5561,19 +5796,18 @@ def _unquote_annotations(tree: ast.Module, table: Optional[symbols.SymbolTable])
             node.annotation = unquoted(node.annotation)
 
 
-def _drop_type_checking_blocks(tree: ast.Module) -> None:
-    """`if TYPE_CHECKING:` at module level never runs: only its `else` is the program's.
+def _drop_type_checking_blocks(tree: ast.Module,
+                               table: Optional[symbols.SymbolTable]) -> None:
+    """`if TYPE_CHECKING:` never runs: only its `else` is the program's.
     (After the passes that read the names it imports for annotations.)"""
-    def checking(test: ast.expr) -> bool:
-        return _unparse_expr(test) in ("TYPE_CHECKING", "typing.TYPE_CHECKING")
+    tests = _type_checking_tests(tree, table) if table is not None else set()
 
-    kept: List[ast.stmt] = []
-    for stmt in tree.body:
-        if isinstance(stmt, ast.If) and checking(stmt.test):
-            kept.extend(stmt.orelse)
-        else:
-            kept.append(stmt)
-    tree.body[:] = kept
+    class Drop(ast.NodeTransformer):
+        def visit_If(self, node: ast.If) -> Union[ast.If, List[ast.stmt]]:
+            self.generic_visit(node)
+            return node.orelse if id(node.test) in tests else node
+
+    Drop().visit(tree)
 
 
 def _mark_runtime_api(tree: ast.Module, table: Optional[symbols.SymbolTable]) -> None:
@@ -7045,6 +7279,7 @@ def process_file(file_path: str, project: Optional[ProjectFacts] = None) -> str:
     if _encode_local_identifiers(tree, table):
         table = _resolve_bindings(tree)
     _mark_dynamic_isinstance_types(tree, table)
+    _retain_type_imports(tree, table, project)
     _mark_runtime_api(tree, table)
     _lower_exit_statements(tree, table)
     _erase_typing_casts(tree, table)
@@ -7070,7 +7305,7 @@ def process_file(file_path: str, project: Optional[ProjectFacts] = None) -> str:
     _parameterize_bare_containers(tree, table, facts)
     _mark_module_constants(tree, table)
     _plan_error_propagation(tree, table)
-    _drop_type_checking_blocks(tree)
+    _drop_type_checking_blocks(tree, table)
 
     for parent in ast.walk(tree):
         for child in ast.iter_child_nodes(parent):

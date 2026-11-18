@@ -7158,8 +7158,12 @@ fn collect_super_calls_in_expr(expr Expr, mut names []string) {
 // has_class_annotation finds resolved class metadata retained on a field's AST.
 fn has_class_annotation(annotation Expr) bool {
 	return match annotation {
-		Name { annotation.api in runtime_class_types || annotation.api in runtime_api }
-		Attribute { annotation.api in runtime_class_types || annotation.api in runtime_api }
+		Name {
+			annotation.api.starts_with('__project_type__.') || annotation.api in runtime_class_types || annotation.api in runtime_api
+		}
+		Attribute {
+			annotation.api.starts_with('__project_type__.') || annotation.api in runtime_class_types || annotation.api in runtime_api
+		}
 		Subscript {
 			has_class_annotation(*annotation.value) || has_class_annotation(*annotation.slice)
 		}
@@ -8698,6 +8702,18 @@ fn (mut t VTranspiler) annotation_typename(ann ?Expr) string {
 		Name { a.api }
 		Attribute { a.api }
 		else { '' }
+	}
+	if api.starts_with('__project_type__.') {
+		target := api.trim_string_left('__project_type__.')
+		owner := t.registry.lookup(target.all_before_last('.'))
+		if owner.dotted == '' {
+			t.generated_code_has_any_type = true
+			return 'Any'
+		}
+		name := emitted_class_name(target.all_after_last('.'))
+		if owner.v_module == t.module_name { return name }
+		t.add_using(owner.v_module)
+		return '${owner.v_module}.${name}'
 	}
 	if v_type := runtime_class_types[api] {
 		t.add_using(v_type.all_before('|'))
