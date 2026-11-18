@@ -237,7 +237,7 @@ dynamic_cases := ['dynamic_container_elements', 'dynamic_membership', 'dynamic_c
 	'truth_literals', 'truth_storage_default', 'truth_mixed_list_body', 'truth_mixed_list_else',
 	'truth_mixed_list_default', 'truth_boxed_floats', 'mixed_display_dynamic', 'json_runtime_options',
 	'truth_bool_context', 'truth_optional_returns', 'truth_native_objects', 'truth_local_class_hooks',
-	'dynamic_isinstance', 'dynamic_method_errors']
+	'dynamic_isinstance', 'dynamic_method_errors', 'empty_set_runtime']
 dynamic_root := os.join_path(os.temp_dir(), 'py2v_dynamic_${os.getpid()}')
 os.mkdir_all(dynamic_root) or { panic(err) }
 mut dynamic_args := [][]string{}
@@ -267,9 +267,10 @@ for i, result in dynamic_results {
 		failures << fail_line('FAIL', name, '')
 	}
 }
-uncaught_cases := ['dynamic_method_uncaught_type', 'dynamic_method_uncaught_attr']
+uncaught_cases := ['dynamic_method_uncaught_type', 'dynamic_method_uncaught_attr', 'empty_set_uncaught']
 uncaught_messages := ['TypeError: sequence item 0: expected str instance, int found',
-	"AttributeError: 'int' object has no attribute 'append'"]
+	"AttributeError: 'int' object has no attribute 'append'",
+	"AttributeError: 'set' object has no attribute 'append'"]
 mut uncaught_args := [][]string{}
 for i, name in uncaught_cases {
 	uncaught_args << [py2v, python, os.join_path(cases_dir, name + '.py'),

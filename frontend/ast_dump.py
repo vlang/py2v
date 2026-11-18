@@ -3979,6 +3979,34 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
 
     inferred_bindings = {b["id"]: b.get("inferred") for b in facts.bindings}
 
+    # An empty set needs its runtime identity, equality and hashability checks.
+    empty_sets = set()
+    set_bindings = set()
+    assignments = []
+    for node in ast.walk(tree):
+        target = (node.targets[0] if isinstance(node, ast.Assign) and len(node.targets) == 1
+                  else node.target if isinstance(node, ast.AnnAssign) else None)
+        if not isinstance(target, ast.Name) or node.value is None:
+            continue
+        binding_id = getattr(target, "_binding", None)
+        if binding_id is not None:
+            assignments.append((node, target, binding_id))
+    for node, target, binding_id in sorted(assignments, key=lambda item: (
+            item[1].lineno, item[1].col_offset)):
+        binding = table.bindings[binding_id]
+        if table.scopes[binding.scope].kind == "class":
+            continue
+        call = node.value
+        empty = (isinstance(call, ast.Call) and isinstance(call.func, ast.Name)
+                 and call.func.id == "set" and getattr(call.func, "_binding", None) is None
+                 and not call.args and not call.keywords)
+        first = min(binding.sites)[:2] == (target.lineno, target.col_offset)
+        if empty and (first or binding_id in set_bindings):
+            empty_sets.add(id(call))
+            set_bindings.add(binding_id)
+            if isinstance(node, ast.AnnAssign):
+                node.annotation = _annotation_node("Any", node.annotation)
+
     def optional_dynamic_annotation(annotation: Optional[ast.expr]) -> bool:
         text = _unparse_expr(annotation).replace("typing.", "").replace(" ", "") if annotation else ""
         return text in ("Optional[Any]", "Any|None", "None|Any",
@@ -4067,7 +4095,7 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
     # The bindings the backend declares as `Any`: parameters with no annotation (the
     # receiver and the parameters of `__init__`, which the backend types from the fields,
     # are not among them), then every local that is only ever given a dynamic value.
-    dynamic_bindings = set()
+    dynamic_bindings = set(set_bindings)
     dynamic_returning = set()
     native_operators = {id(fn) for cls in ast.walk(tree) if isinstance(cls, ast.ClassDef)
                         for fn in cls.body if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef))
@@ -4226,6 +4254,8 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
         return _truth_kind(node, facts) in ("int", "float", "str", "bool", "none", "bytes")
 
     def dynamic(node: ast.AST) -> bool:
+        if id(node) in empty_sets:
+            return True
         if getattr(node, "_dynamic", False):
             return True
         if isinstance(node, ast.Name):
@@ -4547,6 +4577,11 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
             return node
 
         def visit_Call(self, node: ast.Call) -> ast.AST:
+            if id(node) in empty_sets:
+                arguments = ast.copy_location(ast.List(elts=[], ctx=ast.Load()), node)
+                call = _runtime_call("new_set", [arguments], node)
+                call._api = "__pyrt__.new_set"
+                return _runtime_call("box", [call], node)
             is_method = dynamic_method_call(node)
             is_dict_get = any_dict_get(node)
             is_value_join = (isinstance(node.func, ast.Attribute) and node.func.attr == "join"
