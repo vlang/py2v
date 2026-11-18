@@ -210,6 +210,15 @@ for name in dynamic_cases {
 dynamic_results := parallel.amap(dynamic_args, compare_execution, workers: 2)
 for i, result in dynamic_results {
 	name := 'runtime execution: ' + dynamic_cases[i]
+	$if windows {
+		// A V install without the SQLite object (as on the Windows CI runner) cannot link
+		// pyrt.sqlite3; that case's generated text is still compared above.
+		if result.exit_code != 0 && result.output.contains('thirdparty/sqlite') {
+			report('SKIP', name, ' (no SQLite library to link on this platform)')
+			skipped++
+			continue
+		}
+	}
 	if result.exit_code == 0 {
 		report('PASS', name, '')
 		passed++
