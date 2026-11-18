@@ -325,10 +325,11 @@ call_results_cases := ['dict_get_missing', 'dict_get_eager', 'dict_get_chain', '
 	'dict_get_mutating', 'dict_get_compare', 'with_return', 'rebound_optional_params',
 	'argparse_join_value', 'join_string_iterable', 'subparser_parameter', 'nested_closures',
 	'nested_functions', 'nonlocal_closure', 'closure_uses_class', 'module_name_shadowed',
-	'closure_exit_finally', 'bound_append', 'conditional_condition', 'conditional_map', 'custom_remove',
-	'divmod_value', 'empty_isinstance', 'expression_walrus', 'independent_dunders',
-	'local_identifier_encoding', 'loop_scope_bindings', 'loop_unpack_targets', 'overload_definitions',
-	'parameter_bindings', 'private_method_calls', 'closure_capture_discriminator']
+	'closure_exit_finally', 'constructor_closure_captures', 'bound_append', 'conditional_condition',
+	'conditional_map', 'custom_remove', 'divmod_value', 'empty_isinstance', 'expression_walrus',
+	'independent_dunders', 'local_identifier_encoding', 'loop_scope_bindings', 'loop_unpack_targets',
+	'overload_definitions', 'parameter_bindings', 'private_method_calls',
+	'closure_capture_discriminator']
 mut execution_args := [][]string{}
 for name in call_results_cases {
 	execution_args << [py2v, python, os.join_path(cases_dir, name + '.py'),

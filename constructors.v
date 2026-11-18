@@ -407,7 +407,11 @@ fn (mut t VTranspiler) render_sequenced_init_call(info InitConstructor, qualifie
 		name := refs.names[raw_name]
 		if !t.init_argument_local(name) { continue }
 		emitted := t.visit_name(name)
-		if mutated[raw_name] {
+		if emitted.starts_with('(*') && emitted.ends_with(')') {
+			// Nested functions share this binding through a storage pointer.
+			// Capture that pointer; argument reads and mutations still dereference it.
+			captures << emitted[2..emitted.len - 1]
+		} else if mutated[raw_name] {
 			mut typ := t.infer_expr_type(Expr(name))
 			if typ == '' {
 				if annotation := name.v_annotation { typ = map_type(annotation) }
