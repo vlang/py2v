@@ -1988,6 +1988,12 @@ pub fn (mut t VTranspiler) visit_class_def(node ClassDef) string {
 	t.class_field_escapes[node.name] = field_escapes.clone()
 
 	if node.declarations.len > 0 {
+		mut field_annotations := map[string]Expr{}
+		for stmt in node.body {
+			if stmt is AnnAssign && stmt.target is Name && has_class_annotation(stmt.annotation) {
+				field_annotations[(stmt.target as Name).id] = stmt.annotation
+			}
+		}
 		mut has_typed_fields := false
 		for decl, typename in node.declarations {
 			// Python bookkeeping attributes (__slots__ and friends) have no V
@@ -2009,7 +2015,11 @@ pub fn (mut t VTranspiler) visit_class_def(node ClassDef) string {
 				fields << 'pub mut:'
 				has_typed_fields = true
 			}
-			mut typ := t.map_type(decl_type)
+			mut typ := if annotation := field_annotations[decl] {
+				t.typename_from_annotation(annotation)
+			} else {
+				t.map_type(decl_type)
+			}
 			if typ == 'auto' {
 				typ = 'Any'
 				t.generated_code_has_any_type = true
@@ -7142,6 +7152,20 @@ fn collect_super_calls_in_expr(expr Expr, mut names []string) {
 			collect_super_calls_in_expr((expr as Starred).value, mut names)
 		}
 		else {}
+	}
+}
+
+// has_class_annotation finds resolved class metadata retained on a field's AST.
+fn has_class_annotation(annotation Expr) bool {
+	return match annotation {
+		Name { annotation.api in runtime_class_types || annotation.api in runtime_api }
+		Attribute { annotation.api in runtime_class_types || annotation.api in runtime_api }
+		Subscript {
+			has_class_annotation(*annotation.value) || has_class_annotation(*annotation.slice)
+		}
+		Tuple { annotation.elts.any(has_class_annotation(it)) }
+		BinOp { has_class_annotation(*annotation.left) || has_class_annotation(*annotation.right) }
+		else { false }
 	}
 }
 
