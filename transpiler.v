@@ -277,12 +277,6 @@ pub fn (t VTranspiler) emitted_fn_name(name string) string {
 // visit_module renders a whole Python module: constants, imports, structs and
 // functions, in the order V requires them.
 pub fn (mut t VTranspiler) visit_module(node Module) string {
-	if node.list_identity_error != '' {
-		name := if t.module_name == '' { 'main' } else { t.module_name }
-		reason := node.list_identity_error.replace('\n', ' ')
-		return 'module ${name}\n\n// ${reason}\nfn main() {\n\tpy2v_unsupported_list_identity()\n}\n'
-	}
-
 	t.prepare_init_constructors(node)
 	mut bindings := map[string]int{}
 	mut calls := []BindingCall{}
@@ -600,6 +594,21 @@ pub fn (mut t VTranspiler) visit_module(node Module) string {
 		t.registry.py2v_format_declared_in[t.module_name] = true
 		func_decls << py2v_format_helper
 	}
+	// Keep unsafe module declarations visible behind an explicit compilation refusal.
+	if node.list_identity_module_errors.len > 0 {
+		for reason in node.list_identity_module_errors {
+			message := 'py2v: module-level list refusal: ${reason.replace('\n', ' ')}'
+			eprintln(message)
+			func_decls << '// ${message}'
+		}
+		key := '${t.module_name}.list_identity_module_guard'
+		if !t.registry.helper_declared[key] {
+			t.registry.helper_declared[key] = true
+			name := t.runtime_helper_name('list_identity_module_guard')
+			refusal := t.runtime_helper_name('unsupported_list_identity_module')
+			func_decls << 'const ${name} = ${refusal}()'
+		}
+	}
 	// A run-time helper is declared in the first file of a V module that asks for it.
 	for kind in t.helpers_used {
 		key := '${t.module_name}.${kind}'
@@ -665,6 +674,10 @@ fn runtime_helper_declaration(kind string, name string) string {
 		'append_method' {
 			'fn ${name}[T](mut items []T) fn (T) {\n' +
 				'\treturn fn [mut items] [T](value T) { items << value }\n}'
+		}
+		'unsupported_list_identity' {
+			'@[noreturn]\nfn ${name}() {\n' +
+				"\tpanic('py2v_unsupported_list_identity: list aliases cannot be preserved')\n}"
 		}
 		'generic_mod' {
 			'fn ${name}[T](a T, b T) T {\n' +
@@ -923,7 +936,12 @@ pub fn (mut t VTranspiler) visit_stmt(stmt Stmt) string {
 		Global { return t.visit_global(stmt) }
 		Nonlocal { return t.visit_nonlocal(stmt) }
 		ExprStmt { return t.visit_expr_stmt(stmt) }
-		Pass { return '// pass' }
+		Pass {
+			if stmt.list_identity_error != '' {
+				return t.list_identity_refusal(stmt.list_identity_error)
+			}
+			return '// pass'
+		}
 		Break { return t.visit_break() }
 		Continue { return 'continue' }
 		TypeAlias { return t.visit_type_alias(stmt) }
@@ -7958,6 +7976,13 @@ fn (mut t VTranspiler) ifexp_branch(expr Expr) string {
 	return if expr is Dict && code.starts_with('{') { '(${code})' } else { code }
 }
 
+// list_identity_refusal reports and emits a loud boundary for an unprovable list group.
+fn (mut t VTranspiler) list_identity_refusal(reason string) string {
+	message := 'py2v: ${reason.replace('\n', ' ')}'
+	eprintln(message)
+	return '${t.runtime_helper('unsupported_list_identity')}() // ${message}'
+}
+
 // visit_lambda emits V code for lambda expressions (Lambda).
 pub fn (mut t VTranspiler) visit_lambda(node Lambda) string {
 	mut args := []string{}
@@ -8002,6 +8027,10 @@ pub fn (mut t VTranspiler) visit_lambda(node Lambda) string {
 		}
 	}
 
+	if node.list_identity_error != '' {
+		return 'fn (${args.join(', ')}) ${lambda_type} {\n' +
+			t.indent_code(t.list_identity_refusal(node.list_identity_error), 1) + '\n}'
+	}
 	return 'fn (${args.join(', ')}) ${lambda_type} {\n\treturn ${stripped_body}\n}'
 }
 

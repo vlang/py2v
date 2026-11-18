@@ -2023,6 +2023,9 @@ def _node_to_dict(node: ast.AST, mutable_vars: Set[str],
     var_annotations = ctx.var_annotations
     result: Dict[str, Any] = {}
     result["node_type"] = type(node).__name__
+    refusal = getattr(node, '_list_identity_error', '')
+    if refusal and isinstance(node, ast.Lambda):
+        result['list_identity_error'] = refusal
 
     # Location info
     for attr in ("lineno", "col_offset", "end_lineno", "end_col_offset"):
@@ -2033,6 +2036,10 @@ def _node_to_dict(node: ast.AST, mutable_vars: Set[str],
 
     # Handle specific node types
     if isinstance(node, ast.Module):
+        result['list_identity_module_errors'] = [
+            item._list_identity_error for item in ast.walk(node)
+            if getattr(item, '_list_identity_error', '')
+            and not isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda))]
         result["condition_walrus_names"] = getattr(node, "_condition_walrus_names", [])
         result["module_consts"] = getattr(node, "_module_consts", [])
         result["body"] = [_node_to_dict(n, mutable_vars, redefined, ctx) for n in node.body]
@@ -2132,10 +2139,11 @@ def _node_to_dict(node: ast.AST, mutable_vars: Set[str],
         # Serialised after local_ann so an inferred parameter type can ride along.
         result["args"] = _arguments_to_dict(node.args, func_mutable, local_ann)
 
-        result["body"] = [_node_to_dict(n, func_mutable, redefined,
+        result["body"] = ([{'node_type': 'Pass', 'list_identity_error': refusal}]
+                          if refusal else [_node_to_dict(n, func_mutable, redefined,
                                         AnalysisContext(local_ann, ctx.func_ret_annotations,
                                                         ctx.slots_by_class, ctx.field_types,
-                                                        table=ctx.table, facts=ctx.facts)) for n in node.body]
+                                                        table=ctx.table, facts=ctx.facts)) for n in node.body])
         result["decorator_list"] = [_node_to_dict(d, mutable_vars, redefined, ctx) for d in node.decorator_list]
         result["returns"] = _node_to_dict(node.returns, mutable_vars, redefined, ctx) if node.returns else None
         result["type_comment"] = getattr(node, "type_comment", None)
@@ -7407,40 +7415,67 @@ def process_file(file_path: str, project: Optional[ProjectFacts] = None) -> str:
         _annotate_parameters_from_calls(tree, table, facts)
     _annotate_returns(tree, facts)
     _lower_frozensets(tree, table)
-    try:
-        references = list_refs.plan(tree, table, facts)
-    except list_refs.UnsupportedListIdentity as error:
-        return json.dumps({"node_type": "Module", "body": [], "list_identity_error": str(error)})
-    _lower_dynamic_values(tree, table, facts, any_lists)
-    _box_mixed_displays(tree, table, facts)
-    _parameterize_bare_containers(tree, table, facts)
-    _mark_module_constants(tree, table)
-    # Backend comprehension substitution must not rename V's implicit error binding.
-    err_bindings = {getattr(target, "_binding", None)
-                    for node in ast.walk(tree) if isinstance(node, ast.comprehension)
-                    for target in ast.walk(node.target)
-                    if isinstance(target, ast.Name) and target.id == "err"}
-    err_bindings.discard(None)
-    reserved = {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)}
-    if table is not None:
-        reserved.update(binding.name for binding in table.bindings)
-        reserved.update(_v_spelling(binding.name) for binding in table.bindings)
-    renamed: Dict[int, str] = {}
-    number = 0
-    for binding in sorted(err_bindings):
-        while f"py2v_comp_err_{number}" in reserved:
-            number += 1
-        renamed[binding] = f"py2v_comp_err_{number}"
-        reserved.add(renamed[binding])
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Name) and getattr(node, "_binding", None) in renamed:
-            node.id = renamed[node._binding]
-    _plan_error_propagation(tree, table)
-    _drop_type_checking_blocks(tree, table)
-    try:
-        list_refs.lower(tree, references, _runtime_call)
-    except list_refs.UnsupportedListIdentity as error:
-        return json.dumps({"node_type": "Module", "body": [], "list_identity_error": str(error)})
+    original = tree
+    source_nodes = list(ast.walk(original))
+    for index, node in enumerate(source_nodes):
+        node._list_refusal_id = index
+    needs_copy = facts is not None and (
+        any(item.get('k') == 'list' for item in facts.types)
+        or any(isinstance(node, (ast.List, ast.ListComp)) for node in source_nodes))
+    while True:
+        # The analyses keep AST object identities. Snapshot attributes while
+        # preserving every AST node, then restore those same objects on failure.
+        memo = {id(node): node for node in source_nodes}
+        snapshot = [(node, copy.deepcopy(vars(node), memo)) for node in source_nodes] if needs_copy else []
+        tree = original
+        try:
+            references = list_refs.plan(tree, table, facts)
+            # Dynamic lowering adds lifted lists to its input set. Start each retry fresh.
+            _lower_dynamic_values(tree, table, facts, any_lists.copy())
+            _box_mixed_displays(tree, table, facts)
+            _parameterize_bare_containers(tree, table, facts)
+            _mark_module_constants(tree, table)
+            # Backend comprehension substitution must not rename V's implicit error binding.
+            err_bindings = {getattr(target, "_binding", None)
+                            for node in ast.walk(tree) if isinstance(node, ast.comprehension)
+                            for target in ast.walk(node.target)
+                            if isinstance(target, ast.Name) and target.id == "err"}
+            err_bindings.discard(None)
+            reserved = {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)}
+            if table is not None:
+                reserved.update(binding.name for binding in table.bindings)
+                reserved.update(_v_spelling(binding.name) for binding in table.bindings)
+            renamed: Dict[int, str] = {}
+            number = 0
+            for binding in sorted(err_bindings):
+                while f"py2v_comp_err_{number}" in reserved:
+                    number += 1
+                renamed[binding] = f"py2v_comp_err_{number}"
+                reserved.add(renamed[binding])
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Name) and getattr(node, "_binding", None) in renamed:
+                    node.id = renamed[node._binding]
+            _plan_error_propagation(tree, table)
+            _drop_type_checking_blocks(tree, table)
+            list_refs.lower(tree, references, _runtime_call)
+            break
+        except list_refs.UnsupportedListIdentity as error:
+            scopes, group_nodes = error.planner.refusal_scopes(error)
+            for node, attributes in snapshot:
+                vars(node).clear()
+                vars(node).update(attributes)
+            progressed = False
+            for node in source_nodes:
+                if node._list_refusal_id in group_nodes and not getattr(node, '_list_group_refused', False):
+                    node._list_group_refused = True
+                    progressed = True
+                name = scopes.get(node._list_refusal_id)
+                if name is not None and not getattr(node, '_list_identity_error', ''):
+                    reason = str(error).removeprefix('py2v:').strip()
+                    node._list_identity_error = f'{name}: {reason}'
+                    progressed = True
+            if not progressed:
+                raise RuntimeError(f'cannot narrow list identity refusal: {error}') from error
 
     for parent in ast.walk(tree):
         for child in ast.iter_child_nodes(parent):

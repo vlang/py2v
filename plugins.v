@@ -791,6 +791,10 @@ fn build_typed_lambda_closure(mut t VTranspiler, lam Lambda, iter Expr) string {
 		ret_type = inferred
 	}
 	// Render body expression
+	if lam.list_identity_error != '' {
+		return 'fn (${params.join(', ')}) ${ret_type} {\n' +
+			t.indent_code(t.list_identity_refusal(lam.list_identity_error), 1) + '\n}'
+	}
 	body := t.visit_expr(lam.body)
 	stripped := strip_outer_parens(body)
 	return 'fn (${params.join(', ')}) ${ret_type} {\n\treturn ${stripped}\n}'

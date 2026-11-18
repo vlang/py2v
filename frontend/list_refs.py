@@ -6,11 +6,19 @@ or when identity is compared. Fresh results and read-only aliases stay native. U
 escapes and operations this lowering cannot preserve are diagnosed, never copied silently.
 """
 import ast
-from collections import defaultdict
+from collections import defaultdict, deque
+from typing import Any, Dict, Iterable, Iterator, Optional, Set, Tuple
 
 
 class UnsupportedListIdentity(Exception):
     """A shared-list operation for which this lowering cannot preserve Python semantics."""
+
+    def __init__(self, reason: str, planner: 'Plan', node: Optional[ast.AST] = None,
+                 keys: Iterable[Tuple[Any, ...]] = ()) -> None:
+        super().__init__(reason)
+        self.planner = planner
+        self.node = node
+        self.keys = set(keys)
 
 
 class Plan:
@@ -35,6 +43,97 @@ class Plan:
             elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 self.functions[getattr(node, '_binding', None)] = node
         self.parents = {id(c): n for n in ast.walk(tree) for c in ast.iter_child_nodes(n)}
+        self.node_objects = {id(n): n for n in ast.walk(tree)}
+
+    def walk(self, root: Optional[ast.AST] = None) -> Iterator[ast.AST]:
+        """Keep refused signatures in the graph, excluding their discarded bodies."""
+        pending = deque([self.tree if root is None else root])
+        while pending:
+            node = pending.popleft()
+            refused = getattr(node, '_list_identity_error', '')
+            if refused and not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+                continue
+            yield node
+            for field, value in ast.iter_fields(node):
+                if field == 'body' and getattr(node, '_list_identity_error', ''):
+                    continue
+                if isinstance(value, list):
+                    pending.extend(child for child in value if isinstance(child, ast.AST))
+                elif isinstance(value, ast.AST):
+                    pending.append(value)
+
+    def unsupported(self, reason: str, node: Optional[ast.AST] = None,
+                    keys: Iterable[Tuple[Any, ...]] = ()) -> UnsupportedListIdentity:
+        groups = {self.find(key) for key in keys}
+        if node is not None and not groups:
+            groups.update(self.find(self.nodes[id(child)]) for child in ast.walk(node)
+                          if id(child) in self.nodes and self.ref(child))
+        return UnsupportedListIdentity(reason, self, node, groups)
+
+    def refusal_scopes(self, error: UnsupportedListIdentity) -> Tuple[Dict[int, str], Set[int]]:
+        """Find every owner of a failed alias group, including enclosing containers."""
+        groups = {self.find(key) for key in error.keys}
+        while True:
+            parents = {key for key, child in self.slots.items() if child in groups}
+            if parents <= groups:
+                break
+            groups.update(parents)
+        touches = [self.node_objects[nid] for nid, key in self.nodes.items()
+                   if self.find(key) in groups]
+        touches.extend(self.node_objects[nid] for nid, key in self.returns.items()
+                       if self.find(key) in groups)
+        if error.node is not None:
+            touches.append(error.node)
+        owners = {}
+        for node in touches:
+            parent = self.parents.get(id(node))
+            if isinstance(parent, ast.AnnAssign) and parent.value is None and parent.target is node:
+                # A field annotation does not create or access a list object.
+                continue
+            current = node
+            statement = None
+            evaluated_owners = set()
+            module_definition = None
+            while current is not self.tree:
+                parent = self.parents.get(id(current))
+                if isinstance(parent, ast.arguments) and (
+                        current in parent.defaults or current in parent.kw_defaults):
+                    evaluated_owners.add(id(self.parents[id(parent)]))
+                elif isinstance(parent, (ast.FunctionDef, ast.AsyncFunctionDef)) and (
+                        current in parent.decorator_list or current is parent.returns):
+                    evaluated_owners.add(id(parent))
+                if isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)) \
+                        and id(current) not in evaluated_owners:
+                    break
+                if isinstance(current, ast.stmt):
+                    statement = current
+                if parent is self.tree:
+                    current = statement if statement is not None else current
+                    if isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        module_definition = current
+                        current = current.args
+                    break
+                if parent is None:
+                    raise RuntimeError('cannot isolate list identity refusal')
+                current = parent
+            if current is self.tree:
+                raise RuntimeError('cannot isolate module list identity refusal')
+            label = []
+            ancestor = current
+            while ancestor is not self.tree and ancestor is not None:
+                if isinstance(ancestor, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                    label.append(ancestor.name)
+                elif isinstance(ancestor, ast.Lambda):
+                    label.append(f'<lambda@{ancestor.lineno}>')
+                ancestor = self.parents.get(id(ancestor))
+            name = (f'<module@{module_definition.lineno}>' if module_definition is not None
+                    else '.'.join(reversed(label)) or f'<module@{getattr(current, "lineno", 0)}>')
+            owners[current._list_refusal_id] = name
+        group_nodes = {self.node_objects[nid]._list_refusal_id for nid, key in self.nodes.items()
+                       if self.find(key) in groups}
+        group_nodes.update(self.node_objects[nid]._list_refusal_id for nid, key in self.returns.items()
+                           if self.find(key) in groups)
+        return owners, group_nodes
 
     def find(self, key):
         self.parent.setdefault(key, key)
@@ -464,13 +563,20 @@ class Plan:
             if not grown:
                 break
             self.selected |= grown
+        # Retain the full graph for the unaffected groups, including facts from
+        # discarded bodies. Only the explicitly refused groups lose descriptors.
+        refused = {self.find(key) for nid, key in self.nodes.items()
+                   if getattr(self.node_objects[nid], '_list_group_refused', False)}
+        refused.update(self.find(key) for nid, key in self.returns.items()
+                       if getattr(self.node_objects[nid], '_list_group_refused', False))
+        self.selected -= refused
         return self
 
     def spelling(self, key, seen=None):
         key = self.find(key)
         seen = set() if seen is None else seen
         if key in seen:
-            raise UnsupportedListIdentity('py2v: recursive native list identity is not supported')
+            raise self.unsupported('py2v: recursive native list identity is not supported', keys=[key])
         kinds = self.kinds[key]
         if len(kinds) > 1 and key not in self.selected:
             return 'Any'
@@ -479,7 +585,7 @@ class Plan:
             elem = self.spelling(self.slots[key], seen | {key}) if key in self.slots else 'Any'
             if key in self.selected:
                 if kinds != {'list'}:
-                    raise UnsupportedListIdentity('py2v: a shared list rebound to a different type is not supported')
+                    raise self.unsupported('py2v: a shared list rebound to a different type is not supported', keys=[key])
                 return f'&pyrt.ListRef[{elem}]'
             if kind == 'dict':
                 keys = set()
@@ -536,7 +642,7 @@ class Plan:
             return {self.find(self.key(target)) for target in resize_targets(node)}
 
         assignments = defaultdict(list)
-        for node in ast.walk(self.tree):
+        for node in self.walk():
             if isinstance(node, (ast.Assign, ast.AnnAssign, ast.NamedExpr)) and node.value is not None:
                 targets = node.targets if isinstance(node, ast.Assign) else [node.target]
                 for target in targets:
@@ -570,7 +676,7 @@ class Plan:
             return bool(a and b and a[2] == b[2] and a != b
                         and (a[0] == 'fresh' or b[0] == 'fresh'))
 
-        for node in ast.walk(self.tree):
+        for node in self.walk():
             fn = self.own_function(node)
             owner = id(fn) if fn is not None else None
             effects[owner].update(resize_roots(node))
@@ -613,7 +719,7 @@ class Plan:
                 return [value for arg in args for value in iteration_values(arg)]
             return []
 
-        for node in ast.walk(self.tree):
+        for node in self.walk():
             if isinstance(node, (ast.For, ast.comprehension)) and iteration_values(node.iter):
                 iterated = iteration_values(node.iter)
                 roots = {self.find(self.key(value)) for value in iterated}
@@ -626,16 +732,19 @@ class Plan:
                             if isinstance(parent, ast.DictComp) else [parent.elt])
                     body += [cond for gen in parent.generators for cond in gen.ifs]
                 for stmt in body:
-                    for call in ast.walk(stmt):
+                    for call in self.walk(stmt):
                         if isinstance(call, ast.Call) and roots & call_effects(call):
-                            raise UnsupportedListIdentity(f'py2v:{line}: a call may resize or reorder '
-                                             'the list during iteration; this is not supported')
+                            raise self.unsupported(f'py2v:{line}: a call may resize or reorder '
+                                             'the list during iteration; this is not supported', node, roots)
                         if any(self.find(self.key(target)) == self.find(self.key(value))
                                and not distinct_fresh(target, value)
                                for target in resize_targets(call) for value in iterated):
-                            raise UnsupportedListIdentity(f'py2v:{line}: resizing or reordering a shared list '
-                                             'during iteration is not supported')
+                            raise self.unsupported(f'py2v:{line}: resizing or reordering a shared list '
+                                             'during iteration is not supported', node, roots)
+        active = {id(node) for node in self.walk()}
         for call in self.bad_calls:
+            if id(call) not in active:
+                continue
             if getattr(call, '_api', ''):
                 continue
             # Frontend-created pyrt calls have defined boundaries, not opaque escapes.
@@ -646,13 +755,17 @@ class Plan:
                 continue
             if isinstance(call.func, ast.Attribute) and call.func.attr in ('count', 'index', 'items', 'keys', 'values', 'join'):
                 continue
+            if self.ref(call):
+                raise self.unsupported(f'py2v:{call.lineno}: shared list received from an unresolved call; '
+                                       'cannot preserve native list identity at this boundary', call,
+                                       [self.nodes[id(call)]])
             if any(self.ref(arg) for arg in call.args + [kw.value for kw in call.keywords]):
-                raise UnsupportedListIdentity(f'py2v:{call.lineno}: shared list passed to an unresolved call; '
-                                 'cannot preserve native list identity at this boundary')
+                raise self.unsupported(f'py2v:{call.lineno}: shared list passed to an unresolved call; '
+                                 'cannot preserve native list identity at this boundary', call)
         return self
 
     def annotate(self):
-        for node in ast.walk(self.tree):
+        for node in self.walk():
             if id(node) in self.nodes:
                 typ = self.changed_type(self.nodes[id(node)])
                 if typ:
@@ -719,6 +832,11 @@ def lower(tree, chosen, runtime_call):
         return call
 
     class Lower(ast.NodeTransformer):
+        def visit(self, node):
+            if getattr(node, '_list_identity_error', ''):
+                return node
+            return super().visit(node)
+
         def visit_List(self, node):
             self.generic_visit(node)
             if ref(node) and node._ref_vtype == '&pyrt.ListRef[Any]' and isinstance(node.ctx, ast.Load):
@@ -791,7 +909,7 @@ def lower(tree, chosen, runtime_call):
             self.generic_visit(node)
             if was_ref:
                 if isinstance(node.ctx, ast.Store) and isinstance(node.slice, ast.Slice):
-                    raise UnsupportedListIdentity('py2v: shared-list slice assignment is not supported')
+                    raise chosen.unsupported('py2v: shared-list slice assignment is not supported', node)
                 node.value = items(node.value)
                 if isinstance(node.slice, ast.Slice):
                     bounds = node.slice
@@ -834,7 +952,7 @@ def lower(tree, chosen, runtime_call):
                 if node.func.attr in ('index', 'count', 'remove') or (
                         node.func.value._ref_vtype == '&pyrt.ListRef[Any]' and node.func.attr != 'copy'):
                     if node.keywords:
-                        raise UnsupportedListIdentity('py2v: dynamic shared-list method keywords are not supported')
+                        raise chosen.unsupported('py2v: dynamic shared-list method keywords are not supported', node)
                     result = runtime_call('invoke', [runtime_call('box', [node.func.value], node),
                         ast.Constant(value=node.func.attr)] +
                         [runtime_call('box', [a], a) for a in node.args], node)
@@ -867,7 +985,7 @@ def lower(tree, chosen, runtime_call):
             self.generic_visit(node)
             if ref(node.value):
                 if node.conversion == 97 or (node.format_spec is not None and node.format_spec.values):
-                    raise UnsupportedListIdentity('py2v: this shared-list format conversion is not supported')
+                    raise chosen.unsupported('py2v: this shared-list format conversion is not supported', node)
                 node.value = runtime_call('str', [runtime_call('box', [node.value], node)], node)
                 node.conversion = -1
             return node
@@ -914,7 +1032,7 @@ def lower(tree, chosen, runtime_call):
             self.generic_visit(node)
             if ref(node.target):
                 if not isinstance(node.op, ast.Add):
-                    raise UnsupportedListIdentity('py2v: shared-list augmented operator is not supported')
+                    raise chosen.unsupported('py2v: shared-list augmented operator is not supported', node)
                 if ref(node.value):
                     node.value = items(node.value)
                 # Keep the target so the backend can capture it before the RHS and
@@ -926,7 +1044,7 @@ def lower(tree, chosen, runtime_call):
             has_reference = ref(node.left) or any(ref(n) for n in node.comparators)
             self.generic_visit(node)
             if has_reference and len(node.ops) != 1:
-                raise UnsupportedListIdentity('py2v: chained shared-list comparison is not supported')
+                raise chosen.unsupported('py2v: chained shared-list comparison is not supported', node)
             if has_reference and len(node.ops) == 1 and isinstance(node.ops[0], (ast.Is, ast.IsNot)):
                 node.left = runtime_call('object_identity', [runtime_call('box', [node.left], node.left)], node)
                 node.comparators = [runtime_call('object_identity', [runtime_call('box', [n], n)], n)
@@ -944,7 +1062,7 @@ def lower(tree, chosen, runtime_call):
                 return (ast.copy_location(ast.UnaryOp(op=ast.Not(), operand=compared), node)
                         if isinstance(node.ops[0], ast.NotIn) else compared)
             if has_reference and any(isinstance(op, (ast.Lt, ast.LtE, ast.Gt, ast.GtE)) for op in node.ops):
-                raise UnsupportedListIdentity('py2v: shared-list ordering comparison is not supported')
+                raise chosen.unsupported('py2v: shared-list ordering comparison is not supported', node)
             if all(isinstance(op, (ast.Eq, ast.NotEq, ast.Lt, ast.LtE, ast.Gt, ast.GtE)) for op in node.ops):
                 if ref(node.left):
                     node.left = items(node.left)
