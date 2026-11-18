@@ -1001,14 +1001,24 @@ fn (mut t VTranspiler) visit_closure_from_funcdef(node FunctionDef, nl_names []s
 	mut capture_locals := map[string]string{}
 	mut capture_setup := []string{}
 	mut default_values := []string{}
+	mut default_setup := []string{}
+	mut decorator_values := []string{}
 	mut refusal := node.capture_refusal
 	capture_names := if node.is_nested { node.capture_names } else { nl_names }
 	for expr in node.args.defaults {
-		default_values << t.visit_expr(expr)
-		if expr !is Constant { refusal = 'nonliteral_default' }
+		code := t.visit_expr(expr)
+		if expr is Constant {
+			default_values << code
+		} else {
+			// Python evaluates defaults once when it executes the definition.
+			// Do not re-evaluate them at each call or capture their later bindings.
+			tmp := t.new_tmp('default')
+			default_setup << '${tmp} := ${code}'
+			default_values << tmp
+		}
 	}
 	for decorator in node.decorator_list {
-		default_values << t.visit_expr(decorator)
+		decorator_values << t.visit_expr(decorator)
 		refusal = 'decorator'
 	}
 	for py_name in capture_names {
@@ -1121,16 +1131,12 @@ fn (mut t VTranspiler) visit_closure_from_funcdef(node FunctionDef, nl_names []s
 	t.func_return_types[node.name] = ret
 	t.func_param_types[node.name] = param_types
 	t.mut_param_indices[node.name] = mut_indices
-	mut closure_defaults := []string{}
-	for expr in node.args.defaults {
-		closure_defaults << t.visit_expr(expr)
-	}
-	t.func_defaults[node.name] = closure_defaults
+	t.func_defaults[node.name] = default_values.clone()
 	t.func_param_count[node.name] = node.args.posonlyargs.len + node.args.args.len
-	mut prefix := ''
+	mut prefix := if default_setup.len > 0 { default_setup.join('\n') + '\n' } else { '' }
 	if node.is_recursive {
 		if refusal == '' {
-			prefix = "mut ${name} := fn (${declarations.join(', ')}) ${ret} { panic('uninitialized recursive closure') }\n"
+			prefix += "mut ${name} := fn (${declarations.join(', ')}) ${ret} { panic('uninitialized recursive closure') }\n"
 			captures << 'mut ${name}'
 			t.local_idents[node.name] = name
 		} else {
@@ -1182,8 +1188,10 @@ fn (mut t VTranspiler) visit_closure_from_funcdef(node FunctionDef, nl_names []s
 		// Keep the entire implementation as a function argument. The unresolved call
 		// refuses unsupported capture timing instead of omitting the function's body.
 		capture_params << declarations
-		defaults := if default_values.len > 0 { ', ' + default_values.join(', ') } else { '' }
-		return '${name} ${bind} py2v_unsupported_closure_${refusal}(fn (${capture_params.join(', ')}) ${ret} {\n${body_code}\n}${defaults})'
+		mut refusal_values := default_values.clone()
+		refusal_values << decorator_values
+		defaults := if refusal_values.len > 0 { ', ' + refusal_values.join(', ') } else { '' }
+		return '${prefix}${name} ${bind} py2v_unsupported_closure_${refusal}(fn (${capture_params.join(', ')}) ${ret} {\n${body_code}\n}${defaults})'
 	}
 	if capture_setup.len > 0 {
 		prefix += capture_setup.join('\n') + '\n'
@@ -1640,7 +1648,7 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 	// A nested `def` may sit inside a block (if/for/try/with). V only allows
 	// `fn` declarations at the top level of a function body, so lift any that are
 	// nested deeper and emit them alongside the others.
-	body_stmts = t.hoist_block_fns(body_stmts, mut nested_fndefs)
+	body_stmts = t.hoist_block_fns(body_stmts, mut nested_fndefs, false)
 
 	// Pre-scan body for variables passed to mut-parameter functions
 	t.prescan_mut_call_args(body_stmts)
@@ -9936,15 +9944,15 @@ fn v_return_type(typ string) string {
 // hoist_block_fns lifts function definitions out of nested blocks in `stmts`,
 // appending their V code to `out`. Statements are rewritten in place through the
 // returned list.
-pub fn (mut t VTranspiler) hoist_block_fns(stmts []Stmt, mut out []string) []Stmt {
+pub fn (mut t VTranspiler) hoist_block_fns(stmts []Stmt, mut out []string, in_block bool) []Stmt {
 	mut result := []Stmt{}
 	for stmt in stmts {
-		result << t.hoist_in_stmt(stmt, mut out)
+		result << t.hoist_in_stmt(stmt, mut out, in_block)
 	}
 	return result
 }
 
-fn (mut t VTranspiler) hoist_in_stmt(stmt Stmt, mut out []string) Stmt {
+fn (mut t VTranspiler) hoist_in_stmt(stmt Stmt, mut out []string, in_block bool) Stmt {
 	// Lift the definition out of the block. V has no way to declare a function
 	// inside a nested block, so the block keeps a `pass` in its place.
 	//
@@ -9952,7 +9960,10 @@ fn (mut t VTranspiler) hoist_in_stmt(stmt Stmt, mut out []string) Stmt {
 	// stay an inline closure so it captures by reference.
 	if stmt is FunctionDef {
 		fd := stmt as FunctionDef
-		if fd.is_nested { return stmt }
+		if fd.is_nested && (!in_block || fd.capture_names.len > 0 || fd.is_recursive
+			|| fd.args.defaults.any(it !is Constant) || fd.decorator_list.len > 0) {
+			return stmt
+		}
 		for inner in fd.body {
 			if inner is Nonlocal {
 				return stmt
@@ -9962,8 +9973,12 @@ fn (mut t VTranspiler) hoist_in_stmt(stmt Stmt, mut out []string) Stmt {
 		return Stmt(Pass{})
 	}
 	if stmt is AsyncFunctionDef {
-		if stmt.is_nested { return stmt }
-		out << t.visit_async_function_def(stmt as AsyncFunctionDef)
+		fd := stmt as AsyncFunctionDef
+		if fd.is_nested && (!in_block || fd.capture_names.len > 0 || fd.is_recursive
+			|| fd.args.defaults.any(it !is Constant) || fd.decorator_list.len > 0) {
+			return stmt
+		}
+		out << t.visit_async_function_def(fd)
 		return Stmt(Pass{})
 	}
 	// A class under any enclosing block has to move: V cannot declare a struct
@@ -9980,8 +9995,8 @@ fn (mut t VTranspiler) hoist_in_stmt(stmt Stmt, mut out []string) Stmt {
 			return Stmt(If{
 				test:                   s.test
 				lower_condition_walrus: s.lower_condition_walrus
-				body:                   t.hoist_block_fns(s.body, mut out)
-				orelse:                 t.hoist_block_fns(s.orelse, mut out)
+				body:                   t.hoist_block_fns(s.body, mut out, true)
+				orelse:                 t.hoist_block_fns(s.orelse, mut out, true)
 				loc:                    s.loc
 				level:                  s.level
 			})
@@ -9991,8 +10006,8 @@ fn (mut t VTranspiler) hoist_in_stmt(stmt Stmt, mut out []string) Stmt {
 			return Stmt(For{
 				target: s.target
 				iter:   s.iter
-				body:   t.hoist_block_fns(s.body, mut out)
-				orelse: t.hoist_block_fns(s.orelse, mut out)
+				body:   t.hoist_block_fns(s.body, mut out, true)
+				orelse: t.hoist_block_fns(s.orelse, mut out, true)
 				loc:    s.loc
 				level:  s.level
 			})
@@ -10001,8 +10016,8 @@ fn (mut t VTranspiler) hoist_in_stmt(stmt Stmt, mut out []string) Stmt {
 			s := stmt as While
 			return Stmt(While{
 				test:   s.test
-				body:   t.hoist_block_fns(s.body, mut out)
-				orelse: t.hoist_block_fns(s.orelse, mut out)
+				body:   t.hoist_block_fns(s.body, mut out, true)
+				orelse: t.hoist_block_fns(s.orelse, mut out, true)
 				loc:    s.loc
 				level:  s.level
 			})
@@ -10011,7 +10026,7 @@ fn (mut t VTranspiler) hoist_in_stmt(stmt Stmt, mut out []string) Stmt {
 			s := stmt as With
 			return Stmt(With{
 				items: s.items
-				body:  t.hoist_block_fns(s.body, mut out)
+				body:  t.hoist_block_fns(s.body, mut out, true)
 				loc:   s.loc
 			})
 		}
@@ -10019,7 +10034,7 @@ fn (mut t VTranspiler) hoist_in_stmt(stmt Stmt, mut out []string) Stmt {
 			s := stmt as AsyncWith
 			return Stmt(AsyncWith{
 				items: s.items
-				body:  t.hoist_block_fns(s.body, mut out)
+				body:  t.hoist_block_fns(s.body, mut out, true)
 				loc:   s.loc
 			})
 		}
@@ -10028,8 +10043,8 @@ fn (mut t VTranspiler) hoist_in_stmt(stmt Stmt, mut out []string) Stmt {
 			return Stmt(AsyncFor{
 				target: s.target
 				iter:   s.iter
-				body:   t.hoist_block_fns(s.body, mut out)
-				orelse: t.hoist_block_fns(s.orelse, mut out)
+				body:   t.hoist_block_fns(s.body, mut out, true)
+				orelse: t.hoist_block_fns(s.orelse, mut out, true)
 				loc:    s.loc
 				level:  s.level
 			})
@@ -10042,15 +10057,15 @@ fn (mut t VTranspiler) hoist_in_stmt(stmt Stmt, mut out []string) Stmt {
 					typ:     h.typ
 					classes: h.classes
 					name:    h.name
-					body:    t.hoist_block_fns(h.body, mut out)
+					body:    t.hoist_block_fns(h.body, mut out, true)
 					loc:     h.loc
 				}
 			}
 			return Stmt(Try{
-				body:               t.hoist_block_fns(s.body, mut out)
+				body:               t.hoist_block_fns(s.body, mut out, true)
 				handlers:           handlers
-				orelse:             t.hoist_block_fns(s.orelse, mut out)
-				finalbody:          t.hoist_block_fns(s.finalbody, mut out)
+				orelse:             t.hoist_block_fns(s.orelse, mut out, true)
+				finalbody:          t.hoist_block_fns(s.finalbody, mut out, true)
 				guard:              s.guard
 				loc:                s.loc
 				is_exception_group: s.is_exception_group
@@ -10136,7 +10151,7 @@ pub fn (mut t VTranspiler) hoist_module_fns(stmts []Stmt, mut out []string) []St
 fn (mut t VTranspiler) hoist_in_stmt_list(stmts []Stmt, mut out []string) []Stmt {
 	mut result := []Stmt{}
 	for stmt in stmts {
-		result << t.hoist_in_stmt(stmt, mut out)
+		result << t.hoist_in_stmt(stmt, mut out, true)
 	}
 	return result
 }

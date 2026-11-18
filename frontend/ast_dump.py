@@ -6847,19 +6847,22 @@ def _plan_closures(tree, table, facts):
                 ancestors.add(parent)
             parent = table.scopes[parent].parent
         captures = {}
-        for part in ast.walk(fn):
-            if not isinstance(part, ast.Name):
-                continue
-            bid = getattr(part, "_binding", None)
-            if bid is None:
-                continue
-            binding = table.bindings[bid]
-            if binding.scope not in ancestors or binding.kind in ("class", "import"):
-                continue
-            if bid == getattr(fn, "_binding", None):
-                fn._is_recursive = True
-                continue
-            captures[binding.name] = binding
+        # Defaults, decorators, and annotations are evaluated in the enclosing
+        # scope at definition time, not by the closure when it is called.
+        for statement in fn.body:
+            for part in ast.walk(statement):
+                if not isinstance(part, ast.Name):
+                    continue
+                bid = getattr(part, "_binding", None)
+                if bid is None:
+                    continue
+                binding = table.bindings[bid]
+                if binding.scope not in ancestors or binding.kind in ("class", "import"):
+                    continue
+                if bid == getattr(fn, "_binding", None):
+                    fn._is_recursive = True
+                    continue
+                captures[binding.name] = binding
         fn._capture_names = sorted(captures)
         fn._capture_mutable = []
         fn._capture_types = {}

@@ -48,10 +48,11 @@ fn loop() int {
 }
 
 fn default(n int) int {
-	read := py2v_unsupported_closure_nonliteral_default(fn (n int, x int) int {
+	py2v_default1 := n + 1
+	read := fn (x int) int {
 		return x + 3
-	}, n + 1)
-	return read(n + 1)
+	}
+	return read(py2v_default1)
 }
 
 fn rebound_function() int {

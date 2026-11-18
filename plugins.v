@@ -1017,8 +1017,12 @@ fn visit_dict_fn(args []string) (string, bool) {
 // Handle divmod() call
 fn visit_divmod(mut t VTranspiler, node Call, args []string) (string, bool) {
 	if args.len != 2 { return '', false }
-	left := t.infer_expr_type(node.args[0])
-	right := t.infer_expr_type(node.args[1])
+	left_raw := t.division_operand_type(node.args[0], t.infer_expr_type(node.args[0]))
+	right_raw := t.division_operand_type(node.args[1], t.infer_expr_type(node.args[1]))
+	// A unary float retains the frontend annotation `float`, whereas a
+	// literal constant is inferred as `f64`. Both select a native float pair.
+	left := if left_raw == 'float' { 'f64' } else { left_raw }
+	right := if right_raw == 'float' { 'f64' } else { right_raw }
 	kind := if is_v_int_type(left) && is_v_int_type(right) {
 		'divmod_int'
 	} else if left in ['int', 'f64', 'f32'] && right in ['int', 'f64', 'f32'] {

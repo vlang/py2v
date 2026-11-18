@@ -35,11 +35,13 @@ fn recursive(n int) int {
 	return result * 10 + count
 }
 
+fn choose(x int) int {
+	return x + 3
+}
+
 fn conditional(flag bool) int {
 	if flag {
-		choose := fn (x int) int {
-			return x + 3
-		}
+		// pass
 		return choose(5)
 	}
 	return 0

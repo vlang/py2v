@@ -329,7 +329,9 @@ call_results_cases := ['dict_get_missing', 'dict_get_eager', 'dict_get_chain', '
 	'conditional_map', 'custom_remove', 'divmod_value', 'empty_isinstance', 'expression_walrus',
 	'independent_dunders', 'local_identifier_encoding', 'loop_scope_bindings', 'loop_unpack_targets',
 	'overload_definitions', 'parameter_bindings', 'private_method_calls',
-	'closure_capture_discriminator']
+	'closure_capture_discriminator', 'review_nested_default', 'review_nested_default_snapshot',
+	'review_nested_default_once', 'review_nested_if', 'review_nested_loop',
+	'review_nested_literal_block', 'review_divmod_negative_float']
 mut execution_args := [][]string{}
 for name in call_results_cases {
 	execution_args << [py2v, python, os.join_path(cases_dir, name + '.py'),
@@ -862,7 +864,9 @@ execution_cases := ['bound_append', 'closure_capture_discriminator', 'conditiona
 	'conditional_map', 'custom_remove', 'divmod_value', 'empty_isinstance', 'expression_walrus',
 	'independent_dunders', 'local_identifier_encoding', 'loop_scope_bindings', 'loop_unpack_targets',
 	'nested_closures', 'overload_definitions', 'parameter_bindings', 'private_method_calls',
-	'nonlocal_closure', 'nested_functions', 'closure_uses_class']
+	'nonlocal_closure', 'nested_functions', 'closure_uses_class', 'review_nested_default',
+	'review_nested_default_snapshot', 'review_nested_default_once', 'review_nested_if',
+	'review_nested_loop', 'review_nested_literal_block', 'review_divmod_negative_float']
 syntax_cases := ['annotation_syntax', 'bound_append_rebound', 'dynamic_isinstance',
 	'dynamic_isinstance_bindings', 'dynamic_slice_axes', 'generator_value_context',
 	'independent_dunder_chain', 'qualified_constant_conditions', 'unresolved_qualified_call',
