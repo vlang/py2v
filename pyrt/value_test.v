@@ -231,9 +231,9 @@ fn check_value_constructors_and_aliases() ! {
 	l := new_list(source)
 	tu := new_tuple(source)
 	source[0] = Value(i64(9))
-	// python: exec_result("a=[1]; b=list(a); a[0]=9", "repr(b)") == '[1]' 
+	// python: exec_result("a=[1]; b=list(a); a[0]=9", "repr(b)") == '[1]'
 	assert repr(Value(l)) == '[1]'
-	// python: exec_result("a=[1]; b=tuple(a); a[0]=9", "repr(b)") == '(1,)' 
+	// python: exec_result("a=[1]; b=tuple(a); a[0]=9", "repr(b)") == '(1,)'
 	assert repr(Value(tu)) == '(1,)'
 	s := new_set([Value(i64(1)), Value(true), Value(1.0)])!
 	got_68 := len_(Value(s))!
@@ -243,7 +243,7 @@ fn check_value_constructors_and_aliases() ! {
 	s.add(Value(i64(2)))!
 	s.discard(Value(true))!
 	s.discard(Value(i64(9)))!
-	// python: exec_result("s={1}; s.add(2); s.add(2); s.discard(True); s.discard(9)", "repr(s)") == '{2}' 
+	// python: exec_result("s={1}; s.add(2); s.add(2); s.discard(True); s.discard(9)", "repr(s)") == '{2}'
 	assert repr(Value(s)) == '{2}'
 }
 
@@ -259,7 +259,7 @@ fn check_value_typed_sequence() ! {
 	boxed := Value(Sequence(typed))
 	setitem(boxed, Value(i64(-1)), Value(i64(7)))!
 	typed.items[0] = 5
-	// python: exec_result("a=[1,2,3]; b=a; b[-1]=7; a[0]=5", "repr(b)") == '[5, 2, 7]' 
+	// python: exec_result("a=[1,2,3]; b=a; b[-1]=7; a[0]=5", "repr(b)") == '[5, 2, 7]'
 	assert repr(boxed) == '[5, 2, 7]'
 	got_71 := typed.len()
 	// python: (len([5,2,7])) == 3
@@ -268,13 +268,13 @@ fn check_value_typed_sequence() ! {
 	// python: repr([5,2,7][-1]) == '7'
 	assert repr(got_72) == '7'
 	typed.set(1, Value(i64(4)))!
-	// python: exec_result("a=[5,2,7]; a[1]=4", "repr(a)") == '[5, 4, 7]' 
+	// python: exec_result("a=[5,2,7]; a[1]=4", "repr(a)") == '[5, 4, 7]'
 	assert repr(boxed) == '[5, 4, 7]'
 	delitem(boxed, Value(i64(-1)))!
-	// python: exec_result("a=[5,4,7]; del a[-1]", "repr(a)") == '[5, 4]' 
+	// python: exec_result("a=[5,4,7]; del a[-1]", "repr(a)") == '[5, 4]'
 	assert repr(boxed) == '[5, 4]'
 	typed.delete(0)!
-	// python: exec_result("a=[5,4]; del a[0]", "repr(a)") == '[4]' 
+	// python: exec_result("a=[5,4]; del a[0]", "repr(a)") == '[4]'
 	assert repr(boxed) == '[4]'
 	got_76 := eq(boxed, Value(new_list([Value(i64(4))])))
 	// python: ([4] == [4]) == True
