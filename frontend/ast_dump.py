@@ -4446,6 +4446,8 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
             # `v[key] = item` where v is a value of unknown type
             target = node.targets[0] if len(node.targets) == 1 else None
             stores = (isinstance(target, ast.Subscript) and not isinstance(target.slice, ast.Slice)
+                      and not (isinstance(target.slice, ast.Tuple)
+                               and any(isinstance(axis, ast.Slice) for axis in target.slice.elts))
                       and dynamic(target.value))
             self.generic_visit(node)
             if id(node) in unpack_nodes:
