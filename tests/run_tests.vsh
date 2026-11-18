@@ -190,6 +190,12 @@ mut skipped := 0
 mut failures := []string{}
 mut verbose := os.getenv('VERBOSE') == '1'
 mut fmt_seq := 0
+python := $if windows { 'python' } $else { 'python3' }
+// Cases written in syntax only CPython 3.15 parses. The frontend runs under the same
+// interpreter (main.v), so where that is older they cannot translate and are skipped.
+newer_syntax_cases := ['dict_unpack_typechecking']
+python_parses_newer := os.exec([python, '-c',
+	'import sys; sys.exit(0 if sys.version_info >= (3, 15) else 1)']).exit_code == 0
 
 for entry in case_names {
 	case_name := entry.trim_string_right('.py')
@@ -198,6 +204,11 @@ for entry in case_names {
 
 	if !os.exists(expected_file) {
 		report('SKIP', case_name, ' (no expected file)')
+		skipped++
+		continue
+	}
+	if case_name in newer_syntax_cases && !python_parses_newer {
+		report('SKIP', case_name, ' (needs Python 3.15 syntax)')
 		skipped++
 		continue
 	}
@@ -246,7 +257,6 @@ init_expected := os.read_file(os.join_path(script_dir, 'baseline', 'init_executi
 	panic(err)
 }
 init_v_run := run_generated(init_v)
-python := $if windows { 'python' } $else { 'python3' }
 
 dynamic_cases := ['dynamic_container_elements', 'dynamic_membership', 'dynamic_comprehensions',
 	'dynamic_methods', 'dynamic_or_default', 'dynamic_stores', 'dynamic_runtime_returns',
@@ -403,16 +413,23 @@ call_results_cases := ['dict_get_missing', 'dict_get_eager', 'dict_get_chain', '
 	'comb_sort', 'element_store_mut', 'mut_inplace_methods', 'typing_abc_annotations',
 	'dict_unpack_typechecking', 'list_box_any_id', 'list_alias_iter_reorder', 'list_alias_slice_reverse',
 	'list_alias_slice_delete', 'list_slice_step_assign', 'list_slice_step_delete',
-	'list_slice_unit_step_resize', 'list_slice_unit_step_grow',
-	'list_frozenset_alias', 'dict_widen_local', 'dict_widen_reassign', 'list_scoped_refusal']
+	'list_slice_unit_step_resize', 'list_slice_unit_step_grow', 'list_frozenset_alias',
+	'dict_widen_local', 'dict_widen_reassign', 'list_scoped_refusal']
 mut execution_args := [][]string{}
+mut execution_names := []string{}
 for name in call_results_cases {
+	if name in newer_syntax_cases && !python_parses_newer {
+		report('SKIP', 'call results: ${name} execution', ' (needs Python 3.15 syntax)')
+		skipped++
+		continue
+	}
+	execution_names << name
 	execution_args << [py2v, python, os.join_path(cases_dir, name + '.py'),
 		os.join_path(call_results_root, name + '.v')]
 }
 execution_results := parallel.amap(execution_args, compare_execution, workers: runtime.nr_jobs())
 for i, result in execution_results {
-	name := 'call results: ${call_results_cases[i]} execution'
+	name := 'call results: ${execution_names[i]} execution'
 	if result.exit_code == 0 {
 		report('PASS', name, '')
 		passed++
