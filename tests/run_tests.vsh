@@ -862,10 +862,11 @@ execution_cases := ['bound_append', 'closure_capture_discriminator', 'conditiona
 	'independent_dunders', 'local_identifier_encoding', 'loop_scope_bindings', 'loop_unpack_targets',
 	'nested_closures', 'overload_definitions', 'parameter_bindings', 'private_method_calls',
 	'nonlocal_closure', 'nested_functions', 'closure_uses_class']
-syntax_cases := ['annotation_syntax', 'bound_append_rebound', 'dynamic_isinstance', 'dynamic_slice_axes',
-	'generator_value_context', 'independent_dunder_chain', 'qualified_constant_conditions',
-	'unresolved_qualified_call', 'unsupported_closure_capture', 'unsupported_expression_walrus',
-	'unsupported_format_fields', 'unsupported_super_value']
+syntax_cases := ['annotation_syntax', 'bound_append_rebound', 'dynamic_isinstance',
+	'dynamic_isinstance_bindings', 'dynamic_slice_axes', 'generator_value_context',
+	'independent_dunder_chain', 'qualified_constant_conditions', 'unresolved_qualified_call',
+	'unsupported_closure_capture', 'unsupported_expression_walrus', 'unsupported_format_fields',
+	'unsupported_super_value']
 mut parser_cases := execution_cases.clone()
 parser_cases << syntax_cases
 mut parser_args := [][]string{}

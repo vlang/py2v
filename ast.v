@@ -268,6 +268,8 @@ pub mut:
 	// parameter of the enclosing function annotated with a builtin class a V
 	// type stands for; it names that class (int, float, str, bool, list, dict).
 	subject_class string
+	// The isinstance type argument is a runtime binding, not a static V type name.
+	isinstance_dynamic_types bool
 	// api is the Python name of the runtime library entry this call resolved to
 	// (`datetime.datetime.now`), or empty.
 	api string

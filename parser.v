@@ -1220,19 +1220,20 @@ fn parse_call(m map[string]json2.Any) Call {
 		}
 	}
 	return Call{
-		subject_class: (m['subject_class'] or { json2.Any('') }).str()
-		api:           (m['api'] or { json2.Any('') }).str()
-		propagate:     (m['propagate'] or { json2.Any(false) }).bool()
-		guard:         (m['guard'] or { json2.Any(0) }).int()
-		func:          parse_expr(map_field(m, 'func')) or {
+		isinstance_dynamic_types: (m['isinstance_dynamic_types'] or { json2.Any(false) }).bool()
+		subject_class:            (m['subject_class'] or { json2.Any('') }).str()
+		api:                      (m['api'] or { json2.Any('') }).str()
+		propagate:                (m['propagate'] or { json2.Any(false) }).bool()
+		guard:                    (m['guard'] or { json2.Any(0) }).int()
+		func:                     parse_expr(map_field(m, 'func')) or {
 			&Expr(Constant{
 				value: NoneValue{}
 			})
 		}
-		args:          args
-		keywords:      keywords
-		loc:           parse_location(m)
-		v_annotation:  parse_type_annotation(m) or { '' }
+		args:                     args
+		keywords:                 keywords
+		loc:                      parse_location(m)
+		v_annotation:             parse_type_annotation(m) or { '' }
 	}
 }
 

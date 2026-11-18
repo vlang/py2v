@@ -913,7 +913,7 @@ fn visit_hasattr(args []string) (string, bool) {
 // and interfaces, and a V parameter of such a type cannot hold anything else,
 // so the answer is a constant. As in Python, a bool is also an int.
 fn isinstance_of_known_type(node Call) ?string {
-	if node.subject_class == '' || node.args.len != 2 {
+	if node.isinstance_dynamic_types || node.subject_class == '' || node.args.len != 2 {
 		return none
 	}
 	classes := match node.args[1] {
@@ -947,7 +947,7 @@ fn visit_isinstance(mut t VTranspiler, node Call, args []string) (string, bool) 
 	if type_expr is Tuple && type_expr.elts.len == 0 {
 		return '${t.runtime_helper('isinstance_empty')}(${args[0]})', true
 	}
-	if !isinstance_static_types(type_expr) {
+	if node.isinstance_dynamic_types || !isinstance_static_types(type_expr) {
 		return 'py2v_unsupported_dynamic_isinstance(${args.join(', ')})', true
 	}
 	types_arg := args[1]

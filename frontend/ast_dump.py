@@ -2393,6 +2393,8 @@ def _node_to_dict(node: ast.AST, mutable_vars: Set[str],
         result["keywords"] = [_keyword_to_dict(kw, mutable_vars, redefined, ctx) for kw in node.keywords]
         if getattr(node, "_subject_class", ""):
             result["subject_class"] = node._subject_class
+        if getattr(node, "_isinstance_dynamic_types", False):
+            result["isinstance_dynamic_types"] = True
         if getattr(node, "_api", ""):
             result["api"] = node._api
         if getattr(node, "_propagate", False):
@@ -6078,6 +6080,38 @@ def _mark_runtime_api(tree: ast.Module, table: Optional[symbols.SymbolTable]) ->
                 node._dynamic = True
 
 
+def _mark_dynamic_isinstance_types(tree: ast.Module, table: Optional[symbols.SymbolTable]) -> None:
+    """Keep runtime type objects out of V's static `is Type` position.
+
+    A parameter or captured value remains a runtime object even when its Python
+    name starts with a capital letter. Attributes of such values are dynamic too.
+    Class declarations, unchanged imports, and unresolved builtin names retain
+    the existing static-type lowering.
+    """
+    if table is None:
+        return
+
+    def static_type(node: ast.expr) -> bool:
+        if isinstance(node, ast.Name):
+            bid = getattr(node, "_binding", None)
+            if bid is None:
+                return True
+            binding = table.bindings[bid]
+            return binding.kind in ("class", "import") and not binding.rebound
+        if isinstance(node, ast.Attribute):
+            return static_type(node.value)
+        if isinstance(node, ast.Tuple):
+            return all(isinstance(part, (ast.Name, ast.Attribute)) and static_type(part)
+                       for part in node.elts)
+        return False
+
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                and node.func.id == "isinstance" and len(node.args) == 2
+                and getattr(node.func, "_binding", None) is None):
+            node._isinstance_dynamic_types = not static_type(node.args[1])
+
+
 def _mark_isinstance_inferred(tree: ast.Module, table: Optional[symbols.SymbolTable],
                               facts: Optional[infer.TypeFacts]) -> None:
     """Set `_subject_class` on `isinstance(name, ...)` when every value the code gives the
@@ -6941,6 +6975,7 @@ def process_file(file_path: str, project: Optional[ProjectFacts] = None) -> str:
     _unquote_annotations(tree, table)
     if _encode_local_identifiers(tree, table):
         table = _resolve_bindings(tree)
+    _mark_dynamic_isinstance_types(tree, table)
     _mark_runtime_api(tree, table)
     _lower_exit_statements(tree, table)
     _erase_typing_casts(tree, table)
