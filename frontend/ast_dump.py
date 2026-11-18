@@ -3025,6 +3025,38 @@ def _state_truth_tests(tree: ast.Module, table: Optional[symbols.SymbolTable],
     falsy_classes = {cls.name for cls in ast.walk(tree) if isinstance(cls, ast.ClassDef)
                      and any(isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef))
                              and m.name in ("__bool__", "__len__") for m in cls.body)}
+    local_hooks = {}
+    for cls in ast.walk(tree):
+        if not isinstance(cls, ast.ClassDef):
+            continue
+        # Inheritance, metaclasses, and decorators may supply truth hooks.
+        if cls.decorator_list or cls.keywords or (cls.bases and not (
+                len(cls.bases) == 1 and isinstance(cls.bases[0], ast.Name)
+                and cls.bases[0].id == "object")):
+            continue
+        if any(isinstance(stmt, ast.Assign)
+               and any(isinstance(t, ast.Name) and t.id in ("__bool__", "__len__")
+                       for t in stmt.targets)
+               or isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name)
+               and stmt.target.id in ("__bool__", "__len__")
+               or isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef))
+               and stmt.name in ("__bool__", "__len__") and stmt.decorator_list
+               for stmt in cls.body):
+            continue
+        methods = {m.name for m in cls.body
+                   if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef))}
+        hook = "bool" if "__bool__" in methods else "len" if "__len__" in methods else "always"
+        local_hooks[getattr(cls, "_binding", None)] = hook
+    local_hooks.pop(None, None)
+
+    def local_truth_hook(node: ast.expr) -> str:
+        type_id = getattr(node, "_represented", getattr(node, "_assumed", None))
+        if type_id is None:
+            type_id = getattr(node, "_type", None)
+        if type_id is None or facts.types[type_id]["k"] != "instance":
+            return ""
+        return local_hooks.get(facts.types[type_id].get("class_binding"), "")
+
 
     def optional_instance(node: ast.expr) -> bool:
         """An optional local instance without truth hooks, Path or SQLite handle:
@@ -3121,9 +3153,19 @@ def _state_truth_tests(tree: ast.Module, table: Optional[symbols.SymbolTable],
             return False
         item = facts.types[type_id]
         return (item["k"] == "callable" or item["k"] == "instance"
-                and item.get("name") in ("pathlib.Path", "sqlite3.Connection", "sqlite3.Cursor", "re.Match"))
+                and (item.get("name") in ("pathlib.Path", "sqlite3.Connection", "sqlite3.Cursor", "re.Match")
+                     or local_truth_hook(node) == "always"))
 
     def stated(node: ast.expr) -> ast.expr:
+        hook = local_truth_hook(node)
+        if hook in ("bool", "len"):
+            method = ast.copy_location(
+                ast.Call(func=ast.Attribute(value=node,
+                                            attr="to_bool" if hook == "bool" else "len",
+                                            ctx=ast.Load()), args=[], keywords=[]), node)
+            if hook == "bool":
+                return method
+            return _runtime_call("truth_length", [method], node)
         if (isinstance(node, ast.Constant) and node.value is None
                 or isinstance(node, (ast.List, ast.Tuple)) and not node.elts):
             return ast.copy_location(ast.Constant(value=False), node)
@@ -3377,7 +3419,7 @@ def _runtime_call(name: str, args: List[ast.expr], like: ast.AST) -> ast.expr:
     for part in ast.walk(call):
         if not hasattr(part, "lineno"):
             ast.copy_location(part, like)
-    result_types = {"length": "int", "truth": "bool", "truth_option": "bool", "instance_truth": "bool", "eq": "bool", "has": "bool", "is_none": "bool",
+    result_types = {"length": "int", "truth": "bool", "truth_option": "bool", "instance_truth": "bool", "truth_length": "bool", "eq": "bool", "has": "bool", "is_none": "bool",
                     "str": "string", "to_int": "int", "to_float": "float",
                     "to_str": "string", "to_bool": "bool", "elements": "list[Any]",
                     "unpack": "list[Any]"}
