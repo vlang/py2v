@@ -107,6 +107,11 @@ fn success(value Any) {
 	success_py(value) or { pyrt.fail(err) }
 }
 
+fn side(label string) string {
+	println(label)
+	return label
+}
+
 fn main() {
 	caught_type('')
 	caught_attr(1)
@@ -128,4 +133,8 @@ fn main() {
 	value := receiver()
 	(pyrt.call_method(pyrt.box(value), 'append', [pyrt.box(argument())]) or { pyrt.fail(err) })
 	success(pyrt.empty_list())
+	println((side('first')).str() + ' ' + (pyrt.str((pyrt.call_method(pyrt.box(receiver()), 'append', [pyrt.box(1)]) or { pyrt.fail(err) }))).str())
+	effects := [pyrt.box(side('third')),
+		(pyrt.call_method(pyrt.box(receiver()), 'append', [pyrt.box(2)]) or { pyrt.fail(err) })]
+	println(effects.len)
 }

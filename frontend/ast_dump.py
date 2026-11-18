@@ -4062,6 +4062,30 @@ def _lower_frozensets(tree: ast.Module, table: Optional[symbols.SymbolTable]) ->
     """Construct the builtin immutable set through the runtime's iterable adapter."""
     if table is None or any(binding.name == "pyrt" for binding in table.bindings):
         return
+    class Annotations(ast.NodeTransformer):
+        def visit_Name(self, node: ast.Name) -> ast.AST:
+            if node.id == "frozenset" and getattr(node, "_binding", None) is None:
+                return ast.copy_location(ast.Name(id="Any", ctx=ast.Load()), node)
+            return node
+
+        def visit_Subscript(self, node: ast.Subscript) -> ast.AST:
+            if (isinstance(node.value, ast.Name) and node.value.id == "frozenset"
+                    and getattr(node.value, "_binding", None) is None):
+                element = node.slice
+                if (isinstance(element, ast.Name) and element.id in (
+                        "str", "int", "float", "bool", "bytes", "object")
+                        and getattr(element, "_binding", None) is None):
+                    return ast.copy_location(ast.Name(id="Any", ctx=ast.Load()), node)
+                return node
+            return self.generic_visit(node)
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.arg) and node.annotation is not None:
+            node.annotation = Annotations().visit(node.annotation)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.returns is not None:
+            node.returns = Annotations().visit(node.returns)
+        elif isinstance(node, ast.AnnAssign):
+            node.annotation = Annotations().visit(node.annotation)
     if not any(isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
                and node.func.id == "frozenset" and getattr(node.func, "_binding", None) is None
                for node in ast.walk(tree)):

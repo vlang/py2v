@@ -38,6 +38,11 @@ def success(value: Any) -> None:
     print(value)
 
 
+def side(label: str) -> str:
+    print(label)
+    return label
+
+
 if __name__ == "__main__":
     caught_type("")
     caught_attr(1)
@@ -48,3 +53,6 @@ if __name__ == "__main__":
     value = receiver()
     value.append(argument())
     success([])
+    print(side("first"), receiver().append(1))
+    effects = [side("third"), receiver().append(2)]
+    print(len(effects))
