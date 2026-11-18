@@ -403,6 +403,7 @@ call_results_cases := ['dict_get_missing', 'dict_get_eager', 'dict_get_chain', '
 	'comb_sort', 'element_store_mut', 'mut_inplace_methods', 'typing_abc_annotations',
 	'dict_unpack_typechecking', 'list_box_any_id', 'list_alias_iter_reorder', 'list_alias_slice_reverse',
 	'list_alias_slice_delete', 'list_slice_step_assign', 'list_slice_step_delete',
+	'list_slice_unit_step_resize', 'list_slice_unit_step_grow',
 	'list_frozenset_alias', 'dict_widen_local', 'dict_widen_reassign', 'list_scoped_refusal']
 mut execution_args := [][]string{}
 for name in call_results_cases {

@@ -163,6 +163,11 @@ pub fn list_ref_delete_slice_step[T](list &ListRef[T], start int, stop int, step
 
 // list_ref_assign_slice_step assigns elements into a stepped selection in place.
 pub fn list_ref_assign_slice_step[T](replacement []T, list &ListRef[T], start int, stop int, step int, has_start bool, has_stop bool) {
+	// An explicit unit step is a normal slice assignment and may resize the list.
+	if step == 1 {
+		list_ref_assign_slice(replacement, list, start, stop, has_start, has_stop)
+		return
+	}
 	indices := list_ref_indices(list.items.len, start, stop, step, has_start, has_stop)
 	if indices.len != replacement.len {
 		panic('attempt to assign sequence of size ${replacement.len} to extended slice of size ${indices.len}')

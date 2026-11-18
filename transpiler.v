@@ -6093,11 +6093,17 @@ fn without_opt(code string) (string, bool) {
 
 // visit_call binds eligible module functions before rendering their arguments.
 pub fn (mut t VTranspiler) visit_call(original Call) string {
-	if original.api == '__py2v__.list_ref_assign_slice' && original.args.len == 6 {
+	if (original.api == '__py2v__.list_ref_assign_slice' && original.args.len == 6)
+		|| (original.api == '__py2v__.list_ref_assign_slice_step' && original.args.len == 7) {
 		t.add_using('pyrt')
 		typ := get_expr_annotation(original.args[1])
 		elem := typ['&pyrt.ListRef['.len..typ.len - 1]
-		return 'pyrt.list_ref_assign_slice[${elem}](${original.args.map(t.visit_expr(it)).join(', ')})'
+		name := if original.args.len == 7 {
+			'list_ref_assign_slice_step'
+		} else {
+			'list_ref_assign_slice'
+		}
+		return 'pyrt.${name}[${elem}](${original.args.map(t.visit_expr(it)).join(', ')})'
 	}
 	if original.api == '__py2v__.list_ref_slice' && original.args.len == 5 {
 		t.add_using('pyrt')
