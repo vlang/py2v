@@ -1,18 +1,17 @@
 module main
 
-fn inner(y int) int {
-	return y * 2
-}
-
 fn outer(x int) int {
+	inner := fn (y int) int {
+		return y * 2
+	}
 	return inner(x) + 1
 }
 
-fn adder(x int) int {
-	return x + n
-}
-
 fn make_adder(n int) fn (int) int {
+	py2v_capture1 := &n
+	adder := fn [py2v_capture1] (x int) int {
+		return x + (*py2v_capture1)
+	}
 	return adder
 }
 

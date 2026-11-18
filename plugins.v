@@ -913,7 +913,7 @@ fn visit_hasattr(args []string) (string, bool) {
 // and interfaces, and a V parameter of such a type cannot hold anything else,
 // so the answer is a constant. As in Python, a bool is also an int.
 fn isinstance_of_known_type(node Call) ?string {
-	if node.subject_class == '' || node.args.len != 2 {
+	if node.isinstance_dynamic_types || node.subject_class == '' || node.args.len != 2 {
 		return none
 	}
 	classes := match node.args[1] {
@@ -941,7 +941,15 @@ fn isinstance_of_known_type(node Call) ?string {
 }
 
 // Handle isinstance() call
-fn visit_isinstance(args []string) (string, bool) {
+fn visit_isinstance(mut t VTranspiler, node Call, args []string) (string, bool) {
+	if node.args.len != 2 { return 'py2v_unsupported_isinstance(${args.join(', ')})', true }
+	type_expr := node.args[1]
+	if type_expr is Tuple && type_expr.elts.len == 0 {
+		return '${t.runtime_helper('isinstance_empty')}(${args[0]})', true
+	}
+	if node.isinstance_dynamic_types || !isinstance_static_types(type_expr) {
+		return 'py2v_unsupported_dynamic_isinstance(${args.join(', ')})', true
+	}
 	types_arg := args[1]
 	// Handle tuple of types: isinstance(x, (A, B)) → x is A || x is B
 	// visit_tuple renders Python tuples as V arrays: [A, B, ...]
@@ -961,6 +969,17 @@ fn visit_isinstance(args []string) (string, bool) {
 	// V `is` checks the static (sum-type) variant; inherited types need
 	// manual adaptation if the hierarchy is not a V sum type.
 	return '${args[0]} is ${args[1]}', true
+}
+
+fn isinstance_static_types(expr Expr) bool {
+	return match expr {
+		Name { true }
+		Attribute {
+			expr.value is Name || (expr.value is Attribute && isinstance_static_types(expr.value))
+		}
+		Tuple { expr.elts.all(it is Name || (it is Attribute && isinstance_static_types(it))) }
+		else { false }
+	}
 }
 
 // Handle list() call
@@ -996,8 +1015,23 @@ fn visit_dict_fn(args []string) (string, bool) {
 }
 
 // Handle divmod() call
-fn visit_divmod(args []string) (string, bool) {
-	return '(${paren_left(args[0], 5)} / ${paren_right(args[1], 5)}, ${paren_left(args[0], 5)} % ${paren_right(args[1], 5)})', true
+fn visit_divmod(mut t VTranspiler, node Call, args []string) (string, bool) {
+	if args.len != 2 { return '', false }
+	left_raw := t.division_operand_type(node.args[0], t.infer_expr_type(node.args[0]))
+	right_raw := t.division_operand_type(node.args[1], t.infer_expr_type(node.args[1]))
+	// A unary float retains the frontend annotation `float`, whereas a
+	// literal constant is inferred as `f64`. Both select a native float pair.
+	left := if left_raw == 'float' { 'f64' } else { left_raw }
+	right := if right_raw == 'float' { 'f64' } else { right_raw }
+	kind := if is_v_int_type(left) && is_v_int_type(right) {
+		'divmod_int'
+	} else if left in ['int', 'f64', 'f32'] && right in ['int', 'f64', 'f32'] {
+		'divmod_float'
+	} else {
+		'divmod_value'
+	}
+	t.add_using('pyrt')
+	return '${t.runtime_helper(kind)}(${args.join(', ')})', true
 }
 
 // Handle ord() call - get unicode code point of character
@@ -1235,7 +1269,7 @@ fn dispatch_builtin_impl(mut t VTranspiler, fname string, node Call, args []stri
 			if known := isinstance_of_known_type(node) {
 				return DispatchResult{known, true, ''}
 			}
-			code, handled := visit_isinstance(args)
+			code, handled := visit_isinstance(mut t, node, args)
 			return DispatchResult{code, handled, ''}
 		}
 		'list' {
@@ -1274,7 +1308,7 @@ fn dispatch_builtin_impl(mut t VTranspiler, fname string, node Call, args []stri
 			return DispatchResult{code, handled, ''}
 		}
 		'divmod' {
-			code, handled := visit_divmod(args)
+			code, handled := visit_divmod(mut t, node, args)
 			return DispatchResult{code, handled, ''}
 		}
 		'sys.exit' {

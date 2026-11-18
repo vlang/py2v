@@ -303,7 +303,17 @@ fn parse_expr(m map[string]json2.Any) ?&Expr {
 	}
 }
 
-// Parse FunctionDef
+// capture_types_field reads binding names as values, never json2 discriminator keys.
+fn capture_types_field(m map[string]json2.Any) map[string]string {
+	mut result := map[string]string{}
+	for entry in (m['capture_types'] or { json2.Any([]json2.Any{}) }).as_array() {
+		record := entry.as_map()
+		name := (record['name'] or { json2.Any('') }).str()
+		result[name] = (record['annotation'] or { json2.Any('') }).str()
+	}
+	return result
+}
+
 fn parse_function_def(m map[string]json2.Any) FunctionDef {
 	mut body := []Stmt{}
 	if raw_body := m['body'] {
@@ -328,6 +338,12 @@ fn parse_function_def(m map[string]json2.Any) FunctionDef {
 		}
 	}
 	return FunctionDef{
+		is_nested:              (m['is_nested'] or { json2.Any(false) }).bool()
+		is_recursive:           (m['is_recursive'] or { json2.Any(false) }).bool()
+		capture_names:          (m['capture_names'] or { json2.Any([]json2.Any{}) }).as_array().map(it.str())
+		capture_mutable:        (m['capture_mutable'] or { json2.Any([]json2.Any{}) }).as_array().map(it.str())
+		capture_refusal:        (m['capture_refusal'] or { json2.Any('') }).str()
+		capture_types:          capture_types_field(m)
 		raises:                 (m['raises'] or { json2.Any(false) }).bool()
 		name:                   m['name'] or { json2.Any('') }.str()
 		args:                   parse_arguments(m['args'] or { json2.Any(map[string]json2.Any{}) })
@@ -352,6 +368,12 @@ fn parse_function_def(m map[string]json2.Any) FunctionDef {
 fn parse_async_function_def(m map[string]json2.Any) AsyncFunctionDef {
 	fd := parse_function_def(m)
 	return AsyncFunctionDef{
+		is_nested:              fd.is_nested
+		is_recursive:           fd.is_recursive
+		capture_names:          fd.capture_names
+		capture_mutable:        fd.capture_mutable
+		capture_refusal:        fd.capture_refusal
+		capture_types:          fd.capture_types
 		name:                   fd.name
 		args:                   fd.args
 		body:                   fd.body
@@ -1198,25 +1220,27 @@ fn parse_call(m map[string]json2.Any) Call {
 		}
 	}
 	return Call{
-		subject_class: (m['subject_class'] or { json2.Any('') }).str()
-		api:           (m['api'] or { json2.Any('') }).str()
-		propagate:     (m['propagate'] or { json2.Any(false) }).bool()
-		guard:         (m['guard'] or { json2.Any(0) }).int()
-		func:          parse_expr(map_field(m, 'func')) or {
+		isinstance_dynamic_types: (m['isinstance_dynamic_types'] or { json2.Any(false) }).bool()
+		subject_class:            (m['subject_class'] or { json2.Any('') }).str()
+		api:                      (m['api'] or { json2.Any('') }).str()
+		propagate:                (m['propagate'] or { json2.Any(false) }).bool()
+		guard:                    (m['guard'] or { json2.Any(0) }).int()
+		func:                     parse_expr(map_field(m, 'func')) or {
 			&Expr(Constant{
 				value: NoneValue{}
 			})
 		}
-		args:          args
-		keywords:      keywords
-		loc:           parse_location(m)
-		v_annotation:  parse_type_annotation(m) or { '' }
+		args:                     args
+		keywords:                 keywords
+		loc:                      parse_location(m)
+		v_annotation:             parse_type_annotation(m) or { '' }
 	}
 }
 
 // Parse Attribute
 fn parse_attribute(m map[string]json2.Any) Attribute {
 	return Attribute{
+		bound_append: (m['bound_append'] or { json2.Any('') }).str()
 		value:        parse_expr(map_field(m, 'value')) or {
 			&Expr(Constant{
 				value: NoneValue{}
@@ -1507,20 +1531,22 @@ fn parse_await(m map[string]json2.Any) Await {
 // Parse Yield
 fn parse_yield(m map[string]json2.Any) Yield {
 	return Yield{
-		value: parse_optional_expr(m['value'] or { json2.Any(json2.Null{}) })
-		loc:   parse_location(m)
+		used_as_value: m['used_as_value'] or { json2.Any(false) }.bool()
+		value:         parse_optional_expr(m['value'] or { json2.Any(json2.Null{}) })
+		loc:           parse_location(m)
 	}
 }
 
 // Parse YieldFrom
 fn parse_yield_from(m map[string]json2.Any) YieldFrom {
 	return YieldFrom{
-		value: parse_expr(map_field(m, 'value')) or {
+		used_as_value: m['used_as_value'] or { json2.Any(false) }.bool()
+		value:         parse_expr(map_field(m, 'value')) or {
 			&Expr(Constant{
 				value: NoneValue{}
 			})
 		}
-		loc:   parse_location(m)
+		loc:           parse_location(m)
 	}
 }
 

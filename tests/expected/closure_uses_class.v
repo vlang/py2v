@@ -48,10 +48,14 @@ pub fn py2v_new_token(text string, quoted bool) Token {
 fn tokenize(src string) []Token {
 	mut tokens := []Token{}
 	mut cur := ''
-	end_token := fn [mut cur, tokens] () Any {
-		if cur != '' {
-			tokens << py2v_new_token(cur, false)
-			cur = ''
+	py2v_capture1 := &cur
+	py2v_capture2 := &tokens
+	end_token := fn [py2v_capture1, py2v_capture2] () {
+		if (*py2v_capture1) != '' {
+			(*py2v_capture2) << py2v_new_token((*py2v_capture1), false)
+			unsafe {
+				(*py2v_capture1) = ''
+			}
 		}
 	}
 	for ch in src.split('') {

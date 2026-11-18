@@ -1,7 +1,7 @@
 module main
 
 fn written_initializer(node ClassDef) ?FunctionDef {
-	for stmt in node.body {
+	for stmt in node.body.reverse() {
 		if stmt is FunctionDef && stmt.name == '__init__' {
 			return stmt
 		}

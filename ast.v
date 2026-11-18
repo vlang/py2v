@@ -268,6 +268,8 @@ pub mut:
 	// parameter of the enclosing function annotated with a builtin class a V
 	// type stands for; it names that class (int, float, str, bool, list, dict).
 	subject_class string
+	// The isinstance type argument is a runtime binding, not a static V type name.
+	isinstance_dynamic_types bool
 	// api is the Python name of the runtime library entry this call resolved to
 	// (`datetime.datetime.now`), or empty.
 	api string
@@ -287,6 +289,8 @@ pub mut:
 
 pub struct Attribute {
 pub mut:
+	// A first-class list append planned by the frontend, or a refusal reason.
+	bound_append string
 	value        &Expr
 	attr         string
 	ctx          ExprContext
@@ -409,14 +413,16 @@ pub mut:
 
 pub struct Yield {
 pub mut:
-	value ?&Expr
-	loc   Location
+	value         ?&Expr
+	loc           Location
+	used_as_value bool
 }
 
 pub struct YieldFrom {
 pub mut:
-	value &Expr
-	loc   Location
+	value         &Expr
+	loc           Location
+	used_as_value bool
 }
 
 pub struct FormattedValue {
@@ -454,15 +460,21 @@ pub mut:
 // Statements
 pub struct FunctionDef {
 pub mut:
-	name           string
-	args           Arguments
-	body           []Stmt
-	decorator_list []Expr
-	returns        ?&Expr
-	type_comment   ?string
-	loc            Location
-	is_generator   bool
-	is_void        bool
+	is_nested       bool
+	capture_names   []string
+	capture_mutable []string
+	capture_refusal string
+	capture_types   map[string]string // JSON uses name/annotation records for arbitrary Python names.
+	is_recursive    bool
+	name            string
+	args            Arguments
+	body            []Stmt
+	decorator_list  []Expr
+	returns         ?&Expr
+	type_comment    ?string
+	loc             Location
+	is_generator    bool
+	is_void         bool
 	// raises: the function returns a V result (`!T`); see the frontend's error plan.
 	raises                 bool
 	mutable_vars           []string
@@ -476,6 +488,12 @@ pub mut:
 
 pub struct AsyncFunctionDef {
 pub mut:
+	is_nested              bool
+	capture_names          []string
+	capture_mutable        []string
+	capture_refusal        string
+	capture_types          map[string]string // JSON uses name/annotation records for arbitrary Python names.
+	is_recursive           bool
 	name                   string
 	args                   Arguments
 	body                   []Stmt

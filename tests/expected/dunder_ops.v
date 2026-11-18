@@ -35,7 +35,7 @@ fn (self Vector) len() int {
 	return 2
 }
 
-fn (self Vector) - () Vector {
+fn (self Vector) py_neg() Vector {
 	return (fn [self] () Vector {
 		py2v_init_arg3 := -self.x
 		py2v_init_arg4 := -self.y

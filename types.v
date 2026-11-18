@@ -22,6 +22,8 @@ pub const v_type_map = {
 	'set':      '[]Any'
 	'Set':      '[]Any'
 	'object':   'Any'
+	'type':     'Any'
+	'Type':     'Any'
 	'float':    'f64'
 	'i16':      'i16'
 	'i32':      'int'
@@ -242,6 +244,14 @@ pub fn map_type_except(typename string, classes []string) string {
 	if classes.any(typename.starts_with('${it}[')) {
 		return typename
 	}
+	for wrapper in ['ClassVar[', 'Final['] {
+		if typename.starts_with(wrapper) && typename.ends_with(']') {
+			return map_type_except(typename[wrapper.len..typename.len - 1], classes)
+		}
+	}
+	if typename.starts_with('type[') || typename.starts_with('Type[') {
+		return 'Any'
+	}
 	// Check if it's a container type (uppercase or PEP 585 lowercase)
 	if typename.starts_with('List[') || typename.starts_with('list[')
 		|| typename.starts_with('Sequence[') || typename.starts_with('Iterable[')
@@ -333,6 +343,14 @@ pub fn escape_keyword(name string) string {
 // ordinary named methods rather than operators. V forbids a leading underscore
 // on method names, so `__init__` becomes `init`.
 pub const python_dunder_method_names = {
+	'__floordiv__':  'py_floor_div'
+	'__ne__':        'py_ne'
+	'__le__':        'py_le'
+	'__gt__':        'py_gt'
+	'__ge__':        'py_ge'
+	'__neg__':       'py_neg'
+	'__pos__':       'py_pos'
+	'__invert__':    'py_invert'
 	'__init__':      'init'
 	'__post_init__': 'post_init'
 	'__enter__':     'enter'

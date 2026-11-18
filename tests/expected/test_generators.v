@@ -23,14 +23,13 @@ fn generator_with_args(a int, b int, ch chan i64) {
 	}
 }
 
-fn inner(ch chan int) {
-	defer { ch.close() }
-	ch <- 1
-	ch <- 2
-}
-
 fn generator_with_yield_from(ch chan int) {
 	defer { ch.close() }
+	inner := fn (ch chan int) {
+		defer { ch.close() }
+		ch <- 1
+		ch <- 2
+	}
 	py2v_gen1 := inner()
 	// yield from py2v_gen1
 	for {

@@ -29,6 +29,7 @@ import sys
 import os
 import unicodedata
 from dataclasses import dataclass, field
+from string import Formatter
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 import infer
@@ -232,6 +233,11 @@ class ScopeTracker(ast.NodeVisitor):
 
     def visit_Delete(self, node: ast.Delete):
         """Process del statement - don't mark as mutable since @[translated] relaxes this."""
+        self.generic_visit(node)
+
+    def visit_Attribute(self, node: ast.Attribute):
+        if getattr(node, "_bound_append", "") == "list":
+            self.mutable.add(node.value.id)
         self.generic_visit(node)
 
     def _check_subscript_assign(self, target: ast.AST):
@@ -1265,30 +1271,155 @@ def _detect_decorator_kind(decorator_list) -> str:
     return ""
 
 
+def _plan_overload_definitions(tree):
+    """Retain typing overload bodies under distinct, non-operator names.
+
+    Python replaces each @overload definition with a non-callable stub. Only the
+    concrete implementation owns the public method or operator spelling in V.
+    """
+    used = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)}
+    used.update(n.name for n in ast.walk(tree)
+                if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)))
+    serial = 0
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if not any((isinstance(d, ast.Name) and d.id == "overload")
+                   or (isinstance(d, ast.Attribute) and d.attr == "overload")
+                   for d in node.decorator_list):
+            continue
+        while True:
+            serial += 1
+            name = f"py2v_overload_{serial}_{node.name.strip('_')}"
+            if name not in used:
+                break
+        used.add(name)
+        node._overload_name = name
+
+
+def _refuse_unsupported_format_fields(tree):
+    """Do not paste Python conversions or nested specs into V interpolation.
+
+    Keep the template and every argument in the established unresolved-call
+    refusal. The old formatter treated !r as an identifier and a nested closing
+    brace as the end of the field, corrupting the remainder of the V function.
+    """
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "format" and isinstance(node.func.value, ast.Constant)
+                and isinstance(node.func.value.value, str)):
+            continue
+        try:
+            fields = list(Formatter().parse(node.func.value.value))
+            unsupported = any(conversion is not None or any(c in spec for c in "{}#")
+                              for _, field, spec, conversion in fields if field is not None)
+        except ValueError:
+            unsupported = True
+        if not unsupported:
+            continue
+        arguments = [node.func.value] + node.args
+        for keyword in node.keywords:
+            arguments += [ast.Constant(value=keyword.arg or "**"), keyword.value]
+        node.func = ast.copy_location(ast.Name(id="py2v_unsupported_str_format", ctx=ast.Load()),
+                                      node.func)
+        node.args = arguments
+        node.keywords = []
+
+
 # Mapping of Python dunder names to their V operator/method equivalents.
 _DUNDER_V_OP: Dict[str, str] = {
     "__add__": "+",
     "__sub__": "-",
     "__mul__": "*",
     "__truediv__": "/",
-    "__floordiv__": "/",
+    "__floordiv__": "py_floor_div",
     "__mod__": "%",
     "__eq__": "==",
-    "__ne__": "!=",
+    "__ne__": "py_ne",
     "__lt__": "<",
-    "__le__": "<=",
-    "__gt__": ">",
-    "__ge__": ">=",
+    "__le__": "py_le",
+    "__gt__": "py_gt",
+    "__ge__": "py_ge",
     "__str__": "str",
     "__repr__": "repr",
     "__len__": "len",
     "__getitem__": "index",
     "__setitem__": "index_set",
     "__contains__": "contains",
-    "__neg__": "-",
-    "__pos__": "+",
-    "__invert__": "~",
+    "__neg__": "py_neg",
+    "__pos__": "py_pos",
+    "__invert__": "py_invert",
 }
+
+
+def _lower_named_dunder_operations(tree, facts):
+    """Call Python's own hooks where V cannot overload the operator.
+
+    V derives !=, <=, > and >= from == and <; Python permits independent
+    implementations. Unary operators and floor division also need named methods.
+    Only a receiver resolved to a class in this file selects one of these hooks.
+    """
+    if facts is None:
+        return
+    classes = {n.name: n for n in ast.walk(tree) if isinstance(n, ast.ClassDef)}
+    if not classes:
+        return
+
+    def defines(name, method, seen=None):
+        seen = set() if seen is None else seen
+        cls = classes.get(name)
+        if cls is None or name in seen:
+            return False
+        seen.add(name)
+        return (any(isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+                    and n.name == method for n in cls.body)
+                or any(isinstance(b, ast.Name) and defines(b.id, method, seen)
+                       for b in cls.bases))
+
+    def call_hook(node, receiver, method, args):
+        typ = getattr(receiver, "_assumed", getattr(receiver, "_type", None))
+        info = facts.types[typ] if typ is not None else {}
+        if info.get("k") != "instance" or not defines(info.get("name"), method):
+            return node
+        call = ast.Call(func=ast.Attribute(value=receiver, attr=method, ctx=ast.Load()),
+                        args=args, keywords=[])
+        return ast.copy_location(call, node)
+
+    class Lower(ast.NodeTransformer):
+        def visit_UnaryOp(self, node):
+            self.generic_visit(node)
+            method = {ast.USub: "__neg__", ast.UAdd: "__pos__",
+                      ast.Invert: "__invert__"}.get(type(node.op))
+            return call_hook(node, node.operand, method, []) if method else node
+
+        def visit_BinOp(self, node):
+            self.generic_visit(node)
+            if isinstance(node.op, ast.FloorDiv):
+                return call_hook(node, node.left, "__floordiv__", [node.right])
+            return node
+
+        def visit_Compare(self, node):
+            self.generic_visit(node)
+            methods = {ast.NotEq: "__ne__", ast.LtE: "__le__", ast.Gt: "__gt__",
+                       ast.GtE: "__ge__"}
+            if len(node.ops) != 1:
+                operands = [node.left] + node.comparators
+                for receiver, op in zip(operands, node.ops):
+                    method = methods.get(type(op))
+                    if method and call_hook(node, receiver, method, []) is not node:
+                        # A chain must retain its once-only operands and lazy comparisons.
+                        # Do not silently substitute V's derived ordering for Python hooks.
+                        labels = ast.List(elts=[ast.Constant(value=type(op).__name__)
+                                                for op in node.ops], ctx=ast.Load())
+                        call = ast.Call(func=ast.Name(id="py2v_unsupported_comparison_chain",
+                                                     ctx=ast.Load()),
+                                        args=[labels] + operands, keywords=[])
+                        return ast.copy_location(call, node)
+                return node
+            method = methods.get(type(node.ops[0]))
+            return call_hook(node, node.left, method, node.comparators) if method else node
+
+    Lower().visit(tree)
 
 
 def _dunder_to_v_op(name: str) -> str:
@@ -1548,7 +1679,7 @@ def _initializer_field_types(node: ast.ClassDef, declarations: Dict[str, str],
     Forwarding initializers retain their old field types, including Any, so an
     existing successful program keeps the same observable representation.
     """
-    initializer = next((method for method in node.body
+    initializer = next((method for method in reversed(node.body)
                         if isinstance(method, (ast.FunctionDef, ast.AsyncFunctionDef))
                         and method.name == "__init__"), None)
     if initializer is None or _forwarding_initializer(initializer):
@@ -1898,12 +2029,24 @@ def _node_to_dict(node: ast.AST, mutable_vars: Set[str],
 
     elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
         result["name"] = node.name
+        result["is_nested"] = getattr(node, "_is_nested", False)
+        result["is_recursive"] = getattr(node, "_is_recursive", False)
+        result["capture_names"] = getattr(node, "_capture_names", [])
+        result["capture_mutable"] = getattr(node, "_capture_mutable", [])
+        # json2.Any treats a dictionary key named `_type` as a discriminator.
+        # Python binding names are data, so encode them as record values.
+        result["capture_types"] = [
+            {"name": name, "annotation": annotation}
+            for name, annotation in sorted(getattr(node, "_capture_types", {}).items())
+        ]
+        result["capture_refusal"] = getattr(node, "_capture_refusal", "")
         result["condition_walrus_names"] = getattr(node, "_condition_walrus_names", [])
 
         # Compute mutable vars within this function FIRST
         tracker = ScopeTracker()
         tracker.visit(node)
-        func_mutable = tracker.mutable | ctx.rebound_parameters(node)
+        func_mutable = (tracker.mutable | ctx.rebound_parameters(node)
+                        | set(getattr(node, "_captured_mutable", [])))
         result["mutable_vars"] = sorted(func_mutable)
 
         # Build a local var_annotation map including parameter annotations so
@@ -1990,7 +2133,7 @@ def _node_to_dict(node: ast.AST, mutable_vars: Set[str],
         result["is_class_method"] = getattr(node, "_is_class_method", False)
         result["class_name"] = getattr(node, "_class_name", "")
         result["decorator_kind"] = _detect_decorator_kind(node.decorator_list)
-        result["dunder_op"] = _dunder_to_v_op(node.name)
+        result["dunder_op"] = getattr(node, "_overload_name", _dunder_to_v_op(node.name))
         inferred_ret = _infer_return_type(node)
         if inferred_ret:
             result["v_annotation"] = inferred_ret
@@ -2233,9 +2376,11 @@ def _node_to_dict(node: ast.AST, mutable_vars: Set[str],
 
     elif isinstance(node, ast.Yield):
         result["value"] = _node_to_dict(node.value, mutable_vars, redefined, ctx) if node.value else None
+        result["used_as_value"] = getattr(node, "_used_as_value", False)
 
     elif isinstance(node, ast.YieldFrom):
         result["value"] = _node_to_dict(node.value, mutable_vars, redefined, ctx)
+        result["used_as_value"] = getattr(node, "_used_as_value", False)
 
     elif isinstance(node, ast.Compare):
         result["left"] = _node_to_dict(node.left, mutable_vars, redefined, ctx)
@@ -2248,6 +2393,8 @@ def _node_to_dict(node: ast.AST, mutable_vars: Set[str],
         result["keywords"] = [_keyword_to_dict(kw, mutable_vars, redefined, ctx) for kw in node.keywords]
         if getattr(node, "_subject_class", ""):
             result["subject_class"] = node._subject_class
+        if getattr(node, "_isinstance_dynamic_types", False):
+            result["isinstance_dynamic_types"] = True
         if getattr(node, "_api", ""):
             result["api"] = node._api
         if getattr(node, "_propagate", False):
@@ -2290,6 +2437,7 @@ def _node_to_dict(node: ast.AST, mutable_vars: Set[str],
     elif isinstance(node, ast.Attribute):
         result["value"] = _node_to_dict(node.value, mutable_vars, redefined, ctx)
         result["attr"] = node.attr
+        result["bound_append"] = getattr(node, "_bound_append", "")
         result["ctx"] = {"node_type": type(node.ctx).__name__}
         if getattr(node, "_api", ""):
             result["api"] = node._api
@@ -4280,11 +4428,14 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
 
         def visit_Subscript(self, node: ast.Subscript) -> ast.AST:
             self.generic_visit(node)
+            if (isinstance(node.ctx, ast.Load) and isinstance(node.slice, ast.Tuple)
+                    and any(isinstance(axis, ast.Slice) for axis in node.slice.elts)):
+                return node  # keep the backend's explicit multi-axis refusal
             if (isinstance(node.ctx, ast.Load) and dynamic(node.value)
                     and not isinstance(node.slice, ast.Slice)):
                 return _runtime_call("item_at", [node.value, boxed(node.slice)], node)
             if (isinstance(node.ctx, ast.Load) and dynamic(node.value)
-                    and node.slice.step is None):
+                    and isinstance(node.slice, ast.Slice) and node.slice.step is None):
                 nothing = ast.copy_location(ast.Constant(value=None), node)
                 bounds = [_runtime_call("box", [bound if bound is not None else nothing], node)
                           for bound in (node.slice.lower, node.slice.upper)]
@@ -4295,6 +4446,8 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
             # `v[key] = item` where v is a value of unknown type
             target = node.targets[0] if len(node.targets) == 1 else None
             stores = (isinstance(target, ast.Subscript) and not isinstance(target.slice, ast.Slice)
+                      and not (isinstance(target.slice, ast.Tuple)
+                               and any(isinstance(axis, ast.Slice) for axis in target.slice.elts))
                       and dynamic(target.value))
             self.generic_visit(node)
             if id(node) in unpack_nodes:
@@ -5929,6 +6082,38 @@ def _mark_runtime_api(tree: ast.Module, table: Optional[symbols.SymbolTable]) ->
                 node._dynamic = True
 
 
+def _mark_dynamic_isinstance_types(tree: ast.Module, table: Optional[symbols.SymbolTable]) -> None:
+    """Keep runtime type objects out of V's static `is Type` position.
+
+    A parameter or captured value remains a runtime object even when its Python
+    name starts with a capital letter. Attributes of such values are dynamic too.
+    Class declarations, unchanged imports, and unresolved builtin names retain
+    the existing static-type lowering.
+    """
+    if table is None:
+        return
+
+    def static_type(node: ast.expr) -> bool:
+        if isinstance(node, ast.Name):
+            bid = getattr(node, "_binding", None)
+            if bid is None:
+                return True
+            binding = table.bindings[bid]
+            return binding.kind in ("class", "import") and not binding.rebound
+        if isinstance(node, ast.Attribute):
+            return static_type(node.value)
+        if isinstance(node, ast.Tuple):
+            return all(isinstance(part, (ast.Name, ast.Attribute)) and static_type(part)
+                       for part in node.elts)
+        return False
+
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                and node.func.id == "isinstance" and len(node.args) == 2
+                and getattr(node.func, "_binding", None) is None):
+            node._isinstance_dynamic_types = not static_type(node.args[1])
+
+
 def _mark_isinstance_inferred(tree: ast.Module, table: Optional[symbols.SymbolTable],
                               facts: Optional[infer.TypeFacts]) -> None:
     """Set `_subject_class` on `isinstance(name, ...)` when every value the code gives the
@@ -6637,12 +6822,140 @@ def _declare_inferred_containers(tree: ast.Module, table: Optional[symbols.Symbo
     return any_lists
 
 
+def _plan_closures(tree, table, facts):
+    """Keep nested definitions at their execution site with lexical captures.
+
+    Symbol identities exclude module names, builtins, inner locals, and class types.
+    Mutably captured bindings remain mutable in their owning function as well.
+    """
+    if table is None or facts is None:
+        return
+    binding_facts = {b["id"]: b for b in facts.bindings}
+    for fn in ast.walk(tree):
+        if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        scope_id = getattr(fn, "_scope_id", None)
+        if scope_id is None:
+            continue
+        parent = table.scopes[scope_id].parent
+        if parent is None or table.scopes[parent].kind not in ("function", "lambda"):
+            continue
+        fn._is_nested = True
+        ancestors = set()
+        while parent is not None:
+            if table.scopes[parent].kind in ("function", "lambda"):
+                ancestors.add(parent)
+            parent = table.scopes[parent].parent
+        captures = {}
+        # Defaults, decorators, and annotations are evaluated in the enclosing
+        # scope at definition time, not by the closure when it is called.
+        for statement in fn.body:
+            for part in ast.walk(statement):
+                if not isinstance(part, ast.Name):
+                    continue
+                bid = getattr(part, "_binding", None)
+                if bid is None:
+                    continue
+                binding = table.bindings[bid]
+                if binding.scope not in ancestors or binding.kind in ("class", "import"):
+                    continue
+                if bid == getattr(fn, "_binding", None):
+                    fn._is_recursive = True
+                    continue
+                captures[binding.name] = binding
+        fn._capture_names = sorted(captures)
+        fn._capture_mutable = []
+        fn._capture_types = {}
+        for name, binding in captures.items():
+            info = binding_facts.get(binding.id, {})
+            typ = next((info.get(key) for key in ("declared", "assumed", "inferred")
+                        if info.get(key) is not None), None)
+            if typ is not None:
+                fn._capture_types[name] = _annotation_for_type(facts.types, typ) or "Any"
+            if binding.rebound and (binding.kind == "function"
+                                    or typ is not None and facts.types[typ]["k"] == "callable"):
+                fn._capture_refusal = "rebound_function"
+            if binding.rebound or binding.declared_nonlocal:
+                fn._capture_mutable.append(name)
+                owner = table.scopes[binding.scope]._node
+                if owner is not None:
+                    owner._captured_mutable = sorted(set(
+                        getattr(owner, "_captured_mutable", [])) | {name})
+
+
+def _plan_bound_appends(tree, table, facts):
+    """A saved list.append needs a closure, not the call-only << spelling.
+
+    V captures a mutable array binding. It cannot capture a Python list's identity
+    across rebinding of that name, so that case must remain an explicit refusal.
+    Unknown receivers keep their ordinary bound method, including user classes.
+    """
+    callees = {id(n.func) for n in ast.walk(tree) if isinstance(n, ast.Call)}
+    if facts is None or table is None:
+        return
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Attribute) and node.attr == "append"
+                and isinstance(node.ctx, ast.Load) and id(node) not in callees):
+            continue
+        typ = getattr(node.value, "_type", None)
+        if typ is None or facts.types[typ]["k"] != "list":
+            continue
+        binding_id = getattr(node.value, "_binding", None)
+        if (isinstance(node.value, ast.Name) and binding_id is not None
+                and not table.bindings[binding_id].rebound):
+            node._bound_append = "list"
+        else:
+            node._bound_append = "receiver_identity"
+
+
+def _encode_local_identifiers(tree, table):
+    """Give non-ASCII and underscore-digit locals collision-free V spellings.
+
+    Work on lexical binding identities, not text, so strings and attributes keep
+    their Python values. Exported names, parameters, and captured bindings are
+    outside this local-only rewrite.
+    """
+    if table is None:
+        return False
+    used = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)}
+    renamed = {}
+    for binding in table.bindings:
+        name = binding.name
+        if (table.scopes[binding.scope].kind != "function" or binding.is_param
+                or binding.captured or binding.kind in ("class", "function", "import")):
+            continue
+        if name.isascii() and not name.lstrip("_")[:1].isdigit():
+            continue
+        candidate = "py2v_ident_" + "_".join(f"{ord(c):x}" for c in name)
+        while candidate in used:
+            candidate += "_"
+        used.add(candidate)
+        renamed[binding.id] = candidate
+    if not renamed:
+        return False
+    by_scope = {}
+    for binding in table.bindings:
+        if binding.id in renamed:
+            by_scope.setdefault(binding.scope, {})[binding.name] = renamed[binding.id]
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and getattr(node, "_binding", None) in renamed:
+            node.id = renamed[node._binding]
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            scope = getattr(node, "_scope_id", None)
+            names = getattr(node, "_condition_walrus_names", [])
+            replacements = by_scope.get(scope, {})
+            node._condition_walrus_names = [replacements.get(n, n) for n in names]
+    return bool(renamed)
+
+
 def process_file(file_path: str, project: Optional[ProjectFacts] = None) -> str:
     """Parse, analyze, and return enriched JSON AST."""
     with open(file_path, "r", encoding="utf-8") as f:
         source = f.read()
 
     tree = ast.parse(source, filename=file_path)
+    _plan_overload_definitions(tree)
+    _refuse_unsupported_format_fields(tree)
 
     # Mark the walrus `if` tests the transpiler may hoist, before the
     # `__main__` guard becomes a function, so its block counts as module level
@@ -6665,11 +6978,17 @@ def process_file(file_path: str, project: Optional[ProjectFacts] = None) -> str:
     table = _resolve_bindings(tree)
     _mark_math_members(tree, table)
     _unquote_annotations(tree, table)
+    if _encode_local_identifiers(tree, table):
+        table = _resolve_bindings(tree)
+    _mark_dynamic_isinstance_types(tree, table)
     _mark_runtime_api(tree, table)
     _lower_exit_statements(tree, table)
     _erase_typing_casts(tree, table)
     _expand_bool_calls(tree)
     facts = _infer_types(tree, table, project)
+    _plan_closures(tree, table, facts)
+    _lower_named_dunder_operations(tree, facts)
+    _plan_bound_appends(tree, table, facts)
     _loop_comprehensions(tree, facts)
     any_lists = _declare_inferred_containers(tree, table, facts)
     _declare_block_locals(tree, table, facts)
@@ -6688,6 +7007,11 @@ def process_file(file_path: str, project: Optional[ProjectFacts] = None) -> str:
     _mark_module_constants(tree, table)
     _plan_error_propagation(tree, table)
     _drop_type_checking_blocks(tree)
+
+    for parent in ast.walk(tree):
+        for child in ast.iter_child_nodes(parent):
+            if isinstance(child, (ast.Yield, ast.YieldFrom)):
+                child._used_as_value = not isinstance(parent, ast.Expr)
 
     # Detect class methods
     _detect_class_methods(tree)
