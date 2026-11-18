@@ -29,7 +29,7 @@ fn (a Any) < (b Any) bool {
 }
 
 fn report(value Any) {
-	println(if pyrt.truth(value) { 'True' } else { 'False' })
+	println(if !!pyrt.truth(value) { 'True' } else { 'False' })
 	println(if !pyrt.truth(value) { 'True' } else { 'False' })
 }
 

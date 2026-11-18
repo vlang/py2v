@@ -2758,6 +2758,21 @@ def _truth_kind(node: ast.expr, facts: infer.TypeFacts) -> str:
     return facts.types[type_id]["k"] if type_id is not None else "unknown"
 
 
+def _expand_bool_calls(tree: ast.Module) -> None:
+    """The builtin bool(x) is exactly not not x, including its one truth evaluation."""
+    class Lower(ast.NodeTransformer):
+        def visit_Call(self, node: ast.Call) -> ast.AST:
+            self.generic_visit(node)
+            if (isinstance(node.func, ast.Name) and node.func.id == "bool"
+                    and getattr(node.func, "_binding", None) is None
+                    and len(node.args) == 1 and not node.keywords
+                    and not isinstance(node.args[0], ast.Starred)):
+                inner = ast.copy_location(ast.UnaryOp(op=ast.Not(), operand=node.args[0]), node)
+                return ast.copy_location(ast.UnaryOp(op=ast.Not(), operand=inner), node)
+            return node
+    Lower().visit(tree)
+
+
 def _lower_optional_text_calls(tree: ast.Module, table: Optional[symbols.SymbolTable],
                                facts: Optional[infer.TypeFacts]) -> None:
     """A runtime call that gives text or None (`os.environ.get(name)`), used where Python
@@ -6555,6 +6570,7 @@ def process_file(file_path: str, project: Optional[ProjectFacts] = None) -> str:
     _mark_runtime_api(tree, table)
     _lower_exit_statements(tree, table)
     _erase_typing_casts(tree, table)
+    _expand_bool_calls(tree)
     facts = _infer_types(tree, table, project)
     _loop_comprehensions(tree, facts)
     any_lists = _declare_inferred_containers(tree, table, facts)

@@ -9,10 +9,10 @@ fn main_func() {
 	println((42).str())
 	println((3.14).str())
 	println(true.str())
-	println(if (1 != 0) { 'True' } else { 'False' })
-	println(if (0 != 0) { 'True' } else { 'False' })
-	println(if ('hello'.len > 0) { 'True' } else { 'False' })
-	println(if (''.len > 0) { 'True' } else { 'False' })
+	println(if !!(1 != 0) { 'True' } else { 'False' })
+	println(if !!(0 != 0) { 'True' } else { 'False' })
+	println(if !!('hello' != '') { 'True' } else { 'False' })
+	println(if !!('' != '') { 'True' } else { 'False' })
 }
 
 fn main() {
