@@ -13,6 +13,8 @@ mut:
 	comp_depth int
 	// Above zero while emitting the body of a `defer` block.
 	defer_depth int
+	// An uncaught SystemExit must execute pending finally bodies before exiting.
+	exit_finally_bodies [][]Stmt
 	// Set when an f-string field calls the py2v_format helper.
 	uses_py2v_format bool
 	// Maps and state tracked during transpilation
@@ -441,7 +443,11 @@ pub fn (mut t VTranspiler) visit_module(node Module) string {
 				trimmed := s.trim_space()
 				if trimmed.starts_with('type ') || trimmed.starts_with('const ')
 					|| trimmed.starts_with('enum ') {
-					type_decls << s
+					type_decls << if t.emit_pub && trimmed.starts_with('const ') {
+						'pub ' + s
+					} else {
+						s
+					}
 				} else if trimmed.starts_with('pub struct ') || trimmed.starts_with('struct ') {
 					struct_decls << s
 				} else if stmt is TypeAlias {
@@ -450,7 +456,7 @@ pub fn (mut t VTranspiler) visit_module(node Module) string {
 					// Import comments and similar go before fn main()
 					comment_lines << s
 				} else if decl := module_const_decl(stmt, trimmed, node.module_consts) {
-					type_decls << decl
+					type_decls << if t.emit_pub { 'pub ' + decl } else { decl }
 				} else {
 					main_fn_body << s
 					main_fn_stmts << stmt
@@ -504,7 +510,8 @@ pub fn (mut t VTranspiler) visit_module(node Module) string {
 	if t.emit_pub && main_fn_override.len == 0 {
 		library_decls << comment_lines
 		for i, line in main_fn_body {
-			library_decls << module_scope_decl(main_fn_stmts[i], line, t.module_idents)
+			decl := module_scope_decl(main_fn_stmts[i], line, t.module_idents)
+			library_decls << if decl.starts_with('const ') { 'pub ' + decl } else { decl }
 		}
 	} else {
 		// Merge the guard-rewritten body with module-level inits.
@@ -3615,7 +3622,16 @@ pub fn (mut t VTranspiler) visit_raise(node Raise) string {
 			'pyrt.fail(py2v_raised_${node.guard})'
 		}
 	}
-	if node.mode in ['result', 'guard'] {
+	mut exits := false
+	if exc := node.exc {
+		if exc is Name {
+			exits = exc.id == 'SystemExit'
+		} else if exc is Call && exc.func is Name {
+			exits = exc.func.id == 'SystemExit'
+		}
+	}
+	exits = exits && 'SystemExit' !in t.known_classes
+	if node.mode in ['result', 'guard'] || exits {
 		if made := t.raised_error(node) {
 			t.add_using('pyrt')
 			if node.mode == 'guard' {
@@ -3623,6 +3639,26 @@ pub fn (mut t VTranspiler) visit_raise(node Raise) string {
 			}
 			if t.fn_returns_result {
 				return 'return ${made}'
+			}
+			if exits {
+				if t.exit_finally_bodies.len > 0 {
+					// Evaluate the exit argument once, before the cleanup's side effects.
+					name := t.new_tmp('py2v_exit')
+					mut lines := ['${name} := ${made}']
+					saved_finally := t.exit_finally_bodies.clone()
+					for i := saved_finally.len - 1; i >= 0; i-- {
+						// A new exit in this cleanup supersedes the old one, but must
+						// still execute the finalizers enclosing this cleanup.
+						t.exit_finally_bodies = saved_finally[..i].clone()
+						for stmt in saved_finally[i] {
+							lines << t.visit_stmt(stmt)
+						}
+					}
+					t.exit_finally_bodies = saved_finally
+					lines << 'pyrt.fail(${name})'
+					return lines.join('\n')
+				}
+				return 'pyrt.fail(${made})'
 			}
 		}
 	}
@@ -3727,8 +3763,14 @@ pub fn (mut t VTranspiler) visit_try(node Try) string {
 		t.emit_try_finally_defer(mut buf, node.finalbody)
 	}
 
+	if node.finalbody.len > 0 {
+		t.exit_finally_bodies << node.finalbody
+	}
 	for stmt in node.body {
 		buf << t.visit_stmt(stmt)
+	}
+	if node.finalbody.len > 0 {
+		t.exit_finally_bodies.pop()
 	}
 	if finally_in_defer {
 		for stmt in node.finalbody {
@@ -4537,6 +4579,7 @@ pub fn (mut t VTranspiler) visit_import_from(node ImportFrom) string {
 			if target_v == '' {
 				// Not a module of this project; fall through.
 			} else if target_v != t.module_name {
+				t.imported_modules[local] = true
 				t.import_aliases[local] = target_v
 				t.import_prefixes[target_v] = true
 				continue
@@ -4617,6 +4660,33 @@ pub fn (t VTranspiler) unresolved_import_comment() string {
 		'\n// Provide one in python_to_v_import (types.v) or port the module.'
 }
 
+// project_import_name resolves an explicit Python import to the generated module.
+// Keep the imported symbol's name: a local alias is not an export of its owner.
+fn (mut t VTranspiler) project_import_name(path string) ?string {
+	if path == '' { return none }
+	if info := t.registry.by_dotted[path] {
+		if info.v_module == t.module_name { return none }
+		t.add_using(info.v_module)
+		return info.v_module
+	}
+	if !path.contains('.') { return none }
+	owner := t.registry.lookup(path.all_before_last('.'))
+	if owner.dotted == '' { return none }
+	symbol := path.all_after_last('.')
+	mut name := escape_local_ident(symbol)
+	if symbol in owner.value_symbols {
+		naming := VTranspiler{
+			...t
+			module_name:  owner.v_module
+			current_stem: v_file_stem(owner.v_relpath)
+		}
+		name = naming.module_value_name(symbol, naming.private_names_shared_with_siblings())
+	}
+	if owner.v_module == t.module_name { return name }
+	t.add_using(owner.v_module)
+	return '${owner.v_module}.${name}'
+}
+
 // collapse_submodule_attr rewrites `mod.attr` to `attr` when `mod` was bound by
 // `from . import mod` and that submodule lands in the V module already in scope.
 //
@@ -4668,7 +4738,8 @@ fn (mut t VTranspiler) map_python_import(py_module string) string {
 	// A module belonging to the scanned project maps to a V module of the same
 	// layout, so it needs a real import rather than a "no equivalent" comment.
 	if t.registry.contains(py_module) {
-		if !t.registry.is_project_root(py_module) {
+		if !t.registry.is_project_root(py_module)
+			&& t.registry.v_module_for(py_module) != t.module_name {
 			t.add_using(t.registry.v_module_for(py_module))
 		}
 		return ''
@@ -4875,6 +4946,12 @@ pub fn (mut t VTranspiler) visit_name(node Name) string {
 	// Likewise for a module-level binding such as a constant.
 	if v_ident := t.module_idents[node.id] {
 		return v_ident
+	}
+	if t.is_bound_in_scope(node.id) && node.id in t.init_import_aliases {
+		return escape_local_ident(node.id)
+	}
+	if resolved := t.project_import_name(t.init_python_path(Expr(node))) {
+		return resolved
 	}
 	// A name bound by `from other_module import name` lives in another V
 	// module, so references must be qualified.
@@ -7010,6 +7087,9 @@ pub fn (mut t VTranspiler) visit_attribute(node Attribute) string {
 				}
 			}
 		}
+	}
+	if resolved := t.project_import_name(t.init_python_path(Expr(node))) {
+		return resolved
 	}
 	collapsed := t.collapse_submodule_attr(node)
 	if collapsed != '' {
@@ -9371,6 +9451,9 @@ pub fn (mut t VTranspiler) is_map_expr(expr Expr) bool {
 // rather than a value, in which case `name.attr(...)` is a module-level call that
 // the builtin table should translate instead of a method call.
 pub fn (t VTranspiler) is_known_module_receiver(name string) bool {
+	if name in t.local_idents || name in t.renamed_idents || t.is_bound_in_scope(name) {
+		return false
+	}
 	if t.imported_modules[name] or { false } {
 		return true
 	}

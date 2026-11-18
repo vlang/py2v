@@ -12,6 +12,8 @@ pub:
 	v_relpath string
 	// symbols are the top-level names this module defines.
 	symbols []string
+	// value_symbols names assignments whose V declarations use local spelling.
+	value_symbols []string
 }
 
 // ModuleRegistry records the Python module layout of a project so that the

@@ -310,6 +310,158 @@ for i, result in execution_results {
 }
 os.rmdir_all(call_results_root) or { panic(err) }
 
+// Definite assignment must preserve both Python results and unproven paths.
+assignment_root := os.join_path(os.temp_dir(), 'py2v_assignment_${os.getpid()}')
+os.mkdir_all(assignment_root) or { panic(err) }
+assignment_source := os.join_path(cases_dir, 'definite_assignment.py')
+assignment_translation := os.exec([py2v, assignment_source])
+assignment_v := os.join_path(assignment_root, 'main.v')
+os.write_file(assignment_v, assignment_translation.output) or { panic(err) }
+assignment_run := run_generated(assignment_v)
+assignment_python := os.exec([python, '-B', assignment_source])
+assignment_expected := '[2, 3]\n[4]\n[5]\n[7]\n[8]\n[10]\n[11]\n'
+assignment_name := 'scope: proven assignment execution'
+if assignment_translation.exit_code == 0 && assignment_run.exit_code == 0
+	&& assignment_python.exit_code == 0
+	&& assignment_run.output.replace('\r', '') == assignment_expected
+	&& assignment_python.output.replace('\r', '') == assignment_expected {
+	report('PASS', assignment_name, '')
+	passed++
+} else {
+	report('FAIL', assignment_name, '')
+	println(excerpt_n(assignment_run.output, 20))
+	failed++
+	failures << fail_line('FAIL', assignment_name, '')
+}
+os.rmdir_all(assignment_root) or { panic(err) }
+assignment_analysis := os.exec([python, '-B', os.join_path(script_dir, 'definite_assignment_test.py')])
+assignment_analysis_name := 'scope: definite assignment analysis'
+if assignment_analysis.exit_code == 0 {
+	report('PASS', assignment_analysis_name, '')
+	passed++
+} else {
+	report('FAIL', assignment_analysis_name, '')
+	println(excerpt_n(assignment_analysis.output, 20))
+	failed++
+	failures << fail_line('FAIL', assignment_analysis_name, '')
+}
+
+// Compile each builtin witness once and compare its output with CPython.
+for witness in [
+	['builtin_frozenset',
+		'0 2 2 2 1\nTrue False\n2 0 0\nleft\nright\nTrue\nfrozenset({1.0})\nfrozenset({-0.0})\nfrozenset({1.0})\nfrozenset({-0.0})\nFalse True\nunhashable\nmember error\nnot iterable\n'],
+	['builtin_frozenset_shadow', '22\n'],
+	['builtin_frozenset_mutable_member', 'True\nTrue\nFalse\n'],
+	['builtin_typing_cast', '1\nword\n3\nonce\n8\n9\n'],
+	['builtin_typing_union_cast', '1\nword\n2\n3\n7\n'],
+	['builtin_typing_forward_cast', '1\n2\n3\n4\n5\n'],
+	['builtin_exit_shadow', '22\n'],
+] {
+	builtin_root := os.join_path(os.temp_dir(), 'py2v_builtin_${witness[0]}_${os.getpid()}')
+	os.mkdir_all(builtin_root) or { panic(err) }
+	source := os.join_path(cases_dir, witness[0] + '.py')
+	translated := os.exec([py2v, source])
+	generated := os.join_path(builtin_root, 'main.v')
+	binary := os.join_path(builtin_root, 'probe' + $if windows { '.exe' } $else { '' })
+	os.write_file(generated, translated.output) or { panic(err) }
+	built := os.exec([@VEXE, '-path', project_dir + '|@vlib|@vmodules', '-o', binary, generated])
+	native := if built.exit_code == 0 { os.exec([binary]) } else { built }
+	cpython := os.exec([python, '-B', source])
+	name := 'builtins: ${witness[0]} execution'
+	if translated.exit_code == 0 && native.exit_code == 0 && cpython.exit_code == 0
+		&& native.output.replace('\r', '') == witness[1]
+		&& cpython.output.replace('\r', '') == witness[1] {
+		report('PASS', name, '')
+		passed++
+	} else {
+		report('FAIL', name, '')
+		println(excerpt_n(native.output, 20))
+		failed++
+		failures << fail_line('FAIL', name, '')
+	}
+	os.rmdir_all(builtin_root) or { panic(err) }
+}
+// All exit modes share one compiled fixture and compare status as well as output.
+exit_root := os.join_path(os.temp_dir(), 'py2v_builtin_exit_${os.getpid()}')
+os.mkdir_all(exit_root) or { panic(err) }
+exit_source := os.join_path(cases_dir, 'builtin_exit.py')
+exit_translated := os.exec([py2v, exit_source])
+exit_generated := os.join_path(exit_root, 'main.v')
+exit_binary := os.join_path(exit_root, 'probe' + $if windows { '.exe' } $else { '' })
+os.write_file(exit_generated, exit_translated.output) or { panic(err) }
+exit_built := os.exec([@VEXE, '-path', project_dir + '|@vlib|@vmodules', '-o', exit_binary,
+	exit_generated])
+for mode in ['caught', 'zero', 'int', 'true', 'false', 'none', 'message', 'direct_finally',
+	'sys_finally', 'nested_finally', 'nested_cleanups'] {
+	native := if exit_built.exit_code == 0 { os.exec([exit_binary, mode]) } else { exit_built }
+	cpython := os.exec([python, '-B', exit_source, mode])
+	expected_status := match mode {
+		'int' { 7 }
+		'sys_finally' { 4 }
+		'nested_finally' { 3 }
+		'nested_cleanups' { 2 }
+		'true', 'message', 'direct_finally' { 1 }
+		else { 0 }
+	}
+	expected_output := match mode {
+		'caught' { 'caught 3\nbase message\ndefault\nnone\n' }
+		'message' { 'message\n' }
+		'direct_finally' { 'direct cleanup\ndirect message\n' }
+		'sys_finally' { 'argument evaluated\nsys cleanup\n' }
+		'nested_finally' { 'outer cleanup\n' }
+		'nested_cleanups' { 'inner cleanup\nouter cleanup\n' }
+		else { '' }
+	}
+	name := 'builtins: exit ${mode}'
+	if exit_translated.exit_code == 0 && native.exit_code == expected_status
+		&& cpython.exit_code == expected_status
+		&& native.output.replace('\r', '') == expected_output
+		&& cpython.output.replace('\r', '') == expected_output {
+		report('PASS', name, '')
+		passed++
+	} else {
+		report('FAIL', name, '')
+		println('status ${native.exit_code}, expected ${expected_status}')
+		println(excerpt_n(native.output, 20))
+		failed++
+		failures << fail_line('FAIL', name, '')
+	}
+}
+os.rmdir_all(exit_root) or { panic(err) }
+exit_analysis := os.exec([python, '-B', os.join_path(script_dir, 'exit_lowering_test.py')])
+exit_analysis_name := 'builtins: exit resolution and refusal cases'
+if exit_analysis.exit_code == 0 {
+	report('PASS', exit_analysis_name, '')
+	passed++
+} else {
+	report('FAIL', exit_analysis_name, '')
+	println(excerpt_n(exit_analysis.output, 20))
+	failed++
+	failures << fail_line('FAIL', exit_analysis_name, '')
+}
+cast_analysis := os.exec([python, '-B', os.join_path(script_dir, 'typing_cast_test.py')])
+cast_analysis_name := 'builtins: typing cast effects and refusal cases'
+if cast_analysis.exit_code == 0 {
+	report('PASS', cast_analysis_name, '')
+	passed++
+} else {
+	report('FAIL', cast_analysis_name, '')
+	println(excerpt_n(cast_analysis.output, 20))
+	failed++
+	failures << fail_line('FAIL', cast_analysis_name, '')
+}
+frozen_unit := os.exec([@VEXE, 'test', os.join_path(project_dir, 'pyrt', 'frozenset_from_test.v')])
+frozen_unit_name := 'builtins: immutable set identity and copying'
+if frozen_unit.exit_code == 0 {
+	report('PASS', frozen_unit_name, '')
+	passed++
+} else {
+	report('FAIL', frozen_unit_name, '')
+	println(excerpt_n(frozen_unit.output, 20))
+	failed++
+	failures << fail_line('FAIL', frozen_unit_name, '')
+}
+
 // An initializer that cannot start from a valid zero struct must fail visibly.
 // Keep these negative cases out of the generated-code expectation loop.
 init_errors := os.join_path(os.temp_dir(), 'py2v_init_errors_${os.getpid()}', 'main')
@@ -392,6 +544,43 @@ for pkg in package_fixtures {
 				println(excerpt_n(py_run.output, 20))
 				failed++
 				failures << fail_line('FAIL', name, '')
+			}
+		}
+		if pkg == 'pkg_imports' {
+			for fixture in ['uses_bound_names', 'uses_imported_values'] {
+				generated := os.read_file(os.join_path(out_dir, 'py_pkg_imports', fixture + '.v')) or { panic(err) }
+				expected := os.read_file(os.join_path(expected_dir, pkg, fixture + '.v')) or { panic(err) }
+				fmt_seq++
+				generated_norm := normalize_v_code(generated, fmt_seq)
+				fmt_seq++
+				name := 'imports: ${fixture}'
+				if generated_norm == normalize_v_code(expected, fmt_seq) {
+					report('PASS', name, '')
+					passed++
+				} else {
+					report('FAIL', name, '')
+					failed++
+					failures << fail_line('FAIL', name, '')
+				}
+			}
+			entry := os.join_path(out_dir, 'import_main.v')
+			os.write_file(entry, 'module main\nimport py_pkg_imports\nfn main() {\nprintln(py_pkg_imports.bound_names_total())\nprintln(py_pkg_imports.shadow_module(3))\nprintln(py_pkg_imports.shadow_import())\nprintln(py_pkg_imports.imported_values_total())\n}\n') or { panic(err) }
+			v_run := run_generated(entry)
+			py_run := os.exec([python, '-B', '-c',
+				'import sys; sys.path.insert(0, sys.argv[1]); from pkg_imports.uses_bound_names import bound_names_total, shadow_module, shadow_import; from pkg_imports.uses_imported_values import imported_values_total; print(bound_names_total()); print(shadow_module(3)); print(shadow_import()); print(imported_values_total())',
+				cases_dir])
+			name_run := 'imports: execution'
+			if v_run.exit_code == 0 && py_run.exit_code == 0
+				&& v_run.output.replace('\r', '') == '30\n4\n4\n29\n'
+				&& py_run.output.replace('\r', '') == '30\n4\n4\n29\n' {
+				report('PASS', name_run, '')
+				passed++
+			} else {
+				report('FAIL', name_run, '')
+				println(excerpt_n(v_run.output, 20))
+				println(excerpt_n(py_run.output, 20))
+				failed++
+				failures << fail_line('FAIL', name_run, '')
 			}
 		}
 		if pkg == 'pkg_init_execution' {

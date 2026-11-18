@@ -187,7 +187,8 @@ fn (t VTranspiler) init_python_path(expr Expr) string {
 	match expr {
 		Name {
 			if expr.id in t.local_idents || expr.id in t.module_idents
-				|| expr.id in t.renamed_idents || t.escaped_identifiers[expr.id] {
+				|| expr.id in t.renamed_idents || t.escaped_identifiers[expr.id]
+				|| t.is_bound_in_scope(expr.id) {
 				return ''
 			}
 			return t.init_import_aliases[expr.id] or { '' }
