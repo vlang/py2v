@@ -4620,7 +4620,11 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
                   if b not in other_sites and values
                   and all(isinstance(v, ast.ListComp) and dynamic(v.elt) for v in values)}
 
-    _declare_block_locals(tree, table, facts, dynamic_bindings)
+    runtime_lists = {b for b, values in assigned.items()
+                     if b not in other_sites and any(isinstance(v, ast.ListComp) for v in values)
+                     and all(isinstance(v, ast.List) or
+                             isinstance(v, ast.ListComp) and dynamic(v.elt) for v in values)}
+    any_lists |= _declare_block_locals(tree, table, facts, dynamic_bindings, runtime_lists)
 
     def known(node: ast.AST) -> bool:
         type_id = getattr(node, "_assumed", None)
@@ -6960,7 +6964,8 @@ def _definitely_assigned_loads(fn: Union[ast.FunctionDef, ast.AsyncFunctionDef])
 
 def _declare_block_locals(tree: ast.Module, table: Optional[symbols.SymbolTable],
                           facts: Optional[infer.TypeFacts],
-                          dynamic_bindings: Optional[set] = None) -> None:
+                          dynamic_bindings: Optional[set] = None,
+                          runtime_lists: Optional[Set[int]] = None) -> Set[int]:
     """Declare at the top of its function a local that Python first assigns inside a block
     and uses outside it.
 
@@ -6972,10 +6977,22 @@ def _declare_block_locals(tree: ast.Module, table: Optional[symbols.SymbolTable]
     assignments then assign. A local whose type is not fully known is left as it was.
 
     With `dynamic_bindings` (the second run, from `_lower_dynamic_values`), the locals among
-    them are declared instead, as `name: Any = None`: a value of unknown type."""
+    them are declared instead, as `name: Any = None`: a value of unknown type.
+    A comprehension collecting runtime values can use `list[Any]` when every read
+    is definitely assigned; the returned bindings identify those native lists."""
     if table is None or facts is None:
-        return
+        return set()
+    lifted_lists: Set[int] = set()
     known = {b["id"]: b for b in facts.bindings}
+
+    def value_comprehension(value: ast.expr) -> bool:
+        if not isinstance(value, ast.ListComp):
+            return False
+        element = value.elt
+        type_id = getattr(element, "_assumed", getattr(element, "_type", None))
+        return (getattr(element, "_dynamic", False)
+                or type_id is not None and facts.types[type_id]["k"] == "dynamic")
+
     compound = (ast.If, ast.For, ast.AsyncFor, ast.While, ast.With, ast.AsyncWith, ast.Try)
     for fn in ast.walk(tree):
         if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -7024,7 +7041,7 @@ def _declare_block_locals(tree: ast.Module, table: Optional[symbols.SymbolTable]
 
         for stmt in fn.body:
             walk(stmt, (), stmt)
-        proven_loads = _definitely_assigned_loads(fn) if eager_occurrences else set()
+        proven_loads: Optional[Set[int]] = None
         declarations: List[ast.stmt] = []
         for binding_id, found in occurrences.items():
             binding = table.bindings[binding_id]
@@ -7047,12 +7064,31 @@ def _declare_block_locals(tree: ast.Module, table: Optional[symbols.SymbolTable]
                 loads = [node for _, node, site in found + eager
                          if isinstance(node.ctx, ast.Load)
                          or isinstance(site, ast.AugAssign) and site.target is node]
+                if proven_loads is None:
+                    proven_loads = _definitely_assigned_loads(fn)
                 if not loads or any(id(node) not in proven_loads for node in loads):
                     continue  # preserve today's output when assignment is not proven
             type_id = fact.get("assumed", fact.get("inferred"))
             text = _annotation_for_type(facts.types, type_id) if type_id is not None else None
             value: Optional[ast.expr] = None
             runtime_class = ""
+            runtime_list = False
+            if text is None and isinstance(stmt.value, ast.ListComp) and not binding.captured:
+                writes = [site for _, node, site in found if isinstance(node.ctx, ast.Store)]
+                runtime_list = bool(writes) and all(
+                    isinstance(site, ast.Assign) and len(site.targets) == 1
+                    and (isinstance(site.value, ast.List)
+                         or value_comprehension(site.value)
+                         or runtime_lists is not None and binding_id in runtime_lists)
+                    for site in writes)
+                if runtime_list:
+                    if proven_loads is None:
+                        proven_loads = _definitely_assigned_loads(fn)
+                    loads = [node for _, node, _ in found + eager_occurrences.get(binding_id, [])
+                             if isinstance(node.ctx, ast.Load)]
+                    if not loads or any(id(node) not in proven_loads for node in loads):
+                        continue
+                    text = "list[Any]"
             if text is None and dynamic_bindings is None:
                 # a runtime object, a list of one, or one that may be None
                 held = getattr(tree, "_runtime_binding_types", {}).get(binding_id, "")
@@ -7065,7 +7101,7 @@ def _declare_block_locals(tree: ast.Module, table: Optional[symbols.SymbolTable]
                         "Optional[py2v_class]" if len(parts) == 2 else "py2v_class")
                     if len(parts) == 2:
                         value = ast.copy_location(ast.Constant(value=None), fn)
-            if dynamic_bindings is not None:
+            if dynamic_bindings is not None and not runtime_list:
                 if text is not None or binding_id not in dynamic_bindings:
                     continue  # declared by the first run, or not a value of unknown type
                 text = "Any"
@@ -7083,11 +7119,14 @@ def _declare_block_locals(tree: ast.Module, table: Optional[symbols.SymbolTable]
             ast.copy_location(target, fn)
             ast.copy_location(declaration, fn)
             declarations.append(declaration)
+            if runtime_list:
+                lifted_lists.add(binding_id)
         if declarations:
             at = 1 if (fn.body and isinstance(fn.body[0], ast.Expr)
                        and isinstance(fn.body[0].value, ast.Constant)
                        and isinstance(fn.body[0].value.value, str)) else 0
             fn.body[at:at] = declarations
+    return lifted_lists
 
 
 def _declare_inferred_containers(tree: ast.Module, table: Optional[symbols.SymbolTable],
@@ -7320,7 +7359,7 @@ def process_file(file_path: str, project: Optional[ProjectFacts] = None) -> str:
     _plan_bound_appends(tree, table, facts)
     _loop_comprehensions(tree, facts)
     any_lists = _declare_inferred_containers(tree, table, facts)
-    _declare_block_locals(tree, table, facts)
+    any_lists |= _declare_block_locals(tree, table, facts)
     _lower_optional_text_calls(tree, table, facts)
     _choose_boolop_values(tree, facts)
     _state_truth_tests(tree, table, facts)

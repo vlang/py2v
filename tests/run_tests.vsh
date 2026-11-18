@@ -242,7 +242,7 @@ dynamic_cases := ['dynamic_container_elements', 'dynamic_membership', 'dynamic_c
 	'truth_bool_context', 'truth_optional_returns', 'truth_native_objects', 'truth_local_class_hooks',
 	'dynamic_isinstance', 'dynamic_method_errors', 'empty_set_runtime', 'runtime_field_types',
 	'dynamic_locals', 'frozenset_annotations', 'dynamic_method_comprehension_errors',
-	'sqlite_row_comprehension', 'sqlite_untyped_handles']
+	'sqlite_row_comprehension', 'sqlite_untyped_handles', 'try_comprehension']
 dynamic_root := os.join_path(os.temp_dir(), 'py2v_dynamic_${os.getpid()}')
 os.mkdir_all(dynamic_root) or { panic(err) }
 mut dynamic_args := [][]string{}
