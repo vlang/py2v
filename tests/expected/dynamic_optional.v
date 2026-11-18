@@ -28,9 +28,13 @@ fn (a Any) < (b Any) bool {
 	return pyrt.lt(a, b) or { panic(err) }
 }
 
-fn show(items Any, value ?string) {
-	pyrt.invoke(items, 'append', pyrt.box(value))
+fn show_py(items Any, value ?string) ! {
+	pyrt.call_method(pyrt.box(items), 'append', [pyrt.box(value)])!
 	println(pyrt.str(pyrt.item_at(items, pyrt.box(-1))))
+}
+
+fn show(items Any, value ?string) {
+	show_py(items, value) or { pyrt.fail(err) }
 }
 
 fn main() {

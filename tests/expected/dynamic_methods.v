@@ -28,22 +28,26 @@ fn (a Any) < (b Any) bool {
 	return pyrt.lt(a, b) or { panic(err) }
 }
 
-fn describe(record Any, mut words []string) int {
-	name := pyrt.invoke(record, 'get', pyrt.box('name'), pyrt.box('nobody'))
-	tags := pyrt.invoke(record, 'get', pyrt.box('tags'))
+fn describe_py(record Any, mut words []string) !int {
+	name := pyrt.call_method(pyrt.box(record), 'get', [pyrt.box('name'), pyrt.box('nobody')])!
+	tags := pyrt.call_method(pyrt.box(record), 'get', [pyrt.box('tags')])!
 	if pyrt.truth(tags) {
-		println((pyrt.str(pyrt.invoke(name, 'upper'))).str() + ' ' + (pyrt.length(tags)).str())
+		println((pyrt.str(pyrt.call_method(pyrt.box(name), 'upper', [])!)).str() + ' ' + (pyrt.length(tags)).str())
 	} else {
 		println('${pyrt.str(name)} no tags')
 	}
-	if pyrt.truth(pyrt.invoke(record, 'get', pyrt.box('missing'))) {
+	if pyrt.truth(pyrt.call_method(pyrt.box(record), 'get', [pyrt.box('missing')])!) {
 		println('unexpected')
 	}
 	words << 'end'
-	for key in pyrt.elements(pyrt.invoke(record, 'keys')) {
+	for key in pyrt.elements(pyrt.call_method(pyrt.box(record), 'keys', [])!) {
 		println(pyrt.str(key))
 	}
 	return words.len
+}
+
+fn describe(record Any, mut words []string) int {
+	return describe_py(record, mut words) or { pyrt.fail(err) }
 }
 
 fn first_word(text string) Any {

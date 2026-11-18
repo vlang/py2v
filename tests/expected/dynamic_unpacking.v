@@ -32,7 +32,7 @@ fn pair_py(value Any) ! {
 	py2v_unpack1 := pyrt.unpack(pyrt.box(value), 2)!
 	mut first := py2v_unpack1[0]
 	mut second := py2v_unpack1[1]
-	println(pyrt.str(pyrt.invoke(first, 'upper')))
+	println(pyrt.str(pyrt.call_method(pyrt.box(first), 'upper', [])!))
 	println(pyrt.str(pyrt.item_at(second, pyrt.box('n'))))
 }
 
@@ -44,7 +44,7 @@ fn list_pair_py(value Any) ! {
 	py2v_unpack2 := pyrt.unpack(pyrt.box(value), 2)!
 	first := py2v_unpack2[0]
 	second := py2v_unpack2[1]
-	println(pyrt.str(pyrt.invoke(first, 'upper')))
+	println(pyrt.str(pyrt.call_method(pyrt.box(first), 'upper', [])!))
 	println(pyrt.str(second))
 }
 
@@ -69,7 +69,7 @@ fn pairs_py(values Any) ! {
 		py2v_unpack4 := pyrt.unpack(pyrt.box(py2v_dynamic_iter_0), 2)!
 		mut first := py2v_unpack4[0]
 		mut second := py2v_unpack4[1]
-		println(pyrt.str(pyrt.invoke(first, 'upper')))
+		println(pyrt.str(pyrt.call_method(pyrt.box(first), 'upper', [])!))
 		println(pyrt.str(pyrt.item_at(second, pyrt.box('n'))))
 	}
 	if has_break != true {

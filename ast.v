@@ -218,8 +218,8 @@ pub mut:
 	// math_member is set on a read of a name bound by `from math import ...`:
 	// the member's name in Python's math module.
 	math_member string
-	// api is the Python name of the runtime library class this name stands for in an
-	// annotation (`datetime.datetime`), or empty.
+	// api identifies the resolved class in an annotation: a runtime API path or a
+	// __project_type__ path to a class supplied by a type-only project import.
 	api string
 }
 

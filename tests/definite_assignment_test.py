@@ -30,6 +30,8 @@ class DefiniteAssignmentTest(unittest.TestCase):
             "if flag:\n    return []\nelse:\n    values = [2]\nreturn [v for v in values]",
             "try:\n    values = [1]\nexcept ValueError:\n    values = [2]\nreturn [v for v in values]",
             "try:\n    values = [1]\nexcept ValueError:\n    return []\nreturn [v for v in values]",
+            "try:\n    values = [1]\nexcept ValueError:\n    raise\nreturn [v for v in values]",
+            "try:\n    values = [1]\nexcept ValueError:\n    values = [2]\nexcept TypeError:\n    return []\nreturn [v for v in values]",
             "for i in [1]:\n    values = [i]\nreturn [v for v in values]",
             "while True:\n    values = [1]\n    break\nreturn [v for v in values]",
             "try:\n    pass\nfinally:\n    values = [1]\nreturn [v for v in values]",
@@ -42,6 +44,8 @@ class DefiniteAssignmentTest(unittest.TestCase):
         bodies = [
             "if flag:\n    values = [1]\nreturn [v for v in values]",
             "try:\n    values = [1]\nexcept ValueError:\n    pass\nreturn [v for v in values]",
+            "try:\n    values = [1]\nexcept ValueError:\n    values = [2]\nexcept TypeError:\n    pass\nreturn [v for v in values]",
+            "try:\n    values = [1]\nexcept ValueError:\n    if flag:\n        values = [2]\nreturn [v for v in values]",
             "try:\n    values = [1]\nfinally:\n    result = [v for v in values]",
             "for i in []:\n    values = [i]\nreturn [v for v in values]",
             "for i in [*[]]:\n    values = [i]\nreturn [v for v in values]",
