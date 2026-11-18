@@ -7259,6 +7259,16 @@ pub fn (mut t VTranspiler) visit_slice(node Slice) string {
 
 // visit_list emits V code for list literals (List).
 pub fn (mut t VTranspiler) visit_list(node List) string {
+	if node.elts.len == 0 {
+		annotation := node.v_annotation or { '' }
+		if annotation.starts_with('list[') {
+			typ := map_type(annotation)
+			if typ.contains('Any') {
+				t.generated_code_has_any_type = true
+			}
+			return '${typ}{}'
+		}
+	}
 	// Check for starred elements
 	has_starred := node.elts.any(fn (e Expr) bool {
 		return e is Starred
@@ -7367,6 +7377,14 @@ pub fn (mut t VTranspiler) visit_tuple(node Tuple) string {
 // visit_dict emits V code for dict literals (Dict).
 pub fn (mut t VTranspiler) visit_dict(node Dict) string {
 	if node.keys.len == 0 {
+		annotation := node.v_annotation or { '' }
+		if annotation.starts_with('dict[') {
+			typ := map_type(annotation)
+			if typ.contains('Any') {
+				t.generated_code_has_any_type = true
+			}
+			return '${typ}{}'
+		}
 		// V has no untyped empty map literal; fall back to a string-keyed map,
 		// which is what Python code almost always means for `{}`.
 		t.generated_code_has_any_type = true
@@ -7459,9 +7477,27 @@ fn (mut t VTranspiler) if_condition(test Expr) string {
 // visit_ifexp emits V code for inline if-expressions (IfExp).
 pub fn (mut t VTranspiler) visit_ifexp(node IfExp) string {
 	test := t.visit_expr(node.test)
-	body := t.visit_expr(node.body)
-	orelse := t.visit_expr(node.orelse)
+	body := t.ifexp_value(*node.body)
+	orelse := t.ifexp_value(*node.orelse)
 	return 'if ${test} { ${body} } else { ${orelse} }'
+}
+
+// ifexp_value retains the float type of integral literals in a value choice.
+// json2 can decode 0.0 as an integer; an int first branch would truncate 2.5.
+fn (mut t VTranspiler) ifexp_value(expr Expr) string {
+	if expr is Constant && (expr.v_annotation or { '' }) == 'float' {
+		code := t.visit_constant(expr)
+		return if code.contains('.') || code.contains('e') || code.contains('E') {
+			code
+		} else {
+			'${code}.0'
+		}
+	}
+	if expr is UnaryOp && (expr.op is UAdd || expr.op is USub) && expr.operand is Constant
+		&& ((expr.operand as Constant).v_annotation or { '' }) == 'float' {
+		return op_to_symbol(get_unary_op_type(expr.op)) + t.ifexp_value(expr.operand)
+	}
+	return t.visit_expr(expr)
 }
 
 // visit_lambda emits V code for lambda expressions (Lambda).

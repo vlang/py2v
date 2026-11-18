@@ -119,6 +119,10 @@ fn visit_print(mut t VTranspiler, node Call, args []string) (string, bool) {
 		// Check if the argument is a string constant
 		if arg_node is Constant {
 			c := arg_node as Constant
+			if c.value is NoneValue {
+				parts << "'None'"
+				continue
+			}
 			if c.value is string {
 				// Keep the processed string literal for the final print expression.
 				parts << arg_str_proc
@@ -482,7 +486,7 @@ fn visit_sorted(args []string) (string, bool) {
 }
 
 // The element and key types `<` orders in V as in Python.
-const sort_scalar_types = ['int', 'i64', 'f64', 'string']
+const sort_scalar_types = ['int', 'i64', 'f64', 'string']!
 
 // sort_less returns the body of the `less(lhs, rhs)` function that orders elements of
 // type `elem` as the `key` and `reverse` keywords of `sorted()` or `list.sort()` ask, and

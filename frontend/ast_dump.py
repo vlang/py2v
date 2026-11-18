@@ -486,8 +486,8 @@ def _infer_return_type(node: ast.FunctionDef) -> str:
             saw_none_return = True
             continue
 
-        # Comparisons and boolean ops always return bool.
-        if isinstance(expr, (ast.Compare, ast.BoolOp)):
+        # Comparisons return bool; boolean operations return a selected operand.
+        if isinstance(expr, ast.Compare):
             return_types.add("bool")
             continue
 
@@ -2758,6 +2758,21 @@ def _truth_kind(node: ast.expr, facts: infer.TypeFacts) -> str:
     return facts.types[type_id]["k"] if type_id is not None else "unknown"
 
 
+def _expand_bool_calls(tree: ast.Module) -> None:
+    """The builtin bool(x) is exactly not not x, including its one truth evaluation."""
+    class Lower(ast.NodeTransformer):
+        def visit_Call(self, node: ast.Call) -> ast.AST:
+            self.generic_visit(node)
+            if (isinstance(node.func, ast.Name) and node.func.id == "bool"
+                    and getattr(node.func, "_binding", None) is None
+                    and len(node.args) == 1 and not node.keywords
+                    and not isinstance(node.args[0], ast.Starred)):
+                inner = ast.copy_location(ast.UnaryOp(op=ast.Not(), operand=node.args[0]), node)
+                return ast.copy_location(ast.UnaryOp(op=ast.Not(), operand=inner), node)
+            return node
+    Lower().visit(tree)
+
+
 def _lower_optional_text_calls(tree: ast.Module, table: Optional[symbols.SymbolTable],
                                facts: Optional[infer.TypeFacts]) -> None:
     """A runtime call that gives text or None (`os.environ.get(name)`), used where Python
@@ -2845,7 +2860,7 @@ def _choose_boolop_values(tree: ast.Module, facts: Optional[infer.TypeFacts]) ->
     """`a or b` and `a and b` used for their value, not as a condition, become the choice
     Python makes: `a if a else b` and `b if a else a` (`name = given or "default"`). V's
     `||` and `&&` take and give bool only. Done when every operand has the same known
-    str, int, float or list type and each one but the last is a plain name or an attribute
+    str, int, float, list or dict type and each one but the last is a plain name or an attribute
     of one, so that reading it twice is safe; `_state_truth_tests` then states the test."""
     if facts is None:
         return
@@ -2868,8 +2883,26 @@ def _choose_boolop_values(tree: ast.Module, facts: Optional[infer.TypeFacts]) ->
         elif isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
             mark(node.operand)
 
+    def empty(node: ast.expr) -> bool:
+        return (isinstance(node, ast.List) and not node.elts
+                or isinstance(node, ast.Dict) and not node.keys)
+
+    def annotation(type_id: int) -> "Optional[str]":
+        item = facts.types[type_id]
+        if item["k"] in ("dynamic", "unknown"):
+            return "Any"
+        if item["k"] == "list":
+            inner = annotation(item["elem"])
+            return f"list[{inner}]" if inner else None
+        if item["k"] == "dict":
+            key, value = annotation(item["key"]), annotation(item["value"])
+            return f"dict[{key}, {value}]" if key in ("str", "int") and value else None
+        return _annotation_for_type(facts.types, type_id)
+
     def spelled(node: ast.expr, or_none: bool = False) -> Optional[str]:
-        type_id = getattr(node, "_assumed", None)
+        if isinstance(node, ast.Constant) and type(node.value) is float:
+            return "float"
+        type_id = getattr(node, "_represented", getattr(node, "_assumed", None))
         if type_id is None:
             type_id = getattr(node, "_type", None)
         if type_id is not None and or_none and facts.types[type_id]["k"] == "union":
@@ -2878,27 +2911,55 @@ def _choose_boolop_values(tree: ast.Module, facts: Optional[infer.TypeFacts]) ->
                        if facts.types[m]["k"] != "none"]
             if len(members) == 1 and len(facts.types[type_id]["members"]) == 2:
                 type_id = members[0]
-        if type_id is None or facts.types[type_id]["k"] not in ("str", "int", "float", "list"):
+        if type_id is None or facts.types[type_id]["k"] not in ("str", "int", "float", "list", "dict"):
             return None
-        return _annotation_for_type(facts.types, type_id)
+        return annotation(type_id)
 
     def plain(node: ast.expr) -> bool:
-        return isinstance(node, ast.Name) or (
-            isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name))
+        return (isinstance(node, (ast.Name, ast.Constant))
+                or isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub))
+                and isinstance(node.operand, ast.Constant) and type(node.operand.value) in (int, float)
+                or isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name))
 
     class Choose(ast.NodeTransformer):
         def visit_BoolOp(self, node: ast.BoolOp) -> ast.AST:
             self.generic_visit(node)
+            values: list[ast.expr] = []
+            for i, value in enumerate(node.values):
+                if isinstance(value, ast.Constant) and not isinstance(value.value, float):
+                    stops = bool(value.value) == isinstance(node.op, ast.Or)
+                    if stops:
+                        values.append(value)
+                        break
+                    if i < len(node.values) - 1:
+                        continue
+                values.append(value)
+            if len(values) == 1:
+                # A bare integral float loses its type in json2; keep the typed
+                # choice instead of introducing such a literal as the result.
+                if isinstance(values[0], ast.Constant) and isinstance(values[0].value, float):
+                    return node
+                return values[0]
+            node.values = values
             if id(node) in tested:
                 return node
-            kinds = {spelled(value) for value in node.values}
+            kinds = {spelled(value) for value in node.values if not empty(value)}
             if isinstance(node.op, ast.Or) and (len(kinds) != 1 or None in kinds):
                 # `given or "default"` where the earlier values may be None: the last one,
                 # which is not, decides the type
-                kinds = {spelled(value, or_none=True) for value in node.values[:-1]}
-                kinds.add(spelled(node.values[-1]))
+                kinds = {spelled(value, or_none=True) for value in node.values[:-1]
+                         if not empty(value)}
+                if not empty(node.values[-1]):
+                    kinds.add(spelled(node.values[-1]))
             if len(kinds) != 1 or None in kinds or not all(plain(v) for v in node.values[:-1]):
                 return node
+            text = next(iter(kinds))
+            for value in node.values:
+                if empty(value):
+                    if (isinstance(value, ast.List) and not text.startswith("list[")
+                            or isinstance(value, ast.Dict) and not text.startswith("dict[")):
+                        return node
+                    value._runtime_annotation = text
             result = node.values[-1]
             for value in reversed(node.values[:-1]):
                 again = copy.deepcopy(value)
@@ -2922,19 +2983,85 @@ def _state_truth_tests(tree: ast.Module, table: Optional[symbols.SymbolTable],
                        facts: Optional[infer.TypeFacts]) -> None:
     """Write the test Python makes when a str, number or container is used as a condition:
     `if name:` becomes `if name != "":`, `if not items:` becomes `if not len(items) > 0:`.
-    V conditions are bool only. A value of unknown type is left as written."""
+    V conditions are bool only. Dynamic storage is left for runtime truth lowering."""
     if table is None or facts is None:
         return
+    context = AnalysisContext(table=table, facts=facts)
+    native_maps = {getattr(n.target, "_binding", None) for n in ast.walk(tree)
+                   if isinstance(n, ast.AnnAssign) and context.native_map_annotation(n)}
+    runtime_available = not any(b.name == "pyrt" for b in table.bindings)
+    optional_dynamic = set()
+    for declaration in ast.walk(tree):
+        annotation = (declaration.annotation if isinstance(declaration, (ast.arg, ast.AnnAssign))
+                      else None)
+        target = declaration.target if isinstance(declaration, ast.AnnAssign) else declaration
+        if annotation is not None and isinstance(target, (ast.arg, ast.Name)):
+            text = _unparse_expr(annotation).replace("typing.", "").replace(" ", "")
+            if text in ("Optional[Any]", "Any|None", "None|Any",
+                        "Optional[object]", "object|None", "None|object"):
+                optional_dynamic.add(getattr(target, "_binding", None))
+    # These APIs return Python lists as well as native V arrays. Iterator APIs
+    # such as re.finditer also emit arrays, but their Python truth is always true.
+    list_apis = {"sqlite3.Cursor.fetchall", "sqlite3.Cursor.fetchmany",
+                 "re.findall", "re.Pattern.findall", "re.split", "re.Pattern.split"}
+    list_assignments: dict[int, list[ast.expr]] = {}
+    for stmt in ast.walk(tree):
+        target = (stmt.targets[0] if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1
+                  else stmt.target if isinstance(stmt, ast.AnnAssign) else None)
+        binding = getattr(target, "_binding", None) if isinstance(target, ast.Name) else None
+        if binding is not None and stmt.value is not None:
+            list_assignments.setdefault(binding, []).append(stmt.value)
+    list_bindings = {b for b, values in list_assignments.items()
+                     if len(table.bindings[b].sites) == len(values)
+                     and all(isinstance(value, ast.Call) and getattr(value, "_api", "") in list_apis
+                             for value in values)}
+
+    def runtime_list(node: ast.expr) -> bool:
+        return (isinstance(node, ast.Call) and getattr(node, "_api", "") in list_apis
+                or isinstance(node, ast.Name) and getattr(node, "_binding", None) in list_bindings)
+
     len_is_builtin = not any(b.name == "len" for b in table.bindings)
     # Classes whose instances can be false: they define their own truth or length.
     falsy_classes = {cls.name for cls in ast.walk(tree) if isinstance(cls, ast.ClassDef)
                      and any(isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef))
                              and m.name in ("__bool__", "__len__") for m in cls.body)}
+    local_hooks = {}
+    for cls in ast.walk(tree):
+        if not isinstance(cls, ast.ClassDef):
+            continue
+        # Inheritance, metaclasses, and decorators may supply truth hooks.
+        if cls.decorator_list or cls.keywords or (cls.bases and not (
+                len(cls.bases) == 1 and isinstance(cls.bases[0], ast.Name)
+                and cls.bases[0].id == "object")):
+            continue
+        if any(isinstance(stmt, ast.Assign)
+               and any(isinstance(t, ast.Name) and t.id in ("__bool__", "__len__")
+                       for t in stmt.targets)
+               or isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name)
+               and stmt.target.id in ("__bool__", "__len__")
+               or isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef))
+               and stmt.name in ("__bool__", "__len__") and stmt.decorator_list
+               for stmt in cls.body):
+            continue
+        methods = {m.name for m in cls.body
+                   if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef))}
+        hook = "bool" if "__bool__" in methods else "len" if "__len__" in methods else "always"
+        local_hooks[getattr(cls, "_binding", None)] = hook
+    local_hooks.pop(None, None)
+
+    def local_truth_hook(node: ast.expr) -> str:
+        type_id = getattr(node, "_represented", getattr(node, "_assumed", None))
+        if type_id is None:
+            type_id = getattr(node, "_type", None)
+        if type_id is None or facts.types[type_id]["k"] != "instance":
+            return ""
+        return local_hooks.get(facts.types[type_id].get("class_binding"), "")
+
 
     def optional_instance(node: ast.expr) -> bool:
-        """Whether the value is None or an instance of a class of this file that is always
-        true: then its truth is `is not None`."""
-        type_id = getattr(node, "_assumed", None)
+        """An optional local instance without truth hooks, Path or SQLite handle:
+        these instances are always true, so their optional truth is `is not None`."""
+        type_id = getattr(node, "_represented", getattr(node, "_assumed", None))
         if type_id is None:
             type_id = getattr(node, "_type", None)
         if type_id is None or facts.types[type_id]["k"] != "union":
@@ -2942,8 +3069,10 @@ def _state_truth_tests(tree: ast.Module, table: Optional[symbols.SymbolTable],
         members = [facts.types[m] for m in facts.types[type_id]["members"]]
         others = [m for m in members if m["k"] != "none"]
         return (len(members) == 2 and len(others) == 1 and others[0]["k"] == "instance"
-                and others[0].get("class_binding") is not None
-                and others[0].get("name") not in falsy_classes)
+                and (others[0].get("name") in (
+                    "pathlib.Path", "sqlite3.Connection", "sqlite3.Cursor")
+                     or others[0].get("class_binding") is not None
+                     and others[0].get("name") not in falsy_classes))
 
     def reference(node: ast.AST) -> bool:
         # a name or a chain of attributes of one: reading it twice reads the same value
@@ -2991,9 +3120,16 @@ def _state_truth_tests(tree: ast.Module, table: Optional[symbols.SymbolTable],
         float, bool or a sized container) and is a plain reference; else an empty string."""
         if not reference(node):
             return ""
+        if (runtime_available and isinstance(node, ast.Name)
+                and getattr(node, "_binding", None) in optional_dynamic):
+            return "dynamic"
+        represented = getattr(node, "_represented", None)
+        if (represented is not None and facts.types[represented]["k"] in
+                ("dynamic", "str", "int", "float", "bool") + _SIZED_KINDS):
+            return declared_optional_field(node)
         # Either layer may show it: where a branch looks unreachable to the annotated
         # layer, the evidence layer still has the declared union.
-        for layer in ("_assumed", "_type"):
+        for layer in ("_represented", "_assumed", "_type"):
             type_id = getattr(node, layer, None)
             if type_id is None or facts.types[type_id]["k"] != "union":
                 continue
@@ -3002,19 +3138,62 @@ def _state_truth_tests(tree: ast.Module, table: Optional[symbols.SymbolTable],
             if len(members) != 2 or len(others) != 1:
                 return ""
             kind = others[0]
-            if kind in ("str", "int", "float", "bool") or (kind in _SIZED_KINDS and len_is_builtin):
+            if (kind in ("str", "int", "float", "bool")
+                    or kind == "dynamic" and runtime_available
+                    or kind in _SIZED_KINDS and len_is_builtin):
                 return kind
             return ""
         return declared_optional_field(node)
 
+    def native_always_true(node: ast.expr) -> bool:
+        type_id = getattr(node, "_represented", getattr(node, "_assumed", None))
+        if type_id is None:
+            type_id = getattr(node, "_type", None)
+        if type_id is None:
+            return False
+        item = facts.types[type_id]
+        return (item["k"] == "callable" or item["k"] == "instance"
+                and (item.get("name") in ("pathlib.Path", "sqlite3.Connection", "sqlite3.Cursor", "re.Match")
+                     or local_truth_hook(node) == "always"))
+
     def stated(node: ast.expr) -> ast.expr:
+        hook = local_truth_hook(node)
+        if hook in ("bool", "len"):
+            method = ast.copy_location(
+                ast.Call(func=ast.Attribute(value=node,
+                                            attr="to_bool" if hook == "bool" else "len",
+                                            ctx=ast.Load()), args=[], keywords=[]), node)
+            if hook == "bool":
+                return method
+            return _runtime_call("truth_length", [method], node)
+        if (isinstance(node, ast.Constant) and node.value is None
+                or isinstance(node, (ast.List, ast.Tuple)) and not node.elts):
+            return ast.copy_location(ast.Constant(value=False), node)
         if isinstance(node, ast.BoolOp):
             node.values = [stated(v) for v in node.values]
             return node
         if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
             node.operand = stated(node.operand)
             return node
+        if runtime_available and native_always_true(node):
+            return _runtime_call("instance_truth", [node], node)
         plain = optional_plain(node)
+        represented = getattr(node, "_represented", None)
+        if (represented is not None and facts.types[represented]["k"] == "dynamic"
+                and not runtime_list(node)
+                and not plain
+                and not any(isinstance(n, ast.Name) and getattr(n, "_binding", None) in native_maps
+                            for n in ast.walk(node))):
+            return node
+        if isinstance(node, ast.Call) and runtime_available:
+            type_id = getattr(node, "_represented", getattr(node, "_assumed", None))
+            if type_id is not None and facts.types[type_id]["k"] == "union":
+                members = [facts.types[m]["k"] for m in facts.types[type_id]["members"]]
+                if len(members) == 2 and set(members) == {"str", "none"}:
+                    test = _runtime_call("has_text", [node], node)
+                    test._dynamic = False
+                    test._runtime_annotation = "bool"
+                    return test
         if plain:
             # `value` that may be None or a str, number or container: not None, and then
             # the test of that type. V narrows the option within the one condition.
@@ -3029,6 +3208,8 @@ def _state_truth_tests(tree: ast.Module, table: Optional[symbols.SymbolTable],
                                    comparators=[ast.Constant(value=0 if plain == "int" else 0.0)])
             elif plain == "bool":
                 rest = again
+            elif plain == "dynamic":
+                rest = _runtime_call("truth", [again], node)
             else:
                 size = ast.Call(func=ast.Name(id="len", ctx=ast.Load()), args=[again], keywords=[])
                 rest = ast.Compare(left=size, ops=[ast.Gt()], comparators=[ast.Constant(value=0)])
@@ -3037,7 +3218,10 @@ def _state_truth_tests(tree: ast.Module, table: Optional[symbols.SymbolTable],
                 if not hasattr(part, "lineno"):
                     ast.copy_location(part, node)
             return both
-        kind = _truth_kind(node, facts)
+        storage_kind = facts.types[represented]["k"] if represented is not None else ""
+        kind = ("list" if runtime_list(node)
+                else storage_kind if storage_kind in ("str", "int", "float", "bool") + _SIZED_KINDS
+                else _truth_kind(node, facts))
         if optional_instance(node):
             new: ast.expr = ast.Compare(left=node, ops=[ast.IsNot()],
                                         comparators=[ast.Constant(value=None)])
@@ -3235,7 +3419,7 @@ def _runtime_call(name: str, args: List[ast.expr], like: ast.AST) -> ast.expr:
     for part in ast.walk(call):
         if not hasattr(part, "lineno"):
             ast.copy_location(part, like)
-    result_types = {"length": "int", "truth": "bool", "eq": "bool", "has": "bool", "is_none": "bool",
+    result_types = {"length": "int", "truth": "bool", "truth_option": "bool", "instance_truth": "bool", "truth_length": "bool", "eq": "bool", "has": "bool", "is_none": "bool",
                     "str": "string", "to_int": "int", "to_float": "float",
                     "to_str": "string", "to_bool": "bool", "elements": "list[Any]",
                     "unpack": "list[Any]"}
@@ -3647,6 +3831,48 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
 
     inferred_bindings = {b["id"]: b.get("inferred") for b in facts.bindings}
 
+    def optional_dynamic_annotation(annotation: Optional[ast.expr]) -> bool:
+        text = _unparse_expr(annotation).replace("typing.", "").replace(" ", "") if annotation else ""
+        return text in ("Optional[Any]", "Any|None", "None|Any",
+                        "Optional[object]", "object|None", "None|object")
+
+    optional_functions = {fn._binding for fn in ast.walk(tree)
+                          if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef))
+                          and getattr(fn, "_binding", None) is not None
+                          and not table.bindings[fn._binding].rebound
+                          and optional_dynamic_annotation(fn.returns)}
+    optional_bindings = set()
+    optional_aliases: dict[int, set[int]] = {}
+    for stmt in ast.walk(tree):
+        if isinstance(stmt, ast.arg) and optional_dynamic_annotation(stmt.annotation):
+            optional_bindings.add(getattr(stmt, "_binding", None))
+        target = (stmt.targets[0] if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1
+                  else stmt.target if isinstance(stmt, ast.AnnAssign) else None)
+        binding = getattr(target, "_binding", None) if isinstance(target, ast.Name) else None
+        if binding is None:
+            continue
+        if isinstance(stmt, ast.AnnAssign) and optional_dynamic_annotation(stmt.annotation):
+            optional_bindings.add(binding)
+        if isinstance(stmt.value, ast.Call) and isinstance(stmt.value.func, ast.Name):
+            if getattr(stmt.value.func, "_binding", None) in optional_functions:
+                optional_bindings.add(binding)
+        elif isinstance(stmt.value, ast.Name):
+            source = getattr(stmt.value, "_binding", None)
+            if source is not None:
+                optional_aliases.setdefault(source, set()).add(binding)
+    optional_bindings.discard(None)
+    pending = list(optional_bindings)
+    while pending:
+        for alias in optional_aliases.get(pending.pop(), ()):
+            if alias not in optional_bindings:
+                optional_bindings.add(alias)
+                pending.append(alias)
+
+    def optional_value(node: ast.AST) -> bool:
+        return (isinstance(node, ast.Name) and getattr(node, "_binding", None) in optional_bindings
+                or isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                and getattr(node.func, "_binding", None) in optional_functions)
+
     def any_list_annotation(annotation: Optional[ast.AST], binding_id: Optional[int] = None) -> bool:
         if annotation is None:
             return False
@@ -3827,7 +4053,9 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
 
     def chosen_value(node: ast.AST) -> bool:
         return (isinstance(node, ast.BoolOp) and id(node) not in tested_values
-                and all(runs_free(v) for v in node.values[1:]) and dynamic(node.values[0])
+                and (all(isinstance(v, (ast.Name, ast.Constant)) for v in node.values[:-1])
+                     or all(runs_free(v) for v in node.values[1:]))
+                and dynamic(node.values[0])
                 and all(dynamic(v) or boxable(v) for v in node.values))
 
     def dynamic_method_call(node: ast.AST) -> bool:
@@ -3838,6 +4066,16 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
                 and not getattr(node, "_api", "")
                 and not any(isinstance(a, ast.Starred) for a in node.args)
                 and dynamic(node.func.value))
+
+    def choice_boxable(node: ast.AST) -> bool:
+        # Native mutable references must keep their aliases. A fresh display
+        # can be boxed when its contents are runtime values or immutable leaves.
+        if dynamic(node):
+            return True
+        if _is_display(node):
+            values = node.values if isinstance(node, ast.Dict) else node.elts
+            return all(choice_boxable(value) for value in values)
+        return _truth_kind(node, facts) in ("int", "float", "str", "bool", "none", "bytes")
 
     def dynamic(node: ast.AST) -> bool:
         if getattr(node, "_dynamic", False):
@@ -3855,9 +4093,7 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
             return not getattr(node, "_api", "") and dynamic(node.value)
         if isinstance(node, ast.IfExp):
             branches = (node.body, node.orelse)
-            return any(dynamic(b) for b in branches) and all(
-                dynamic(b) or _truth_kind(b, facts) in (
-                    "int", "float", "str", "bool", "none", "bytes") for b in branches)
+            return any(dynamic(b) for b in branches) and all(choice_boxable(b) for b in branches)
         if any_dict_get(node) or dynamic_method_call(node) or chosen_value(node):
             return True
         if isinstance(node, ast.Subscript) and not isinstance(node.slice, ast.Slice):
@@ -4021,15 +4257,15 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
             was_dynamic = dynamic(node)
             self.generic_visit(node)
             if was_dynamic:
-                node.body = node.body if dynamic(node.body) else _runtime_call("box", [node.body], node.body)
-                node.orelse = node.orelse if dynamic(node.orelse) else _runtime_call("box", [node.orelse], node.orelse)
+                node.body = node.body if dynamic(node.body) else _deep_box(node.body)
+                node.orelse = node.orelse if dynamic(node.orelse) else _deep_box(node.orelse)
                 node._dynamic = True
             return node
 
         def visit_UnaryOp(self, node: ast.UnaryOp) -> ast.AST:
             self.generic_visit(node)
-            if isinstance(node.op, ast.Not) and dynamic(node.operand):
-                node.operand = _runtime_call("truth", [node.operand], node.operand)
+            if isinstance(node.op, ast.Not):
+                node.operand = truth(node.operand)
             return node
 
         def visit_Attribute(self, node: ast.Attribute) -> ast.AST:
@@ -4100,9 +4336,24 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
 
         def visit_BoolOp(self, node: ast.BoolOp) -> ast.AST:
             chosen = chosen_value(node)
+            lazy = all(isinstance(v, (ast.Name, ast.Constant)) for v in node.values[:-1])
             self.generic_visit(node)
             if not chosen:
                 return node
+            if lazy:
+                result = node.values[-1]
+                if not dynamic(result):
+                    result = _deep_box(result)
+                for value in reversed(node.values[:-1]):
+                    selected = value if dynamic(value) else _deep_box(value)
+                    test = _runtime_call("truth", [selected], value)
+                    if isinstance(node.op, ast.Or):
+                        result = ast.IfExp(test=test, body=copy.deepcopy(selected), orelse=result)
+                    else:
+                        result = ast.IfExp(test=test, body=result, orelse=copy.deepcopy(selected))
+                    ast.copy_location(result, node)
+                    result._dynamic = True
+                return result
             name = "either" if isinstance(node.op, ast.Or) else "both"
             result = node.values[0]
             for value in node.values[1:]:
@@ -4268,11 +4519,22 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
         if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
             node.operand = truth(node.operand)
             return node
-        if dynamic(node):
+        represented = getattr(node, "_represented", None)
+        storage_dynamic = (represented is not None
+                           and facts.types[represented]["k"] == "dynamic"
+                           and not any(isinstance(n, ast.Name)
+                                       and getattr(n, "_binding", None) in native_maps
+                                       for n in ast.walk(node)))
+        if optional_value(node):
+            return _runtime_call("truth_option", [node], node)
+        if dynamic(node) or storage_dynamic:
             return _runtime_call("truth", [node], node)
         return node
 
     # Truth tests first: they look at names and subscripts as written.
+    context = AnalysisContext(table=table, facts=facts)
+    native_maps = {getattr(n.target, "_binding", None) for n in ast.walk(tree)
+                   if isinstance(n, ast.AnnAssign) and context.native_map_annotation(n)}
     for node in ast.walk(tree):
         if isinstance(node, (ast.If, ast.While, ast.IfExp, ast.Assert)):
             if not any(isinstance(n, ast.NamedExpr) for n in ast.walk(node.test)):
@@ -4680,6 +4942,14 @@ def _deep_box(node: ast.expr) -> ast.expr:
     every level: the runtime value of a dict holds runtime values, not V maps."""
     if getattr(node, "_dynamic", False):
         return node
+    if isinstance(node, ast.Constant) and isinstance(node.value, float):
+        number = _runtime_call("to_float", [_runtime_call("box", [node], node)], node)
+        return _runtime_call("box", [number], node)
+    if (isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.USub, ast.UAdd))
+            and isinstance(node.operand, ast.Constant) and isinstance(node.operand.value, float)):
+        number = _runtime_call("to_float", [_runtime_call("box", [node.operand], node)], node)
+        signed = ast.copy_location(ast.UnaryOp(op=node.op, operand=number), node)
+        return _runtime_call("box", [signed], node)
     if _is_display(node):
         if isinstance(node, ast.Dict):
             node.values = [_deep_box(v) for v in node.values]
@@ -6398,6 +6668,7 @@ def process_file(file_path: str, project: Optional[ProjectFacts] = None) -> str:
     _mark_runtime_api(tree, table)
     _lower_exit_statements(tree, table)
     _erase_typing_casts(tree, table)
+    _expand_bool_calls(tree)
     facts = _infer_types(tree, table, project)
     _loop_comprehensions(tree, facts)
     any_lists = _declare_inferred_containers(tree, table, facts)

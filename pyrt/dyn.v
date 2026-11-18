@@ -80,6 +80,27 @@ pub fn has_text(a ?string) bool {
 	return (a or { '' }) != ''
 }
 
+// truth_option tests an optional runtime value without evaluating its source twice.
+pub fn truth_option[T](value ?T) bool {
+	if actual := value {
+		return truth(box(actual))
+	}
+	return false
+}
+
+// instance_truth evaluates a value proven always truthy without invoking it.
+pub fn instance_truth[T](value T) bool {
+	return true
+}
+
+// truth_length enforces Python's nonnegative __len__ result for truth tests.
+pub fn truth_length(length int) bool {
+	if length < 0 {
+		panic('__len__() should return >= 0')
+	}
+	return length != 0
+}
+
 // text_or is `a or b` where a may be None and b is text.
 pub fn text_or(a ?string, b string) string {
 	if found := a {

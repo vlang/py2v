@@ -83,7 +83,7 @@ fn show() {
 	assert infer_bool(1)
 	escape_quotes_ := ' foo \"bar\" baz '
 	assert 'aaabbccc'.contains('bbc')
-	assert 1 != 0
+	assert !!(1 != 0)
 	c1_, _, c2_ = 1, 2, 3
 }
 

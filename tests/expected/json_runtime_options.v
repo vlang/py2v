@@ -47,6 +47,6 @@ fn main() {
 		'y': 2
 	}))
 	println((json.dumps(pyrt.box({
-		'a': [pyrt.box(1), pyrt.box(2.5), pyrt.none_, pyrt.box(true)]
+		'a': [pyrt.box(1), pyrt.box(pyrt.to_float(pyrt.box(2.5))), pyrt.none_, pyrt.box(true)]
 	}), separators: [',', ':']) or { pyrt.fail(err) }))
 }

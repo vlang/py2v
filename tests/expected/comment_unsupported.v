@@ -37,7 +37,7 @@ fn do_unsupported() {
 		}
 		return result
 	}())
-	b := (a != 0)
+	b := !!(a != 0)
 	println(if b { 'True' } else { 'False' })
 }
 

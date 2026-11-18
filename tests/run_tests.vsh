@@ -194,7 +194,12 @@ python := $if windows { 'python' } $else { 'python3' }
 dynamic_cases := ['dynamic_container_elements', 'dynamic_membership', 'dynamic_comprehensions',
 	'dynamic_methods', 'dynamic_or_default', 'dynamic_stores', 'dynamic_runtime_returns',
 	'dynamic_attributes', 'dynamic_truth', 'dynamic_mixed_membership', 'dynamic_boxed_bytes',
-	'dynamic_unpacking', 'dynamic_optional', 'dynamic_conditional', 'native_map_types']
+	'dynamic_unpacking', 'dynamic_optional', 'dynamic_conditional', 'native_map_types',
+	'truth_container_values', 'truth_optional_values', 'truth_dynamic_negation', 'truth_dynamic_lazy',
+	'truth_optional_instances', 'truth_runtime_lists', 'truth_optional_calls', 'truth_optional_dynamic',
+	'truth_literals', 'truth_storage_default', 'truth_mixed_list_body', 'truth_mixed_list_else',
+	'truth_mixed_list_default', 'truth_boxed_floats', 'mixed_display_dynamic', 'json_runtime_options',
+	'truth_bool_context', 'truth_optional_returns', 'truth_native_objects', 'truth_local_class_hooks']
 dynamic_root := os.join_path(os.temp_dir(), 'py2v_dynamic_${os.getpid()}')
 os.mkdir_all(dynamic_root) or { panic(err) }
 mut dynamic_args := [][]string{}
@@ -205,6 +210,15 @@ for name in dynamic_cases {
 dynamic_results := parallel.amap(dynamic_args, compare_execution, workers: 2)
 for i, result in dynamic_results {
 	name := 'runtime execution: ' + dynamic_cases[i]
+	$if windows {
+		// A V install without the SQLite object (as on the Windows CI runner) cannot link
+		// pyrt.sqlite3; that case's generated text is still compared above.
+		if result.exit_code != 0 && result.output.contains('thirdparty/sqlite') {
+			report('SKIP', name, ' (no SQLite library to link on this platform)')
+			skipped++
+			continue
+		}
+	}
 	if result.exit_code == 0 {
 		report('PASS', name, '')
 		passed++
