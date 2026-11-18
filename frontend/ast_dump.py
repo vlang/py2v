@@ -3956,6 +3956,16 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
                 and not any(isinstance(a, ast.Starred) for a in node.args)
                 and dynamic(node.func.value))
 
+    def choice_boxable(node: ast.AST) -> bool:
+        # Native mutable references must keep their aliases. A fresh display
+        # can be boxed when its contents are runtime values or immutable leaves.
+        if dynamic(node):
+            return True
+        if _is_display(node):
+            values = node.values if isinstance(node, ast.Dict) else node.elts
+            return all(choice_boxable(value) for value in values)
+        return _truth_kind(node, facts) in ("int", "float", "str", "bool", "none", "bytes")
+
     def dynamic(node: ast.AST) -> bool:
         if getattr(node, "_dynamic", False):
             return True
@@ -3972,9 +3982,7 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
             return not getattr(node, "_api", "") and dynamic(node.value)
         if isinstance(node, ast.IfExp):
             branches = (node.body, node.orelse)
-            return any(dynamic(b) for b in branches) and all(
-                dynamic(b) or _truth_kind(b, facts) in (
-                    "int", "float", "str", "bool", "none", "bytes") for b in branches)
+            return any(dynamic(b) for b in branches) and all(choice_boxable(b) for b in branches)
         if any_dict_get(node) or dynamic_method_call(node) or chosen_value(node):
             return True
         if isinstance(node, ast.Subscript) and not isinstance(node.slice, ast.Slice):
@@ -4138,8 +4146,8 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
             was_dynamic = dynamic(node)
             self.generic_visit(node)
             if was_dynamic:
-                node.body = node.body if dynamic(node.body) else _runtime_call("box", [node.body], node.body)
-                node.orelse = node.orelse if dynamic(node.orelse) else _runtime_call("box", [node.orelse], node.orelse)
+                node.body = node.body if dynamic(node.body) else _deep_box(node.body)
+                node.orelse = node.orelse if dynamic(node.orelse) else _deep_box(node.orelse)
                 node._dynamic = True
             return node
 
