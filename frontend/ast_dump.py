@@ -1971,6 +1971,8 @@ def _annotation_to_str(node: Optional[ast.AST]) -> str:
         return f"{_annotation_to_str(node.value)}.{node.attr}"
     if isinstance(node, ast.Tuple):
         return ", ".join(_annotation_to_str(e) for e in node.elts)
+    if isinstance(node, ast.List):
+        return "[" + ", ".join(_annotation_to_str(e) for e in node.elts) + "]"
     # PEP 604: X | Y union types (Python 3.10+)
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
         left = _annotation_to_str(node.left)

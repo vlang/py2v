@@ -1518,6 +1518,9 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 		t.generated_code_has_any_type = true
 		if ann := kwonly.annotation {
 			kwtype = t.typename_from_annotation(*ann)
+			if kwtype == '' {
+				kwtype = '?Any'
+			}
 		}
 		t.var_types[kwonly.arg] = kwtype
 		if kwonly.arg in node.mutable_vars {
@@ -9167,6 +9170,17 @@ fn (mut t VTranspiler) annotation_typename(ann ?Expr) string {
 				}
 				t.pending_type_notes << '// NOTE: Literal[${index}] — allowed values are ${index}'
 				return base_type
+			}
+			if value == 'defaultdict' && t.init_import_aliases[value] == 'collections.defaultdict' {
+				// Match the map used for construction by visit_assign.
+				if a.slice is Tuple && a.slice.elts.len == 2 {
+					element := t.annotation_typename(a.slice.elts[1])
+					if element != '' {
+						return 'map[string]${element}'
+					}
+				}
+				t.generated_code_has_any_type = true
+				return 'map[string]Any'
 			}
 			if base_name == 'Dict' || base_name == 'dict'
 				|| (base_name == 'Mapping' && 'Mapping' !in t.abc_named_classes()) {

@@ -225,6 +225,18 @@ pub fn map_type_except(typename string, classes []string) string {
 	if typename == 'Callable' {
 		return 'Any'
 	}
+	for head in ['Callable[', 'typing.Callable[', 'collections.abc.Callable['] {
+		if !typename.starts_with(head) || !typename.ends_with(']') {
+			continue
+		}
+		args := split_type_args(typename[head.len..typename.len - 1])
+		if args.len != 2 || !args[0].starts_with('[') || !args[0].ends_with(']') {
+			return 'fn (Any) Any'
+		}
+		params := split_type_args(args[0][1..args[0].len - 1]).map(map_type_except(it, classes))
+		ret := if args[1] == 'None' { '' } else { ' ' + map_type_except(args[1], classes) }
+		return 'fn (${params.join(', ')})${ret}'
+	}
 	// A bare `MutableSequence` is a bare `list`.
 	if typename == 'MutableSequence' {
 		return v_type_map['list']

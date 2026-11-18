@@ -414,7 +414,8 @@ call_results_cases := ['dict_get_missing', 'dict_get_eager', 'dict_get_chain', '
 	'dict_unpack_typechecking', 'list_box_any_id', 'list_alias_iter_reorder', 'list_alias_slice_reverse',
 	'list_alias_slice_delete', 'list_slice_step_assign', 'list_slice_step_delete',
 	'list_slice_unit_step_resize', 'list_slice_unit_step_grow', 'list_frozenset_alias',
-	'dict_widen_local', 'dict_widen_reassign', 'list_scoped_refusal']
+	'dict_widen_local', 'dict_widen_reassign', 'list_scoped_refusal', 'decl_defaultdict',
+	'decl_kwonly_none', 'decl_callable_field', 'decl_callable_missing_return']
 mut execution_args := [][]string{}
 mut execution_names := []string{}
 for name in call_results_cases {
