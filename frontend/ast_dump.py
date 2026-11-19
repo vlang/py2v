@@ -5736,7 +5736,8 @@ def _builtin_exception_names() -> frozenset:
                      if isinstance(value, type) and issubclass(value, BaseException))
 
 
-def _mark_module_constants(tree: ast.Module, table: Optional[symbols.SymbolTable]) -> None:
+def _mark_module_constants(tree: ast.Module, table: Optional[symbols.SymbolTable],
+                           package: bool) -> None:
     """Name the module-level values that functions read, so they become V constants.
 
     A V function cannot see a local of `main`. A name bound once at module level to a
@@ -5752,6 +5753,16 @@ def _mark_module_constants(tree: ast.Module, table: Optional[symbols.SymbolTable
             for node in ast.walk(fn):
                 if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
                     read_in_function.add(getattr(node, "_binding", None))
+    read_in_initializer: set = set()
+    if package:
+        # Package initializers also become V module declarations. Preserve
+        # annotated constants used by another initializer, even if no function
+        # reads the name directly.
+        for stmt in tree.body:
+            if isinstance(stmt, (ast.Assign, ast.AnnAssign)) and stmt.value is not None:
+                read_in_initializer.update(
+                    getattr(node, "_binding", None) for node in ast.walk(stmt.value)
+                    if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load))
     spellings: Dict[str, int] = {}
     for b in table.bindings:
         key = _v_spelling(b.name)
@@ -5768,7 +5779,8 @@ def _mark_module_constants(tree: ast.Module, table: Optional[symbols.SymbolTable
         if not isinstance(target, ast.Name):
             continue
         binding_id = getattr(target, "_binding", None)
-        if binding_id is None or binding_id not in read_in_function:
+        needed_by_initializer = isinstance(stmt, ast.AnnAssign) and binding_id in read_in_initializer
+        if binding_id is None or (binding_id not in read_in_function and not needed_by_initializer):
             continue
         b = table.bindings[binding_id]
         if b.scope != 0 or b.rebound or b.declared_global or spellings.get(_v_spelling(b.name), 0) != 1:
@@ -7768,7 +7780,7 @@ def process_file(file_path: str, project: Optional[ProjectFacts] = None) -> str:
             _lower_dynamic_values(tree, table, facts, any_lists.copy())
             _box_mixed_displays(tree, table, facts)
             _parameterize_bare_containers(tree, table, facts)
-            _mark_module_constants(tree, table)
+            _mark_module_constants(tree, table, package=project is not None)
             # Backend comprehension substitution must not rename V's implicit error binding.
             err_bindings = {getattr(target, "_binding", None)
                             for node in ast.walk(tree) if isinstance(node, ast.comprehension)

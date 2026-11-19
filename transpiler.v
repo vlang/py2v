@@ -1496,8 +1496,8 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 				incoming := t.new_tmp('${arg.arg}_in')
 				param_copies << 'mut ${arg_name} := ${incoming}.clone()'
 				arg_name = incoming
-		} else if typename in v_value_param_types || optional_value || local_value
-			|| typename.starts_with('&pyrt.ListRef[') {
+			} else if typename in v_value_param_types || optional_value || local_value
+				|| typename.starts_with('&pyrt.ListRef[') {
 				// Rebinding a number, string or bool parameter is local in Python, and V
 				// has no `mut` for these or their options: it arrives under another name and the
 				// body starts with a mutable local that has the source's name.
@@ -1996,6 +1996,7 @@ pub fn (mut t VTranspiler) visit_class_def(node ClassDef) string {
 	mut class_attr_values := []string{}
 	mut class_attr_syms := map[string]string{}
 	mut init_field_names := map[string]bool{}
+	module_names := if t.emit_pub { t.module_idents.values() } else { []string{} }
 
 	for stmt in node.body {
 		match stmt {
@@ -2029,7 +2030,14 @@ pub fn (mut t VTranspiler) visit_class_def(node ClassDef) string {
 				if stmt.targets.len == 1 && stmt.targets[0] is Name {
 					attr_name := (stmt.targets[0] as Name).id
 					if !is_v_field_ident(attr_name) {
-						class_attr_syms[attr_name] = class_attr_symbol_name(node.name, attr_name)
+						symbol := class_attr_symbol_name(node.name, attr_name)
+						// A package can export Status.VALID under STATUS_VALID.
+						// Keep the generated storage distinct from that alias.
+						class_attr_syms[attr_name] = if symbol in module_names {
+							t.registry.helper_name(t.module_name, 'class_${symbol}_', t.source_words)
+						} else {
+							symbol
+						}
 					}
 				}
 			}
