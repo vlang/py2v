@@ -274,7 +274,7 @@ pub fn (t VTranspiler) emitted_fn_name(name string) string {
 	if t.emit_pub && t.current_stem != '' && name == 'main' {
 		return t.current_stem + '_main'
 	}
-	return name
+	return t.registry.function_names['${t.current_dotted}.${name}'] or { name }
 }
 
 // visit_module renders a whole Python module: constants, imports, structs and
@@ -385,6 +385,12 @@ pub fn (mut t VTranspiler) visit_module(node Module) string {
 		}
 		if stmt is ClassDef {
 			t.module_class_names[(stmt as ClassDef).name] = true
+		}
+		if stmt is FunctionDef || stmt is AsyncFunctionDef {
+			name := if stmt is FunctionDef { stmt.name } else { (stmt as AsyncFunctionDef).name }
+			if renamed := t.registry.function_names['${t.current_dotted}.${name}'] {
+				t.module_idents[name] = renamed
+			}
 		}
 	}
 
@@ -1268,7 +1274,7 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 	if !node.is_class_method {
 		t.init_import_aliases.delete(node.name)
 	}
-	if !node.is_class_method {
+	if !node.is_class_method && !node.is_nested {
 		renamed := t.emitted_fn_name(node.name)
 		if renamed != node.name {
 			return t.visit_function_def(FunctionDef{
@@ -5277,6 +5283,9 @@ fn (mut t VTranspiler) project_import_name(path string) ?string {
 		t.add_using(info.v_module)
 		return info.v_module
 	}
+	if name := t.imported_colliding_function(path) {
+		return name
+	}
 	if !path.contains('.') { return none }
 	owner := t.registry.lookup(path.all_before_last('.'))
 	if owner.dotted == '' { return none }
@@ -5293,6 +5302,27 @@ fn (mut t VTranspiler) project_import_name(path string) ?string {
 	if owner.v_module == t.module_name { return name }
 	t.add_using(owner.v_module)
 	return '${owner.v_module}.${name}'
+}
+
+// Resolve a renamed definition through explicit imports, including re-exports.
+fn (mut t VTranspiler) imported_colliding_function(path string) ?string {
+	if t.registry.function_names.len == 0 { return none }
+	mut target := path
+	for _ in 0 .. max_reexport_hops {
+		if !target.contains('.') { return none }
+		info := t.registry.lookup(target.all_before_last('.'))
+		if info.dotted == '' { return none }
+		canonical := '${info.dotted}.${target.all_after_last('.')}'
+		if binding := t.registry.init_import_bindings[canonical] {
+			target = binding
+			continue
+		}
+		name := t.registry.function_names[canonical] or { return none }
+		if info.v_module == t.module_name { return name }
+		t.add_using(info.v_module)
+		return '${info.v_module}.${name}'
+	}
+	return none
 }
 
 // collapse_submodule_attr rewrites `mod.attr` to `attr` when `mod` was bound by
@@ -6490,6 +6520,9 @@ pub fn (mut t VTranspiler) visit_call(original Call) string {
 	// Handle string/list methods that need translation
 	if node.func is Attribute {
 		attr_node := node.func as Attribute
+		if renamed := t.imported_colliding_function(t.init_python_path(node.func)) {
+			return '${renamed}(${vargs.join(', ')})'
+		}
 		// A `from . import mod` qualifier is Python-only; call the symbol
 		// directly rather than rebuilding `mod.method(...)` from the AST.
 		collapsed := t.collapse_submodule_attr(attr_node)
