@@ -161,7 +161,8 @@ const project_dir = os.dir(script_dir)
 const cases_dir = os.join_path(script_dir, 'cases')
 const expected_dir = os.join_path(script_dir, 'expected')
 const package_fixtures = ['pkg_imports', 'pkg_lib_main', 'pkg_multi', 'pkg_multi2', 'pkg_true_div',
-	'pkg_init_execution', 'pkg_private_names', 'pkg_call_defaults', 'pkg_type_only']!
+	'pkg_init_execution', 'pkg_private_names', 'pkg_call_defaults', 'pkg_type_only',
+	'pkg_qualified_construct']!
 
 mut py2v := resolve_py2v()
 
@@ -399,8 +400,9 @@ call_results_cases := ['dict_get_missing', 'dict_get_eager', 'dict_get_chain', '
 	'nested_functions', 'nonlocal_closure', 'closure_uses_class', 'module_name_shadowed',
 	'closure_exit_finally', 'constructor_closure_captures', 'bound_append', 'conditional_condition',
 	'conditional_map', 'custom_remove', 'divmod_value', 'empty_isinstance', 'expression_walrus',
-	'independent_dunders', 'local_identifier_encoding', 'loop_scope_bindings', 'loop_unpack_targets',
-	'overload_definitions', 'parameter_bindings', 'private_method_calls',
+	'independent_dunders', 'local_identifier_encoding', 'loop_scope_bindings', 'loop_target_rebinding',
+	'loop_parameter_alias', 'loop_unpack_targets', 'uppercase_condition', 'async', 'variadic_generator',
+	'variadic_generator_kwonly', 'overload_definitions', 'parameter_bindings', 'private_method_calls',
 	'closure_capture_discriminator', 'review_nested_default', 'review_nested_default_snapshot',
 	'review_nested_default_once', 'review_nested_if', 'review_nested_loop',
 	'review_nested_literal_block', 'review_divmod_negative_float', 'modulo_signed', 'modulo_float',
@@ -414,11 +416,11 @@ call_results_cases := ['dict_get_missing', 'dict_get_eager', 'dict_get_chain', '
 	'dict_unpack_typechecking', 'list_box_any_id', 'list_alias_iter_reorder', 'list_alias_slice_reverse',
 	'list_alias_slice_delete', 'list_slice_step_assign', 'list_slice_step_delete',
 	'list_slice_unit_step_resize', 'list_slice_unit_step_grow', 'list_frozenset_alias',
-	'dict_widen_local', 'dict_widen_reassign', 'list_scoped_refusal', 'decl_defaultdict',
-	'decl_kwonly_none', 'decl_callable_field', 'decl_callable_missing_return', 'decl_callable_optional',
-	'decl_digit_name', 'decl_duplicate_init', 'decl_duplicate_dunder', 'decl_duplicate_overwritten',
-	'decl_reserved_prefix_field', 'decl_reserved_numeric_field', 'decl_defaultdict_int_key',
-	'decl_defaultdict_alias']
+	'dict_widen_local', 'dict_widen_reassign', 'list_scoped_refusal', 'decl_callable_field',
+	'decl_callable_missing_return', 'decl_callable_optional', 'decl_defaultdict_alias',
+	'decl_defaultdict_int_key', 'decl_defaultdict', 'decl_digit_name', 'decl_duplicate_dunder',
+	'decl_duplicate_init', 'decl_duplicate_overwritten', 'decl_kwonly_none',
+	'decl_reserved_numeric_field', 'decl_reserved_prefix_field']
 mut execution_args := [][]string{}
 mut execution_names := []string{}
 for name in call_results_cases {
@@ -762,6 +764,37 @@ for pkg in package_fixtures {
 	} else {
 		report('PASS', pkg, ' (multi-module)')
 		passed++
+		if pkg == 'pkg_qualified_construct' {
+			for part in ['defs', 'use'] {
+				actual := os.read_file(os.join_path(out_dir, 'py_${part}', '__init__.v')) or { panic(err) }
+				expected := os.read_file(os.join_path(expected_dir, pkg, part, '__init__.v')) or { panic(err) }
+				name := 'qualified constructor: ${part} fixture'
+				if actual.replace('\r', '') == expected.replace('\r', '') {
+					report('PASS', name, '')
+					passed++
+				} else {
+					report('FAIL', name, '')
+					failed++
+					failures << fail_line('FAIL', name, '')
+				}
+			}
+			entry := os.join_path(out_dir, 'qualified_main.v')
+			os.write_file(entry, 'module main\nimport py_use\nfn main() {\n\tprintln(py_use.total())\n}\n') or { panic(err) }
+			driver := os.join_path(out_dir, 'driver.py')
+			os.write_file(os.join_path(out_dir, 'source_path.txt'), cases_dir) or { panic(err) }
+			os.write_file(driver, 'import sys\nfrom pathlib import Path\nsys.path.insert(0, Path(__file__).with_name("source_path.txt").read_text(encoding="utf-8"))\nfrom pkg_qualified_construct.use import total\nprint(total())\n') or { panic(err) }
+			result := compare_execution(['', python, driver, entry])
+			name := 'qualified constructor: package execution'
+			if result.exit_code == 0 {
+				report('PASS', name, '')
+				passed++
+			} else {
+				report('FAIL', name, '')
+				println(result.output)
+				failed++
+				failures << fail_line('FAIL', name, '')
+			}
+		}
 		if pkg == 'pkg_type_only' {
 			for fixture in ['acyclic/consumer', 'cycle_b/consumer', 'model/holder', 'model/frozen'] {
 				module_name := 'py_pkg_type_only_' + fixture.all_before_last('/')

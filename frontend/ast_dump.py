@@ -7374,7 +7374,7 @@ def _plan_bound_appends(tree, table, facts):
 
 
 def _encode_local_identifiers(tree, table):
-    """Give non-ASCII and underscore-digit locals collision-free V spellings.
+    """Give locals with incompatible spellings collision-free V names.
 
     Work on lexical binding identities, not text, so strings and attributes keep
     their Python values. Exported names, parameters, and captured bindings are
@@ -7383,13 +7383,15 @@ def _encode_local_identifiers(tree, table):
     if table is None:
         return False
     used = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)}
+    used.update(binding.name for binding in table.bindings)
     renamed = {}
     for binding in table.bindings:
         name = binding.name
         if (table.scopes[binding.scope].kind != "function" or binding.is_param
                 or binding.captured or binding.kind in ("class", "function", "import")):
             continue
-        if name.isascii() and not name.lstrip("_")[:1].isdigit():
+        # `C.field` is parsed as a C reference even if Python's C is a local.
+        if name != "C" and name.isascii() and not name.lstrip("_")[:1].isdigit():
             continue
         candidate = "py2v_ident_" + "_".join(f"{ord(c):x}" for c in name)
         while candidate in used:

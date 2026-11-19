@@ -36,13 +36,13 @@ fn (a Any) < (b Any) bool {
 	return pyrt.lt(a, b) or { panic(err) }
 }
 
-pub struct parser {
+pub struct Py2v_parser {
 pub mut:
 	val u32
 }
 
 fn test_parser(input Any, expected Any) {
-	mut p := parser{
+	mut p := Py2v_parser{
 		val: u32(0)
 	}
 	result := p.parse(io.BytesIO(input))
