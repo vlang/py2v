@@ -36,8 +36,12 @@ fn compute(value int) int {
 	return value
 }
 
+fn construct_py() !Any {
+	return pyrt.untranslated_import('unavailable.Widget')!
+}
+
 fn construct() Any {
-	return py2v_unsupported_qualified_call('external.Widget', compute(1), compute(2), 'mode', compute(3))
+	return construct_py() or { pyrt.fail(err) }
 }
 
 fn method_py(receiver Any) !Any {

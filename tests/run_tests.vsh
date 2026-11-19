@@ -397,30 +397,32 @@ os.mkdir_all(call_results_root) or { panic(err) }
 call_results_cases := ['dict_get_missing', 'dict_get_eager', 'dict_get_chain', 'dict_get_receiver',
 	'dict_get_mutating', 'dict_get_compare', 'with_return', 'rebound_optional_params',
 	'argparse_join_value', 'join_string_iterable', 'subparser_parameter', 'nested_closures',
-	'nested_functions', 'nonlocal_closure', 'closure_uses_class', 'module_name_shadowed',
-	'closure_exit_finally', 'constructor_closure_captures', 'bound_append', 'conditional_condition',
-	'conditional_map', 'custom_remove', 'divmod_value', 'empty_isinstance', 'expression_walrus',
-	'independent_dunders', 'local_identifier_encoding', 'loop_scope_bindings', 'loop_target_rebinding',
-	'loop_parameter_alias', 'loop_unpack_targets', 'uppercase_condition', 'async', 'variadic_generator',
-	'variadic_generator_kwonly', 'overload_definitions', 'parameter_bindings', 'private_method_calls',
-	'closure_capture_discriminator', 'review_nested_default', 'review_nested_default_snapshot',
-	'review_nested_default_once', 'review_nested_if', 'review_nested_loop',
-	'review_nested_literal_block', 'review_divmod_negative_float', 'modulo_signed', 'modulo_float',
-	'modulo_generic', 'modulo_target_once', 'modulo_dynamic_target', 'dict_local_any_writes',
-	'dict_local_inferred_writes', 'modulo_loop_value', 'list_name_alias', 'list_function_alias',
-	'list_field_alias', 'list_container_alias', 'list_return_alias', 'list_copy_boundary',
-	'list_identity_compare', 'list_nested_paths', 'list_slice_alias', 'list_reference_ops',
-	'list_heterogeneous_alias', 'list_delete_alias', 'list_augassign_target', 'list_box_source',
-	'list_box_identity', 'list_box_mutate_only', 'list_box_widening', 'augassign_side_effects',
-	'comb_sort', 'element_store_mut', 'mut_inplace_methods', 'typing_abc_annotations',
-	'dict_unpack_typechecking', 'list_box_any_id', 'list_alias_iter_reorder', 'list_alias_slice_reverse',
-	'list_alias_slice_delete', 'list_slice_step_assign', 'list_slice_step_delete',
-	'list_slice_unit_step_resize', 'list_slice_unit_step_grow', 'list_frozenset_alias',
-	'dict_widen_local', 'dict_widen_reassign', 'list_scoped_refusal', 'decl_callable_field',
-	'decl_callable_missing_return', 'decl_callable_optional', 'decl_defaultdict_alias',
-	'decl_defaultdict_int_key', 'decl_defaultdict', 'decl_digit_name', 'decl_duplicate_dunder',
-	'decl_duplicate_init', 'decl_duplicate_overwritten', 'decl_kwonly_none',
-	'decl_reserved_numeric_field', 'decl_reserved_prefix_field']
+	'os_path_dirname', 'nested_functions', 'nonlocal_closure', 'closure_uses_class',
+	'module_name_shadowed', 'closure_exit_finally', 'constructor_closure_captures', 'bound_append',
+	'conditional_condition', 'conditional_map', 'custom_remove', 'divmod_value', 'empty_isinstance',
+	'expression_walrus', 'independent_dunders', 'local_identifier_encoding', 'loop_scope_bindings',
+	'loop_target_rebinding', 'loop_parameter_alias', 'loop_unpack_targets', 'uppercase_condition',
+	'async', 'variadic_generator', 'variadic_generator_kwonly', 'overload_definitions',
+	'parameter_bindings', 'private_method_calls', 'closure_capture_discriminator',
+	'review_nested_default', 'review_nested_default_snapshot', 'review_nested_default_once',
+	'review_nested_if', 'review_nested_loop', 'review_nested_literal_block',
+	'review_divmod_negative_float', 'modulo_signed', 'modulo_float', 'modulo_generic',
+	'modulo_target_once', 'modulo_dynamic_target', 'dict_local_any_writes', 'dict_local_inferred_writes',
+	'modulo_loop_value', 'list_name_alias', 'list_function_alias', 'list_field_alias',
+	'list_container_alias', 'list_return_alias', 'list_copy_boundary', 'list_identity_compare',
+	'list_nested_paths', 'list_slice_alias', 'list_reference_ops', 'list_heterogeneous_alias',
+	'list_delete_alias', 'list_augassign_target', 'list_box_source', 'list_box_identity',
+	'list_box_mutate_only', 'list_box_widening', 'augassign_side_effects', 'comb_sort',
+	'element_store_mut', 'mut_inplace_methods', 'typing_abc_annotations', 'dict_unpack_typechecking',
+	'list_box_any_id', 'list_alias_iter_reorder', 'list_alias_slice_reverse', 'list_alias_slice_delete',
+	'list_slice_step_assign', 'list_slice_step_delete', 'list_slice_unit_step_resize',
+	'list_slice_unit_step_grow', 'list_frozenset_alias', 'dict_widen_local', 'dict_widen_reassign',
+	'list_scoped_refusal', 'refused_walrus', 'decl_defaultdict', 'decl_kwonly_none',
+	'decl_callable_field', 'decl_callable_missing_return', 'decl_callable_optional', 'decl_digit_name',
+	'decl_duplicate_init', 'decl_duplicate_dunder', 'decl_duplicate_overwritten',
+	'decl_reserved_prefix_field', 'decl_reserved_numeric_field', 'decl_defaultdict_int_key',
+	'decl_defaultdict_alias', 'external_dynamic', 'scheduling_refusal', 'nominal_enum_classmethod',
+	'nominal_enum_unannotated', 'dynamic_empty_tuple']
 mut execution_args := [][]string{}
 mut execution_names := []string{}
 for name in call_results_cases {
@@ -437,6 +439,34 @@ execution_results := parallel.amap(execution_args, compare_execution, workers: r
 for i, result in execution_results {
 	name := 'call results: ${execution_names[i]} execution'
 	if result.exit_code == 0 {
+		report('PASS', name, '')
+		passed++
+	} else {
+		report('FAIL', name, '')
+		println(result.output)
+		failed++
+		failures << fail_line('FAIL', name, '')
+	}
+}
+// Exercise the paths that require a dependency or scheduler on purpose.
+for control in [
+	['external_dynamic', 'println(from_context(', 'lookup()', 'ImportError: untranslated Python import'],
+	['scheduling_refusal', 'println(supported())', 'read_future(0)',
+		'V panic: py2v_unsupported_coroutine'],
+] {
+	case_name := control[0]
+	source := os.read_file(os.join_path(call_results_root, case_name + '.v')) or { panic(err) }
+	mut lines := source.split_into_lines()
+	for index, line in lines {
+		if line.trim_space().starts_with(control[1]) {
+			lines[index] = '\t' + control[2]
+		}
+	}
+	driver := os.join_path(call_results_root, case_name + '_failure.v')
+	os.write_file(driver, lines.join('\n') + '\n') or { panic(err) }
+	result := run_generated(driver)
+	name := '${case_name} fails loudly'
+	if result.exit_code != 0 && result.output.contains(control[3]) {
 		report('PASS', name, '')
 		passed++
 	} else {
@@ -935,8 +965,7 @@ for pkg in package_fixtures {
 	os.rmdir_all(out_dir) or { panic(err) }
 }
 
-// Unknown external classes retain the complete previous emission, even when
-// that emission does not compile. They are outside the scanned package.
+// An external constructor resolves through the runtime when its package is absent.
 external_out := os.join_path(os.temp_dir(), 'py2v_init_external_${os.getpid()}')
 external := os.exec([py2v, '--package', os.join_path(cases_dir, 'pkg_init_external'), '-o',
 	external_out])
@@ -946,7 +975,7 @@ external_code := os.read_file(os.join_path(external_out, 'py_pkg_init_external',
 external_expected := os.read_file(os.join_path(script_dir, 'baseline', 'pkg_init_external.v.txt')) or {
 	panic(err)
 }
-external_name := 'initializers: unknown external class is unchanged'
+external_name := 'initializers: unavailable external class resolves at runtime'
 if external.exit_code == 0 && external_code.replace('\r', '') == external_expected {
 	report('PASS', external_name, '')
 	passed++
