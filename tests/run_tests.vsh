@@ -163,7 +163,7 @@ const expected_dir = os.join_path(script_dir, 'expected')
 const package_fixtures = ['pkg_imports', 'pkg_lib_main', 'pkg_multi', 'pkg_multi2', 'pkg_true_div',
 	'pkg_init_execution', 'pkg_private_names', 'pkg_call_defaults', 'pkg_type_only',
 	'pkg_qualified_construct', 'pkg_colliding_functions', 'pkg_annotated_constants',
-	'pkg_class_constant_alias']!
+	'pkg_class_constant_alias', 'pkg_module_string_product']!
 
 mut py2v := resolve_py2v()
 
@@ -827,7 +827,7 @@ for pkg in package_fixtures {
 			}
 		}
 		if pkg in ['pkg_type_only', 'pkg_colliding_functions', 'pkg_annotated_constants',
-			'pkg_class_constant_alias'] {
+			'pkg_class_constant_alias', 'pkg_module_string_product'] {
 			fixtures := match pkg {
 				'pkg_type_only' {
 					['acyclic/consumer', 'cycle_b/consumer', 'model/holder', 'model/frozen']

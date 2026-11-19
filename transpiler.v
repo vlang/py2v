@@ -425,7 +425,11 @@ pub fn (mut t VTranspiler) visit_module(node Module) string {
 				}
 			}
 		}
-		s := t.visit_stmt(stmt)
+		s := if t.emit_pub && stmt is Assign && stmt.value is ListComp {
+			t.visit_assignment(stmt, true)
+		} else {
+			t.visit_stmt(stmt)
+		}
 		if s.len == 0 {
 			continue
 		}
@@ -2332,6 +2336,10 @@ pub fn (mut t VTranspiler) visit_class_def(node ClassDef) string {
 
 // visit_assign emits V code for an Assign statement.
 pub fn (mut t VTranspiler) visit_assign(node Assign) string {
+	return t.visit_assignment(node, false)
+}
+
+fn (mut t VTranspiler) visit_assignment(node Assign, package_initializer bool) string {
 	// Record what this assignment binds, so a later `for` over the same Python
 	// name is given a fresh V variable instead of shadowing it. Whether a name
 	// was already bound has to be sampled before this statement binds anything,
@@ -2526,7 +2534,13 @@ pub fn (mut t VTranspiler) visit_assign(node Assign) string {
 			}
 		}
 
-		value_str := if use_temp { assignment_temp } else { t.visit_expr(node.value) }
+		value_str := if use_temp {
+			assignment_temp
+		} else if package_initializer && node.value is ListComp {
+			t.module_string_product(node.value) or { t.visit_expr(node.value) }
+		} else {
+			t.visit_expr(node.value)
+		}
 
 		match target {
 			Tuple {
@@ -8339,6 +8353,43 @@ pub fn (mut t VTranspiler) visit_list_comp(node ListComp) string {
 	// Should be transformed by VComprehensionRewriter
 	// Fallback implementation
 	return t.visit_generator_exp_impl(node.elt, node.generators)
+}
+
+// A package string product can initialize a constant through a closure. Each
+// iterable is a native array in the module, so the closure needs no captures.
+fn (mut t VTranspiler) module_string_product(node ListComp) ?string {
+	if node.generators.len < 2 || node.elt !is BinOp {
+		return none
+	}
+	element := node.elt as BinOp
+	if element.op !is Add || element.left !is Name || element.right !is Name {
+		return none
+	}
+	mut targets := map[string]bool{}
+	module_names := t.module_idents.values()
+	for generator in node.generators {
+		if generator.is_async || generator.ifs.len > 0 || generator.iter !is Name
+			|| generator.target !is Name {
+			return none
+		}
+		iter_name := (generator.iter as Name).id
+		target := (generator.target as Name).id
+		if iter_name !in t.module_idents || t.var_types[iter_name] != '[]string'
+			|| target in module_names || target in targets || target == 'result'
+			|| target == '_' || escape_local_decl(target) != target {
+			return none
+		}
+		targets[target] = true
+	}
+	if (element.left as Name).id !in targets || (element.right as Name).id !in targets {
+		return none
+	}
+	saved_types := t.var_types.clone()
+	defer { t.var_types = saved_types }
+	for target, _ in targets {
+		t.var_types[target] = 'string'
+	}
+	return t.visit_generator_exp_impl_walrus(node.elt, node.generators)
 }
 
 // visit_set_comp emits V code for set comprehensions (SetComp).
