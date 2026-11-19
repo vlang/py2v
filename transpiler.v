@@ -274,7 +274,7 @@ pub fn (t VTranspiler) emitted_fn_name(name string) string {
 	if t.emit_pub && t.current_stem != '' && name == 'main' {
 		return t.current_stem + '_main'
 	}
-	return name
+	return t.registry.function_names['${t.current_dotted}.${name}'] or { name }
 }
 
 // visit_module renders a whole Python module: constants, imports, structs and
@@ -386,6 +386,12 @@ pub fn (mut t VTranspiler) visit_module(node Module) string {
 		if stmt is ClassDef {
 			t.module_class_names[(stmt as ClassDef).name] = true
 		}
+		if stmt is FunctionDef || stmt is AsyncFunctionDef {
+			name := if stmt is FunctionDef { stmt.name } else { (stmt as AsyncFunctionDef).name }
+			if renamed := t.registry.function_names['${t.current_dotted}.${name}'] {
+				t.module_idents[name] = renamed
+			}
+		}
 	}
 
 	// A library module has no entry point, and V merges a directory into a
@@ -419,7 +425,11 @@ pub fn (mut t VTranspiler) visit_module(node Module) string {
 				}
 			}
 		}
-		s := t.visit_stmt(stmt)
+		s := if t.emit_pub && stmt is Assign && stmt.value is ListComp {
+			t.visit_assignment(stmt, true)
+		} else {
+			t.visit_stmt(stmt)
+		}
 		if s.len == 0 {
 			continue
 		}
@@ -1140,7 +1150,10 @@ fn (mut t VTranspiler) visit_closure_from_funcdef(node FunctionDef, nl_names []s
 		t.var_types[arg.arg] = typ
 		mut incoming := local
 		if arg.arg in node.mutable_vars {
-			if typ in v_value_param_types || for_rebinds_parameter(node.body, arg.arg) {
+			if !arg.is_mutable && typ.starts_with('[]') {
+				incoming = t.new_tmp('${arg.arg}_in')
+				copies << 'mut ${local} := ${incoming}.clone()'
+			} else if typ in v_value_param_types || for_rebinds_parameter(node.body, arg.arg) {
 				incoming = t.new_tmp('${arg.arg}_in')
 				copies << 'mut ${local} := ${incoming}'
 			} else {
@@ -1265,7 +1278,7 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 	if !node.is_class_method {
 		t.init_import_aliases.delete(node.name)
 	}
-	if !node.is_class_method {
+	if !node.is_class_method && !node.is_nested {
 		renamed := t.emitted_fn_name(node.name)
 		if renamed != node.name {
 			return t.visit_function_def(FunctionDef{
@@ -1483,6 +1496,10 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 				|| typename.starts_with('[]') || typename.starts_with('map['))
 			if typename in v_value_param_types && arg.arg in node.condition_walrus_names {
 				// The walrus lowering copies this parameter itself.
+			} else if !arg.is_mutable && typename.starts_with('[]') {
+				incoming := t.new_tmp('${arg.arg}_in')
+				param_copies << 'mut ${arg_name} := ${incoming}.clone()'
+				arg_name = incoming
 			} else if typename in v_value_param_types || optional_value || local_value
 				|| typename.starts_with('&pyrt.ListRef[') {
 				// Rebinding a number, string or bool parameter is local in Python, and V
@@ -1543,7 +1560,11 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 		}
 		t.var_types[kwonly.arg] = kwtype
 		if kwonly.arg in node.mutable_vars {
-			if kwtype in v_value_param_types || for_rebinds_parameter(node.body, kwonly.arg) {
+			if !kwonly.is_mutable && kwtype.starts_with('[]') {
+				incoming := t.new_tmp('${kwonly.arg}_in')
+				param_copies << 'mut ${kwname} := ${incoming}.clone()'
+				kwname = incoming
+			} else if kwtype in v_value_param_types || for_rebinds_parameter(node.body, kwonly.arg) {
 				incoming := t.new_tmp('${kwonly.arg}_in')
 				param_copies << 'mut ${kwname} := ${incoming}'
 				kwname = incoming
@@ -1979,6 +2000,7 @@ pub fn (mut t VTranspiler) visit_class_def(node ClassDef) string {
 	mut class_attr_values := []string{}
 	mut class_attr_syms := map[string]string{}
 	mut init_field_names := map[string]bool{}
+	module_names := if t.emit_pub { t.module_idents.values() } else { []string{} }
 
 	for stmt in node.body {
 		match stmt {
@@ -2012,7 +2034,14 @@ pub fn (mut t VTranspiler) visit_class_def(node ClassDef) string {
 				if stmt.targets.len == 1 && stmt.targets[0] is Name {
 					attr_name := (stmt.targets[0] as Name).id
 					if !is_v_field_ident(attr_name) {
-						class_attr_syms[attr_name] = class_attr_symbol_name(node.name, attr_name)
+						symbol := class_attr_symbol_name(node.name, attr_name)
+						// A package can export Status.VALID under STATUS_VALID.
+						// Keep the generated storage distinct from that alias.
+						class_attr_syms[attr_name] = if symbol in module_names {
+							t.registry.helper_name(t.module_name, 'class_${symbol}_', t.source_words)
+						} else {
+							symbol
+						}
 					}
 				}
 			}
@@ -2307,6 +2336,10 @@ pub fn (mut t VTranspiler) visit_class_def(node ClassDef) string {
 
 // visit_assign emits V code for an Assign statement.
 pub fn (mut t VTranspiler) visit_assign(node Assign) string {
+	return t.visit_assignment(node, false)
+}
+
+fn (mut t VTranspiler) visit_assignment(node Assign, package_initializer bool) string {
 	// Record what this assignment binds, so a later `for` over the same Python
 	// name is given a fresh V variable instead of shadowing it. Whether a name
 	// was already bound has to be sampled before this statement binds anything,
@@ -2501,7 +2534,13 @@ pub fn (mut t VTranspiler) visit_assign(node Assign) string {
 			}
 		}
 
-		value_str := if use_temp { assignment_temp } else { t.visit_expr(node.value) }
+		value_str := if use_temp {
+			assignment_temp
+		} else if package_initializer && node.value is ListComp {
+			t.module_string_product(node.value) or { t.visit_expr(node.value) }
+		} else {
+			t.visit_expr(node.value)
+		}
 
 		match target {
 			Tuple {
@@ -3206,6 +3245,7 @@ pub fn (mut t VTranspiler) visit_ann_assign(node AnnAssign) string {
 // is_value_param tells whether a parameter is annotated as a Python number, string or
 // bool, which py2v passes by value even when the function binds the name again.
 fn is_value_param(arg Arg) bool {
+	if !arg.is_mutable { return true }
 	ann := arg.annotation or { return false }
 	expr := *ann
 	if expr is Name {
@@ -5265,6 +5305,9 @@ fn (mut t VTranspiler) project_import_name(path string) ?string {
 		t.add_using(info.v_module)
 		return info.v_module
 	}
+	if name := t.imported_colliding_function(path) {
+		return name
+	}
 	if !path.contains('.') { return none }
 	owner := t.registry.lookup(path.all_before_last('.'))
 	if owner.dotted == '' { return none }
@@ -5281,6 +5324,27 @@ fn (mut t VTranspiler) project_import_name(path string) ?string {
 	if owner.v_module == t.module_name { return name }
 	t.add_using(owner.v_module)
 	return '${owner.v_module}.${name}'
+}
+
+// Resolve a renamed definition through explicit imports, including re-exports.
+fn (mut t VTranspiler) imported_colliding_function(path string) ?string {
+	if t.registry.function_names.len == 0 { return none }
+	mut target := path
+	for _ in 0 .. max_reexport_hops {
+		if !target.contains('.') { return none }
+		info := t.registry.lookup(target.all_before_last('.'))
+		if info.dotted == '' { return none }
+		canonical := '${info.dotted}.${target.all_after_last('.')}'
+		if binding := t.registry.init_import_bindings[canonical] {
+			target = binding
+			continue
+		}
+		name := t.registry.function_names[canonical] or { return none }
+		if info.v_module == t.module_name { return name }
+		t.add_using(info.v_module)
+		return '${info.v_module}.${name}'
+	}
+	return none
 }
 
 // collapse_submodule_attr rewrites `mod.attr` to `attr` when `mod` was bound by
@@ -6478,6 +6542,9 @@ pub fn (mut t VTranspiler) visit_call(original Call) string {
 	// Handle string/list methods that need translation
 	if node.func is Attribute {
 		attr_node := node.func as Attribute
+		if renamed := t.imported_colliding_function(t.init_python_path(node.func)) {
+			return '${renamed}(${vargs.join(', ')})'
+		}
 		// A `from . import mod` qualifier is Python-only; call the symbol
 		// directly rather than rebuilding `mod.method(...)` from the AST.
 		collapsed := t.collapse_submodule_attr(attr_node)
@@ -8286,6 +8353,43 @@ pub fn (mut t VTranspiler) visit_list_comp(node ListComp) string {
 	// Should be transformed by VComprehensionRewriter
 	// Fallback implementation
 	return t.visit_generator_exp_impl(node.elt, node.generators)
+}
+
+// A package string product can initialize a constant through a closure. Each
+// iterable is a native array in the module, so the closure needs no captures.
+fn (mut t VTranspiler) module_string_product(node ListComp) ?string {
+	if node.generators.len < 2 || node.elt !is BinOp {
+		return none
+	}
+	element := node.elt as BinOp
+	if element.op !is Add || element.left !is Name || element.right !is Name {
+		return none
+	}
+	mut targets := map[string]bool{}
+	module_names := t.module_idents.values()
+	for generator in node.generators {
+		if generator.is_async || generator.ifs.len > 0 || generator.iter !is Name
+			|| generator.target !is Name {
+			return none
+		}
+		iter_name := (generator.iter as Name).id
+		target := (generator.target as Name).id
+		if iter_name !in t.module_idents || t.var_types[iter_name] != '[]string'
+			|| target in module_names || target in targets || target == 'result'
+			|| target == '_' || escape_local_decl(target) != target {
+			return none
+		}
+		targets[target] = true
+	}
+	if (element.left as Name).id !in targets || (element.right as Name).id !in targets {
+		return none
+	}
+	saved_types := t.var_types.clone()
+	defer { t.var_types = saved_types }
+	for target, _ in targets {
+		t.var_types[target] = 'string'
+	}
+	return t.visit_generator_exp_impl_walrus(node.elt, node.generators)
 }
 
 // visit_set_comp emits V code for set comprehensions (SetComp).

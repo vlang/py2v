@@ -162,7 +162,8 @@ const cases_dir = os.join_path(script_dir, 'cases')
 const expected_dir = os.join_path(script_dir, 'expected')
 const package_fixtures = ['pkg_imports', 'pkg_lib_main', 'pkg_multi', 'pkg_multi2', 'pkg_true_div',
 	'pkg_init_execution', 'pkg_private_names', 'pkg_call_defaults', 'pkg_type_only',
-	'pkg_qualified_construct']!
+	'pkg_qualified_construct', 'pkg_colliding_functions', 'pkg_annotated_constants',
+	'pkg_class_constant_alias', 'pkg_module_string_product']!
 
 mut py2v := resolve_py2v()
 
@@ -422,7 +423,7 @@ call_results_cases := ['dict_get_missing', 'dict_get_eager', 'dict_get_chain', '
 	'decl_duplicate_init', 'decl_duplicate_dunder', 'decl_duplicate_overwritten',
 	'decl_reserved_prefix_field', 'decl_reserved_numeric_field', 'decl_defaultdict_int_key',
 	'decl_defaultdict_alias', 'external_dynamic', 'scheduling_refusal', 'nominal_enum_classmethod',
-	'nominal_enum_unannotated', 'dynamic_empty_tuple']
+	'nominal_enum_unannotated', 'dynamic_empty_tuple', 'sequence_rebind']
 mut execution_args := [][]string{}
 mut execution_names := []string{}
 for name in call_results_cases {
@@ -825,13 +826,26 @@ for pkg in package_fixtures {
 				failures << fail_line('FAIL', name, '')
 			}
 		}
-		if pkg == 'pkg_type_only' {
-			for fixture in ['acyclic/consumer', 'cycle_b/consumer', 'model/holder', 'model/frozen'] {
-				module_name := 'py_pkg_type_only_' + fixture.all_before_last('/')
-				actual := os.read_file(os.join_path(out_dir, module_name,
-					fixture.all_after_last('/') + '.v')) or { '' }
+		if pkg in ['pkg_type_only', 'pkg_colliding_functions', 'pkg_annotated_constants',
+			'pkg_class_constant_alias', 'pkg_module_string_product'] {
+			fixtures := match pkg {
+				'pkg_type_only' {
+					['acyclic/consumer', 'cycle_b/consumer', 'model/holder', 'model/frozen']
+				}
+				'pkg_colliding_functions' { ['__init__', 'left', 'right'] }
+				else { ['__init__'] }
+			}
+			for fixture in fixtures {
+				subpackage := if fixture.contains('/') {
+					'_' + fixture.all_before_last('/')
+				} else {
+					''
+				}
+				module_name := 'py_${pkg}${subpackage}'
+				stem := if fixture.contains('/') { fixture.all_after_last('/') } else { fixture }
+				actual := os.read_file(os.join_path(out_dir, module_name, '${stem}.v')) or { '' }
 				expected := os.read_file(os.join_path(expected_dir, pkg, fixture + '.v')) or { '' }
-				name := 'type-only imports: fixture ' + fixture
+				name := '${pkg}: fixture ${fixture}'
 				if actual.len > 0 && expected.len > 0 && actual.replace('\r', '') == expected.replace('\r', '') {
 					report('PASS', name, '')
 					passed++
@@ -849,11 +863,12 @@ for pkg in package_fixtures {
 				os.cp(source, destination) or { panic(err) }
 			}
 			driver := os.join_path(python_root, 'driver.py')
-			os.write_file(driver, 'import sys\nfrom pathlib import Path\nsys.path.insert(0, str(Path(__file__).parent))\nfrom pkg_type_only.main import total\nprint(total())\n') or { panic(err) }
-			entry := os.join_path(out_dir, 'type_only_main.v')
-			os.write_file(entry, 'module main\n\nimport py_pkg_type_only\n\nfn main() {\n\tprintln(py_pkg_type_only.total())\n}\n') or { panic(err) }
+			python_module := if pkg == 'pkg_type_only' { '${pkg}.main' } else { pkg }
+			os.write_file(driver, 'import sys\nfrom pathlib import Path\nsys.path.insert(0, str(Path(__file__).parent))\nfrom ${python_module} import total\nprint(total())\n') or { panic(err) }
+			entry := os.join_path(out_dir, 'fixture_main.v')
+			os.write_file(entry, 'module main\n\nimport py_${pkg}\n\nfn main() {\n\tprintln(py_${pkg}.total())\n}\n') or { panic(err) }
 			result := compare_execution(['', python, driver, entry])
-			name := 'type-only imports: execution'
+			name := '${pkg}: execution'
 			if result.exit_code == 0 {
 				report('PASS', name, '')
 				passed++

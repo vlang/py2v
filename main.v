@@ -392,6 +392,30 @@ fn collect_module_values(mod Module) []string {
 	return names
 }
 
+// Reserve a V name for each function that shares its name with a sibling binding.
+fn register_colliding_functions(parsed map[string]Module, dupes map[string][]string, mut registry ModuleRegistry) {
+	mut keys := parsed.keys()
+	keys.sort()
+	for key in keys {
+		info := registry.lookup(key)
+		for stmt in parsed[key]!.body {
+			name := match stmt {
+				FunctionDef { stmt.name }
+				AsyncFunctionDef { stmt.name }
+				else { continue }
+			}
+			symbol := '${info.dotted}.${name}'
+			if name == 'main' || '${info.v_module}.${name}' !in dupes
+				|| symbol in registry.function_names {
+				continue
+			}
+			serial := registry.function_names.len + 1
+			kind := 'def_${to_symbol_ident(name)}_${serial}_'
+			registry.function_names[symbol] = registry.helper_name(info.v_module, kind, [])
+		}
+	}
+}
+
 // find_python_files recursively lists .py files under root, skipping caches.
 fn find_python_files(root string) ![]string {
 	mut out := []string{}
@@ -530,6 +554,7 @@ fn translate_package(python_cmd string, ast_dump string, package_dir string, out
 	register_init_constructors(parsed, mut registry)
 	register_defaulted_functions(parsed, mut registry)
 	dupes := registry.collisions()
+	register_colliding_functions(parsed, dupes, mut registry)
 	if dupes.len > 0 {
 		mut keys := dupes.keys()
 		keys.sort()

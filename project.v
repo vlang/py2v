@@ -39,6 +39,8 @@ pub mut:
 	init_import_bindings map[string]string
 	// Module function signatures used to fill omitted scalar defaults.
 	defaulted_functions map[string]FunctionDef
+	// Renamed free functions, keyed by the defining Python path and name.
+	function_names map[string]string
 	// class_bases_by_path maps `module.Class` to its base class names, so a
 	// struct literal built in another module can fill the embedded bases.
 	class_bases_by_path map[string][]string
@@ -205,16 +207,17 @@ pub fn v_file_stem(v_relpath string) string {
 // collisions returns symbols defined by more than one file in the same V
 // module, which V will reject as redefinitions.
 pub fn (r ModuleRegistry) collisions() map[string][]string {
-	mut seen := map[string]string{} // symbol -> first owning module
-	mut owner := map[string]string{} // v_relpath -> dotted, for de-duplication
+	mut seen := map[string]string{} // V module and symbol -> first Python owner
+	mut visited := map[string]bool{}
 	mut dupes := map[string][]string{}
-	for dotted, info in r.by_dotted {
+	for _, info in r.by_dotted {
 		// A file registered under several import paths must only be visited
 		// once, or every one of its symbols looks like a duplicate.
-		if owner[info.v_relpath] != '' {
+		if visited[info.v_relpath] {
 			continue
 		}
-		owner[info.v_relpath] = dotted
+		visited[info.v_relpath] = true
+		dotted := info.dotted
 		for raw_sym in info.symbols {
 			// A library renames `main` to `<stem>_main`, so two files of one
 			// module can each define one without colliding in V.
@@ -225,16 +228,19 @@ pub fn (r ModuleRegistry) collisions() map[string][]string {
 					sym = stem + '_main'
 				}
 			}
-			if sym in seen {
-				key := '${info.v_module}.${sym}'
+			key := '${info.v_module}.${sym}'
+			if first := seen[key] {
+				if first == dotted {
+					continue
+				}
 				if key !in dupes {
-					dupes[key] = [seen[sym]]
+					dupes[key] = [first]
 				}
 				if dotted !in dupes[key] {
 					dupes[key] << dotted
 				}
 			} else {
-				seen[sym] = dotted
+				seen[key] = dotted
 			}
 		}
 	}

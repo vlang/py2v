@@ -2672,7 +2672,7 @@ def _arg_to_dict(arg: ast.arg, mutable_vars: Set[str],
         "arg": arg.arg,
         "annotation": _node_to_dict(arg.annotation, mutable_vars, {}, AnalysisContext.empty()) if arg.annotation else None,
         "type_comment": getattr(arg, "type_comment", None),
-        "is_mutable": arg.arg in mutable_vars,
+        "is_mutable": arg.arg in mutable_vars and not getattr(arg, "_local_sequence_rebind", False),
     }
     # An inferred type for a parameter that carries no annotation of its own, so
     # that the declaration and its uses agree on the V type.
@@ -2812,7 +2812,8 @@ def _mutating_function_params(tree: ast.Module,
             for index, arg in enumerate(fn.args.args):
                 value_type = (isinstance(arg.annotation, ast.Name)
                               and arg.annotation.id in ("int", "float", "str", "bool"))
-                if arg.arg in changed and not value_type:
+                if (arg.arg in changed and not value_type
+                        and not getattr(arg, "_local_sequence_rebind", False)):
                     current.setdefault(fn.name, set()).add(index)
         if current == found:
             return found
@@ -2919,6 +2920,47 @@ def _qualified_import(node: ast.AST, paths: Dict[int, str]) -> str:
         base = _qualified_import(node.value, paths)
         return base + "." + node.attr if base else ""
     return ""
+
+
+def _mark_local_sequence_rebindings(tree: ast.Module, table: symbols.SymbolTable) -> None:
+    """A sequence read locally and rebound to a tuple needs no caller-side mutation."""
+    paths = _stable_import_paths(tree, table)
+    uses: dict[int, list[tuple[ast.Name, ast.AST]]] = {}
+    for parent in ast.walk(tree):
+        for child in ast.iter_child_nodes(parent):
+            if isinstance(child, ast.Name) and (binding := getattr(child, "_binding", None)) is not None:
+                uses.setdefault(binding, []).append((child, parent))
+
+    def builtin(node: ast.AST, name: str) -> bool:
+        return (isinstance(node, ast.Name) and node.id == name
+                and getattr(node, "_binding", None) is None)
+
+    def tuple_value(node: ast.AST) -> bool:
+        return isinstance(node, ast.Tuple) or isinstance(node, ast.Call) and builtin(node.func, "tuple")
+
+    for arg in (node for node in ast.walk(tree) if isinstance(node, ast.arg)):
+        ann = arg.annotation
+        if not isinstance(ann, ast.Subscript):
+            continue
+        origin = _qualified_import(ann.value, paths)
+        if not (builtin(ann.value, "tuple") or origin in ("typing.Tuple", "typing.Sequence", "collections.abc.Sequence")):
+            continue
+        accesses = uses.get(getattr(arg, "_binding", -1), [])
+        rebound = False
+        for name, parent in accesses:
+            if isinstance(name.ctx, ast.Store) and isinstance(parent, ast.Assign) and tuple_value(parent.value):
+                rebound = True
+            elif isinstance(name.ctx, ast.Load) and (
+                    isinstance(parent, ast.Call) and builtin(parent.func, "len") and parent.args == [name]
+                    or isinstance(parent, (ast.For, ast.comprehension)) and parent.iter is name
+                    or isinstance(parent, ast.UnaryOp) and isinstance(parent.op, ast.Not)
+                    or isinstance(parent, (ast.If, ast.While)) and parent.test is name):
+                continue
+            else:
+                break
+        else:
+            if rebound:
+                arg._local_sequence_rebind = True
 
 
 def _mark_scheduling_refusals(tree: ast.Module, table: symbols.SymbolTable, path: str) -> None:
@@ -5694,7 +5736,8 @@ def _builtin_exception_names() -> frozenset:
                      if isinstance(value, type) and issubclass(value, BaseException))
 
 
-def _mark_module_constants(tree: ast.Module, table: Optional[symbols.SymbolTable]) -> None:
+def _mark_module_constants(tree: ast.Module, table: Optional[symbols.SymbolTable],
+                           package: bool) -> None:
     """Name the module-level values that functions read, so they become V constants.
 
     A V function cannot see a local of `main`. A name bound once at module level to a
@@ -5710,6 +5753,16 @@ def _mark_module_constants(tree: ast.Module, table: Optional[symbols.SymbolTable
             for node in ast.walk(fn):
                 if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
                     read_in_function.add(getattr(node, "_binding", None))
+    read_in_initializer: set = set()
+    if package:
+        # Package initializers also become V module declarations. Preserve
+        # annotated constants used by another initializer, even if no function
+        # reads the name directly.
+        for stmt in tree.body:
+            if isinstance(stmt, (ast.Assign, ast.AnnAssign)) and stmt.value is not None:
+                read_in_initializer.update(
+                    getattr(node, "_binding", None) for node in ast.walk(stmt.value)
+                    if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load))
     spellings: Dict[str, int] = {}
     for b in table.bindings:
         key = _v_spelling(b.name)
@@ -5726,7 +5779,8 @@ def _mark_module_constants(tree: ast.Module, table: Optional[symbols.SymbolTable
         if not isinstance(target, ast.Name):
             continue
         binding_id = getattr(target, "_binding", None)
-        if binding_id is None or binding_id not in read_in_function:
+        needed_by_initializer = isinstance(stmt, ast.AnnAssign) and binding_id in read_in_initializer
+        if binding_id is None or (binding_id not in read_in_function and not needed_by_initializer):
             continue
         b = table.bindings[binding_id]
         if b.scope != 0 or b.rebound or b.declared_global or spellings.get(_v_spelling(b.name), 0) != 1:
@@ -7684,6 +7738,7 @@ def process_file(file_path: str, project: Optional[ProjectFacts] = None) -> str:
     if table is not None:
         _mark_scheduling_refusals(tree, table, file_path)
         _mark_nominal_enums(tree, table)
+        _mark_local_sequence_rebindings(tree, table)
     _mark_dynamic_isinstance_types(tree, table)
     _retain_type_imports(tree, table, project)
     _mark_runtime_api(tree, table)
@@ -7725,7 +7780,7 @@ def process_file(file_path: str, project: Optional[ProjectFacts] = None) -> str:
             _lower_dynamic_values(tree, table, facts, any_lists.copy())
             _box_mixed_displays(tree, table, facts)
             _parameterize_bare_containers(tree, table, facts)
-            _mark_module_constants(tree, table)
+            _mark_module_constants(tree, table, package=project is not None)
             # Backend comprehension substitution must not rename V's implicit error binding.
             err_bindings = {getattr(target, "_binding", None)
                             for node in ast.walk(tree) if isinstance(node, ast.comprehension)

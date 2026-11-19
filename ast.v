@@ -531,6 +531,8 @@ pub mut:
 	arg          string
 	annotation   ?&Expr
 	type_comment ?string
+	// is_mutable records caller-side mutability independently of the local binding.
+	is_mutable bool = true
 	// v_annotation is an inferred type for a parameter the frontend could not
 	// read from an annotation, such as one that only feeds an annotated field.
 	v_annotation string
