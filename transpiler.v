@@ -1139,7 +1139,7 @@ fn (mut t VTranspiler) visit_closure_from_funcdef(node FunctionDef, nl_names []s
 		t.var_types[arg.arg] = typ
 		mut incoming := local
 		if arg.arg in node.mutable_vars {
-			if typ in v_value_param_types {
+			if typ in v_value_param_types || for_rebinds_parameter(node.body, arg.arg) {
 				incoming = t.new_tmp('${arg.arg}_in')
 				copies << 'mut ${local} := ${incoming}'
 			} else {
@@ -1163,7 +1163,7 @@ fn (mut t VTranspiler) visit_closure_from_funcdef(node FunctionDef, nl_names []s
 		} else {
 			declarations << 'ch chan ${typ}'
 		}
-		t.generator_signatures[node.name] = GeneratorSignature{typ, node.args.vararg != none}
+		t.generator_signatures[node.name] = GeneratorSignature{typ, node.args.vararg != none, node.args}
 	}
 	if vararg := node.args.vararg {
 		local := escape_local_decl(vararg.arg)
@@ -1473,7 +1473,8 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 		if arg.arg in node.mutable_vars {
 			optional_value := !node.is_class_method && arg.arg !in node.condition_walrus_names
 				&& is_optional_value_type(typename)
-			local_value := typename in ['', 'Any'] && for_rebinds_parameter(node.body, arg.arg)
+			local_value := for_rebinds_parameter(node.body, arg.arg) && (typename in ['', 'Any']
+				|| typename.starts_with('[]') || typename.starts_with('map['))
 			if typename in v_value_param_types && arg.arg in node.condition_walrus_names {
 				// The walrus lowering copies this parameter itself.
 			} else if typename in v_value_param_types || optional_value || local_value
@@ -1536,7 +1537,7 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 		}
 		t.var_types[kwonly.arg] = kwtype
 		if kwonly.arg in node.mutable_vars {
-			if kwtype in v_value_param_types {
+			if kwtype in v_value_param_types || for_rebinds_parameter(node.body, kwonly.arg) {
 				incoming := t.new_tmp('${kwonly.arg}_in')
 				param_copies << 'mut ${kwname} := ${incoming}'
 				kwname = incoming
@@ -1610,7 +1611,7 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 		} else {
 			args_strs << 'ch chan ${yield_type}'
 		}
-		t.generator_signatures[node.name] = GeneratorSignature{yield_type, channel_first}
+		t.generator_signatures[node.name] = GeneratorSignature{yield_type, channel_first, node.args}
 	}
 
 	// A function names its generic types; a method takes them from its receiver.
@@ -3469,6 +3470,7 @@ pub fn (mut t VTranspiler) visit_for(node For) string {
 	saved_renames := t.renamed_idents.clone()
 	mut rename := map[string]string{}
 	mut writebacks := map[string]string{}
+	mut preloop := []string{}
 	for name in for_target_names(node.target) {
 		spelling := t.binding_spelling(name)
 		if spelling in t.loop_idents || spelling in t.scope_idents {
@@ -3486,8 +3488,31 @@ pub fn (mut t VTranspiler) visit_for(node For) string {
 			// acquire the same V spelling when a parameter is lowercased.
 			if t.is_bound_in_scope(name) && (t.param_idents[name] or { true })
 				&& !t.condition_walrus_vars[name] && for_target_is_mutable(node.target, name) {
-				writebacks[name] = spelling
-				t.loop_prelude << '${spelling} = ${fresh}'
+				mut binding := spelling
+				typ := t.var_types[name] or { '' }
+				// Keep mutations of the caller's object before the loop, but
+				// detach the Python name when the loop begins to rebind it.
+				// A V `mut` parameter cannot itself be rebound without altering
+				// the caller. Earlier writes must still go through that parameter.
+				if name in t.param_idents && t.param_idents[name]
+					&& t.local_idents[name] == escape_local_decl(name)
+					&& typ !in v_value_param_types && typ !in ['', 'Any']
+					&& !typ.starts_with('[]') && !typ.starts_with('map[')
+					&& !typ.starts_with('&pyrt.ListRef[') && !typ.starts_with('?') {
+					binding = t.new_tmp('param_rebind')
+					preloop << 'mut ${binding} := ${spelling}'
+					t.local_idents[name] = binding
+					t.scope_idents[binding] = name
+				}
+				writebacks[name] = binding
+				// V requires explicit sharing of array/map values, whereas a
+				// Python loop target rebinds the reference without copying it.
+				value := if typ.starts_with('[]') || typ.starts_with('map[') {
+					'unsafe { ${fresh} }'
+				} else {
+					fresh
+				}
+				t.loop_prelude << '${binding} = ${value}'
 			}
 			rename[name] = fresh
 		}
@@ -3510,7 +3535,7 @@ pub fn (mut t VTranspiler) visit_for(node For) string {
 		}
 	}
 	mut target := t.visit_expr(node.target)
-	mut buf := []string{}
+	mut buf := preloop.clone()
 
 	// Handle for/else pattern - V doesn't have it, use has_break flag
 	has_else := node.orelse.len > 0
@@ -3809,6 +3834,97 @@ fn (mut t VTranspiler) emit_for_else(mut buf []string, orelse []Stmt, flag strin
 struct GeneratorSignature {
 	yield_type    string
 	channel_first bool
+	args          Arguments
+}
+
+struct GeneratorCallArgs {
+	prefix  []string
+	ordered []string
+	valid   bool
+}
+
+// ordered_generator_call binds Python positional and keyword arguments to the
+// generator's V signature (positional, keyword-only, then variadic). Evaluate
+// caller expressions in Python order before rearranging them.
+fn (mut t VTranspiler) ordered_generator_call(call Call, sig GeneratorSignature) GeneratorCallArgs {
+	if sig.args.kwarg != none {
+		return GeneratorCallArgs{}
+	}
+	mut positional := sig.args.posonlyargs.clone()
+	positional << sig.args.args
+	mut named := map[string]string{}
+	mut extras := []string{}
+	mut prefix := []string{}
+	mut available := positional.map(it.arg)
+	available << sig.args.kwonlyargs.map(it.arg)
+	for i, arg in call.args {
+		if arg is Starred {
+			return GeneratorCallArgs{}
+		}
+		tmp := t.new_tmp('gen_arg')
+		prefix << '${tmp} := ${t.visit_expr(arg)}'
+		if i < positional.len {
+			named[positional[i].arg] = tmp
+		} else if sig.args.vararg != none {
+			extras << tmp
+		} else {
+			return GeneratorCallArgs{}
+		}
+	}
+	for kw in call.keywords {
+		name := kw.arg or { return GeneratorCallArgs{} }
+		if name !in available || name in named {
+			return GeneratorCallArgs{}
+		}
+		tmp := t.new_tmp('gen_arg')
+		prefix << '${tmp} := ${t.visit_expr(kw.value)}'
+		named[name] = tmp
+	}
+	mut defaults := map[string]string{}
+	for i, value in sig.args.defaults {
+		idx := positional.len - sig.args.defaults.len + i
+		if idx < 0 || !call_literal_default(value) {
+			return GeneratorCallArgs{}
+		}
+		defaults[positional[idx].arg] = t.visit_expr(value)
+	}
+	for i, value in sig.args.kw_defaults {
+		if expr := value {
+			if !call_literal_default(expr) {
+				return GeneratorCallArgs{}
+			}
+			defaults[sig.args.kwonlyargs[i].arg] = t.visit_expr(expr)
+		}
+	}
+	mut ordered := []string{}
+	for param in positional {
+		if value := named[param.arg] {
+			ordered << value
+			continue
+		}
+		if value := defaults[param.arg] {
+			ordered << value
+			continue
+		}
+		return GeneratorCallArgs{}
+	}
+	for param in sig.args.kwonlyargs {
+		if value := named[param.arg] {
+			ordered << value
+			continue
+		}
+		if value := defaults[param.arg] {
+			ordered << value
+			continue
+		}
+		return GeneratorCallArgs{}
+	}
+	ordered << extras
+	return GeneratorCallArgs{
+		prefix:  prefix
+		ordered: ordered
+		valid:   true
+	}
 }
 
 // visit_async_for emits V code for an AsyncFor loop (converted to sync).
@@ -3819,12 +3935,8 @@ pub fn (mut t VTranspiler) visit_async_for(node AsyncFor) string {
 		iter_call := node.iter as Call
 		producer := t.visit_expr(iter_call.func)
 		mut producer_args := []string{}
-		for arg in iter_call.args {
-			producer_args << t.visit_expr(arg)
-		}
-		for kw in iter_call.keywords {
-			producer_args << t.visit_expr(kw.value)
-		}
+		mut arg_prefix := []string{}
+		mut ordered := false
 		ch := t.new_tmp('ch')
 		buf << '// async for lowered to goroutine + channel'
 		// The channel has the element type its producer was declared with
@@ -3834,8 +3946,27 @@ pub fn (mut t VTranspiler) visit_async_for(node AsyncFor) string {
 			if sig := t.generator_signatures[iter_call.func.id] {
 				elem_type = sig.yield_type
 				channel_first = sig.channel_first
+				if sig.args.kwonlyargs.len > 0 || sig.args.defaults.len > 0
+					|| iter_call.keywords.len > 0 {
+					bound := t.ordered_generator_call(iter_call, sig)
+					if !bound.valid {
+						return '// TODO(py2v): unsupported generator call arguments\\npy2v_unsupported_generator_arguments()'
+					}
+					arg_prefix = bound.prefix
+					producer_args = bound.ordered
+					ordered = true
+				}
 			}
 		}
+		if !ordered {
+			for arg in iter_call.args {
+				producer_args << t.visit_expr(arg)
+			}
+			for kw in iter_call.keywords {
+				producer_args << t.visit_expr(kw.value)
+			}
+		}
+		buf << arg_prefix
 		ch_type := if elem_type.len > 0 { elem_type } else { 'Any' }
 		if ch_type == 'Any' {
 			t.generated_code_has_any_type = true
