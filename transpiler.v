@@ -7582,12 +7582,14 @@ pub fn (mut t VTranspiler) visit_attribute(node Attribute) string {
 
 	value := as_receiver(t.visit_expr(node.value))
 	mut attr := node.attr
-	// Struct fields and locals are declared under their escaped V spelling, so an
-	// access to `self._foo` must use the same escape the declaration used.
+	mut field_escaped := false
+	// Field names in this table are already escaped. Encoding them again can
+	// change reserved-prefix names and point at a nonexistent field.
 	if t.current_class_name != '' {
 		if escapes := t.class_field_escapes[t.current_class_name] {
 			if v_attr := escapes[attr] {
 				attr = v_attr
+				field_escaped = true
 			}
 		}
 	}
@@ -7599,7 +7601,9 @@ pub fn (mut t VTranspiler) visit_attribute(node Attribute) string {
 	// leading underscore is not a legal field name either. Python reaches these
 	// constantly for private attributes, so the rewrite matches the one the
 	// declaration sites apply.
-	attr = python_dunder_method_names[attr] or { escape_leading_underscore(attr) }
+	if !field_escaped {
+		attr = python_dunder_method_names[attr] or { escape_leading_underscore(attr) }
+	}
 	attr_path := '${value}.${attr}'
 
 	// Try attribute dispatch
@@ -9184,12 +9188,14 @@ fn (mut t VTranspiler) annotation_typename(ann ?Expr) string {
 				t.pending_type_notes << '// NOTE: Literal[${index}] — allowed values are ${index}'
 				return base_type
 			}
-			if value == 'defaultdict' && t.init_import_aliases[value] == 'collections.defaultdict' {
-				// Match the map used for construction by visit_assign.
+			if t.init_import_aliases[value] == 'collections.defaultdict' {
 				if a.slice is Tuple && a.slice.elts.len == 2 {
+					key := t.annotation_typename(a.slice.elts[0])
 					element := t.annotation_typename(a.slice.elts[1])
 					if element != '' {
-						return 'map[string]${element}'
+						// Match the constructor for unknown keys; preserve concrete key types.
+						map_key := if key == '' || key == 'Any' { 'string' } else { key }
+						return 'map[${map_key}]${element}'
 					}
 				}
 				t.generated_code_has_any_type = true
