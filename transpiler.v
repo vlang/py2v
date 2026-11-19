@@ -20,6 +20,7 @@ mut:
 	// Maps and state tracked during transpilation
 	current_class_name   string
 	current_classmethod  bool
+	nominal_enums        map[string]bool
 	escaped_identifiers  map[string]bool
 	extra_mut_vars       map[string]bool
 	func_defaults        map[string][]string
@@ -1378,7 +1379,12 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 	// @classmethod / @staticmethod: emit as free function named ClassName_funcname
 	if node.is_class_method && node.decorator_kind in ['classmethod', 'staticmethod'] {
 		member := if node.dunder_op.starts_with('py2v_overload_') { emit_name } else { node.name }
-		emit_name = '${emitted_class_name(node.class_name)}_${member}'
+		owner := emitted_class_name(node.class_name)
+		emit_name = if t.nominal_enums[node.class_name] {
+			'${owner}.${escape_keyword(escape_leading_underscore(member))}'
+		} else {
+			'${owner}_${member}'
+		}
 		dunder_comment = '// @${node.decorator_kind}\n'
 	}
 
@@ -1938,6 +1944,9 @@ fn (mut t VTranspiler) visit_protocol_class(node ClassDef, emitted_name string) 
 pub fn (mut t VTranspiler) visit_class_def(node ClassDef) string {
 	t.init_import_aliases.delete(node.name)
 	emitted_name := emitted_class_name(node.name)
+	if node.bases.len == 1 && native_enum_base(node.bases[0]) {
+		return t.visit_nominal_enum(node, emitted_name)
+	}
 
 	// Protocol → V interface
 	if node.is_protocol {
@@ -6299,6 +6308,14 @@ fn without_opt(code string) (string, bool) {
 
 // visit_call binds eligible module functions before rendering their arguments.
 pub fn (mut t VTranspiler) visit_call(original Call) string {
+	if original.api == '__py2v__.coroutine_refusal' && original.args.len == 2 {
+		message := original.args[0]
+		site := original.args[1]
+		if message is Constant && message.value is string && site is Constant && site.value is string {
+			eprintln('${site.value}: ${message.value}')
+			return 'panic(${t.visit_expr(message)})'
+		}
+	}
 	if (original.api == '__py2v__.list_ref_assign_slice' && original.args.len == 6)
 		|| (original.api == '__py2v__.list_ref_assign_slice_step' && original.args.len == 7) {
 		t.add_using('pyrt')

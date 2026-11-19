@@ -1,5 +1,7 @@
 module main
 
+import pyrt
+
 // TODO(py2v): no V equivalent for import adt, py2many.smt
 // Provide one in python_to_v_import (types.v) or port the module.
 
@@ -43,8 +45,8 @@ fn classify_triangle_correct(a int, b int, c int) TriangleType {
 	}
 }
 
-fn classify_triangle(a int, b int, c int) TriangleType {
-	if smt_pre {
+fn classify_triangle_py(a int, b int, c int) !TriangleType {
+	if pyrt.truth(pyrt.untranslated_import('py2many.smt.pre')!) {
 		assert a > 0
 		assert b > 0
 		assert c > 0
@@ -71,11 +73,15 @@ fn classify_triangle(a int, b int, c int) TriangleType {
 	}
 }
 
+fn classify_triangle(a int, b int, c int) TriangleType {
+	return classify_triangle_py(a, b, c) or { pyrt.fail(err) }
+}
+
 fn main() {
-	a := default_value(int)
-	b := default_value(int)
-	c := default_value(int)
+	a := (pyrt.untranslated_import('py2many.smt.default_value') or { pyrt.fail(err) })
+	b := (pyrt.untranslated_import('py2many.smt.default_value') or { pyrt.fail(err) })
+	c := (pyrt.untranslated_import('py2many.smt.default_value') or { pyrt.fail(err) })
 	assert !(classify_triangle_correct(a, b, c) == classify_triangle(a, b, c))
-	check_sat()
-	get_model()
+	(pyrt.untranslated_import('py2many.smt.check_sat') or { pyrt.fail(err) })
+	(pyrt.untranslated_import('py2many.smt.get_model') or { pyrt.fail(err) })
 }

@@ -2,13 +2,9 @@ module main
 
 import os
 import pyrt
-import io
 
 // TODO(py2v): no V equivalent for import ctypes, py2many.result, pytest
 // Provide one in python_to_v_import (types.v) or port the module.
-
-// TODO(py2v): no V mapping for pytest.main
-// Each site below is stubbed with a zero value.
 
 type Any = pyrt.Value
 
@@ -42,16 +38,10 @@ pub mut:
 }
 
 fn test_parser(input Any, expected Any) {
-	mut p := Py2v_parser{
-		val: u32(0)
-	}
-	result := p.parse(io.BytesIO(input))
-	if result is Ok {
-		assert pyrt.eq(result.value.value, (pyrt.getattr(pyrt.box(expected), 'value') or { pyrt.fail(err) }))
-	}
+	panic('py2v_unsupported_coroutine: test_parser requires an awaitable with unknown scheduling')
 }
 
 fn main() {
-	_ = Any(0)
+	(pyrt.untranslated_import('pytest.main') or { pyrt.fail(err) })
 	println('OK')
 }

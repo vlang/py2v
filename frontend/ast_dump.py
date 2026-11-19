@@ -2100,6 +2100,7 @@ def _node_to_dict(node: ast.AST, mutable_vars: Set[str],
             result["docstring_comment"] = docstring
 
     elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        scheduling_refusal = getattr(node, "_scheduling_refusal", "")
         result["name"] = node.name
         result["is_nested"] = getattr(node, "_is_nested", False)
         result["is_recursive"] = getattr(node, "_is_recursive", False)
@@ -2112,7 +2113,9 @@ def _node_to_dict(node: ast.AST, mutable_vars: Set[str],
             for name, annotation in sorted(getattr(node, "_capture_types", {}).items())
         ]
         result["capture_refusal"] = getattr(node, "_capture_refusal", "")
-        result["condition_walrus_names"] = getattr(node, "_condition_walrus_names", [])
+        # A refused body has no conditions left to assign these names.
+        result["condition_walrus_names"] = ([] if refusal or scheduling_refusal
+                                             else getattr(node, "_condition_walrus_names", []))
 
         # Compute mutable vars within this function FIRST
         tracker = ScopeTracker()
@@ -2191,11 +2194,21 @@ def _node_to_dict(node: ast.AST, mutable_vars: Set[str],
         # Serialised after local_ann so an inferred parameter type can ride along.
         result["args"] = _arguments_to_dict(node.args, func_mutable, local_ann)
 
-        result["body"] = ([{'node_type': 'Pass', 'list_identity_error': refusal}]
-                          if refusal else [_node_to_dict(n, func_mutable, redefined,
-                                        AnalysisContext(local_ann, ctx.func_ret_annotations,
-                                                        ctx.slots_by_class, ctx.field_types,
-                                                        table=ctx.table, facts=ctx.facts)) for n in node.body])
+        if scheduling_refusal:
+            site = f"{node._scheduling_file}:{node.lineno}"
+            panic = ast.Call(func=ast.Name(id="panic", ctx=ast.Load()),
+                             args=[ast.Constant(value=scheduling_refusal), ast.Constant(value=site)],
+                             keywords=[])
+            panic._api = "__py2v__.coroutine_refusal"
+            result["body"] = [_node_to_dict(ast.Expr(value=panic), func_mutable, redefined, ctx)]
+            # The backend's class emitter consumes ordinary function definitions.
+            result["node_type"] = "FunctionDef"
+        elif refusal:
+            result["body"] = [{'node_type': 'Pass', 'list_identity_error': refusal}]
+        else:
+            body_ctx = AnalysisContext(local_ann, ctx.func_ret_annotations, ctx.slots_by_class,
+                                       ctx.field_types, table=ctx.table, facts=ctx.facts)
+            result["body"] = [_node_to_dict(n, func_mutable, redefined, body_ctx) for n in node.body]
         result["decorator_list"] = [_node_to_dict(d, mutable_vars, redefined, ctx) for d in node.decorator_list]
         result["returns"] = _node_to_dict(node.returns, mutable_vars, redefined, ctx) if node.returns else None
         result["type_comment"] = getattr(node, "type_comment", None)
@@ -2881,6 +2894,179 @@ class ProjectFacts:
     is_package: bool = False
 
 
+def _stable_import_paths(tree: ast.Module, table: symbols.SymbolTable) -> Dict[int, str]:
+    """Absolute imports indexed by lexical binding, including imports inside functions."""
+    paths: Dict[int, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            names = [(alias, alias.name if alias.asname else alias.name.split(".")[0])
+                     for alias in node.names]
+        elif isinstance(node, ast.ImportFrom) and not node.level and node.module:
+            names = [(alias, node.module + "." + alias.name) for alias in node.names]
+        else:
+            continue
+        for alias, path in names:
+            binding = getattr(alias, "_binding", None)
+            if binding is not None and not table.bindings[binding].rebound:
+                paths[binding] = path
+    return paths
+
+
+def _qualified_import(node: ast.AST, paths: Dict[int, str]) -> str:
+    if isinstance(node, ast.Name):
+        return paths.get(getattr(node, "_binding", -1), "")
+    if isinstance(node, ast.Attribute):
+        base = _qualified_import(node.value, paths)
+        return base + "." + node.attr if base else ""
+    return ""
+
+
+def _mark_scheduling_refusals(tree: ast.Module, table: symbols.SymbolTable, path: str) -> None:
+    """Preserve directly inlined awaits and refuse bodies needing a scheduler."""
+    paths = _stable_import_paths(tree, table)
+    await_nodes = [node for node in ast.walk(tree) if isinstance(node, ast.Await)]
+    if not await_nodes and not any(p.startswith(("asyncio", "concurrent")) for p in paths.values()):
+        return
+    local_coroutines = {binding for node in ast.walk(tree) if isinstance(node, ast.AsyncFunctionDef)
+                        and (binding := getattr(node, "_binding", None)) is not None
+                        and not table.bindings[binding].rebound}
+    awaited = {id(node.value) for node in await_nodes}
+
+    def local_call(node: ast.AST) -> bool:
+        return (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                and getattr(node.func, "_binding", None) in local_coroutines)
+
+    def wrapper(node: ast.AST) -> bool:
+        # These are the backend's existing synchronous lowerings.
+        return (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and isinstance(node.func.value, ast.Name) and node.func.value.id == "asyncio"
+                and len(node.args) == 1 and not node.keywords and local_call(node.args[0])
+                and (_qualified_import(node.func, paths) == "asyncio.run"
+                     or (_qualified_import(node.func, paths) == "asyncio.create_task"
+                         and id(node) in awaited)))
+
+    inline_members = {id(node.func) for node in ast.walk(tree)
+                      if isinstance(node, ast.Call) and wrapper(node)}
+
+    class Refuse(ast.NodeVisitor):
+        function: Optional[Union[ast.FunctionDef, ast.AsyncFunctionDef]] = None
+
+        def mark(self, operation: str) -> None:
+            fn = self.function
+            if fn is not None and not getattr(fn, "_scheduling_refusal", ""):
+                fn._scheduling_file = path
+                fn._scheduling_refusal = f"py2v_unsupported_coroutine: {fn.name} requires {operation}"
+
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            enclosing = self.function
+            for value in node.decorator_list + node.args.defaults + [
+                    value for value in node.args.kw_defaults if value is not None]:
+                self.visit(value)
+            self.function = node
+            for statement in node.body:
+                self.visit(statement)
+            self.function = enclosing
+
+        visit_AsyncFunctionDef = visit_FunctionDef
+
+        def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+            self.visit(node.target)
+            if node.value is not None:
+                self.visit(node.value)
+
+        def visit_Await(self, node: ast.Await) -> None:
+            if not (local_call(node.value) or wrapper(node.value)):
+                self.mark("an awaitable with unknown scheduling")
+            self.generic_visit(node)
+
+        def visit_Attribute(self, node: ast.Attribute) -> None:
+            if id(node) not in inline_members:
+                self.check_import(node)
+            self.generic_visit(node)
+
+        def visit_Name(self, node: ast.Name) -> None:
+            self.check_import(node)
+
+        def check_import(self, node: ast.AST) -> None:
+            name = _qualified_import(node, paths)
+            if name.startswith(("asyncio.", "concurrent.futures.")):
+                self.mark(name)
+
+    Refuse().visit(tree)
+
+
+def _mark_nominal_enums(tree: ast.Module, table: symbols.SymbolTable) -> None:
+    """Preserve member types where a plain enum classmethod selects its own members."""
+    paths = _stable_import_paths(tree, table)
+    for enum in tree.body:
+        if (not isinstance(enum, ast.ClassDef) or len(enum.bases) != 1
+                or enum.keywords or enum.decorator_list
+                or _qualified_import(enum.bases[0], paths) != "enum.Enum"):
+            continue
+        members: Dict[str, int] = {}
+        methods: List[ast.FunctionDef] = []
+        for statement in enum.body:
+            if isinstance(statement, ast.Expr) and isinstance(statement.value, ast.Constant) \
+                    and isinstance(statement.value.value, str):
+                continue
+            if (isinstance(statement, ast.Assign) and len(statement.targets) == 1
+                    and isinstance(target := statement.targets[0], ast.Name)
+                    and target.id.isascii() and target.id[0].isalpha() and target.id.isupper()
+                    and isinstance(statement.value, ast.Constant) and type(statement.value.value) is int
+                    and 0 <= statement.value.value <= 2147483647 and target.id not in members):
+                members[target.id] = statement.value.value
+            elif (isinstance(statement, ast.FunctionDef) and len(statement.decorator_list) == 1
+                  and isinstance(decorator := statement.decorator_list[0], ast.Name)
+                  and decorator.id == "classmethod" and getattr(decorator, "_binding", None) is None
+                  and (parameters := statement.args.posonlyargs + statement.args.args)
+                  and parameters[0].arg == "cls"):
+                methods.append(statement)
+            else:
+                break
+        else:
+            if not methods or not members or len(set(members.values())) != len(members):
+                continue
+            reads = []
+            for method in methods:
+                receiver = (method.args.posonlyargs + method.args.args)[0]
+                binding = getattr(receiver, "_binding", None)
+                parts = list(ast.walk(method))
+                attributes = [part for part in parts if isinstance(part, ast.Attribute)
+                              and isinstance(part.value, ast.Name)
+                              and getattr(part.value, "_binding", None) == binding]
+                if (binding is None or any(part.attr not in members for part in attributes)
+                        or sum(isinstance(part, ast.Name) and getattr(part, "_binding", None) == binding
+                               for part in parts) != len(attributes)):
+                    break
+                reads.extend(part.value for part in attributes)
+            else:
+                if reads:
+                    # An unannotated selector still returns an enum, not dynamic Any.
+                    def member_result(value: Optional[ast.expr], binding: int) -> bool:
+                        if isinstance(value, ast.Attribute) and isinstance(value.value, ast.Name):
+                            return (getattr(value.value, "_binding", None) == binding
+                                    and value.attr in members)
+                        if isinstance(value, ast.IfExp):
+                            return (member_result(value.body, binding)
+                                    and member_result(value.orelse, binding))
+                        return False
+
+                    for method in methods:
+                        if method.returns is not None or len(method.body) != 1:
+                            continue
+                        statement = method.body[0]
+                        receiver = (method.args.posonlyargs + method.args.args)[0]
+                        if (isinstance(statement, ast.Return)
+                                and member_result(statement.value, receiver._binding)):
+                            method.returns = ast.copy_location(
+                                ast.Name(id=enum.name, ctx=ast.Load()), statement)
+                            method.returns._binding = enum._binding
+                    enum.bases[0]._api = "__py2v__.nominal_enum"
+                    for read in reads:
+                        read.id = enum.name
+                        read._binding = enum._binding
+
+
 def _type_checking_tests(tree: ast.Module, table: symbols.SymbolTable) -> Set[int]:
     """Resolve TYPE_CHECKING through stable imports, including aliases."""
     imported: Dict[int, str] = {}
@@ -3057,9 +3243,10 @@ def _project_type_imports(parsed: List[Tuple[str, bool, ast.Module, symbols.Symb
 def _retain_type_imports(tree: ast.Module, table: Optional[symbols.SymbolTable],
                          project: Optional[ProjectFacts]) -> None:
     """Only annotations consume type imports; cyclic or missing classes stay dynamic."""
-    if table is None or project is None or project.module_name is None:
+    if table is None:
         return
-    entries = project.externals.get(project.module_name, {}).get("type_imports", [])
+    summaries = project.externals if project is not None else {}
+    entries = summaries.get(project.module_name, {}).get("type_imports", []) if project else []
     blocked = {entry["name"] for entry in entries
                if entry["status"] in ("cycle", "unresolved")}
     bindings = {binding.id for binding in table.bindings if binding.name in blocked
@@ -3069,6 +3256,26 @@ def _retain_type_imports(tree: ast.Module, table: Optional[symbols.SymbolTable],
     targets = {binding.id: accepted[binding.name] for binding in table.bindings
                if binding.name in accepted and not binding.rebound
                and table.scopes[binding.scope].kind == "module"}
+    paths = _stable_import_paths(tree, table)
+
+    def external(path: str) -> bool:
+        parts = path.split(".")
+        root = parts[0]
+        known = (*_RUNTIME_API_MODULES, "typing_extensions")
+        return (bool(path) and root not in sys.stdlib_module_names and root not in known
+                and not any(".".join(parts[:end]) in summaries for end in range(1, len(parts) + 1)))
+
+    # Runtime imports that cannot be reached through a project or a known adapter.
+    tree._external_imports = {binding: path for binding, path in paths.items() if external(path)}
+    bindings.update(tree._external_imports)
+
+    def unavailable(node: ast.AST) -> bool:
+        path = _qualified_import(node, paths)
+        return path.startswith(("asyncio.", "concurrent.futures."))
+
+    if not (bindings or targets or any(path.startswith(("asyncio", "concurrent"))
+                                      for path in paths.values())):
+        return
 
     def qualified(node: ast.AST) -> str:
         if isinstance(node, ast.Name):
@@ -3086,21 +3293,21 @@ def _retain_type_imports(tree: ast.Module, table: Optional[symbols.SymbolTable],
             return isinstance(node, ast.Name) and getattr(node, "_binding", -1) in bindings
 
         def visit_Name(self, node: ast.Name) -> ast.AST:
-            if getattr(node, "_binding", -1) in bindings:
+            if self.blocked_root(node) or unavailable(node):
                 return ast.copy_location(ast.Name(id="Any", ctx=ast.Load()), node)
             if target := qualified(node):
                 node._api = "__project_type__." + target
             return node
 
         def visit_Attribute(self, node: ast.Attribute) -> ast.AST:
-            if self.blocked_root(node):
+            if self.blocked_root(node) or unavailable(node):
                 return ast.copy_location(ast.Name(id="Any", ctx=ast.Load()), node)
             if target := qualified(node):
                 node._api = "__project_type__." + target
             return self.generic_visit(node)
 
         def visit_Subscript(self, node: ast.Subscript) -> ast.AST:
-            if self.blocked_root(node.value):
+            if self.blocked_root(node.value) or unavailable(node.value):
                 return ast.copy_location(ast.Name(id="Any", ctx=ast.Load()), node)
             return self.generic_visit(node)
 
@@ -3872,6 +4079,9 @@ def _runtime_call(name: str, args: List[ast.expr], like: ast.AST) -> ast.expr:
         # An empty display has no element type for V to box: the runtime makes it.
         name = "empty_list" if isinstance(args[0], ast.List) else "empty_dict"
         args = []
+    if name == "box" and len(args) == 1 and isinstance(args[0], ast.Tuple) and not args[0].elts:
+        name = "tuple_of"
+        args = []
     call = ast.Call(func=ast.Attribute(value=ast.Name(id="pyrt", ctx=ast.Load()), attr=name,
                                        ctx=ast.Load()), args=args, keywords=[])
     for part in ast.walk(call):
@@ -4311,6 +4521,7 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
     if any(b.name == "pyrt" for b in table.bindings):
         return
     any_lists = any_lists or set()
+    external_imports = getattr(tree, "_external_imports", {})
 
     inferred_bindings = {b["id"]: b.get("inferred") for b in facts.bindings}
 
@@ -4430,7 +4641,7 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
     # The bindings the backend declares as `Any`: parameters with no annotation (the
     # receiver and the parameters of `__init__`, which the backend types from the fields,
     # are not among them), then every local that is only ever given a dynamic value.
-    dynamic_bindings = set(set_bindings)
+    dynamic_bindings = set(set_bindings) | external_imports.keys()
     dynamic_returning = set()
     native_operators = {id(fn) for cls in ast.walk(tree) if isinstance(cls, ast.ClassDef)
                         for fn in cls.body if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef))
@@ -4782,6 +4993,20 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
         return call
 
     class Lower(ast.NodeTransformer):
+        @staticmethod
+        def external_value(path: str, node: ast.expr) -> ast.expr:
+            name = ast.copy_location(ast.Constant(value=path), node)
+            result = _runtime_call("untranslated_import", [name], node)
+            result._api = "__pyrt__.untranslated_import"
+            return result
+
+        def visit_Name(self, node: ast.Name) -> ast.AST:
+            if isinstance(node.ctx, ast.Load):
+                path = _qualified_import(node, external_imports)
+                if path:
+                    return self.external_value(path, node)
+            return node
+
         def visit_IfExp(self, node: ast.IfExp) -> ast.AST:
             was_dynamic = dynamic(node)
             self.generic_visit(node)
@@ -4798,6 +5023,10 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
             return node
 
         def visit_Attribute(self, node: ast.Attribute) -> ast.AST:
+            if isinstance(node.ctx, ast.Load):
+                path = _qualified_import(node, external_imports)
+                if path:
+                    return self.external_value(path, node)
             self.generic_visit(node)
             if (isinstance(node.ctx, ast.Load) and id(node) not in called_attributes
                     and dynamic(node.value) and not getattr(node, "_api", "")):
@@ -4930,6 +5159,10 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
             return node
 
         def visit_Call(self, node: ast.Call) -> ast.AST:
+            external = _qualified_import(node.func, external_imports)
+            if external:
+                # Callee lookup fails before Python evaluates its arguments.
+                return self.external_value(external, node)
             if id(node) in empty_sets:
                 arguments = ast.copy_location(ast.List(elts=[], ctx=ast.Load()), node)
                 call = _runtime_call("new_set", [arguments], node)
@@ -6112,7 +6345,7 @@ def _mark_runtime_api(tree: ast.Module, table: Optional[symbols.SymbolTable]) ->
                 elif len(node.args) == 2:
                     node._api = "os.environ.get"
                 continue
-            if name.startswith("os.") and name != "os.getcwd":
+            if name.startswith("os.") and name not in ("os.getcwd", "os.path.dirname"):
                 # The rest of `os` is still lowered by the backend.
                 continue
             if api.get(name, {}).get("kind") in ("function", "constructor"):
@@ -7448,6 +7681,9 @@ def process_file(file_path: str, project: Optional[ProjectFacts] = None) -> str:
     _unquote_annotations(tree, table)
     if _encode_local_identifiers(tree, table):
         table = _resolve_bindings(tree)
+    if table is not None:
+        _mark_scheduling_refusals(tree, table, file_path)
+        _mark_nominal_enums(tree, table)
     _mark_dynamic_isinstance_types(tree, table)
     _retain_type_imports(tree, table, project)
     _mark_runtime_api(tree, table)

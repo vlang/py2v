@@ -6694,6 +6694,29 @@
     "v_result": "value"
   },
   {
+    "python": "__pyrt__.untranslated_import",
+    "v": "untranslated_import",
+    "module": "pyrt",
+    "kind": "function",
+    "receiver": null,
+    "raises": true,
+    "returns": "Any",
+    "params": [
+      {
+        "name": "path",
+        "type": "str"
+      }
+    ],
+    "variadic": false,
+    "options_struct": null,
+    "options": {},
+    "status": "implemented",
+    "notes": "Compiler intrinsic for a reference to an untranslated Python import.",
+    "v_kind": "fn",
+    "v_returns": "!Value",
+    "v_result": "result"
+  },
+  {
     "python": "__pyrt__.unpack",
     "v": "unpack",
     "module": "pyrt",
