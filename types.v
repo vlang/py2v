@@ -225,6 +225,18 @@ pub fn map_type_except(typename string, classes []string) string {
 	if typename == 'Callable' {
 		return 'Any'
 	}
+	for head in ['Callable[', 'typing.Callable[', 'collections.abc.Callable['] {
+		if !typename.starts_with(head) || !typename.ends_with(']') {
+			continue
+		}
+		args := split_type_args(typename[head.len..typename.len - 1])
+		if args.len != 2 || !args[0].starts_with('[') || !args[0].ends_with(']') {
+			return 'fn (Any) Any'
+		}
+		params := split_type_args(args[0][1..args[0].len - 1]).map(map_type_except(it, classes))
+		ret := if args[1] == 'None' { '' } else { ' ' + map_type_except(args[1], classes) }
+		return 'fn (${params.join(', ')})${ret}'
+	}
 	// A bare `MutableSequence` is a bare `list`.
 	if typename == 'MutableSequence' {
 		return v_type_map['list']
@@ -359,7 +371,10 @@ pub const python_dunder_method_names = {
 	'__del__':       'del'
 	// Numeric protocol hooks. V has no reserved spellings for these, and they
 	// read better as explicit conversion methods than as mangled names.
-	'__int__':       'to_int'
+	'__int__':       'py2v_dunder_int'
+	'__repr__':      'py2v_dunder_repr'
+	'__getitem__':   'py2v_dunder_getitem'
+	'__contains__':  'py2v_dunder_contains'
 	'__float__':     'to_float'
 	'__bool__':      'to_bool'
 	'__index__':     'to_index'
@@ -388,6 +403,14 @@ pub fn escape_leading_underscore(name string) string {
 	if name == '_' {
 		return name
 	}
+	// Reserve the prefix used below, including spellings reached by moving
+	// leading underscores, so a Python name cannot shadow an encoded one.
+	if name.trim_left('_').starts_with('py2v_numeric_') {
+		return 'py2v_numeric_${name}'
+	}
+	if name.trim_left('_').starts_with('py2v_dunder_') {
+		return 'py2v_dunder_${name}'
+	}
 	if name == '' || name[0] != `_` {
 		return name
 	}
@@ -399,6 +422,9 @@ pub fn escape_leading_underscore(name string) string {
 	if rest.len == 0 {
 		// All-underscore name such as `__`: V cannot express this, so use `_`.
 		return '_'
+	}
+	if rest[0].is_digit() {
+		return 'py2v_numeric${name}'
 	}
 	// `lead` underscores move to the end: `_foo` -> `foo_`, `__foo` -> `foo__`.
 	return '${rest}${'_'.repeat(lead)}'

@@ -9,6 +9,31 @@ fn written_initializer(node ClassDef) ?FunctionDef {
 	return none
 }
 
+// init_method_name keeps Python's init and __init__ distinct when both are defined.
+fn init_method_name(node ClassDef) string {
+	mut used := node.declarations.keys()
+	for stmt in node.body {
+		if stmt is FunctionDef && stmt.name != '__init__' {
+			used << escape_leading_underscore(stmt.name)
+		}
+	}
+	if 'init' !in used {
+		return 'init'
+	}
+	mut name := 'py2v_init'
+	for (name in used) {
+		name += '_'
+	}
+	return name
+}
+
+fn (t &VTranspiler) emitted_init_method(class_name string) string {
+	if init := t.resolve_init_constructor(Expr(Name{ id: class_name })) {
+		return init.method_name
+	}
+	return 'init'
+}
+
 // Reserve source spellings and the compound names emitted for class members.
 fn constructor_reserved_names(node Module, mut names map[string]bool) {
 	for word in node.source_words {
@@ -61,6 +86,7 @@ fn collect_init_constructors(node Module, mut names map[string]bool) map[string]
 		found[class_def.name] = InitConstructor{
 			class_name:             class_def.name
 			factory_name:           factory
+			method_name:            init_method_name(class_def)
 			init:                   initializer
 			unsupported:            unsupported
 			type_params:            class_def.type_params
