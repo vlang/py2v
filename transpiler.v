@@ -1140,7 +1140,10 @@ fn (mut t VTranspiler) visit_closure_from_funcdef(node FunctionDef, nl_names []s
 		t.var_types[arg.arg] = typ
 		mut incoming := local
 		if arg.arg in node.mutable_vars {
-			if typ in v_value_param_types || for_rebinds_parameter(node.body, arg.arg) {
+			if !arg.is_mutable && typ.starts_with('[]') {
+				incoming = t.new_tmp('${arg.arg}_in')
+				copies << 'mut ${local} := ${incoming}.clone()'
+			} else if typ in v_value_param_types || for_rebinds_parameter(node.body, arg.arg) {
 				incoming = t.new_tmp('${arg.arg}_in')
 				copies << 'mut ${local} := ${incoming}'
 			} else {
@@ -1483,8 +1486,12 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 				|| typename.starts_with('[]') || typename.starts_with('map['))
 			if typename in v_value_param_types && arg.arg in node.condition_walrus_names {
 				// The walrus lowering copies this parameter itself.
-			} else if typename in v_value_param_types || optional_value || local_value
-				|| typename.starts_with('&pyrt.ListRef[') {
+			} else if !arg.is_mutable && typename.starts_with('[]') {
+				incoming := t.new_tmp('${arg.arg}_in')
+				param_copies << 'mut ${arg_name} := ${incoming}.clone()'
+				arg_name = incoming
+		} else if typename in v_value_param_types || optional_value || local_value
+			|| typename.starts_with('&pyrt.ListRef[') {
 				// Rebinding a number, string or bool parameter is local in Python, and V
 				// has no `mut` for these or their options: it arrives under another name and the
 				// body starts with a mutable local that has the source's name.
@@ -1543,7 +1550,11 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 		}
 		t.var_types[kwonly.arg] = kwtype
 		if kwonly.arg in node.mutable_vars {
-			if kwtype in v_value_param_types || for_rebinds_parameter(node.body, kwonly.arg) {
+			if !kwonly.is_mutable && kwtype.starts_with('[]') {
+				incoming := t.new_tmp('${kwonly.arg}_in')
+				param_copies << 'mut ${kwname} := ${incoming}.clone()'
+				kwname = incoming
+			} else if kwtype in v_value_param_types || for_rebinds_parameter(node.body, kwonly.arg) {
 				incoming := t.new_tmp('${kwonly.arg}_in')
 				param_copies << 'mut ${kwname} := ${incoming}'
 				kwname = incoming
@@ -3206,6 +3217,7 @@ pub fn (mut t VTranspiler) visit_ann_assign(node AnnAssign) string {
 // is_value_param tells whether a parameter is annotated as a Python number, string or
 // bool, which py2v passes by value even when the function binds the name again.
 fn is_value_param(arg Arg) bool {
+	if !arg.is_mutable { return true }
 	ann := arg.annotation or { return false }
 	expr := *ann
 	if expr is Name {

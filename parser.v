@@ -530,6 +530,7 @@ fn parse_arg(m map[string]json2.Any) Arg {
 		arg:          m['arg'] or { json2.Any('') }.str()
 		annotation:   parse_optional_expr(m['annotation'] or { json2.Any(json2.Null{}) })
 		type_comment: parse_optional_string(m['type_comment'] or { json2.Any(json2.Null{}) })
+		is_mutable:   (m['is_mutable'] or { json2.Any(true) }).bool()
 		v_annotation: parse_type_annotation(m) or { '' }
 		loc:          parse_location(m)
 	}
