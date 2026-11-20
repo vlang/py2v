@@ -17,6 +17,11 @@ Key files (read in this order)
 - `plugins.v` — builtin translations (use `dispatch_builtin()`).
 - `types.v` — Python→V type mapping and identifier escaping.
 
+Plain V first
+- The goal is V a V programmer would write: plain V types, vlib calls and readable names. The runtime library `pyrt` is only for Python behavior that plain V cannot express (a value whose type cannot be proven, Python-only semantics). Prove the type and emit the plain form before reaching for `pyrt`.
+- `tests/purity_budget.tsv` holds, per expected file, how many lines may mention `pyrt.`; an unlisted file allows none, so a new fixture's expected output is plain V. `v run tests/purity.vsh` fails when a file is over its budget and also when it is under, so the budget follows every improvement down: run `v run tests/purity.vsh -lower` and commit the result.
+- Raise a budget line only by hand, in the same change, and say in the pull request which Python behavior needs the runtime. The row `@encoded-identifiers` bounds `py2v_ident_<hex>` names the same way.
+
 Change workflow (required)
 - If behavior depends on semantic context, implement it in `frontend/ast_dump.py` first.
 - If frontend JSON shape changes, update `ast.v` and `parser.v` together.
@@ -28,6 +33,7 @@ Build & test (development)
 - Run regression suite: `v tests/run_tests.vsh` (V script; runs on every platform).
 - Targeted V test: `v test py2v_test.v`.
 - Refresh expected fixtures after intentional changes: `sh tests/update_expected.sh`.
+- Check the runtime budget: `v run tests/purity.vsh` (CI runs it; see "Plain V first").
 - Reproduce a case quickly: `./py2v tests/cases/<case>.py`.
 - Inspect frontend JSON only: `python3 frontend/ast_dump.py tests/cases/<case>.py`.
 

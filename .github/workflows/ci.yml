@@ -37,6 +37,10 @@ jobs:
         if: ${{ success() && !cancelled() && steps.setup_v.outcome == 'success' }}
         run: v .
 
+      - name: Check runtime budget
+        if: ${{ success() && !cancelled() && steps.build.outcome == 'success' }}
+        run: v run tests/purity.vsh
+
       - name: Run tests
         if: ${{ success() && !cancelled() && steps.build.outcome == 'success' }}
         id: tests
