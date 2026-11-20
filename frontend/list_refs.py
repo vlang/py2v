@@ -358,6 +358,7 @@ class Plan:
     def graph(self):
         immediate_uses = self.immediate_return_uses()
         returned_parameters = set()
+        forwarded_parameters = set()
         for node in ast.walk(self.tree):
             if isinstance(node, (ast.expr, ast.arg)):
                 self.key(node)
@@ -498,6 +499,10 @@ class Plan:
                     seen_args = set()
                     for value in node.args + [kw.value for kw in node.keywords]:
                         key = self.key(value)
+                        binding = getattr(value, '_binding', None)
+                        if (immediate_uses and isinstance(value, ast.Name) and binding is not None
+                                and self.table.bindings[binding].is_param):
+                            forwarded_parameters.add(key)
                         if key in seen_args:
                             self.shared.add(key)
                         seen_args.add(key)
@@ -607,6 +612,7 @@ class Plan:
             return self.kinds[root] == {'list'} and elem is not None and self.kinds[elem] == {'int'}
 
         shared_inputs = {self.find(key) for key in self.shared}
+        forwarded = {self.find(key) for key in forwarded_parameters}
 
         def stable_comparison_other(call, other, result_root):
             if other is None:
@@ -618,9 +624,9 @@ class Plan:
         for fn in returned_parameters:
             key = self.returns[fn]
             root = self.find(key)
-            # Only native integer arrays have the same value operations at these
-            # uses. A comparison against another alias can read a stale V length.
-            if not native_int_list(root) or not all(
+            # A forwarded parameter also needs compatible mutation at its callee.
+            # The local value-use proof only covers the returning function.
+            if root in forwarded or not native_int_list(root) or not all(
                     stable_comparison_other(call, other, root) for call, other in immediate_uses[fn]):
                 self.shared.add(key)
         mutated = {self.find(k) for k in self.mutated}
