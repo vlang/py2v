@@ -1,13 +1,34 @@
 module main
 
+import strconv
+
 fn show(name string, n int, ratio f64, ok bool) {
 	println('hello ${name}')
-	println('n ${n} ratio ${ratio}')
+	println('n ${n} ratio ${py2v_float_text1(f64(ratio))}')
 	println(name.str() + ' ' + (if ok { 'True' } else { 'False' }).str())
 	println('a-b-${n}')
 	println(('cost $').str() + ' ' + n.str())
 	items := [1, 2]
 	println('items ${items} ${items.len}')
+}
+
+fn py2v_float_text1(value f64) string {
+	scientific := strconv.f64_to_str(value, 16)
+	marker := scientific.index('e') or { return scientific.trim_left('+') }
+	exponent := scientific[marker + 1..].int()
+	if exponent < -4 || exponent >= 16 {
+		return scientific
+	}
+	sign := if scientific.starts_with('-') { '-' } else { '' }
+	digits := scientific[sign.len..marker].replace('.', '')
+	point := exponent + 1
+	if point <= 0 {
+		return sign + '0.' + '0'.repeat(-point) + digits
+	}
+	if point >= digits.len {
+		return sign + digits + '0'.repeat(point - digits.len) + '.0'
+	}
+	return sign + digits[..point] + '.' + digits[point..]
 }
 
 fn main() {

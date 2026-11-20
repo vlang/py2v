@@ -42,7 +42,15 @@ fn yes() bool {
 
 fn loop_case() {
 	mut saved := 0
-	for i in []int{len: 2, init: index} {
+	py2v_range_start1 := 0
+	py2v_range_stop2 := 2
+	py2v_range_step3 := 1
+	if py2v_range_step3 == 0 { panic('ValueError: range() arg 3 must not be zero') }
+	for i := py2v_range_start1; if py2v_range_step3 > 0 {
+		i < py2v_range_stop2
+	} else {
+		i > py2v_range_stop2
+	}; i = py2v_range_next1(i, py2v_range_stop2, py2v_range_step3) {
 		saved = checked(i)
 		if !(saved < 0) {
 			println('loop ${saved}')
@@ -61,6 +69,17 @@ fn nested_case() {
 		}
 	}
 	println(('nested-after').str() + ' ' + (if inner { 'True' } else { 'False' }).str())
+}
+
+fn py2v_range_next1(current int, stop int, step int) int {
+	if step > 0 {
+		if u64(step) >= u64(stop) - u64(current) {
+			return stop
+		}
+	} else if u64(0) - u64(step) >= u64(current) - u64(stop) {
+		return stop
+	}
+	return current + step
 }
 
 fn main() {

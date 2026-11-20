@@ -15,12 +15,12 @@ fn foo() {
 	c3_ := a * b
 	c4_ := py2v_true_div1(a, b)
 	c5_ := -a
-	d := 2
+	d := 2.0
 	e1_ := a + d
 	e2_ := a - d
 	e3_ := a * d
 	e4_ := f64(a) / d
-	f_ := -3
+	f_ := -3.0
 	g_ := -a
 }
 
@@ -73,7 +73,7 @@ fn fadd1(x i8, y f64) f64 {
 }
 
 fn show() {
-	assert fadd1(6, 6) == 12
+	assert fadd1(6, 6.0) == 12
 	println('OK')
 }
 

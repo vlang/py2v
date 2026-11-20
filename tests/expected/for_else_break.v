@@ -22,37 +22,53 @@ fn main_func() {
 	if !py2v_broke2 {
 		println('no 5')
 	}
-	mut py2v_broke4 := false
-	for i in []int{len: 4, init: index} {
-		mut py2v_broke3 := false
-		for j in []int{len: 4, init: index} {
+	mut py2v_broke10 := false
+	py2v_range_start3 := 0
+	py2v_range_stop4 := 4
+	py2v_range_step5 := 1
+	if py2v_range_step5 == 0 { panic('ValueError: range() arg 3 must not be zero') }
+	for i := py2v_range_start3; if py2v_range_step5 > 0 {
+		i < py2v_range_stop4
+	} else {
+		i > py2v_range_stop4
+	}; i = py2v_range_next1(i, py2v_range_stop4, py2v_range_step5) {
+		mut py2v_broke9 := false
+		py2v_range_start6 := 0
+		py2v_range_stop7 := 4
+		py2v_range_step8 := 1
+		if py2v_range_step8 == 0 { panic('ValueError: range() arg 3 must not be zero') }
+		for j := py2v_range_start6; if py2v_range_step8 > 0 {
+			j < py2v_range_stop7
+		} else {
+			j > py2v_range_stop7
+		}; j = py2v_range_next1(j, py2v_range_stop7, py2v_range_step8) {
 			if j > i {
-				py2v_broke3 = true
+				py2v_broke9 = true
 				break
 			}
 		}
-		if !py2v_broke3 {
+		if !py2v_broke9 {
 			println('inner done ${i}')
 		}
 		if i == 2 {
-			py2v_broke4 = true
+			py2v_broke10 = true
 			break
 		}
 	}
-	if !py2v_broke4 {
+	if !py2v_broke10 {
 		println('outer done')
 	}
 	mut n := 5
-	mut py2v_broke5 := false
+	mut py2v_broke11 := false
 	for n > 0 {
 		n -= 1
 		if n == 2 {
 			println('stopped at ${n}')
-			py2v_broke5 = true
+			py2v_broke11 = true
 			break
 		}
 	}
-	if !py2v_broke5 {
+	if !py2v_broke11 {
 		println('ran out')
 	}
 	mut k := 0
@@ -60,6 +76,17 @@ fn main_func() {
 		k += 1
 	}
 	println('counted ${k}')
+}
+
+fn py2v_range_next1(current int, stop int, step int) int {
+	if step > 0 {
+		if u64(step) >= u64(stop) - u64(current) {
+			return stop
+		}
+	} else if u64(0) - u64(step) >= u64(current) - u64(stop) {
+		return stop
+	}
+	return current + step
 }
 
 fn main() {

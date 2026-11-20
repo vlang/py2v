@@ -1,6 +1,7 @@
 module main
 
 import pyrt
+import strconv
 
 type Any = pyrt.Value
 
@@ -74,7 +75,7 @@ fn declared_float() {
 	records := map[string]f64{
 		'value': 1.5
 	}
-	println(records['value'])
+	println(py2v_float_text1(f64(records['value'])))
 }
 
 fn rebound() {
@@ -91,6 +92,25 @@ fn bare_return() map[string]string {
 	return {
 		'title': 'eli'
 	}
+}
+
+fn py2v_float_text1(value f64) string {
+	scientific := strconv.f64_to_str(value, 16)
+	marker := scientific.index('e') or { return scientific.trim_left('+') }
+	exponent := scientific[marker + 1..].int()
+	if exponent < -4 || exponent >= 16 {
+		return scientific
+	}
+	sign := if scientific.starts_with('-') { '-' } else { '' }
+	digits := scientific[sign.len..marker].replace('.', '')
+	point := exponent + 1
+	if point <= 0 {
+		return sign + '0.' + '0'.repeat(-point) + digits
+	}
+	if point >= digits.len {
+		return sign + digits + '0'.repeat(point - digits.len) + '.0'
+	}
+	return sign + digits[..point] + '.' + digits[point..]
 }
 
 fn main() {

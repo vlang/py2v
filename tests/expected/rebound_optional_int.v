@@ -11,5 +11,5 @@ fn number(mut value ?int) {
 
 fn main() {
 	number(none)
-	number(mut 1)
+	number(mut 1.0)
 }

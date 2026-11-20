@@ -2,7 +2,7 @@ module main
 
 pub struct Box[I] {
 pub mut:
-	item &I
+	item I
 }
 
 fn (mut self Box[I]) init(item I) {
@@ -21,8 +21,8 @@ pub fn py2v_new_box[I](item I) Box[I] {
 
 pub struct Pair[K, V] {
 pub mut:
-	key   &K
-	value &V
+	key   K
+	value V
 }
 
 fn (mut self Pair[K, V]) init(key K, value V) {
@@ -46,8 +46,8 @@ pub fn py2v_new_pair[K, V](key K, value V) Pair[K, V] {
 
 pub struct Holder[U, T] {
 pub mut:
-	inner &U
-	other &T
+	inner U
+	other T
 }
 
 fn (mut self Holder[U, T]) init(inner U, other T) {

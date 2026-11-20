@@ -10,7 +10,7 @@ fn default_builtins() {
 	assert a == ''
 	assert b == false
 	assert c == 0
-	assert d == 0
+	assert d == 0.0
 }
 
 fn main() {
@@ -18,6 +18,6 @@ fn main() {
 	println(a)
 	b := arrays.min([1, 2]) or { panic('!') }
 	println(b)
-	c := int(arrays.min([1, 2]) or { panic('!') })
+	c := int(arrays.min([1.0, 2.0]) or { panic('!') })
 	println(c)
 }

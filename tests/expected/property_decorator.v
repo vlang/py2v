@@ -24,8 +24,8 @@ pub fn py2v_new_temperature(celsius f64) Temperature {
 }
 
 fn main() {
-	t := py2v_new_temperature(25)
+	t := py2v_new_temperature(25.0)
 	println(t.celsius)
-	t.set_celsius(30)
+	t.set_celsius(30.0)
 	println(t.celsius)
 }

@@ -1,7 +1,7 @@
 module main
 
 fn in_unit(v_ f64) bool {
-	return 0 <= v_ && v_ < 1
+	return 0.0 <= v_ && v_ < 1.0
 }
 
 fn between(lo int, x int, hi int) bool {
@@ -39,20 +39,39 @@ fn main_func() {
 		println('seven')
 	}
 	mut n := 20
-	for _ in []int{len: 50, init: index} {
+	py2v_range_start1 := 0
+	py2v_range_stop2 := 50
+	py2v_range_step3 := 1
+	if py2v_range_step3 == 0 { panic('ValueError: range() arg 3 must not be zero') }
+	for py2v_range_item4 := py2v_range_start1; if py2v_range_step3 > 0 {
+		py2v_range_item4 < py2v_range_stop2
+	} else {
+		py2v_range_item4 > py2v_range_stop2
+	}; py2v_range_item4 = py2v_range_next1(py2v_range_item4, py2v_range_stop2, py2v_range_step3) {
 		if 10 < n && n < 23 {
 			n += 1
 		}
 	}
 	println(n)
 	mut counter := [0]
-	py2v_cmp1 := bump(mut counter)
-	if 0 < py2v_cmp1 && py2v_cmp1 < 5 {
+	py2v_cmp5 := bump(mut counter)
+	if 0 < py2v_cmp5 && py2v_cmp5 < 5 {
 		println('bumped once')
 	}
 	println(counter[0])
 	ok := 1 <= xs.len && xs.len <= 3
 	println(if ok { 'True' } else { 'False' })
+}
+
+fn py2v_range_next1(current int, stop int, step int) int {
+	if step > 0 {
+		if u64(step) >= u64(stop) - u64(current) {
+			return stop
+		}
+	} else if u64(0) - u64(step) >= u64(current) - u64(stop) {
+		return stop
+	}
+	return current + step
 }
 
 fn main() {

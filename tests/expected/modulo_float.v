@@ -1,23 +1,24 @@
 module main
 
 import math
+import strconv
 
 fn remainder(a f64, b f64) f64 {
 	return py2v_float_mod1(f64(a), f64(b))
 }
 
 fn main_func() {
-	for a in [-7.5, 7.5, -6, 6, 0, -0] {
-		for b in [3, -3] {
+	for a in [-7.5, 7.5, -6.0, 6.0, 0.0, -0.0] {
+		for b in [3.0, -3.0] {
 			result := remainder(a, b)
-			println('${result} ${math.copysign(1, result)}')
+			println('${py2v_float_text1(f64(result))} ${math.copysign(1.0, result)}')
 		}
 	}
 	mut value := -7.5
 	py2v_old1 := value
-	value = py2v_float_mod1(f64(py2v_old1), f64(3))
-	println(value)
-	println('${py2v_float_mod1(f64(-7), f64(3.5))} ${py2v_float_mod1(f64(7.5), f64(-3))}')
+	value = py2v_float_mod1(f64(py2v_old1), f64(3.0))
+	println(py2v_float_text1(f64(value)))
+	println('${py2v_float_text1(f64(py2v_float_mod1(f64(-7), f64(3.5))))} ${py2v_float_text1(f64(py2v_float_mod1(f64(7.5), f64(-3))))}')
 }
 
 fn py2v_float_mod1(a f64, b f64) f64 {
@@ -29,6 +30,25 @@ fn py2v_float_mod1(a f64, b f64) f64 {
 		r = math.copysign(0.0, b)
 	}
 	return r
+}
+
+fn py2v_float_text1(value f64) string {
+	scientific := strconv.f64_to_str(value, 16)
+	marker := scientific.index('e') or { return scientific.trim_left('+') }
+	exponent := scientific[marker + 1..].int()
+	if exponent < -4 || exponent >= 16 {
+		return scientific
+	}
+	sign := if scientific.starts_with('-') { '-' } else { '' }
+	digits := scientific[sign.len..marker].replace('.', '')
+	point := exponent + 1
+	if point <= 0 {
+		return sign + '0.' + '0'.repeat(-point) + digits
+	}
+	if point >= digits.len {
+		return sign + digits + '0'.repeat(point - digits.len) + '.0'
+	}
+	return sign + digits[..point] + '.' + digits[point..]
 }
 
 fn main() {

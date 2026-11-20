@@ -16,7 +16,7 @@ fn main() {
 	}).str() + ' ' + (rolls.len).str())
 	println(if (6 in rolls) { 'True' } else { 'False' })
 	value := rand.f64()
-	println(if value >= 0 && value < 1 { 'True' } else { 'False' })
+	println(if value >= 0.0 && value < 1.0 { 'True' } else { 'False' })
 	names := ['ada', 'bob', 'cy']
 	println(if ((rand.element(names) or { panic(err) }) in names) { 'True' } else { 'False' })
 	mut deck := [1, 2, 3, 4, 5, 6, 7, 8]

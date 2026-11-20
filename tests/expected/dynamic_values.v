@@ -71,7 +71,7 @@ fn main() {
 	println(biggest([3, 9, 4]))
 	println(pyrt.str(first_or(pyrt.box([pyrt.box(7)]), 0)))
 	println(pyrt.str(first_or('', 'none')))
-	println(same(1, 1))
+	println(same(1, 1.0))
 	println(same('a', 1))
 	println(total([1, 2, 3]))
 }

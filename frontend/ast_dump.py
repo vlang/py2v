@@ -58,8 +58,7 @@ class AnalysisContext:
     facts: Optional[Any] = None
 
     def scalar_annotation(self, node: ast.AST) -> str:
-        """`int`, `float`, `string` or `bool` when that is the type of the expression (the
-        type the code shows, else the one its annotations declare), else an empty string."""
+        """The native annotation for an expression whose type is known or declared."""
         if self.facts is None:
             return ""
         type_id = getattr(node, "_assumed", None)
@@ -73,10 +72,16 @@ class AnalysisContext:
             elem = self.facts.types[type_id].get("elem")
             inner = self.facts.types[elem]["k"] if isinstance(elem, int) else ""
             return {"str": "[]string", "bool": "[]bool"}.get(inner, "")
+        if kind in ("tuple", "tuple_of"):
+            shape = self.facts.types[type_id]
+            members = shape["elems"] if kind == "tuple" else [shape["elem"]]
+            if members and all(self.facts.types[member]["k"] == "int" for member in members):
+                return "tuple[int, ...]"
         if kind == "int" and self._holds_declared_float(node):
             # `x: float` called with 1 holds an int in Python, but V declares it f64
             return ""
-        return {"int": "int", "float": "float", "str": "string", "bool": "bool"}.get(kind, "")
+        return {"int": "int", "float": "float", "str": "string", "bool": "bool",
+                "bytes": "bytes"}.get(kind, "")
 
     def _holds_declared_float(self, node: ast.AST) -> bool:
         for part in ast.walk(node):
@@ -2635,6 +2640,9 @@ def _node_to_dict(node: ast.AST, mutable_vars: Set[str],
     elif isinstance(node, ast.Constant):
         result["value"] = _constant_value(node.value)
         result["kind"] = node.kind
+        if type(node.value) is int and not -(1 << 63) <= node.value < 1 << 63:
+            result["value"] = str(node.value)
+            result["kind"] = "py2v_large_int"
         # Provide v_annotation for primitive literal types to help downstream
         # type-aware transpilation in the backend.
         if isinstance(node.value, bool):
@@ -4131,6 +4139,8 @@ def _literal_scalar(node: ast.expr) -> Optional[ast.Constant]:
 
 
 def _literal_text_value(node: ast.expr) -> Optional[ast.Constant]:
+    if isinstance(node, ast.Constant) and type(node.value) is bytes:
+        return node
     scalar = _literal_scalar(node)
     if scalar is not None:
         return scalar
@@ -4219,7 +4229,7 @@ def _lower_literal_text(tree: ast.Module, table: Optional[symbols.SymbolTable],
         value = literal.value
         # A large JSON integer can reach the V backend as an f64. Even the
         # negative 32-bit minimum has an out-of-range positive AST operand.
-        if (type(value) in (float, list, tuple, dict, set)
+        if (type(value) in (float, bytes, list, tuple, dict, set)
                 or type(value) is int and abs(value) >= 1 << 31
                 or for_str and (value is None or type(value) is bool)):
             try:
@@ -4251,6 +4261,15 @@ def _lower_literal_text(tree: ast.Module, table: Optional[symbols.SymbolTable],
                 return node
 
         def visit_BinOp(self, node: ast.BinOp) -> ast.AST:
+            if isinstance(node.op, ast.Pow):
+                left, right = _literal_scalar(node.left), _literal_scalar(node.right)
+                if (left is not None and right is not None and type(left.value) is int
+                        and type(right.value) is int and 0 <= right.value <= 4096
+                        and left.value.bit_length() * right.value <= 4096):
+                    value = left.value ** right.value
+                    if not -(1 << 63) <= value < 1 << 63:
+                        return ast.copy_location(ast.Constant(value=value), node)
+                return node
             if (not isinstance(node.op, ast.Mod) or not isinstance(node.left, ast.Constant)
                     or type(node.left.value) is not str):
                 return node
@@ -4273,6 +4292,16 @@ def _lower_literal_text(tree: ast.Module, table: Optional[symbols.SymbolTable],
                         if rendered is not None else node)
             if not isinstance(node.func, ast.Name) or getattr(node.func, "_binding", None) is not None:
                 return node
+            if node.func.id == "round" and len(node.args) in (1, 2) and not node.keywords:
+                args = [_literal_scalar(arg) for arg in node.args]
+                if (args[0] is not None and type(args[0].value) in (int, float, bool)
+                        and (len(args) == 1 or args[1] is not None
+                             and type(args[1].value) in (int, bool, type(None)))):
+                    try:
+                        value = round(args[0].value, args[1].value if len(args) == 2 else None)
+                    except (OverflowError, ValueError):
+                        return node
+                    return ast.copy_location(ast.Constant(value=value), node)
             if node.func.id == "print":
                 node.args = [text(arg, False) for arg in node.args]
             elif node.func.id == "str" and len(node.args) == 1 and not node.keywords:
@@ -4299,8 +4328,11 @@ def _lower_literal_text(tree: ast.Module, table: Optional[symbols.SymbolTable],
             converted = lower.visit_Call(node)
         elif isinstance(node, ast.FormattedValue):
             converted = lower.visit_FormattedValue(node)
-        elif isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mod):
+        elif isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Mod, ast.Pow)):
             converted = lower.visit_BinOp(node)
+        elif (isinstance(node, ast.UnaryOp) and isinstance(node.operand, ast.Constant)
+              and type(node.operand.value) is int and node.operand.value >= 1 << 63):
+            converted = _literal_scalar(node) or node
         else:
             continue
         if converted is not node:
