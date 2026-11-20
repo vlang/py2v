@@ -726,6 +726,10 @@ fn (mut t VTranspiler) runtime_helper(kind string) string {
 // runtime_helper_declaration returns the V source of the run-time helper `kind`.
 fn runtime_helper_declaration(kind string, name string) string {
 	return match kind {
+		'native_map_pop' {
+			'fn ${name}[K, T](mut items map[K]T, key K) T {\n' +
+				'\tvalue := items[key]\n\titems.delete(key)\n\treturn value\n}'
+		}
 		'isinstance_empty' {
 			'fn ${name}[T](value T) bool {\n\t_ = value\n\treturn false\n}'
 		}
@@ -3753,7 +3757,15 @@ pub fn (mut t VTranspiler) visit_for(node For) string {
 		call := node.iter as Call
 		if call.func is Name {
 			fname := (call.func as Name).id
-			if fname == 'range' && call.args.len == 3 {
+			if call.api == '__py2v__.native_range_loop' && call.args.len in [1, 2] {
+				start := if call.args.len == 1 {
+					'0'
+				} else {
+					t.visit_for_iter(call.args[0], saved_renames)
+				}
+				end := t.visit_for_iter(call.args.last(), saved_renames)
+				for_expr = '${start} .. ${end}'
+			} else if fname == 'range' && call.args.len == 3 {
 				start := t.visit_for_iter(call.args[0], saved_renames)
 				end := t.visit_for_iter(call.args[1], saved_renames)
 				step := t.visit_for_iter(call.args[2], saved_renames)
@@ -6487,6 +6499,11 @@ fn without_opt(code string) (string, bool) {
 
 // visit_call binds eligible module functions before rendering their arguments.
 pub fn (mut t VTranspiler) visit_call(original Call) string {
+	if original.api == '__py2v__.native_map_pop' && original.func is Attribute
+		&& original.args.len == 1 {
+		helper := t.runtime_helper('native_map_pop')
+		return '${helper}(mut ${t.visit_expr(original.func.value)}, ${t.visit_expr(original.args[0])})'
+	}
 	if original.api == '__py2v__.coroutine_refusal' && original.args.len == 2 {
 		message := original.args[0]
 		site := original.args[1]

@@ -7688,6 +7688,90 @@ def _empty_field_annotations(tree: ast.Module, facts: infer.TypeFacts) -> Dict[i
     return found
 
 
+def _lower_local_dict_methods(tree: ast.Module, table: Optional[symbols.SymbolTable]) -> None:
+    """Lower literal updates and proven-present pops on a fresh, unaliased local dict."""
+    if table is None:
+        return
+
+    def literal_types(node: Optional[ast.expr]) -> Optional[Tuple[type, type]]:
+        if not isinstance(node, ast.Dict) or not node.keys:
+            return None
+        key, value = node.keys[0], node.values[0]
+        if not isinstance(key, ast.Constant) or not isinstance(value, ast.Constant):
+            return None
+        key_type, value_type = type(key.value), type(value.value)
+        if key_type not in (str, int) or value_type not in (str, int, bool, float):
+            return None
+        if not all(isinstance(k, ast.Constant) and type(k.value) is key_type for k in node.keys):
+            return None
+        if (len({k.value for k in node.keys}) != len(node.keys)
+                or not all(isinstance(v, ast.Constant) and type(v.value) is value_type
+                           for v in node.values)):
+            return None
+        return key_type, value_type
+
+    for fn in list(ast.walk(tree)):
+        if not isinstance(fn, ast.FunctionDef):
+            continue
+        known: Dict[int, Tuple[Tuple[type, type], Set[Union[str, int]]]] = {}
+        body: List[ast.stmt] = []
+        for stmt in fn.body:
+            body.append(stmt)
+            value = stmt.value if isinstance(stmt, (ast.Assign, ast.Expr)) else None
+            target = stmt.targets[0] if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1 else None
+            if isinstance(target, ast.Name) and (binding := getattr(target, "_binding", None)) is not None:
+                local = table.bindings[binding]
+                if (local.scope == target._scope and not local.captured and not local.rebound
+                        and (types := literal_types(value)) is not None):
+                    known[binding] = (types, {k.value for k in value.keys})
+                    continue
+            if not known:
+                continue
+            allowed: Set[int] = set()
+            calls = [node for node in ast.walk(stmt) if isinstance(node, ast.Call) and not node.keywords]
+            snapshots = {id(call.args[0]) for call in calls if isinstance(call.func, ast.Name)
+                         and call.func.id == "list" and getattr(call.func, "_binding", None) is None
+                         and len(call.args) == 1}
+            for call in calls:
+                func = call.func
+                if (isinstance(func, ast.Name) and func.id == "print"
+                        and getattr(func, "_binding", None) is None):
+                    allowed.update(id(arg) for arg in call.args if isinstance(arg, ast.Name))
+                if not isinstance(func, ast.Attribute) or not isinstance(func.value, ast.Name):
+                    continue
+                receiver = func.value
+                binding = getattr(receiver, "_binding", None)
+                if binding not in known:
+                    continue
+                types, keys = known[binding]
+                if ((func.attr in ("keys", "values") and not call.args and id(call) in snapshots)
+                        or (func.attr == "get" and 1 <= len(call.args) <= 2
+                            and all(isinstance(arg, ast.Constant) for arg in call.args))):
+                    allowed.add(id(receiver))
+                if call is not value or len(call.args) != 1:
+                    continue
+                arg = call.args[0]
+                if (func.attr == "pop" and (isinstance(target, ast.Name) or isinstance(stmt, ast.Expr))
+                        and isinstance(arg, ast.Constant) and type(arg.value) is types[0]
+                        and arg.value in keys):
+                    call._api = "__py2v__.native_map_pop"
+                    keys.remove(arg.value)
+                    allowed.add(id(receiver))
+                if func.attr == "update" and isinstance(stmt, ast.Expr) and literal_types(arg) == types:
+                    # Constant entries can be stored in source order without a second map.
+                    body.pop()
+                    for key, item in zip(arg.keys, arg.values):
+                        subscript = ast.copy_location(
+                            ast.Subscript(value=copy.copy(receiver), slice=key, ctx=ast.Store()), stmt)
+                        body.append(ast.copy_location(ast.Assign(targets=[subscript], value=item), stmt))
+                        keys.add(key.value)
+                    allowed.add(id(receiver))
+            for node in ast.walk(stmt):
+                if isinstance(node, ast.Name) and id(node) not in allowed:
+                    known.pop(getattr(node, "_binding", None), None)
+        fn.body = body
+
+
 def _loop_comprehensions(tree: ast.Module, facts: Optional[infer.TypeFacts]) -> None:
     """A comprehension the backend's `.filter(...).map(...)` form cannot say becomes the
     loop a V programmer writes: one that unpacks its items (`for k, v in d.items()`) or has
@@ -7709,24 +7793,76 @@ def _loop_comprehensions(tree: ast.Module, facts: Optional[infer.TypeFacts]) -> 
             type_id = getattr(node, "_type", None)
         return _annotation_for_type(facts.types, type_id) if type_id is not None else None
 
-    def wanted(node: ast.AST) -> bool:
+    def wanted(node: ast.AST, allow_walrus: bool = False) -> bool:
         if not isinstance(node, (ast.ListComp, ast.GeneratorExp, ast.DictComp)):
             return False
         if any(g.is_async for g in node.generators):
             return False
         unpacks = any(isinstance(g.target, (ast.Tuple, ast.List)) for g in node.generators)
-        if not unpacks and len(node.generators) == 1:
+        if not unpacks and len(node.generators) == 1 and not allow_walrus:
             return False
         for g in node.generators:
             names = [g.target] if isinstance(g.target, ast.Name) else list(getattr(g.target, "elts", []))
             if not names or not all(isinstance(n, ast.Name) for n in names):
                 return False
-        if any(isinstance(n, (ast.NamedExpr, ast.Await, ast.Yield, ast.YieldFrom, ast.Lambda))
+        if any(isinstance(n, (ast.Await, ast.Yield, ast.YieldFrom, ast.Lambda))
+               or isinstance(n, ast.NamedExpr) and not allow_walrus
                for n in ast.walk(node)):
             return False
         if isinstance(node, ast.DictComp):
             return spelled(node.key) in ("str", "int") and spelled(node.value) is not None
         return spelled(node.elt) is not None
+
+    def leading_assignment(expr: ast.expr) -> Optional[ast.NamedExpr]:
+        while isinstance(expr, (ast.Compare, ast.BinOp)):
+            expr = expr.left
+        return expr if isinstance(expr, ast.NamedExpr) else None
+
+    def builtin_range(expr: ast.expr) -> bool:
+        return (isinstance(expr, ast.Call) and isinstance(expr.func, ast.Name)
+                and expr.func.id == "range" and getattr(expr.func, "_binding", None) is None)
+
+    def local_walrus_return(node: Optional[ast.AST], taken: Dict[str, int]) -> bool:
+        if not isinstance(node, ast.ListComp):
+            return False
+        parts = list(ast.walk(node))
+        assignments = [n for n in parts if isinstance(n, ast.NamedExpr)]
+        if len(assignments) != 1:
+            return False
+        assignment = assignments[0]
+        target = assignment.target
+        binding = getattr(target, "_binding", None)
+        if (not isinstance(target, ast.Name) or target.id in taken or binding is None
+                or not wanted(node, allow_walrus=True)):
+            return False
+        prefix = []
+        for gen in node.generators:
+            prefix.append(gen.iter)
+            for test in gen.ifs:
+                if leading_assignment(test) is assignment:
+                    break
+                prefix.append(test)
+            else:
+                continue
+            break
+        else:
+            return False
+        if any(builtin_range(gen.iter) and (
+                len(gen.iter.args) not in (1, 2) or gen.iter.keywords
+                or any(spelled(arg) != "int" for arg in gen.iter.args))
+                for gen in node.generators):
+            return False
+        prefix.append(assignment.value)
+
+        def uses_binding(part: ast.AST) -> bool:
+            return isinstance(part, ast.Name) and getattr(part, "_binding", None) == binding
+
+        if any(uses_binding(part) for expr in prefix for part in ast.walk(expr)):
+            return False
+        # A fresh binding confined to this comprehension needs no write-back
+        # after the generated loop. The assignment runs first in its filter.
+        part_ids = {id(part) for part in parts}
+        return all(id(part) in part_ids for part in ast.walk(tree) if uses_binding(part))
 
     def simple(node: ast.AST) -> bool:
         while isinstance(node, ast.Attribute):
@@ -7839,10 +7975,24 @@ def _loop_comprehensions(tree: ast.Module, facts: Optional[infer.TypeFacts]) -> 
                                                                ctx=ast.Load()),
                                             args=[comp.elt], keywords=[]))
         body: List[ast.stmt] = [store]
+        walrus_filters = any(leading_assignment(test) is not None
+                             for gen in comp.generators for test in gen.ifs)
         for g in reversed(comp.generators):
+            if walrus_filters and builtin_range(g.iter):
+                g.iter._api = "__py2v__.native_range_loop"
             if g.ifs:
-                test = g.ifs[0] if len(g.ifs) == 1 else ast.BoolOp(op=ast.And(), values=list(g.ifs))
-                body = [ast.If(test=test, body=body, orelse=[])]
+                if any(leading_assignment(test) is not None for test in g.ifs):
+                    for test in reversed(g.ifs):
+                        assignment = leading_assignment(test)
+                        before = []
+                        if assignment is not None:
+                            before.append(ast.Assign(targets=[assignment.target],
+                                                     value=assignment.value))
+                            test = Replace({id(assignment): assignment.target.id}).visit(test)
+                        body = before + [ast.If(test=test, body=body, orelse=[])]
+                else:
+                    test = g.ifs[0] if len(g.ifs) == 1 else ast.BoolOp(op=ast.And(), values=list(g.ifs))
+                    body = [ast.If(test=test, body=body, orelse=[])]
             body = [ast.For(target=g.target, iter=g.iter, body=body, orelse=[])]
         declaration = ast.AnnAssign(target=target or ast.Name(id=name, ctx=ast.Store()),
                                     annotation=_annotation_node(text, comp), value=empty, simple=1)
@@ -7891,8 +8041,11 @@ def _loop_comprehensions(tree: ast.Module, facts: Optional[infer.TypeFacts]) -> 
             for case in getattr(stmt, "cases", []):
                 rewrite(case.body, taken)
             found: List[ast.AST] = []
-            for expr in headers(stmt):
-                find(expr, found)
+            if isinstance(stmt, ast.Return) and local_walrus_return(stmt.value, taken):
+                found.append(stmt.value)
+            else:
+                for expr in headers(stmt):
+                    find(expr, found)
             found = [c for c in found if not any(
                 isinstance(n, ast.Name) and n.id in taken
                 for g in generators(c) for n in ast.walk(g.target))]
@@ -8537,6 +8690,7 @@ def process_file(file_path: str, project: Optional[ProjectFacts] = None) -> str:
     _mark_dynamic_isinstance_types(tree, table)
     _retain_type_imports(tree, table, project)
     _mark_runtime_api(tree, table)
+    _lower_local_dict_methods(tree, table)
     _lower_exit_statements(tree, table)
     _erase_typing_casts(tree, table)
     _expand_bool_calls(tree)
