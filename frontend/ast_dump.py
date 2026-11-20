@@ -306,6 +306,8 @@ def _extract_names(node: ast.AST) -> List[str]:
 
 def _is_void_function(node: ast.FunctionDef) -> bool:
     """Check if a function never returns a value."""
+    if getattr(node, "_main_guard", False):
+        return True
     # If there's a return type annotation, it's not void
     if node.returns is not None:
         return False
@@ -318,6 +320,8 @@ def _is_void_function(node: ast.FunctionDef) -> bool:
 
 
 def _is_generator(node: ast.FunctionDef) -> bool:
+    if getattr(node, "_main_guard", False):
+        return False
     for child in ast.walk(node):
         if isinstance(child, (ast.Yield, ast.YieldFrom)):
             return True
@@ -602,6 +606,7 @@ def _rewrite_main_guard(tree: ast.Module) -> ast.Module:
         end_lineno=guard.end_lineno,
         end_col_offset=guard.end_col_offset,
     )
+    main_func._main_guard = True
 
     new_body = []
     for node in tree.body:
@@ -3013,6 +3018,107 @@ def _sibling_summaries(project: Optional[ProjectFacts]):
     return [summary for name, summary in project.externals.items()
             if name == summary.get("module") and name != project.module_name
             and (name if summary["is_package"] else name.rpartition(".")[0]) == owner]
+
+
+def _qualify_guard_classes(tree, table, project, siblings):
+    """Keep a script-only class distinct from a sibling's exported class."""
+    if table is None or not siblings:
+        return False
+    guard = next((stmt for stmt in tree.body if getattr(stmt, "_main_guard", False)), None)
+    if guard is None:
+        return False
+    sibling_classes = {name for summary in siblings for name in summary["classes"]}
+    used = {b.name for b in table.bindings} | sibling_classes
+    renamed = {}
+    stem = project.module_name.rsplit(".", 1)[-1].encode("utf-8").hex()
+    for node in guard.body:
+        if not isinstance(node, ast.ClassDef) or node.name not in sibling_classes:
+            continue
+        binding = table.bindings[node._binding]
+        if binding.scope != guard._scope_id or binding.rebound or binding.declared_nonlocal:
+            continue
+        candidate = f"Py2vGuard{node.name}_{stem}"
+        while candidate in used:
+            candidate += "_"
+        used.add(candidate)
+        renamed[binding.id] = candidate
+        node.name = candidate
+    for node in ast.walk(guard):
+        if isinstance(node, ast.Name) and getattr(node, "_binding", None) in renamed:
+            node.id = renamed[node._binding]
+    return bool(renamed)
+
+
+def _qualify_nested_functions(tree, table, project, siblings):
+    """Keep a hoisted local function apart from definitions with the same name."""
+    if table is None:
+        return False
+    sibling_names = {name for summary in siblings for name in summary.get("local_bindings", ())}
+    module_names = {b.name for b in table.bindings if b.scope == 0
+                    and any(how != "import" for _, _, how in b.sites)}
+    conflicts = module_names | sibling_names
+    used = {b.name for b in table.bindings} | sibling_names
+    stem = (project.module_name if project and project.module_name else "script").encode().hex()
+    renamed = {}
+    serial = 0
+    for binding in table.bindings:
+        if (binding.kind != "function" or table.scopes[binding.scope].kind != "function"
+                or binding.rebound or binding.declared_nonlocal
+                or binding.name not in conflicts):
+            continue
+        while True:
+            serial += 1
+            candidate = f"py2v_nested_{stem}_{serial}_{binding.name}"
+            if candidate not in used:
+                break
+        used.add(candidate)
+        renamed[binding.id] = candidate
+    if not renamed:
+        return False
+    for node in ast.walk(tree):
+        candidate = renamed.get(getattr(node, "_binding", None)) if isinstance(
+            node, (ast.Name, ast.FunctionDef, ast.AsyncFunctionDef)) else None
+        if isinstance(node, ast.Name) and candidate:
+            node.id = candidate
+        elif candidate:
+            node.name = candidate
+    return True
+
+
+def _return_branch_definitions(tree, table):
+    """Return each selected local function at the end of its own branch."""
+    if table is None:
+        return False
+    changed = False
+    for owner in ast.walk(tree):
+        if not isinstance(owner, ast.FunctionDef) or len(owner.body) < 2:
+            continue
+        branch, tail = owner.body[-2:]
+        if not (isinstance(branch, ast.If) and isinstance(tail, ast.Return)
+                and isinstance(tail.value, ast.Name)):
+            continue
+        binding = table.binding(owner._scope_id, tail.value.id)
+        if binding is None or binding.id != getattr(tail.value, "_binding", None):
+            continue
+        arms = []
+        while True:
+            arms.append(branch.body)
+            if len(branch.orelse) != 1 or not isinstance(branch.orelse[0], ast.If):
+                arms.append(branch.orelse)
+                break
+            branch = branch.orelse[0]
+        definitions = [arm for arm in arms if len(arm) == 1
+                       and isinstance(arm[0], ast.FunctionDef)
+                       and arm[0]._binding == binding.id]
+        if (len(definitions) < 2 or len(binding.sites) != len(definitions)
+                or not all(arm in definitions or (len(arm) == 1 and isinstance(arm[0], ast.Raise))
+                           for arm in arms)):
+            continue
+        owner.body.pop()
+        for arm in definitions:
+            arm.append(copy.deepcopy(tail))
+        changed = True
+    return changed
 
 
 def _select_module_branch_functions(tree, table, project, siblings):
@@ -7952,7 +8058,10 @@ def process_file(file_path: str, project: Optional[ProjectFacts] = None) -> str:
     table = _resolve_bindings(tree)
     siblings = _sibling_summaries(project)
     selected = _select_module_branch_functions(tree, table, project, siblings)
-    if selected:
+    qualified = _qualify_guard_classes(tree, table, project, siblings)
+    qualified_locals = _qualify_nested_functions(tree, table, project, siblings)
+    returned = _return_branch_definitions(tree, table)
+    if selected or qualified or qualified_locals or returned:
         table = _resolve_bindings(tree)
     _mark_math_members(tree, table)
     _unquote_annotations(tree, table)

@@ -163,7 +163,7 @@ const expected_dir = os.join_path(script_dir, 'expected')
 const package_fixtures = ['pkg_imports', 'pkg_lib_main', 'pkg_multi', 'pkg_multi2', 'pkg_true_div',
 	'pkg_init_execution', 'pkg_private_names', 'pkg_call_defaults', 'pkg_type_only',
 	'pkg_qualified_construct', 'pkg_colliding_functions', 'pkg_annotated_constants',
-	'pkg_class_constant_alias', 'pkg_module_string_product']!
+	'pkg_class_constant_alias', 'pkg_module_string_product', 'pkg_guard_class']!
 
 mut py2v := resolve_py2v()
 
@@ -418,15 +418,13 @@ call_results_cases := ['dict_get_missing', 'dict_get_eager', 'dict_get_chain', '
 	'list_box_any_id', 'list_alias_iter_reorder', 'list_alias_slice_reverse', 'list_alias_slice_delete',
 	'list_slice_step_assign', 'list_slice_step_delete', 'list_slice_unit_step_resize',
 	'list_slice_unit_step_grow', 'list_frozenset_alias', 'dict_widen_local', 'dict_widen_reassign',
-	'list_scoped_refusal', 'refused_walrus', 'module_branch_definitions', 'dunder_new_collision', 'property_accessor_collision', 'decl_defaultdict',
-	'decl_kwonly_none', 'decl_callable_field', 'decl_callable_missing_return', 'decl_callable_optional',
-	'decl_digit_name', 'decl_duplicate_init', 'decl_duplicate_dunder', 'decl_duplicate_overwritten',
+	'list_scoped_refusal', 'refused_walrus', 'module_branch_definitions', 'dunder_new_collision',
+	'property_accessor_collision', 'returned_branch_definitions', 'decl_defaultdict', 'decl_kwonly_none',
+	'decl_callable_field', 'decl_callable_missing_return', 'decl_callable_optional', 'decl_digit_name',
+	'decl_duplicate_init', 'decl_duplicate_dunder', 'decl_duplicate_overwritten',
 	'decl_reserved_prefix_field', 'decl_reserved_numeric_field', 'decl_defaultdict_int_key',
 	'decl_defaultdict_alias', 'external_dynamic', 'scheduling_refusal', 'nominal_enum_classmethod',
-	'nominal_enum_unannotated', 'dynamic_empty_tuple', 'sequence_rebind', 'reserved_map_name',
-	'generic_none_type_arguments', 'uppercase_while_binding', 'uppercase_range_step',
-	'reserved_volatile_name', 'read_underscore_binding', 'keyword_named_call', 'bubble_sort',
-	'condition_walrus_bindings', 'dict', 'nested_dict']
+	'nominal_enum_unannotated', 'dynamic_empty_tuple', 'sequence_rebind', 'reserved_map_name', 'generic_none_type_arguments', 'uppercase_while_binding', 'uppercase_range_step', 'reserved_volatile_name', 'read_underscore_binding', 'keyword_named_call', 'bubble_sort', 'condition_walrus_bindings', 'dict', 'nested_dict']
 mut execution_args := [][]string{}
 mut execution_names := []string{}
 for name in call_results_cases {
@@ -830,12 +828,13 @@ for pkg in package_fixtures {
 			}
 		}
 		if pkg in ['pkg_type_only', 'pkg_colliding_functions', 'pkg_annotated_constants',
-			'pkg_class_constant_alias', 'pkg_module_string_product'] {
+			'pkg_class_constant_alias', 'pkg_module_string_product', 'pkg_guard_class'] {
 			fixtures := match pkg {
 				'pkg_type_only' {
 					['acyclic/consumer', 'cycle_b/consumer', 'model/holder', 'model/frozen']
 				}
 				'pkg_colliding_functions' { ['__init__', 'left', 'right'] }
+				'pkg_guard_class' { ['__init__', 'choice', 'demo', 'public'] }
 				else { ['__init__'] }
 			}
 			for fixture in fixtures {
@@ -867,9 +866,15 @@ for pkg in package_fixtures {
 			}
 			driver := os.join_path(python_root, 'driver.py')
 			python_module := if pkg == 'pkg_type_only' { '${pkg}.main' } else { pkg }
-			os.write_file(driver, 'import sys\nfrom pathlib import Path\nsys.path.insert(0, str(Path(__file__).parent))\nfrom ${python_module} import total\nprint(total())\n') or { panic(err) }
+			python_guard := if pkg == 'pkg_guard_class' {
+				'import runpy\nrunpy.run_module("${pkg}.demo", run_name="__main__")\n'
+			} else {
+				''
+			}
+			os.write_file(driver, 'import sys\nfrom pathlib import Path\nsys.path.insert(0, str(Path(__file__).parent))\nfrom ${python_module} import total\nprint(total())\n${python_guard}') or { panic(err) }
 			entry := os.join_path(out_dir, 'fixture_main.v')
-			os.write_file(entry, 'module main\n\nimport py_${pkg}\n\nfn main() {\n\tprintln(py_${pkg}.total())\n}\n') or { panic(err) }
+			v_guard := if pkg == 'pkg_guard_class' { '\tpy_${pkg}.demo_main()\n' } else { '' }
+			os.write_file(entry, 'module main\n\nimport py_${pkg}\n\nfn main() {\n\tprintln(py_${pkg}.total())\n${v_guard}}\n') or { panic(err) }
 			result := compare_execution(['', python, driver, entry])
 			name := '${pkg}: execution'
 			if result.exit_code == 0 {

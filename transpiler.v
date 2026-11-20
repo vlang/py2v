@@ -10639,7 +10639,18 @@ fn v_return_type(typ string) string {
 // returned list.
 pub fn (mut t VTranspiler) hoist_block_fns(stmts []Stmt, mut out []string, in_block bool) []Stmt {
 	mut result := []Stmt{}
-	for stmt in stmts {
+	for index, stmt in stmts {
+		// A local function returned by its defining branch can stay a closure.
+		if in_block && stmt is FunctionDef && stmt.is_nested && index + 2 == stmts.len
+			&& stmts[index + 1] is Return {
+			tail := stmts[index + 1] as Return
+			if value := tail.value {
+				if value is Name && value.id == stmt.name {
+					result << stmt
+					continue
+				}
+			}
+		}
 		result << t.hoist_in_stmt(stmt, mut out, in_block)
 	}
 	return result
