@@ -416,6 +416,48 @@ fn register_colliding_functions(parsed map[string]Module, dupes map[string][]str
 	}
 }
 
+// Reserve one V type name per Python file that defines the colliding class.
+fn register_colliding_classes(parsed map[string]Module, dupes map[string][]string, mut registry ModuleRegistry) {
+	mut keys := parsed.keys()
+	keys.sort()
+	mut taken := map[string]bool{}
+	for key in keys {
+		info := registry.lookup(key)
+		for stmt in parsed[key]!.body {
+			if stmt is ClassDef {
+				taken['${info.v_module}.${emitted_class_name(stmt.name)}'] = true
+			}
+		}
+	}
+	mut serial := 0
+	for key in keys {
+		info := registry.lookup(key)
+		for stmt in parsed[key]!.body {
+			if stmt !is ClassDef {
+				continue
+			}
+			class_def := stmt as ClassDef
+			if '${info.v_module}.${class_def.name}' !in dupes { continue }
+			mut name := ''
+			for {
+				serial++
+				name = 'Py2v${emitted_class_name(class_def.name)}${serial}'
+				if '${info.v_module}.${name}' !in taken && name !in registry.module_words[info.v_module] {
+					break
+				}
+			}
+			taken['${info.v_module}.${name}'] = true
+			path := '${info.dotted}.${class_def.name}'
+			registry.class_names[path] = name
+			for member in class_def.body {
+				if member is FunctionDef && member.decorator_kind in ['staticmethod', 'classmethod'] {
+					registry.class_static_members['${path}.${member.name}'] = true
+				}
+			}
+		}
+	}
+}
+
 // find_python_files recursively lists .py files under root, skipping caches.
 fn find_python_files(root string) ![]string {
 	mut out := []string{}
@@ -555,6 +597,7 @@ fn translate_package(python_cmd string, ast_dump string, package_dir string, out
 	register_defaulted_functions(parsed, mut registry)
 	dupes := registry.collisions()
 	register_colliding_functions(parsed, dupes, mut registry)
+	register_colliding_classes(parsed, dupes, mut registry)
 	if dupes.len > 0 {
 		mut keys := dupes.keys()
 		keys.sort()

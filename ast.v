@@ -223,6 +223,8 @@ pub mut:
 	// api identifies the resolved class in an annotation: a runtime API path or a
 	// __project_type__ path to a class supplied by a type-only project import.
 	api string
+	// class_path is the defining Python module and class, if resolved.
+	class_path string
 }
 
 pub struct BinOp {
@@ -272,6 +274,8 @@ pub mut:
 	subject_class string
 	// The isinstance type argument is a runtime binding, not a static V type name.
 	isinstance_dynamic_types bool
+	// Result proved from a resolved project class and its bases.
+	isinstance_nominal string
 	// api is the Python name of the runtime library entry this call resolved to
 	// (`datetime.datetime.now`), or empty.
 	api string
@@ -300,7 +304,8 @@ pub mut:
 	v_annotation ?string
 	// api is the Python name of the runtime library entry this attribute resolved to
 	// (`datetime.timezone.utc`), or empty.
-	api string
+	api        string
+	class_path string
 }
 
 pub struct Subscript {

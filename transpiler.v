@@ -193,6 +193,34 @@ fn emitted_class_name(name string) string {
 	return name
 }
 
+fn (t &VTranspiler) local_class_name(name string) string {
+	return t.registry.class_names['${t.current_dotted}.${name}'] or { emitted_class_name(name) }
+}
+
+fn expr_class_path(expr Expr) string {
+	return match expr {
+		Name { expr.class_path }
+		Attribute { expr.class_path }
+		else { '' }
+	}
+}
+
+fn (mut t VTranspiler) renamed_class(path string) ?string {
+	name := t.registry.class_names[path] or { return none }
+	owner := t.registry.lookup(path.all_before_last('.'))
+	if owner.v_module == t.module_name { return name }
+	t.add_using(owner.v_module)
+	return '${owner.v_module}.${name}'
+}
+
+fn (mut t VTranspiler) renamed_static_member(node Attribute) ?string {
+	path := expr_class_path(*node.value)
+	if !t.registry.class_static_members['${path}.${node.attr}'] { return none }
+	owner := t.renamed_class(path) or { return none }
+	name := '${to_symbol_ident(owner.all_after_last('.'))}_${escape_leading_underscore(node.attr)}'
+	return if owner.contains('.') { '${owner.all_before_last('.')}.${name}' } else { name }
+}
+
 // new_transpiler creates a new VTranspiler instance
 pub fn new_transpiler() VTranspiler {
 	return VTranspiler{
@@ -1392,7 +1420,7 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 	// @classmethod / @staticmethod: emit as free function named ClassName_funcname
 	if node.is_class_method && node.decorator_kind in ['classmethod', 'staticmethod'] {
 		member := if node.dunder_op.starts_with('py2v_overload_') { emit_name } else { node.name }
-		owner := emitted_class_name(node.class_name)
+		owner := t.local_class_name(node.class_name)
 		emit_name = if t.nominal_enums[node.class_name] {
 			'${owner}.${escape_keyword(escape_leading_underscore(member))}'
 		} else {
@@ -1405,7 +1433,7 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 	// requires both operands of an operator to have the same type.
 	is_binop_dunder := node.dunder_op in ['+', '-', '*', '/', '%', '==', '!=', '<', '<=', '>',
 		'>=']
-	mut emitted_receiver_type := emitted_class_name(node.class_name)
+	mut emitted_receiver_type := t.local_class_name(node.class_name)
 	if tp := t.class_type_params[node.class_name] {
 		if tp.len > 0 {
 			emitted_receiver_type = '${emitted_receiver_type}[${tp.join(', ')}]'
@@ -1414,7 +1442,7 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 
 	// Handle class method receiver (skip for staticmethod / classmethod)
 	if node.is_class_method && node.decorator_kind !in ['staticmethod', 'classmethod'] {
-		base_receiver := emitted_class_name(node.class_name)
+		base_receiver := t.local_class_name(node.class_name)
 		// Append generic type params if the class is generic (e.g. Stack[T])
 		mut emitted_receiver := base_receiver
 		if tp := t.class_type_params[node.class_name] {
@@ -1437,6 +1465,8 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 		if use_mut_recv {
 			signature << '(mut self ${emitted_receiver})'
 		} else if node.class_name in t.ref_classes {
+		} else if '${t.current_dotted}.${node.class_name}' in t.registry.class_names {
+			'${to_symbol_ident(owner)}_${escape_leading_underscore(member)}'
 			// `return self` and `node = self` hand out the object, not a copy.
 			signature << '(self &${emitted_receiver})'
 		} else {
@@ -1964,7 +1994,7 @@ fn (mut t VTranspiler) visit_protocol_class(node ClassDef, emitted_name string) 
 // visit_class_def emits V code for a ClassDef node.
 pub fn (mut t VTranspiler) visit_class_def(node ClassDef) string {
 	t.init_import_aliases.delete(node.name)
-	emitted_name := emitted_class_name(node.name)
+	emitted_name := t.local_class_name(node.name)
 	if node.bases.len == 1 && native_enum_base(node.bases[0]) {
 		return t.visit_nominal_enum(node, emitted_name)
 	}
@@ -2034,7 +2064,8 @@ pub fn (mut t VTranspiler) visit_class_def(node ClassDef) string {
 				if stmt.targets.len == 1 && stmt.targets[0] is Name {
 					attr_name := (stmt.targets[0] as Name).id
 					if !is_v_field_ident(attr_name) {
-						symbol := class_attr_symbol_name(node.name, attr_name)
+						class_name := t.registry.class_names['${t.current_dotted}.${node.name}'] or { node.name }
+						symbol := class_attr_symbol_name(class_name, attr_name)
 						// A package can export Status.VALID under STATUS_VALID.
 						// Keep the generated storage distinct from that alias.
 						class_attr_syms[attr_name] = if symbol in module_names {
@@ -2102,7 +2133,7 @@ pub fn (mut t VTranspiler) visit_class_def(node ClassDef) string {
 	if node.declarations.len > 0 {
 		mut field_annotations := map[string]Expr{}
 		for stmt in node.body {
-			if stmt is AnnAssign && stmt.target is Name && has_class_annotation(stmt.annotation) {
+			if stmt is AnnAssign && stmt.target is Name && t.has_class_annotation(stmt.annotation) {
 				field_annotations[(stmt.target as Name).id] = stmt.annotation
 			}
 		}
@@ -2152,7 +2183,13 @@ pub fn (mut t VTranspiler) visit_class_def(node ClassDef) string {
 		}
 	}
 	for base in node.bases {
-		if base is Name {
+		path := expr_class_path(base)
+		if name := t.renamed_class(path) {
+			base_fields := t.registry.class_fields_by_path[path]
+			t.known_classes[name] = base_fields
+			t.class_direct_fields[name] = base_fields
+			base_names << name
+		} else if base is Name {
 			base_name := (base as Name).id
 			if base_name.len > 0 {
 				base_names << base_name
@@ -5621,6 +5658,9 @@ pub fn (mut t VTranspiler) visit_name(node Name) string {
 	// `from other_module import *` makes that module's names visible without a
 	// binding, so they have to be qualified at every use site instead.
 	star_prefix := t.star_import_owner(node.id)
+	if name := t.renamed_class(node.class_path) {
+		return name
+	}
 	if star_prefix != '' {
 		return '${star_prefix}.${escape_local_ident(node.id)}'
 	}
@@ -6496,6 +6536,14 @@ pub fn (mut t VTranspiler) visit_call(original Call) string {
 		return 'Any(pyrt.map_get(${vargs.join(', ')}))'
 	}
 
+	class_path := expr_class_path(*original.func)
+	if name := t.renamed_class(class_path) {
+		fields := t.registry.class_fields_by_path[class_path]
+		t.known_classes[name] = fields
+		t.class_direct_fields[name] = fields
+		ctor_args := original.args.map(t.visit_expr(it))
+		return t.ctor_struct_literal(name, name, original, ctor_args)
+	}
 	// re module → regex module dispatch
 	re_result, re_handled := dispatch_re_func(mut t, fname, vargs)
 	if re_handled {
@@ -6602,6 +6650,9 @@ pub fn (mut t VTranspiler) visit_call(original Call) string {
 				if base_args.len > 0 && base_args[0] == 'self' {
 					base_args = base_args[1..]
 				}
+		if member := t.renamed_static_member(attr_node) {
+			return '${member}(${vargs.join(', ')})'
+		}
 				if base_args.len > 0 {
 					return 'self.${emitted_class_name(recv)}.${init_method}(${base_args.join(', ')})'
 				}
@@ -7714,7 +7765,10 @@ fn collect_super_calls_in_expr(expr Expr, mut names []string) {
 }
 
 // has_class_annotation finds resolved class metadata retained on a field's AST.
-fn has_class_annotation(annotation Expr) bool {
+fn (t &VTranspiler) has_class_annotation(annotation Expr) bool {
+	if expr_class_path(annotation) in t.registry.class_names {
+		return true
+	}
 	return match annotation {
 		Name {
 			annotation.api.starts_with('__project_type__.') || annotation.api in runtime_class_types || annotation.api in runtime_api
@@ -7723,10 +7777,12 @@ fn has_class_annotation(annotation Expr) bool {
 			annotation.api.starts_with('__project_type__.') || annotation.api in runtime_class_types || annotation.api in runtime_api
 		}
 		Subscript {
-			has_class_annotation(*annotation.value) || has_class_annotation(*annotation.slice)
+			t.has_class_annotation(*annotation.value) || t.has_class_annotation(*annotation.slice)
 		}
-		Tuple { annotation.elts.any(has_class_annotation(it)) }
-		BinOp { has_class_annotation(*annotation.left) || has_class_annotation(*annotation.right) }
+		Tuple { annotation.elts.any(t.has_class_annotation(it)) }
+		BinOp {
+			t.has_class_annotation(*annotation.left) || t.has_class_annotation(*annotation.right)
+		}
 		else { false }
 	}
 }
@@ -7890,6 +7946,12 @@ pub fn (mut t VTranspiler) visit_attribute(node Attribute) string {
 	// must call the method as declared.
 	//
 	// Everything else has to shed a leading underscore. V reads `x._foo` as the
+	if name := t.renamed_class(node.class_path) {
+		return name
+	}
+	if member := t.renamed_static_member(node) {
+		return member
+	}
 	// string literal `x.'foo'`, because `_` is a string prefix character, and a
 	// leading underscore is not a legal field name either. Python reaches these
 	// constantly for private attributes, so the rewrite matches the one the
@@ -9370,6 +9432,9 @@ fn (mut t VTranspiler) annotation_typename(ann ?Expr) string {
 			subscripted := *a.value
 			value := if subscripted is Name
 				&& subscripted.id in ['list', 'List', 'set', 'Set', 'Dict', 'Callable',
+	if name := t.renamed_class(expr_class_path(a)) {
+		return name
+	}
 					'MutableSequence', 'type', 'Type'] {
 				subscripted.id
 			} else {

@@ -163,7 +163,7 @@ const expected_dir = os.join_path(script_dir, 'expected')
 const package_fixtures = ['pkg_imports', 'pkg_lib_main', 'pkg_multi', 'pkg_multi2', 'pkg_true_div',
 	'pkg_init_execution', 'pkg_private_names', 'pkg_call_defaults', 'pkg_type_only',
 	'pkg_qualified_construct', 'pkg_colliding_functions', 'pkg_annotated_constants',
-	'pkg_class_constant_alias', 'pkg_module_string_product', 'pkg_guard_class']!
+	'pkg_class_constant_alias', 'pkg_module_string_product', 'pkg_guard_class', 'pkg_class_owners']!
 
 mut py2v := resolve_py2v()
 
@@ -828,13 +828,15 @@ for pkg in package_fixtures {
 			}
 		}
 		if pkg in ['pkg_type_only', 'pkg_colliding_functions', 'pkg_annotated_constants',
-			'pkg_class_constant_alias', 'pkg_module_string_product', 'pkg_guard_class'] {
+			'pkg_class_constant_alias', 'pkg_module_string_product', 'pkg_guard_class',
+			'pkg_class_owners'] {
 			fixtures := match pkg {
 				'pkg_type_only' {
 					['acyclic/consumer', 'cycle_b/consumer', 'model/holder', 'model/frozen']
 				}
 				'pkg_colliding_functions' { ['__init__', 'left', 'right'] }
 				'pkg_guard_class' { ['__init__', 'choice', 'demo', 'public'] }
+				'pkg_class_owners' { ['__init__', 'consumer', 'left', 'owner_check', 'right'] }
 				else { ['__init__'] }
 			}
 			for fixture in fixtures {
@@ -866,15 +868,23 @@ for pkg in package_fixtures {
 			}
 			driver := os.join_path(python_root, 'driver.py')
 			python_module := if pkg == 'pkg_type_only' { '${pkg}.main' } else { pkg }
-			python_guard := if pkg == 'pkg_guard_class' {
-				'import runpy\nrunpy.run_module("${pkg}.demo", run_name="__main__")\n'
-			} else {
-				''
+			python_extra := match pkg {
+				'pkg_guard_class' {
+					'import runpy\nrunpy.run_module("${pkg}.demo", run_name="__main__")\n'
+				}
+				'pkg_class_owners' {
+					'from ${pkg}.owner_check import sibling_result\nprint(sibling_result())\n'
+				}
+				else { '' }
 			}
-			os.write_file(driver, 'import sys\nfrom pathlib import Path\nsys.path.insert(0, str(Path(__file__).parent))\nfrom ${python_module} import total\nprint(total())\n${python_guard}') or { panic(err) }
+			os.write_file(driver, 'import sys\nfrom pathlib import Path\nsys.path.insert(0, str(Path(__file__).parent))\nfrom ${python_module} import total\nprint(total())\n${python_extra}') or { panic(err) }
 			entry := os.join_path(out_dir, 'fixture_main.v')
-			v_guard := if pkg == 'pkg_guard_class' { '\tpy_${pkg}.demo_main()\n' } else { '' }
-			os.write_file(entry, 'module main\n\nimport py_${pkg}\n\nfn main() {\n\tprintln(py_${pkg}.total())\n${v_guard}}\n') or { panic(err) }
+			v_extra := match pkg {
+				'pkg_guard_class' { '\tpy_${pkg}.demo_main()\n' }
+				'pkg_class_owners' { '\tprintln(py_${pkg}.sibling_result())\n' }
+				else { '' }
+			}
+			os.write_file(entry, 'module main\n\nimport py_${pkg}\n\nfn main() {\n\tprintln(py_${pkg}.total())\n${v_extra}}\n') or { panic(err) }
 			result := compare_execution(['', python, driver, entry])
 			name := '${pkg}: execution'
 			if result.exit_code == 0 {

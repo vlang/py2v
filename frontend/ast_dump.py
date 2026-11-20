@@ -2598,6 +2598,8 @@ def _node_to_dict(node: ast.AST, mutable_vars: Set[str],
             result["subject_class"] = node._subject_class
         if getattr(node, "_isinstance_dynamic_types", False):
             result["isinstance_dynamic_types"] = True
+        if nominal := getattr(node, "_isinstance_nominal", ""):
+            result["isinstance_nominal"] = nominal
         if getattr(node, "_api", ""):
             result["api"] = node._api
         if getattr(node, "_propagate", False):
@@ -2690,6 +2692,8 @@ def _node_to_dict(node: ast.AST, mutable_vars: Set[str],
 
     if isinstance(node, ast.expr) and getattr(node, "_runtime_annotation", ""):
         result["v_annotation"] = node._runtime_annotation
+    if isinstance(node, (ast.Name, ast.Attribute)) and getattr(node, "_class_path", ""):
+        result["class_path"] = node._class_path
     return result
 
 
@@ -3230,6 +3234,81 @@ def _qualified_import(node: ast.AST, paths: Dict[int, str]) -> str:
         base = _qualified_import(node.value, paths)
         return base + "." + node.attr if base else ""
     return ""
+
+
+def _mark_project_class_references(tree, table, project):
+    """Keep the import's defining class beside the spelling used in this file."""
+    raw = getattr(tree, "_infer_raw", None)
+    if project is None or project.module_name is None or table is None or raw is None:
+        return
+    local = {node._binding: node for node in tree.body if isinstance(node, ast.ClassDef)
+             and not table.bindings[node._binding].rebound}
+
+    def class_path(path: str) -> str:
+        seen = set()
+        while path not in seen:
+            seen.add(path)
+            module, _, name = path.rpartition(".")
+            summary = project.externals.get(module, {})
+            if name in summary.get("classes", {}):
+                return summary["module"] + "." + name
+            value = summary.get("variables", {}).get(name, {}).get("inferred") or {}
+            if value.get("k") != "class":
+                return ""
+            path = value["name"]
+        return ""
+
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.Name, ast.Attribute)) or not isinstance(node.ctx, ast.Load):
+            continue
+        if isinstance(node, ast.Name) and (cls := local.get(getattr(node, "_binding", None))):
+            node._class_path = project.module_name + "." + cls.name
+            continue
+        api = getattr(node, "_api", "")
+        path = api.removeprefix("__project_type__.") if api.startswith("__project_type__.") else raw.qname(node)
+        if not path:
+            type_id = getattr(node, "_type", None)
+            if type_id is not None:
+                item = raw.p.types[type_id]
+                if item["k"] == "class" and item.get("class_binding") is None:
+                    path = item["name"]
+        if path and (resolved := class_path(path)):
+            node._class_path = resolved
+
+    def ancestry(path: str, target: str, seen: Set[str]) -> Optional[bool]:
+        if path == target:
+            return True
+        if path in seen:
+            return None
+        owner, _, name = path.rpartition(".")
+        summary = project.externals.get(owner, {}).get("classes", {}).get(name)
+        if summary is None:
+            return None
+        bases = []
+        for base in summary.get("bases", []):
+            if base == "object":
+                continue
+            resolved = class_path(base if "." in base else owner + "." + base)
+            bases.append(ancestry(resolved, target, seen | {path}) if resolved else None)
+        return True if True in bases else None if None in bases else False
+
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                and node.func.id == "isinstance" and getattr(node.func, "_binding", None) is None
+                and len(node.args) == 2 and not node.keywords and isinstance(node.args[0], ast.Name)):
+            continue
+        subject, target = node.args
+        target_path = getattr(target, "_class_path", "")
+        type_id = getattr(subject, "_type", None)
+        if not target_path or type_id is None:
+            continue
+        value = raw.p.types[type_id]
+        if value["k"] != "instance":
+            continue
+        cls = local.get(value.get("class_binding"))
+        subject_path = (project.module_name + "." + cls.name if cls else class_path(value["name"]))
+        if subject_path and (result := ancestry(subject_path, target_path, set())) is not None:
+            node._isinstance_nominal = "true" if result else "false"
 
 
 def _mark_local_sequence_rebindings(tree: ast.Module, table: symbols.SymbolTable) -> None:
@@ -8167,6 +8246,7 @@ def process_file(file_path: str, project: Optional[ProjectFacts] = None) -> str:
 
     # Detect class methods
     _detect_class_methods(tree)
+    _mark_project_class_references(tree, table, project)
 
     # Detect nesting levels
     _detect_nesting_levels(tree)

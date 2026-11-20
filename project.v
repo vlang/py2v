@@ -41,6 +41,9 @@ pub mut:
 	defaulted_functions map[string]FunctionDef
 	// Renamed free functions, keyed by the defining Python path and name.
 	function_names map[string]string
+	// Renamed classes and their non-instance members, keyed by defining Python path.
+	class_names          map[string]string
+	class_static_members map[string]bool
 	// class_bases_by_path maps `module.Class` to its base class names, so a
 	// struct literal built in another module can fill the embedded bases.
 	class_bases_by_path map[string][]string
