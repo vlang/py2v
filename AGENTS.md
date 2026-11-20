@@ -31,6 +31,10 @@ Change workflow (required)
 Build & test (development)
 - Build: from repo root run `v .` (do not use `-o` during normal development).
 - Run regression suite: `v tests/run_tests.vsh` (V script; runs on every platform).
+- New `tests/cases/*.py` fixtures run against CPython by default. Each exemption needs a class and
+  a concrete reason in `tests/execution_exempt.tsv`. The optional `platforms` column lists
+  `macos`, `linux`, or `windows` separated by commas. An empty column applies everywhere.
+  `v tests/run_tests.vsh -lower` removes passing defect rows that name no other platform.
 - Targeted V test: `v test py2v_test.v`.
 - Refresh expected fixtures after intentional changes: `sh tests/update_expected.sh`.
 - Check the runtime budget: `v run tests/purity.vsh` (CI runs it; see "Plain V first").
