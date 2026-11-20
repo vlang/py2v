@@ -14,7 +14,7 @@ fn main_func() {
 		'True'
 	} else {
 		'False'
-	}).str() + ' ' + (if pyrt.eq(pyrt.box(a), pyrt.box(c)) { 'True' } else { 'False' }).str())
+	}).str() + ' ' + (if a.items == c.items { 'True' } else { 'False' }).str())
 	b.items << 2
 	println('${pyrt.str(pyrt.box(a))} ${pyrt.str(pyrt.box(c))}')
 	x := pyrt.list_ref[&pyrt.ListRef[int]]([a])

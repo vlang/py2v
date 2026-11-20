@@ -1,33 +1,5 @@
 module main
 
-import pyrt
-
-type Any = pyrt.Value
-
-fn (a Any) + (b Any) Any {
-	return pyrt.add(a, b) or { panic(err) }
-}
-
-fn (a Any) - (b Any) Any {
-	return pyrt.sub(a, b) or { panic(err) }
-}
-
-fn (a Any) * (b Any) Any {
-	return pyrt.mul(a, b) or { panic(err) }
-}
-
-fn (a Any) / (b Any) Any {
-	return pyrt.truediv(a, b) or { panic(err) }
-}
-
-fn (a Any) % (b Any) Any {
-	return pyrt.mod(a, b) or { panic(err) }
-}
-
-fn (a Any) < (b Any) bool {
-	return pyrt.lt(a, b) or { panic(err) }
-}
-
 fn main_func() {
 	mut d := {
 		'a': 1
@@ -42,11 +14,18 @@ fn main_func() {
 	println(val)
 	val = d['z'] or { 99 }
 	println(val)
-	popped := (d['b'] or { 0 })
+	popped := py2v_native_map_pop1(mut d, 'b')
 	println(popped)
 	println(d)
-	// d.update() - manually merge dicts
+	d['x'] = 10
+	d['y'] = 20
 	println(d)
+}
+
+fn py2v_native_map_pop1[K, T](mut items map[K]T, key K) T {
+	value := items[key]
+	items.delete(key)
+	return value
 }
 
 fn main() {

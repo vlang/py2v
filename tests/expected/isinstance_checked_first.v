@@ -2,10 +2,10 @@ module main
 
 import pyrt
 
-fn highest_bit_py(py2v_number_in1 int) !int {
+fn highest_bit(py2v_number_in1 int) int {
 	mut number := py2v_number_in1
 	if !true {
-		return IError(pyrt.exception('TypeError', [pyrt.box("Input value must be an 'int' type")]))
+		// pass
 	}
 	mut position := 0
 	for number != 0 {
@@ -13,10 +13,6 @@ fn highest_bit_py(py2v_number_in1 int) !int {
 		number >>= 1
 	}
 	return position
-}
-
-fn highest_bit(py2v_number_in1 int) int {
-	return highest_bit_py(py2v_number_in1) or { pyrt.fail(err) }
 }
 
 fn rotate_py(x int, py2v_k_in2 int) !int {
@@ -64,7 +60,7 @@ fn count_ints_py(inputs []int) !int {
 	mut total := 0
 	for item in inputs {
 		if !true {
-			return pyrt.raise('TypeError', 'All inputs in the list must be integers')
+			// pass
 		}
 		total += 1
 	}
@@ -75,19 +71,15 @@ fn count_ints(inputs []int) int {
 	return count_ints_py(inputs) or { pyrt.fail(err) }
 }
 
-fn joined_py(separator string, separated []string) !string {
+fn joined(separator string, separated []string) string {
 	mut out := ''
 	for word in separated {
 		if !true {
-			return pyrt.raise('Exception', 'join() accepts only strings')
+			// pass
 		}
 		out += word + separator
 	}
 	return out
-}
-
-fn joined(separator string, separated []string) string {
-	return joined_py(separator, separated) or { pyrt.fail(err) }
 }
 
 fn scaled_py(py2v_theta_in4 f64, accuracy int) !f64 {
@@ -106,21 +98,17 @@ fn scaled(py2v_theta_in4 f64, accuracy int) f64 {
 	return scaled_py(py2v_theta_in4, accuracy) or { pyrt.fail(err) }
 }
 
-fn twice_py(words []string) !int {
+fn twice(words []string) int {
 	mut n := 0
 	for w in words {
 		if !true {
-			return pyrt.raise('Exception', 'only strings')
+			// pass
 		}
 	}
 	for w in words[..1] {
 		n += w.len
 	}
 	return n
-}
-
-fn twice(words []string) int {
-	return twice_py(words) or { pyrt.fail(err) }
 }
 
 fn main() {

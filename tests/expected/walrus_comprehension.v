@@ -1,50 +1,44 @@
 module main
 
-import pyrt
+import math
 
 fn squares_above(n int) []int {
-	return (fn () []int {
-		mut result := []int{}
-		for x in 0 .. n {
-			y := x * x
-			if y > 5 {
-				result << y
-			}
+	mut py2v_comp1 := []int{}
+	for x in 0 .. n {
+		y := x * x
+		if y > 5 {
+			py2v_comp1 << y
 		}
-		return result
-	})()
+	}
+	return py2v_comp1
 }
 
 fn evens_doubled(nums []int) []int {
-	return (fn () []int {
-		mut result := []int{}
-		for x in nums {
-			d := x * 2
-			if d % 4 == 0 {
-				result << d
-			}
+	mut py2v_comp2 := []int{}
+	for x in nums {
+		d := x * 2
+		if math.modulo_floored(d, 4) == 0 {
+			py2v_comp2 << d
 		}
-		return result
-	})()
+	}
+	return py2v_comp2
 }
 
 fn nested_walrus(matrix [][]int) []int {
-	return (fn () []int {
-		mut result := []int{}
-		for row in matrix {
-			for z in row {
-				w := z * 3
-				if w > 6 {
-					result << z
-				}
+	mut py2v_comp3 := []int{}
+	for row in matrix {
+		for z in row {
+			w := z * 3
+			if w > 6 {
+				py2v_comp3 << z
 			}
 		}
-		return result
-	})()
+	}
+	return py2v_comp3
 }
 
 fn main() {
-	println(pyrt.str(pyrt.box(squares_above(8))))
-	println(pyrt.str(pyrt.box(evens_doubled([1, 2, 3, 4, 5, 6]))))
-	println(pyrt.str(pyrt.box(nested_walrus([[1, 2, 3], [4, 5, 6]]))))
+	println(squares_above(8))
+	println(evens_doubled([1, 2, 3, 4, 5, 6]))
+	println(nested_walrus([[1, 2, 3], [4, 5, 6]]))
 }

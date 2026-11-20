@@ -1,33 +1,6 @@
 module main
 
 import arrays
-import pyrt
-
-type Any = pyrt.Value
-
-fn (a Any) + (b Any) Any {
-	return pyrt.add(a, b) or { panic(err) }
-}
-
-fn (a Any) - (b Any) Any {
-	return pyrt.sub(a, b) or { panic(err) }
-}
-
-fn (a Any) * (b Any) Any {
-	return pyrt.mul(a, b) or { panic(err) }
-}
-
-fn (a Any) / (b Any) Any {
-	return pyrt.truediv(a, b) or { panic(err) }
-}
-
-fn (a Any) % (b Any) Any {
-	return pyrt.mod(a, b) or { panic(err) }
-}
-
-fn (a Any) < (b Any) bool {
-	return pyrt.lt(a, b) or { panic(err) }
-}
 
 fn show(small map[string]int, big map[string]int, rank int) {
 	mut py2v_comp1 := []bool{}

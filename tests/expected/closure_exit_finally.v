@@ -1,7 +1,5 @@
 module main
 
-import pyrt
-
 fn inner() int {
 	defer {
 		println('inner cleanup')
@@ -23,7 +21,7 @@ fn make_exit() fn () {
 	}
 	exit_later := fn () {
 		println('inner exit')
-		pyrt.fail(IError(pyrt.exception('SystemExit', [pyrt.box(0)])))
+		exit(0)
 	}
 	return exit_later
 }

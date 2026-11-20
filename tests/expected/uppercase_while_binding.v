@@ -1,12 +1,12 @@
 module main
 
 fn repeat() {
-	mut py2v_ident_53 := true
-	for py2v_ident_53 {
+	mut s := true
+	for s {
 		for i in [1] {
 			println(i)
 		}
-		py2v_ident_53 = false
+		s = false
 	}
 }
 

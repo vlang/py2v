@@ -19,7 +19,6 @@ defer_finally	does-not-compile	cannot assign a `none` value to a variable
 definite_assignment_unproven	does-not-compile	undefined ident: `values`
 delete	does-not-compile	`my_list` is immutable, declare it with `mut` to make it mutable
 demorgan	needs-dependency	Imports py2many.smt, which the suite does not install.
-dict_methods	differs	line 6: CPython [{'a': 1, 'c': 3}], V [{'a': 1, 'b': 2, 'c': 3}]
 dict_unpack_typechecking	python-version	Dict comprehension unpacking requires Python 3.15.
 dunder_ops	does-not-compile	unknown type `_Private`.
 dynamic_isinstance_bindings	does-not-compile	unknown function: py2v_unsupported_dynamic_isinstance
@@ -119,7 +118,6 @@ unsupported_closure_capture	does-not-compile	unknown function: py2v_unsupported_
 unsupported_expression_walrus	does-not-compile	unknown function: py2v_unsupported_assignment_expression
 unsupported_format_fields	does-not-compile	unknown function: py2v_unsupported_str_format
 unsupported_super_value	needs-dependency	Imports the intentionally unavailable outside module.
-walrus_comprehension	does-not-compile	range type can only be an integer type
 walrus_in_comprehension_element	does-not-compile	`names` must be explicitly listed as inherited variable to be used inside a closure
 with	does-not-compile	cannot use `MockFile` as type `Any` in return argument
 with_file_cleanup	does-not-compile	cannot use `Any` as `string` in argument 1 to `os.create`

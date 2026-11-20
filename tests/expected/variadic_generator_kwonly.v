@@ -1,35 +1,7 @@
 module main
 
-import pyrt
-
 // TODO(py2v): no V equivalent for import asyncio
 // Provide one in python_to_v_import (types.v) or port the module.
-
-type Any = pyrt.Value
-
-fn (a Any) + (b Any) Any {
-	return pyrt.add(a, b) or { panic(err) }
-}
-
-fn (a Any) - (b Any) Any {
-	return pyrt.sub(a, b) or { panic(err) }
-}
-
-fn (a Any) * (b Any) Any {
-	return pyrt.mul(a, b) or { panic(err) }
-}
-
-fn (a Any) / (b Any) Any {
-	return pyrt.truediv(a, b) or { panic(err) }
-}
-
-fn (a Any) % (b Any) Any {
-	return pyrt.mod(a, b) or { panic(err) }
-}
-
-fn (a Any) < (b Any) bool {
-	return pyrt.lt(a, b) or { panic(err) }
-}
 
 fn note(value int) int {
 	println('eval ${value}')

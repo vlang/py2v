@@ -1,38 +1,38 @@
 module main
 
 fn implicit_keys() bool {
-	py2v_ident_43_4f_44_45_53 := {
+	codes := {
 		'KEY': 1
 	}
-	return 'KEY' in py2v_ident_43_4f_44_45_53
+	return 'KEY' in codes
 }
 
 fn explicit_keys() bool {
-	py2v_ident_43_4f_44_45_53_ := {
+	codes := {
 		'KEY': 1
 	}
-	return 'KEY' in py2v_ident_43_4f_44_45_53_.keys()
+	return 'KEY' in codes.keys()
 }
 
 fn dict_values() bool {
-	py2v_ident_43_4f_44_45_53__ := {
+	codes := {
 		'KEY': 1
 	}
-	return 1 in py2v_ident_43_4f_44_45_53__.keys().map(py2v_ident_43_4f_44_45_53__[it])
+	return 1 in codes.keys().map(codes[it])
 }
 
 fn return_dict_index_str(key string) int {
-	py2v_ident_43_4f_44_45_53___ := {
+	codes := {
 		'KEY': 1
 	}
-	return py2v_ident_43_4f_44_45_53___[key]
+	return codes[key]
 }
 
 fn return_dict_index_int(key int) string {
-	py2v_ident_43_4f_44_45_53____ := {
+	codes := {
 		1: 'one'
 	}
-	return py2v_ident_43_4f_44_45_53____[key]
+	return codes[key]
 }
 
 fn main() {
