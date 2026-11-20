@@ -1334,6 +1334,116 @@ def _drop_overwritten_class_bindings(tree: ast.Module) -> None:
             cls.body = [stmt for stmt in cls.body if stmt not in discarded]
 
 
+def _lower_colliding_accessors(tree, table, facts):
+    """Give colliding descriptor accessors separate names and call them for known receivers."""
+    if table is None or facts is None:
+        return False
+    properties = {}
+    for cls in ast.walk(tree):
+        if not isinstance(cls, ast.ClassDef):
+            continue
+        methods = [stmt for stmt in cls.body if isinstance(stmt, ast.FunctionDef)]
+        used = {stmt.name for stmt in methods} | set(_extract_class_declarations(cls))
+        for getter in methods:
+            name = getter.name
+            if not (len(getter.decorator_list) == 1
+                    and isinstance(getter.decorator_list[0], ast.Name)
+                    and getter.decorator_list[0].id == "property"
+                    and getattr(getter.decorator_list[0], "_binding", None) is None):
+                continue
+            accessors = {}
+            for fn in methods:
+                if fn is getter or fn.name != name:
+                    continue
+                decorators = fn.decorator_list
+                if not (len(decorators) == 1 and isinstance(decorators[0], ast.Attribute)
+                        and isinstance(decorators[0].value, ast.Name)
+                        and decorators[0].value.id == name
+                        and decorators[0].attr in ("setter", "deleter")
+                        and decorators[0].attr not in accessors):
+                    accessors.clear()
+                    break
+                accessors[decorators[0].attr] = fn
+            if "deleter" not in accessors and not (
+                    "setter" in accessors and f"set_{name}" in used):
+                continue
+            if len(table.bindings[getter._binding].sites) != len(accessors) + 1:
+                continue
+            names = {"getter": name}
+            for kind, fn in accessors.items():
+                candidate = f"py2v_property_{kind}_{name}"
+                while candidate in used:
+                    candidate += "_"
+                used.add(candidate)
+                fn.name = candidate
+                fn.decorator_list = []
+                names[kind] = candidate
+            properties[(cls._binding, name)] = names
+
+    if not properties:
+        return False
+
+    def method(target, kind):
+        if not isinstance(target, ast.Attribute):
+            return None
+        typ = getattr(target.value, "_assumed", getattr(target.value, "_type", None))
+        if typ is None:
+            return None
+        fact = facts.types[typ]
+        if fact["k"] != "instance":
+            return None
+        return properties.get((fact["class_binding"], target.attr), {}).get(kind)
+
+    def access(target, name, args):
+        func = ast.Attribute(value=target.value, attr=name, ctx=ast.Load())
+        call = ast.copy_location(ast.Call(func=func, args=args, keywords=[]), target)
+        if hasattr(target, "_type"):
+            call._type = target._type
+        return call
+
+    used = {binding.name for binding in table.bindings}
+    serial = 0
+
+    class Lower(ast.NodeTransformer):
+        def visit_Attribute(self, node):
+            name = method(node, "getter") if isinstance(node.ctx, ast.Load) else None
+            self.generic_visit(node)
+            return access(node, name, []) if name else node
+
+        def visit_Assign(self, node):
+            target = node.targets[0]
+            name = method(target, "setter") if len(node.targets) == 1 else None
+            self.generic_visit(node)
+            if not name:
+                return node
+            # Python evaluates the right-hand side before the target receiver.
+            if isinstance(node.value, ast.Constant):
+                return ast.copy_location(ast.Expr(value=access(target, name, [node.value])), node)
+            nonlocal serial
+            while True:
+                serial += 1
+                temporary = f"py2v_property_value_{serial}"
+                if temporary not in used:
+                    used.add(temporary)
+                    break
+            save = ast.Assign(targets=[ast.Name(id=temporary, ctx=ast.Store())], value=node.value)
+            call = access(target, name, [ast.Name(id=temporary, ctx=ast.Load())])
+            return [ast.copy_location(save, node), ast.copy_location(ast.Expr(value=call), node)]
+
+        def visit_Delete(self, node):
+            names = [method(target, "deleter") for target in node.targets]
+            self.generic_visit(node)
+            if not any(names):
+                return node
+            return [ast.copy_location(ast.Expr(value=access(target, name, [])) if name
+                                      else ast.Delete(targets=[target]), node)
+                    for target, name in zip(node.targets, names)]
+
+    Lower().visit(tree)
+    ast.fix_missing_locations(tree)
+    return True
+
+
 def _plan_overload_definitions(tree):
     """Retain typing overload bodies under distinct, non-operator names.
 
@@ -7859,6 +7969,9 @@ def process_file(file_path: str, project: Optional[ProjectFacts] = None) -> str:
     _erase_typing_casts(tree, table)
     _expand_bool_calls(tree)
     facts = _infer_types(tree, table, project)
+    if _lower_colliding_accessors(tree, table, facts):
+        table = _resolve_bindings(tree)
+        facts = _infer_types(tree, table, project)
     _plan_closures(tree, table, facts)
     _lower_named_dunder_operations(tree, facts)
     _plan_bound_appends(tree, table, facts)

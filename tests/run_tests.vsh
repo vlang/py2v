@@ -418,7 +418,7 @@ call_results_cases := ['dict_get_missing', 'dict_get_eager', 'dict_get_chain', '
 	'list_box_any_id', 'list_alias_iter_reorder', 'list_alias_slice_reverse', 'list_alias_slice_delete',
 	'list_slice_step_assign', 'list_slice_step_delete', 'list_slice_unit_step_resize',
 	'list_slice_unit_step_grow', 'list_frozenset_alias', 'dict_widen_local', 'dict_widen_reassign',
-	'list_scoped_refusal', 'refused_walrus', 'module_branch_definitions', 'decl_defaultdict',
+	'list_scoped_refusal', 'refused_walrus', 'module_branch_definitions', 'dunder_new_collision', 'property_accessor_collision', 'decl_defaultdict',
 	'decl_kwonly_none', 'decl_callable_field', 'decl_callable_missing_return', 'decl_callable_optional',
 	'decl_digit_name', 'decl_duplicate_init', 'decl_duplicate_dunder', 'decl_duplicate_overwritten',
 	'decl_reserved_prefix_field', 'decl_reserved_numeric_field', 'decl_defaultdict_int_key',
