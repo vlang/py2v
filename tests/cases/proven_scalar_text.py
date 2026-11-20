@@ -1,0 +1,7 @@
+print(str(True), str(False), str(None))
+print(str(-123), str(2147483648), str(9223372036854775808))
+print("café 'quoted' 雪")
+print(1.0, 1e16, 1e-5, -0.0, 1e999, -1e999)
+print(str(1.0), str(1e16), str(1e-5), str(-0.0))
+print(float("nan"), str(float("+inf")), str(float("-inf")))
+print(4294967301, -2147483648, str(-2147483649))

@@ -4,30 +4,6 @@ import pyrt
 
 type Any = pyrt.Value
 
-fn (a Any) + (b Any) Any {
-	return pyrt.add(a, b) or { panic(err) }
-}
-
-fn (a Any) - (b Any) Any {
-	return pyrt.sub(a, b) or { panic(err) }
-}
-
-fn (a Any) * (b Any) Any {
-	return pyrt.mul(a, b) or { panic(err) }
-}
-
-fn (a Any) / (b Any) Any {
-	return pyrt.truediv(a, b) or { panic(err) }
-}
-
-fn (a Any) % (b Any) Any {
-	return pyrt.mod(a, b) or { panic(err) }
-}
-
-fn (a Any) < (b Any) bool {
-	return pyrt.lt(a, b) or { panic(err) }
-}
-
 fn fill(status map[string]Any, record Any, text string) {
 	pyrt.set_index(status['tasks'], pyrt.box('total'), pyrt.box(3))
 	pyrt.set_index(status['tasks'], pyrt.box('names'), pyrt.box([pyrt.box('a'), pyrt.box('b')]))

@@ -21,7 +21,7 @@ fn main_func() {
 	println('${name}=${n}')
 	print('${name} ${n}' + ';\n')
 	println(("it's").str() + "'" + ('quoted').str())
-	println((2.5).str() + '|' + (if true { 'True' } else { 'False' }).str())
+	println(('2.5').str() + '|' + (if true { 'True' } else { 'False' }).str())
 	println('plain default')
 	print('tab' + '\t')
 	println('done')

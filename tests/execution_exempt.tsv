@@ -111,7 +111,6 @@ try_else	differs	line 2: CPython [else], V [finally]
 try_except_runtime	needs-sqlite	V cannot link thirdparty/sqlite.	windows
 try_finally_in_finally_jump	does-not-compile	unknown function: py2v_unsupported_jump_out_of_try_finally_inside_finally
 tuple_ops	differs	line 1: CPython [(1, 2, 3)], V [[1, 2, 3]]
-type_convert	differs	line 8: CPython [True], V [true]
 typing_constructs	does-not-compile	Option type `int` cannot be called directly, you should unwrap it first
 unresolved_qualified_call	needs-dependency	Imports the intentionally unavailable module.
 unsupported_closure_capture	does-not-compile	unknown function: py2v_unsupported_closure_forward_capture

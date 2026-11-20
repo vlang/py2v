@@ -25,7 +25,7 @@ fn main_func() {
 	mut a := pyrt.list_ref[int]([1, 2])
 	mut holder := py2v_new_holder(a)
 	holder.add(3)
-	println('${pyrt.str(pyrt.box(a))} ${pyrt.str(pyrt.box(holder.values))}')
+	println('${a.items.str()} ${pyrt.str(pyrt.box(holder.values))}')
 	a.items << 4
 	println(pyrt.str(pyrt.box(holder.values)))
 }

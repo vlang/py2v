@@ -33,6 +33,8 @@ mut:
 	mut_receiver_methods map[string]bool
 	// Constructor factories mark an emitted fallback parameter here.
 	generated_code_has_any_type bool
+	uses_any_operators          bool
+	any_parameter_names         map[string]bool
 	global_vars                 map[string]bool
 	has_global_decl             bool
 	mut_param_indices           map[string][]int
@@ -571,13 +573,16 @@ pub fn (mut t VTranspiler) visit_module(node Module) string {
 			break
 		}
 	}
-	if needs_any && !t.registry.any_declared_in[t.module_name] {
-		t.registry.any_declared_in[t.module_name] = true
-		// A value whose type is not known is the runtime's value. Its operators are
-		// declared on the alias here: V resolves an operator on a sum type only when it
-		// is declared in the module that uses it.
+	// One file can need the type while another uses its operators.
+	if t.uses_any_operators && (needs_any || t.registry.any_declared_in[t.module_name])
+		&& !t.registry.any_operators_declared_in[t.module_name] {
+		t.registry.any_operators_declared_in[t.module_name] = true
 		t.add_using('pyrt')
 		type_decls.prepend(any_operators)
+	}
+	if needs_any && !t.registry.any_declared_in[t.module_name] {
+		t.registry.any_declared_in[t.module_name] = true
+		t.add_using('pyrt')
 		type_decls.prepend('type Any = pyrt.Value')
 	}
 
@@ -1460,6 +1465,9 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 	t.scope_idents = map[string]string{}
 	saved_param_idents := t.param_idents
 	t.param_idents = map[string]bool{}
+	saved_any_params := t.any_parameter_names
+	t.any_parameter_names = map[string]bool{}
+	defer { t.any_parameter_names = saved_any_params }
 
 	mut signature := []string{}
 	// Cross-module symbols need a `pub` visibility in V; single-file output
@@ -1633,6 +1641,9 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 		}
 
 		args_strs << '${arg_name} ${typename}'
+		if typename == 'Any' {
+			t.any_parameter_names[arg.arg] = true
+		}
 		if !node.is_class_method {
 			t.func_param_types[node.name] << typename
 		}
@@ -3257,6 +3268,9 @@ fn (mut t VTranspiler) visit_aug_assign_once(node AugAssign, op_type string, tar
 		FloorDiv { '//' }
 		else { '?' }
 	}
+	if op_sym in ['+', '-', '*', '/', '%'] {
+		t.note_any_operator(*node.target, node.value, old, val)
+	}
 	return '${target} ${op_sym}= ${val}'
 }
 
@@ -3379,6 +3393,34 @@ fn (a Any) % (b Any) Any {
 fn (a Any) < (b Any) bool {
 	return pyrt.lt(a, b) or { panic(err) }
 }'
+
+// note_any_operator records a native infix emission whose operand uses the Value alias.
+fn (mut t VTranspiler) note_any_operator(left Expr, right Expr, a string, b string) {
+	if t.uses_any_operators {
+		return
+	}
+	t.uses_any_operators = a.starts_with('Any(') || b.starts_with('Any(')
+		|| t.is_any_operand(left) || t.is_any_operand(right)
+}
+
+// is_any_operand recognizes Value storage, including parameters omitted from var_types.
+fn (mut t VTranspiler) is_any_operand(expr Expr) bool {
+	inferred := t.infer_expr_type(expr)
+	annotation := get_v_annotation(expr)
+	// A scalar inference can hide the Any storage of an unannotated read.
+	if !t.emit_pub && annotation == '' && (expr is Name || expr is Subscript) {
+		return true
+	}
+	if inferred == 'Any' || (t.emit_pub && inferred == 'pyrt.Value') {
+		return true
+	}
+	if inferred != '' {
+		return false
+	}
+	// Imported bindings and runtime call results can be opaque while emitting a package.
+	return annotation == 'Any' || (t.emit_pub && annotation in ['', 'pyrt.Value'])
+		|| (expr is Name && t.any_parameter_names[expr.id])
+}
 
 // mentions_word tells whether `word` stands in `code` as a whole identifier.
 fn mentions_word(code string, word string) bool {
@@ -6149,6 +6191,9 @@ pub fn (mut t VTranspiler) visit_binop(node BinOp) string {
 	}
 
 	prec := v_prec(op)
+	if op in ['+', '-', '*', '/'] {
+		t.note_any_operator(*node.left, *node.right, left, right)
+	}
 	return '${paren_left(left, prec)} ${op} ${paren_right(right, prec)}'
 }
 
@@ -6251,6 +6296,9 @@ pub fn (mut t VTranspiler) visit_compare(node Compare) string {
 		}
 	}
 
+	if op in ['<', '<=', '>', '>='] {
+		t.note_any_operator(*node.left, node.comparators[0], left, right)
+	}
 	return '${cmp_operand(left)} ${op} ${cmp_operand(right)}'
 }
 

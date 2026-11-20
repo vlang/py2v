@@ -1500,6 +1500,13 @@ def _refuse_unsupported_format_fields(tree):
             unsupported = True
         if not unsupported:
             continue
+        # Keep constant-only calls intact for the later, proof-based text pass.
+        # Binding resolution has not run yet, so do not assume calls to float()
+        # or set() name their builtins at this point.
+        inputs = node.args + [kw.value for kw in node.keywords]
+        if (not any(isinstance(part, ast.Call) for arg in inputs for part in ast.walk(arg))
+                and _literal_format_text(node) is not None):
+            continue
         arguments = [node.func.value] + node.args
         for keyword in node.keywords:
             arguments += [ast.Constant(value=keyword.arg or "**"), keyword.value]
@@ -4100,6 +4107,204 @@ def _truth_kind(node: ast.expr, facts: infer.TypeFacts) -> str:
     if type_id is None:
         type_id = getattr(node, "_type", None)
     return facts.types[type_id]["k"] if type_id is not None else "unknown"
+
+
+def _literal_scalar(node: ast.expr) -> Optional[ast.Constant]:
+    """Recover exact builtin values without evaluating source expressions."""
+    if isinstance(node, ast.Constant) and type(node.value) in (type(None), bool, int, float, str):
+        return node
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub)):
+        operand = _literal_scalar(node.operand)
+        if operand is not None and type(operand.value) in (int, float):
+            value = -operand.value if isinstance(node.op, ast.USub) else operand.value
+            return ast.copy_location(ast.Constant(value=value), node)
+    if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+            and node.func.id == "float" and getattr(node.func, "_binding", None) is None
+            and len(node.args) == 1 and not node.keywords
+            and isinstance(node.args[0], ast.Constant) and type(node.args[0].value) is str):
+        try:
+            value = float(node.args[0].value)
+        except ValueError:
+            return None
+        return ast.copy_location(ast.Constant(value=value), node)
+    return None
+
+
+def _literal_text_value(node: ast.expr) -> Optional[ast.Constant]:
+    scalar = _literal_scalar(node)
+    if scalar is not None:
+        return scalar
+    if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+            and node.func.id == "set" and getattr(node.func, "_binding", None) is None
+            and not node.args and not node.keywords):
+        value = set()
+    elif isinstance(node, ast.Dict):
+        if any(key is None for key in node.keys):
+            return None
+        keys = [_literal_text_value(key) for key in node.keys]
+        values = [_literal_text_value(item) for item in node.values]
+        if any(key is None for key in keys) or any(item is None for item in values):
+            return None
+        try:
+            value = {key.value: item.value for key, item in zip(keys, values)}
+        except TypeError:
+            return None
+    elif isinstance(node, (ast.List, ast.Tuple, ast.Set)):
+        members = [_literal_text_value(item) for item in node.elts]
+        if any(item is None for item in members):
+            return None
+        items = [item.value for item in members]
+        if isinstance(node, ast.Set):
+            # A pair that collapses to one member has no ordering ambiguity,
+            # including mixed numeric equality (1 == 1.0, False == 0).
+            # Keep two distinct members only for small, unseeded integer hashes.
+            try:
+                value = set(items)
+            except TypeError:
+                return None
+            if len(items) > 2 or (len(value) > 1 and not all(
+                    type(item) in (int, bool) and abs(item) < (1 << 31) - 1 for item in items)):
+                return None
+        else:
+            value = tuple(items) if isinstance(node, ast.Tuple) else items
+    else:
+        return None
+    return ast.copy_location(ast.Constant(value=value), node)
+
+
+def _literal_format_text(node: ast.Call) -> Optional[str]:
+    """Format exact built-in literal inputs, never evaluating user code."""
+    args = [_literal_text_value(arg) for arg in node.args]
+    kwargs = [(kw.arg, _literal_text_value(kw.value)) for kw in node.keywords]
+    if (any(arg is None for arg in args) or any(k is None or v is None for k, v in kwargs)
+            or len({k for k, _ in kwargs}) != len(kwargs)):
+        return None
+    try:
+        return node.func.value.value.format(*(arg.value for arg in args),
+                                            **{k: v.value for k, v in kwargs})
+    except (AttributeError, IndexError, KeyError, OverflowError, TypeError, ValueError):
+        return None
+
+
+def _lower_literal_text(tree: ast.Module, table: Optional[symbols.SymbolTable],
+                        closed_file: bool) -> None:
+    """Precompute CPython text for exact values in text-only contexts."""
+    if table is None or table.scopes[0].has_star_import:
+        return
+    nodes = list(ast.walk(tree))
+    boolean_bindings = set()
+    if closed_file:
+        for stmt in nodes:
+            if (isinstance(stmt, ast.Assign) and len(stmt.targets) == 1
+                    and isinstance(stmt.targets[0], ast.Name)
+                    and isinstance(stmt.value, ast.Constant) and type(stmt.value.value) is bool):
+                binding = getattr(stmt.targets[0], "_binding", None)
+                if binding is not None:
+                    origin = table.bindings[binding]
+                    if (len(origin.sites) == 1 and not origin.rebound and not origin.is_param
+                            and not origin.declared_global and not origin.declared_nonlocal):
+                        boolean_bindings.add(binding)
+
+    def boolean_text(node: ast.expr) -> ast.expr:
+        if (isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not)
+                or isinstance(node, ast.Name) and getattr(node, "_binding", None) in boolean_bindings):
+            form = ast.IfExp(test=node, body=ast.Constant(value="True"), orelse=ast.Constant(value="False"))
+            return ast.copy_location(form, node)
+        return node
+
+    def text(node: ast.expr, for_str: bool) -> ast.expr:
+        literal = _literal_text_value(node)
+        if literal is None:
+            return node
+        value = literal.value
+        # A large JSON integer can reach the V backend as an f64. Even the
+        # negative 32-bit minimum has an out-of-range positive AST operand.
+        if (type(value) in (float, list, tuple, dict, set)
+                or type(value) is int and abs(value) >= 1 << 31
+                or for_str and (value is None or type(value) is bool)):
+            try:
+                rendered = str(value)
+            except ValueError:
+                return node
+            return ast.copy_location(ast.Constant(value=rendered), node)
+        return node
+
+    class Lower:
+        def visit_FormattedValue(self, node: ast.FormattedValue) -> ast.AST:
+            if node.format_spec is not None and node.format_spec.values:
+                return node
+            literal = _literal_text_value(node.value)
+            if literal is None:
+                converted = boolean_text(node.value)
+                if converted is not node.value:
+                    node.value = converted
+                    node.conversion = -1
+                return node
+            value = literal.value
+            if node.conversion in (-1, ord("s")) and type(value) in (str, int):
+                if type(value) is str or abs(value) < 1 << 31:
+                    return node
+            render = {ord("r"): repr, ord("a"): ascii}.get(node.conversion, str)
+            try:
+                return ast.copy_location(ast.Constant(value=render(value)), node)
+            except ValueError:
+                return node
+
+        def visit_BinOp(self, node: ast.BinOp) -> ast.AST:
+            if (not isinstance(node.op, ast.Mod) or not isinstance(node.left, ast.Constant)
+                    or type(node.left.value) is not str):
+                return node
+            template = node.left.value
+            # Constant arguments make all %-format directives safe to evaluate,
+            # including width, precision, mapping, and Python repr conversions.
+            argument = _literal_text_value(node.right)
+            if argument is None:
+                return node
+            try:
+                return ast.copy_location(ast.Constant(value=template % argument.value), node)
+            except (KeyError, TypeError, ValueError, OverflowError):
+                return node
+
+        def visit_Call(self, node: ast.Call) -> ast.AST:
+            if (isinstance(node.func, ast.Attribute) and node.func.attr == "format"
+                    and isinstance(node.func.value, ast.Constant) and type(node.func.value.value) is str):
+                rendered = _literal_format_text(node)
+                return (ast.copy_location(ast.Constant(value=rendered), node)
+                        if rendered is not None else node)
+            if not isinstance(node.func, ast.Name) or getattr(node.func, "_binding", None) is not None:
+                return node
+            if node.func.id == "print":
+                node.args = [text(arg, False) for arg in node.args]
+            elif node.func.id == "str" and len(node.args) == 1 and not node.keywords:
+                arg = node.args[0]
+                converted = text(arg, True)
+                if converted is arg:
+                    converted = boolean_text(arg)
+                if converted is not arg:
+                    return ast.copy_location(converted, node)
+            return node
+
+    # Process children first without adding recursion frames for long arithmetic chains.
+    lower = Lower()
+    replacements: Dict[ast.AST, ast.AST] = {}
+    for node in reversed(nodes):
+        for field_name, child in ast.iter_fields(node):
+            if isinstance(child, ast.AST) and child in replacements:
+                setattr(node, field_name, replacements[child])
+            elif isinstance(child, list):
+                for index, item in enumerate(child):
+                    if isinstance(item, ast.AST) and item in replacements:
+                        child[index] = replacements[item]
+        if isinstance(node, ast.Call):
+            converted = lower.visit_Call(node)
+        elif isinstance(node, ast.FormattedValue):
+            converted = lower.visit_FormattedValue(node)
+        elif isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mod):
+            converted = lower.visit_BinOp(node)
+        else:
+            continue
+        if converted is not node:
+            replacements[node] = converted
 
 
 def _expand_bool_calls(tree: ast.Module) -> None:
@@ -8693,6 +8898,7 @@ def process_file(file_path: str, project: Optional[ProjectFacts] = None) -> str:
     _lower_local_dict_methods(tree, table)
     _lower_exit_statements(tree, table)
     _erase_typing_casts(tree, table)
+    _lower_literal_text(tree, table, closed_file=project is None)
     _expand_bool_calls(tree)
     facts = _infer_types(tree, table, project)
     if _lower_colliding_accessors(tree, table, facts):

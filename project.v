@@ -57,6 +57,8 @@ pub mut:
 	// package is merged into one module per subpackage, so every file of that
 	// module would otherwise redeclare it.
 	any_declared_in map[string]bool
+	// any_operators_declared_in records V modules with the Value overloads.
+	any_operators_declared_in map[string]bool
 	// py2v_format_declared_in does the same for the f-string format helper.
 	py2v_format_declared_in map[string]bool
 	// module_words lists, per V module, the source words of every file merged into it.

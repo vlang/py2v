@@ -906,6 +906,18 @@ def lower(tree, chosen, runtime_call):
         out._ref_items = True
         return out
 
+    def ref_text(node):
+        type_id = getattr(node, '_type', None)
+        typ = chosen.facts.types[type_id] if type_id is not None else {}
+        if (chosen.closed_file and node._ref_vtype == '&pyrt.ListRef[int]'
+                and typ.get('k') == 'list' and chosen.facts.types[typ['elem']]['k'] == 'int'):
+            call = ast.Call(func=ast.Attribute(value=items(node), attr='str', ctx=ast.Load()),
+                            args=[], keywords=[])
+            out = ast.copy_location(call, node)
+            out._runtime_annotation = 'string'
+            return out
+        return runtime_call('str', [runtime_call('box', [node], node)], node)
+
     def clone(node):
         return ast.copy_location(ast.Call(func=ast.Attribute(value=node, attr='copy', ctx=ast.Load()),
                                          args=[], keywords=[]), node)
@@ -1051,11 +1063,10 @@ def lower(tree, chosen, runtime_call):
                     return wrap(node, node)
             if isinstance(node.func, ast.Name) and getattr(node.func, '_binding', None) is None:
                 name = node.func.id
-                if name == 'repr' and node.args and ref(node.args[0]):
-                    return runtime_call('str', [runtime_call('box', [node.args[0]], node)], node)
+                if name in ('str', 'repr') and len(node.args) == 1 and not node.keywords and ref(node.args[0]):
+                    return ref_text(node.args[0])
                 if name in ('print', 'str'):
-                    node.args = [runtime_call('str', [runtime_call('box', [a], a)], a)
-                                 if ref(a) else a for a in node.args]
+                    node.args = [ref_text(a) if ref(a) else a for a in node.args]
                 elif name in ('len', 'sum', 'min', 'max', 'sorted', 'reversed', 'enumerate', 'zip',
                               'list', 'tuple', 'set', 'frozenset', 'all', 'any', 'bool'):
                     if name == 'bool' and node.args and ref(node.args[0]):
@@ -1073,7 +1084,7 @@ def lower(tree, chosen, runtime_call):
             if ref(node.value):
                 if node.conversion == 97 or (node.format_spec is not None and node.format_spec.values):
                     raise chosen.unsupported('py2v: this shared-list format conversion is not supported', node)
-                node.value = runtime_call('str', [runtime_call('box', [node.value], node)], node)
+                node.value = ref_text(node.value)
                 node.conversion = -1
             return node
 

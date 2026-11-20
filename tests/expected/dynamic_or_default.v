@@ -4,30 +4,6 @@ import pyrt
 
 type Any = pyrt.Value
 
-fn (a Any) + (b Any) Any {
-	return pyrt.add(a, b) or { panic(err) }
-}
-
-fn (a Any) - (b Any) Any {
-	return pyrt.sub(a, b) or { panic(err) }
-}
-
-fn (a Any) * (b Any) Any {
-	return pyrt.mul(a, b) or { panic(err) }
-}
-
-fn (a Any) / (b Any) Any {
-	return pyrt.truediv(a, b) or { panic(err) }
-}
-
-fn (a Any) % (b Any) Any {
-	return pyrt.mod(a, b) or { panic(err) }
-}
-
-fn (a Any) < (b Any) bool {
-	return pyrt.lt(a, b) or { panic(err) }
-}
-
 fn show_py(record Any, fallback string) ! {
 	name := pyrt.either(pyrt.call_method(pyrt.box(record), 'get', [pyrt.box('name')])!, pyrt.box('nobody'))
 	tags := pyrt.either(pyrt.call_method(pyrt.box(record), 'get', [pyrt.box('tags')])!, pyrt.empty_list())

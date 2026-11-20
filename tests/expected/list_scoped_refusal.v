@@ -33,7 +33,7 @@ fn unrelated() {
 	values := pyrt.list_ref[int]([4])
 	mut alias := values
 	alias.items << 5
-	println(pyrt.str(pyrt.box(values)))
+	println(values.items.str())
 }
 
 fn refused_return() []int {

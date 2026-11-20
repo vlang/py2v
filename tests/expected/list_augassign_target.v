@@ -26,7 +26,7 @@ fn main_func() {
 	}]
 	py2v_old4.items << replace(rows)
 	(*py2v_container2)[if py2v_index3 < 0 { py2v_container2.len + py2v_index3 } else { py2v_index3 }] = py2v_old4
-	println('${pyrt.str(pyrt.box(a))} ${pyrt.str(pyrt.box(rows.items[0]))}')
+	println('${a.items.str()} ${rows.items[0].items.str()}')
 }
 
 fn main() {
