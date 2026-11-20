@@ -4,9 +4,9 @@ import pyrt
 
 fn bubble_sort(py2v_seq_in1 &pyrt.ListRef[int]) &pyrt.ListRef[int] {
 	mut seq := unsafe { py2v_seq_in1 }
-	L := seq.items.len
-	for _ in []int{len: L, init: index} {
-		for n in []int{len: L - 1, init: index + 1} {
+	py2v_ident_4c := seq.items.len
+	for _ in []int{len: py2v_ident_4c, init: index} {
+		for n in []int{len: py2v_ident_4c - 1, init: index + 1} {
 			if seq.items[n] < seq.items[n - 1] {
 				seq.items[n - 1], seq.items[n] = seq.items[n], seq.items[n - 1]
 			}

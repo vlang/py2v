@@ -134,6 +134,7 @@ pub const v_keywords = [..]string[
 	'typeof',
 	'union',
 	'unsafe',
+	'volatile',
 ]
 
 // V built-in type names that conflict when used as identifiers (variable/parameter names)
@@ -457,7 +458,8 @@ pub fn escape_identifier(name string) string {
 // fields keep escape_leading_underscore and stay consistent with their uses.
 //
 // `char` is a V type name the compiler refuses as a variable or parameter name.
-const v_reserved_idents = ['v', 'sql', 'char']!
+// `map` is also a V type name, and a bare `map {` starts a map literal.
+const v_reserved_idents = ['v', 'sql', 'char', 'map']!
 
 // v_reserved_fn_names are Python names that V reserves for its own C-backed
 // intrinsics. A user `fn` declared under one of these names cannot be called at
@@ -474,6 +476,12 @@ const v_reserved_fn_names = ['spawn', 'exit', 'malloc', 'free']!
 // still reaches the module that declares it.
 pub fn escape_fn_name(name string) string {
 	i := name.last_index('.') or {
+		// `Or(...)` looks like a cast and vfmt can change the argument list.
+		// Escape its lowercased spelling when it would be a V keyword.
+		lower := lower_first_ascii(name)
+		if lower != name && is_keyword(lower) {
+			return escape_keyword(lower)
+		}
 		return if name in v_reserved_fn_names {
 			'${name}_'
 		} else {

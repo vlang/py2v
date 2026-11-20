@@ -5624,6 +5624,11 @@ pub fn (mut t VTranspiler) visit_name(node Name) string {
 	if star_prefix != '' {
 		return '${star_prefix}.${escape_local_ident(node.id)}'
 	}
+	// Leave the unbound Python builtin available to call dispatch.
+	if node.id == 'map' && node.ctx is Load && !t.is_bound_in_scope(node.id)
+		&& !t.loop_idents[escape_local_ident(node.id)] && t.lambda_params[node.id] == 0 {
+		return node.id
+	}
 	return escape_local_ident(node.id)
 }
 
@@ -9548,6 +9553,22 @@ fn (mut t VTranspiler) annotation_typename(ann ?Expr) string {
 				}
 				t.generated_code_has_any_type = true
 				return 'map[${index}]Any'
+			}
+			// A None type argument denotes the singleton type. In a generic
+			// specialization it must occupy a slot, even though a bare None
+			// return annotation denotes no result.
+			if mapped == value && value.len > 0 && value[0].is_capital() && a.slice is Tuple
+				&& a.slice.elts.any(it is Constant && it.value is NoneValue) {
+				mut type_args := []string{cap: a.slice.elts.len}
+				for argument in a.slice.elts {
+					if argument is Constant && argument.value is NoneValue {
+						t.add_using('pyrt')
+						type_args << 'pyrt.NoneType'
+					} else {
+						type_args << t.annotation_typename(argument)
+					}
+				}
+				return '${mapped}[${type_args.join(', ')}]'
 			}
 			// User-defined generic (e.g. Stack[T]) — emit Name[T] style only when
 			// the base type is a user class name (PascalCase/UpperCase start) and the

@@ -21,10 +21,10 @@ fn loop_binding() {
 }
 
 fn ignored() {
-	mut py2v_walrus_name3 := false
-	py2v_walrus_name3 = true
-	if py2v_walrus_name3 {
-		println(('underscore').str() + ' ' + (if py2v_walrus_name3 { 'True' } else { 'False' }).str())
+	mut py2v_ident_5f := false
+	py2v_ident_5f = true
+	if py2v_ident_5f {
+		println(('underscore').str() + ' ' + (if py2v_ident_5f { 'True' } else { 'False' }).str())
 	}
 }
 
