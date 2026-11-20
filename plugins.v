@@ -955,6 +955,9 @@ fn isinstance_of_known_type(node Call) ?string {
 fn visit_isinstance(mut t VTranspiler, node Call, args []string) (string, bool) {
 	if node.args.len != 2 { return 'py2v_unsupported_isinstance(${args.join(', ')})', true }
 	type_expr := node.args[1]
+	if node.isinstance_nominal != '' && expr_class_path(type_expr) in t.registry.class_names {
+		return node.isinstance_nominal, true
+	}
 	if type_expr is Tuple && type_expr.elts.len == 0 {
 		return '${t.runtime_helper('isinstance_empty')}(${args[0]})', true
 	}

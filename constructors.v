@@ -154,7 +154,7 @@ fn (mut t VTranspiler) emit_init_factory(info InitConstructor) string {
 		suffix++
 		instance = 'py2v_instance_${suffix}'
 	}
-	mut class_type := emitted_class_name(info.class_name)
+	mut class_type := t.local_class_name(info.class_name)
 	mut factory := info.factory_name
 	if info.type_params.len > 0 {
 		generics := '[${info.type_params.join(', ')}]'

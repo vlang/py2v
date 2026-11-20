@@ -24,7 +24,9 @@ Usage:
 import ast
 import copy
 import functools
+import importlib.util
 import json
+import operator
 import sys
 import os
 import unicodedata
@@ -306,6 +308,8 @@ def _extract_names(node: ast.AST) -> List[str]:
 
 def _is_void_function(node: ast.FunctionDef) -> bool:
     """Check if a function never returns a value."""
+    if getattr(node, "_main_guard", False):
+        return True
     # If there's a return type annotation, it's not void
     if node.returns is not None:
         return False
@@ -318,6 +322,8 @@ def _is_void_function(node: ast.FunctionDef) -> bool:
 
 
 def _is_generator(node: ast.FunctionDef) -> bool:
+    if getattr(node, "_main_guard", False):
+        return False
     for child in ast.walk(node):
         if isinstance(child, (ast.Yield, ast.YieldFrom)):
             return True
@@ -602,6 +608,7 @@ def _rewrite_main_guard(tree: ast.Module) -> ast.Module:
         end_lineno=guard.end_lineno,
         end_col_offset=guard.end_col_offset,
     )
+    main_func._main_guard = True
 
     new_body = []
     for node in tree.body:
@@ -1284,18 +1291,20 @@ def _detect_decorator_kind(decorator_list) -> str:
     return ""
 
 
-def _drop_overwritten_class_bindings(tree: ast.Module) -> None:
-    """Drop plain class members overwritten before anything can read them."""
-    for cls in ast.walk(tree):
-        if not isinstance(cls, ast.ClassDef) or cls.bases or cls.keywords or cls.decorator_list:
+def _drop_overwritten_definitions(tree: ast.Module) -> None:
+    """Drop plain definitions overwritten before anything can read them."""
+    for scope in ast.walk(tree):
+        if not isinstance(scope, (ast.Module, ast.ClassDef)):
             continue
-        methods = [stmt for stmt in cls.body if isinstance(stmt, ast.FunctionDef)]
-        if len(methods) == len({stmt.name for stmt in methods}):
+        if isinstance(scope, ast.ClassDef) and (scope.bases or scope.keywords or scope.decorator_list):
+            continue
+        definitions = [stmt for stmt in scope.body if isinstance(stmt, ast.FunctionDef)]
+        if len(definitions) == len({stmt.name for stmt in definitions}):
             continue
         plain: dict[ast.stmt, str] = {}
         aliases: dict[ast.stmt, tuple[str, str]] = {}
         defined: set[str] = set()
-        for stmt in cls.body:
+        for stmt in scope.body:
             if isinstance(stmt, ast.FunctionDef):
                 args = stmt.args
                 if (not stmt.decorator_list and stmt.returns is None and not args.defaults
@@ -1315,7 +1324,7 @@ def _drop_overwritten_class_bindings(tree: ast.Module) -> None:
 
         later_writes: set[str] = set()
         discarded: set[ast.stmt] = set()
-        for stmt in reversed(cls.body):
+        for stmt in reversed(scope.body):
             if stmt in plain:
                 name = plain[stmt]
                 if name in later_writes:
@@ -1331,7 +1340,117 @@ def _drop_overwritten_class_bindings(tree: ast.Module) -> None:
             else:
                 later_writes.clear()
         if discarded:
-            cls.body = [stmt for stmt in cls.body if stmt not in discarded]
+            scope.body = [stmt for stmt in scope.body if stmt not in discarded]
+
+
+def _lower_colliding_accessors(tree, table, facts):
+    """Give colliding descriptor accessors separate names and call them for known receivers."""
+    if table is None or facts is None:
+        return False
+    properties = {}
+    for cls in ast.walk(tree):
+        if not isinstance(cls, ast.ClassDef):
+            continue
+        methods = [stmt for stmt in cls.body if isinstance(stmt, ast.FunctionDef)]
+        used = {stmt.name for stmt in methods} | set(_extract_class_declarations(cls))
+        for getter in methods:
+            name = getter.name
+            if not (len(getter.decorator_list) == 1
+                    and isinstance(getter.decorator_list[0], ast.Name)
+                    and getter.decorator_list[0].id == "property"
+                    and getattr(getter.decorator_list[0], "_binding", None) is None):
+                continue
+            accessors = {}
+            for fn in methods:
+                if fn is getter or fn.name != name:
+                    continue
+                decorators = fn.decorator_list
+                if not (len(decorators) == 1 and isinstance(decorators[0], ast.Attribute)
+                        and isinstance(decorators[0].value, ast.Name)
+                        and decorators[0].value.id == name
+                        and decorators[0].attr in ("setter", "deleter")
+                        and decorators[0].attr not in accessors):
+                    accessors.clear()
+                    break
+                accessors[decorators[0].attr] = fn
+            if "deleter" not in accessors and not (
+                    "setter" in accessors and f"set_{name}" in used):
+                continue
+            if len(table.bindings[getter._binding].sites) != len(accessors) + 1:
+                continue
+            names = {"getter": name}
+            for kind, fn in accessors.items():
+                candidate = f"py2v_property_{kind}_{name}"
+                while candidate in used:
+                    candidate += "_"
+                used.add(candidate)
+                fn.name = candidate
+                fn.decorator_list = []
+                names[kind] = candidate
+            properties[(cls._binding, name)] = names
+
+    if not properties:
+        return False
+
+    def method(target, kind):
+        if not isinstance(target, ast.Attribute):
+            return None
+        typ = getattr(target.value, "_assumed", getattr(target.value, "_type", None))
+        if typ is None:
+            return None
+        fact = facts.types[typ]
+        if fact["k"] != "instance":
+            return None
+        return properties.get((fact["class_binding"], target.attr), {}).get(kind)
+
+    def access(target, name, args):
+        func = ast.Attribute(value=target.value, attr=name, ctx=ast.Load())
+        call = ast.copy_location(ast.Call(func=func, args=args, keywords=[]), target)
+        if hasattr(target, "_type"):
+            call._type = target._type
+        return call
+
+    used = {binding.name for binding in table.bindings}
+    serial = 0
+
+    class Lower(ast.NodeTransformer):
+        def visit_Attribute(self, node):
+            name = method(node, "getter") if isinstance(node.ctx, ast.Load) else None
+            self.generic_visit(node)
+            return access(node, name, []) if name else node
+
+        def visit_Assign(self, node):
+            target = node.targets[0]
+            name = method(target, "setter") if len(node.targets) == 1 else None
+            self.generic_visit(node)
+            if not name:
+                return node
+            # Python evaluates the right-hand side before the target receiver.
+            if isinstance(node.value, ast.Constant):
+                return ast.copy_location(ast.Expr(value=access(target, name, [node.value])), node)
+            nonlocal serial
+            while True:
+                serial += 1
+                temporary = f"py2v_property_value_{serial}"
+                if temporary not in used:
+                    used.add(temporary)
+                    break
+            save = ast.Assign(targets=[ast.Name(id=temporary, ctx=ast.Store())], value=node.value)
+            call = access(target, name, [ast.Name(id=temporary, ctx=ast.Load())])
+            return [ast.copy_location(save, node), ast.copy_location(ast.Expr(value=call), node)]
+
+        def visit_Delete(self, node):
+            names = [method(target, "deleter") for target in node.targets]
+            self.generic_visit(node)
+            if not any(names):
+                return node
+            return [ast.copy_location(ast.Expr(value=access(target, name, [])) if name
+                                      else ast.Delete(targets=[target]), node)
+                    for target, name in zip(node.targets, names)]
+
+    Lower().visit(tree)
+    ast.fix_missing_locations(tree)
+    return True
 
 
 def _plan_overload_definitions(tree):
@@ -2094,6 +2213,7 @@ def _node_to_dict(node: ast.AST, mutable_vars: Set[str],
             and not isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda))]
         result["condition_walrus_names"] = getattr(node, "_condition_walrus_names", [])
         result["module_consts"] = getattr(node, "_module_consts", [])
+        result["rebound_functions"] = list(getattr(node, "_rebound_functions", {}).items())
         result["body"] = [_node_to_dict(n, mutable_vars, redefined, ctx) for n in node.body]
         docstring = _extract_docstring(node)
         if docstring:
@@ -2481,6 +2601,8 @@ def _node_to_dict(node: ast.AST, mutable_vars: Set[str],
             result["subject_class"] = node._subject_class
         if getattr(node, "_isinstance_dynamic_types", False):
             result["isinstance_dynamic_types"] = True
+        if nominal := getattr(node, "_isinstance_nominal", ""):
+            result["isinstance_nominal"] = nominal
         if getattr(node, "_api", ""):
             result["api"] = node._api
         if getattr(node, "_propagate", False):
@@ -2573,6 +2695,8 @@ def _node_to_dict(node: ast.AST, mutable_vars: Set[str],
 
     if isinstance(node, ast.expr) and getattr(node, "_runtime_annotation", ""):
         result["v_annotation"] = node._runtime_annotation
+    if isinstance(node, (ast.Name, ast.Attribute)) and getattr(node, "_class_path", ""):
+        result["class_path"] = node._class_path
     return result
 
 
@@ -2895,6 +3019,284 @@ class ProjectFacts:
     is_package: bool = False
 
 
+def _sibling_summaries(project: Optional[ProjectFacts]):
+    if project is None or project.module_name is None:
+        return []
+    owner = (project.module_name if project.is_package
+             else project.module_name.rpartition(".")[0])
+    return [summary for name, summary in project.externals.items()
+            if name == summary.get("module") and name != project.module_name
+            and (name if summary["is_package"] else name.rpartition(".")[0]) == owner]
+
+
+def _qualify_guard_classes(tree, table, project, siblings):
+    """Keep a script-only class distinct from a sibling's exported class."""
+    if table is None or not siblings:
+        return False
+    guard = next((stmt for stmt in tree.body if getattr(stmt, "_main_guard", False)), None)
+    if guard is None:
+        return False
+    sibling_classes = {name for summary in siblings for name in summary["classes"]}
+    used = {b.name for b in table.bindings} | sibling_classes
+    renamed = {}
+    stem = project.module_name.rsplit(".", 1)[-1].encode("utf-8").hex()
+    for node in guard.body:
+        if not isinstance(node, ast.ClassDef) or node.name not in sibling_classes:
+            continue
+        binding = table.bindings[node._binding]
+        if binding.scope != guard._scope_id or binding.rebound or binding.declared_nonlocal:
+            continue
+        candidate = f"Py2vGuard{node.name}_{stem}"
+        while candidate in used:
+            candidate += "_"
+        used.add(candidate)
+        renamed[binding.id] = candidate
+        node.name = candidate
+    for node in ast.walk(guard):
+        if isinstance(node, ast.Name) and getattr(node, "_binding", None) in renamed:
+            node.id = renamed[node._binding]
+    return bool(renamed)
+
+
+def _qualify_nested_functions(tree, table, project, siblings):
+    """Keep a hoisted local function apart from definitions with the same name."""
+    if table is None:
+        return False
+    sibling_names = {name for summary in siblings for name in summary.get("local_bindings", ())}
+    module_names = {b.name for b in table.bindings if b.scope == 0
+                    and any(how != "import" for _, _, how in b.sites)}
+    conflicts = module_names | sibling_names
+    used = {b.name for b in table.bindings} | sibling_names
+    stem = (project.module_name if project and project.module_name else "script").encode().hex()
+    renamed = {}
+    serial = 0
+    for binding in table.bindings:
+        if (binding.kind != "function" or table.scopes[binding.scope].kind != "function"
+                or binding.rebound or binding.declared_nonlocal
+                or binding.name not in conflicts):
+            continue
+        while True:
+            serial += 1
+            candidate = f"py2v_nested_{stem}_{serial}_{binding.name}"
+            if candidate not in used:
+                break
+        used.add(candidate)
+        renamed[binding.id] = candidate
+    if not renamed:
+        return False
+    for node in ast.walk(tree):
+        candidate = renamed.get(getattr(node, "_binding", None)) if isinstance(
+            node, (ast.Name, ast.FunctionDef, ast.AsyncFunctionDef)) else None
+        if isinstance(node, ast.Name) and candidate:
+            node.id = candidate
+        elif candidate:
+            node.name = candidate
+    return True
+
+
+def _return_branch_definitions(tree, table):
+    """Return each selected local function at the end of its own branch."""
+    if table is None:
+        return False
+    changed = False
+    for owner in ast.walk(tree):
+        if not isinstance(owner, ast.FunctionDef) or len(owner.body) < 2:
+            continue
+        branch, tail = owner.body[-2:]
+        if not (isinstance(branch, ast.If) and isinstance(tail, ast.Return)
+                and isinstance(tail.value, ast.Name)):
+            continue
+        binding = table.binding(owner._scope_id, tail.value.id)
+        if binding is None or binding.id != getattr(tail.value, "_binding", None):
+            continue
+        arms = []
+        while True:
+            arms.append(branch.body)
+            if len(branch.orelse) != 1 or not isinstance(branch.orelse[0], ast.If):
+                arms.append(branch.orelse)
+                break
+            branch = branch.orelse[0]
+        definitions = [arm for arm in arms if len(arm) == 1
+                       and isinstance(arm[0], ast.FunctionDef)
+                       and arm[0]._binding == binding.id]
+        if (len(definitions) < 2 or len(binding.sites) != len(definitions)
+                or not all(arm in definitions or (len(arm) == 1 and isinstance(arm[0], ast.Raise))
+                           for arm in arms)):
+            continue
+        owner.body.pop()
+        for arm in definitions:
+            arm.append(copy.deepcopy(tail))
+        changed = True
+    return changed
+
+
+def _select_module_branch_functions(tree, table, project, siblings):
+    """Bind matching plain functions once, using the branch Python would execute."""
+    if table is None:
+        return False
+    sibling_names = {name for summary in siblings for name in summary.get("local_bindings", ())}
+    used = {b.name for b in table.bindings} | sibling_names
+    module_name = project.module_name if project is not None else None
+    stem = (module_name or "script").encode("utf-8").hex()
+    serial = 0
+
+    def fresh() -> str:
+        nonlocal serial
+        while True:
+            serial += 1
+            name = f"py2v_branch_{stem}_{serial}"
+            if name not in used:
+                used.add(name)
+                return name
+
+    def plain(fn: ast.stmt) -> bool:
+        return (isinstance(fn, ast.FunctionDef) and fn.name not in ("main", "_")
+                and not fn.name.startswith("__") and not fn.decorator_list
+                and not fn.args.defaults and not any(fn.args.kw_defaults)
+                and fn.args.vararg is None and fn.args.kwarg is None
+                and not getattr(fn, "type_params", []) and not _is_generator(fn))
+
+    def branch(stmt: ast.If):
+        tests = []
+        arms = []
+        while True:
+            tests.append(stmt.test)
+            arms.append(stmt.body)
+            if len(stmt.orelse) != 1 or not isinstance(stmt.orelse[0], ast.If):
+                arms.append(stmt.orelse)
+                break
+            stmt = stmt.orelse[0]
+        if not all(arm and all(plain(fn) for fn in arm) for arm in arms):
+            return None
+        by_arm = [{fn.name: fn for fn in arm} for arm in arms]
+        names = by_arm[0].keys()
+        if any(len(arm) != len(names) or items.keys() != names for arm, items in zip(arms, by_arm)):
+            return None
+        groups = []
+        for name in names:
+            defs = [items[name] for items in by_arm]
+            first = defs[0]
+            if name in sibling_names:
+                return None
+            binding = table.bindings[first._binding]
+            if binding.scope != 0 or binding.declared_global or len(binding.sites) != len(defs):
+                return None
+            signature = (ast.dump(first.args), ast.dump(first.returns or ast.Constant(None)))
+            if any((ast.dump(fn.args), ast.dump(fn.returns or ast.Constant(None))) != signature
+                   for fn in defs[1:]):
+                return None
+            groups.append(defs)
+        return tests, groups
+
+    def select(tests: List[ast.expr], values: List[ast.expr]) -> ast.expr:
+        value = values[-1]
+        for test, selected in reversed(list(zip(tests, values))):
+            value = ast.IfExp(test=test, body=selected, orelse=value)
+        return value
+
+    def choice(name: str, value: ast.expr, origin: ast.AST) -> ast.Assign:
+        target = ast.Name(id=name, ctx=ast.Store())
+        stmt = ast.Assign(targets=[target], value=value)
+        stmt._module_branch_choice = True
+        return ast.fix_missing_locations(ast.copy_location(stmt, origin))
+
+    body = []
+    changed = False
+    # V constants run before main. Leave groups after runtime statements in place.
+    for index, stmt in enumerate(tree.body):
+        matched = branch(stmt) if isinstance(stmt, ast.If) else None
+        if matched is not None:
+            tests, groups = matched
+            selector = fresh()
+            selected = ast.Name(id=selector, ctx=ast.Load())
+            if len(tests) == 1:
+                selectors = [ast.Constant(True), ast.Constant(False)]
+                chosen = [selected]
+            else:
+                selectors = [ast.Constant(arm) for arm in range(len(tests) + 1)]
+                chosen = [ast.Compare(left=copy.deepcopy(selected), ops=[ast.Eq()],
+                                      comparators=[ast.Constant(arm)]) for arm in range(len(tests))]
+            body.append(choice(selector, select(tests, selectors), stmt))
+            for defs in groups:
+                name = defs[0].name
+                for fn in defs:
+                    fn.name = fresh()
+                values = [ast.Name(id=fn.name, ctx=ast.Load()) for fn in defs]
+                body.extend(defs)
+                body.append(choice(name, select(copy.deepcopy(chosen), values), stmt))
+            changed = True
+            continue
+        body.append(stmt)
+        if (isinstance(stmt, (ast.Import, ast.ImportFrom)) or plain(stmt)
+                or index == 0 and isinstance(stmt, ast.Expr)
+                and isinstance(stmt.value, ast.Constant) and isinstance(stmt.value.value, str)):
+            continue
+        body.extend(tree.body[index + 1:])
+        break
+    tree.body = body
+    # A later def is an assignment to the existing module binding. Keep the
+    # implementations at file scope and leave each replacement in its branch.
+    originals = {stmt._binding: stmt for stmt in tree.body if plain(stmt)
+                 and getattr(stmt, "_binding", None) is not None}
+    branches = {}
+
+    def collect(stmts):
+        for stmt in stmts:
+            if isinstance(stmt, ast.FunctionDef):
+                binding_id = getattr(stmt, "_binding", None)
+                if binding_id in originals:
+                    branches.setdefault(binding_id, []).append(stmt)
+            elif isinstance(stmt, ast.If):
+                collect(stmt.body)
+                collect(stmt.orelse)
+
+    for stmt in tree.body:
+        if isinstance(stmt, ast.If):
+            collect(stmt.body)
+            collect(stmt.orelse)
+
+    rebound = {}
+    replacements = {}
+    declarations = []
+    for binding_id, choices in branches.items():
+        first = originals[binding_id]
+        binding = table.bindings[binding_id]
+        if (first.name in sibling_names or binding.scope != 0 or binding.declared_global
+                or len(binding.sites) != 1 + len(choices)
+                or not all(how == "def" for _, _, how in binding.sites)):
+            continue
+        signature = (ast.dump(first.args), ast.dump(first.returns or ast.Constant(None)))
+        if any(not plain(fn) or fn.lineno < first.end_lineno
+               or (ast.dump(fn.args), ast.dump(fn.returns or ast.Constant(None))) != signature
+               for fn in choices):
+            continue
+        name = first.name
+        first.name = fresh()
+        rebound[name] = first.name
+        for fn in choices:
+            fn.name = fresh()
+            declarations.append(fn)
+            target = ast.Name(id=name, ctx=ast.Store())
+            value = ast.Name(id=fn.name, ctx=ast.Load())
+            replacements[id(fn)] = ast.fix_missing_locations(ast.copy_location(
+                ast.Assign(targets=[target], value=value), fn))
+
+    def replace(stmts):
+        for index, stmt in enumerate(stmts):
+            if id(stmt) in replacements:
+                stmts[index] = replacements[id(stmt)]
+            elif isinstance(stmt, ast.If):
+                replace(stmt.body)
+                replace(stmt.orelse)
+
+    if rebound:
+        replace(tree.body)
+        tree.body.extend(declarations)
+        tree._rebound_functions = rebound
+        changed = True
+    return changed
+
+
 def _stable_import_paths(tree: ast.Module, table: symbols.SymbolTable) -> Dict[int, str]:
     """Absolute imports indexed by lexical binding, including imports inside functions."""
     paths: Dict[int, str] = {}
@@ -2920,6 +3322,234 @@ def _qualified_import(node: ast.AST, paths: Dict[int, str]) -> str:
         base = _qualified_import(node.value, paths)
         return base + "." + node.attr if base else ""
     return ""
+
+
+def _select_target_definitions(tree, table, project) -> bool:
+    """Choose definition branches fixed by the native translation target."""
+    if table is None:
+        return False
+    paths = _stable_import_paths(tree, table)
+    if not paths and not any(isinstance(stmt, ast.Try) for stmt in tree.body):
+        return False
+    written = {_qualified_import(node, paths) for node in ast.walk(tree)
+               if isinstance(node, ast.Attribute) and not isinstance(node.ctx, ast.Load)}
+    values = {"sys.platform": sys.platform, "os.name": os.name, "sys.version_info": sys.version_info}
+    compares = {ast.Eq: operator.eq, ast.NotEq: operator.ne, ast.Lt: operator.lt,
+                ast.LtE: operator.le, ast.Gt: operator.gt, ast.GtE: operator.ge}
+    missing = object()
+    externals = project.externals if project is not None else {}
+
+    def value(node):
+        path = _qualified_import(node, paths)
+        if path in values and path not in written:
+            return values[path], True
+        if path.startswith("sys.version_info.") and "sys.version_info" not in written and path not in written:
+            field = path.rsplit(".", 1)[1]
+            if field in ("major", "minor", "micro", "releaselevel", "serial"):
+                return getattr(sys.version_info, field), True
+        if isinstance(node, ast.Subscript):
+            source, target = value(node.value)
+            if source is sys.version_info:
+                index = node.slice
+                try:
+                    if isinstance(index, ast.Slice):
+                        parts = [ast.literal_eval(item) if item is not None else None
+                                 for item in (index.lower, index.upper, index.step)]
+                        return source[slice(*parts)], True
+                    return source[ast.literal_eval(index)], True
+                except (ValueError, TypeError, IndexError):
+                    pass
+        try:
+            return ast.literal_eval(node), False
+        except (ValueError, TypeError):
+            return missing, False
+
+    def condition(node) -> Optional[bool]:
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
+            test = condition(node.operand)
+            return None if test is None else not test
+        if isinstance(node, ast.BoolOp):
+            stop = isinstance(node.op, ast.Or)
+            for operand in node.values:
+                test = condition(operand)
+                if test is None or test == stop:
+                    return test
+            return not stop
+        if not isinstance(node, ast.Compare):
+            return None
+        left, target = value(node.left)
+        for op, right_node in zip(node.ops, node.comparators):
+            right, right_target = value(right_node)
+            compare = compares.get(type(op))
+            if compare is None or left is missing or right is missing or not (target or right_target):
+                return None
+            try:
+                if not compare(left, right):
+                    return False
+            except TypeError:
+                return None
+            left, target = right, right_target
+        return True
+
+    def imported(statement) -> Optional[bool]:
+        if isinstance(statement, ast.Import):
+            for alias in statement.names:
+                if alias.name in externals:
+                    continue
+                if alias.name not in sys.stdlib_module_names:
+                    return None
+                if importlib.util.find_spec(alias.name) is None:
+                    return False
+            return True
+        if not isinstance(statement, ast.ImportFrom):
+            return None
+        module = statement.module or ""
+        if statement.level:
+            if project is None or not project.module_name:
+                return None
+            package = project.module_name if project.is_package else project.module_name.rpartition(".")[0]
+            try:
+                module = importlib.util.resolve_name("." * statement.level + module, package)
+            except ImportError:
+                return None
+        info = externals.get(module)
+        if info is None:
+            return None
+        exports = set(info.get("variables", {})) | set(info.get("classes", {})) | set(info.get("functions", {}))
+        if all(alias.name in exports or module + "." + alias.name in externals for alias in statement.names):
+            return True
+        return None
+
+    def candidate(node) -> bool:
+        classes = False
+        functions = set()
+        pending = [node]
+        while pending:
+            item = pending.pop()
+            if isinstance(item, ast.ClassDef):
+                classes = True
+            elif isinstance(item, ast.FunctionDef):
+                if item.name in functions:
+                    return True
+                functions.add(item.name)
+            elif isinstance(item, (ast.If, ast.Try, ast.ExceptHandler)):
+                pending.extend(ast.iter_child_nodes(item))
+        return classes
+
+    class Select(ast.NodeTransformer):
+        changed = False
+
+        def visit_If(self, node):
+            if candidate(node) and (yes := condition(node.test)) is not None:
+                self.changed = True
+                return self.visit(ast.Module(body=node.body if yes else node.orelse, type_ignores=[])).body
+            return self.generic_visit(node)
+
+        def visit_Try(self, node):
+            if not candidate(node) or len(node.handlers) != 1:
+                return self.generic_visit(node)
+            handler = node.handlers[0]
+            if (not isinstance(handler.type, ast.Name) or handler.type.id != "ImportError"
+                    or getattr(handler.type, "_binding", None) is not None or handler.name):
+                return self.generic_visit(node)
+            retained = []
+            for stmt in node.body:
+                if not isinstance(stmt, (ast.Import, ast.ImportFrom)):
+                    break
+                status = imported(stmt)
+                if status is None:
+                    return self.generic_visit(node)
+                if not status:
+                    self.changed = True
+                    chosen = retained + handler.body + node.finalbody
+                    return self.visit(ast.Module(body=chosen, type_ignores=[])).body
+                retained.append(stmt)
+            if retained and all(isinstance(stmt, ast.FunctionDef) and not stmt.decorator_list
+                                and not stmt.args.defaults and not any(stmt.args.kw_defaults)
+                                for stmt in node.body[len(retained):]):
+                self.changed = True
+                chosen = node.body + node.orelse + node.finalbody
+                return self.visit(ast.Module(body=chosen, type_ignores=[])).body
+            return self.generic_visit(node)
+
+    selector = Select()
+    selector.visit(tree)
+    return selector.changed
+
+
+def _mark_project_class_references(tree, table, project):
+    """Keep the import's defining class beside the spelling used in this file."""
+    raw = getattr(tree, "_infer_raw", None)
+    if project is None or project.module_name is None or table is None or raw is None:
+        return
+    local = {node._binding: node for node in tree.body if isinstance(node, ast.ClassDef)
+             and not table.bindings[node._binding].rebound}
+
+    def class_path(path: str) -> str:
+        seen = set()
+        while path not in seen:
+            seen.add(path)
+            module, _, name = path.rpartition(".")
+            summary = project.externals.get(module, {})
+            if name in summary.get("classes", {}):
+                return summary["module"] + "." + name
+            value = summary.get("variables", {}).get(name, {}).get("inferred") or {}
+            if value.get("k") != "class":
+                return ""
+            path = value["name"]
+        return ""
+
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.Name, ast.Attribute)) or not isinstance(node.ctx, ast.Load):
+            continue
+        if isinstance(node, ast.Name) and (cls := local.get(getattr(node, "_binding", None))):
+            node._class_path = project.module_name + "." + cls.name
+            continue
+        api = getattr(node, "_api", "")
+        path = api.removeprefix("__project_type__.") if api.startswith("__project_type__.") else raw.qname(node)
+        if not path:
+            type_id = getattr(node, "_type", None)
+            if type_id is not None:
+                item = raw.p.types[type_id]
+                if item["k"] == "class" and item.get("class_binding") is None:
+                    path = item["name"]
+        if path and (resolved := class_path(path)):
+            node._class_path = resolved
+
+    def ancestry(path: str, target: str, seen: Set[str]) -> Optional[bool]:
+        if path == target:
+            return True
+        if path in seen:
+            return None
+        owner, _, name = path.rpartition(".")
+        summary = project.externals.get(owner, {}).get("classes", {}).get(name)
+        if summary is None:
+            return None
+        bases = []
+        for base in summary.get("bases", []):
+            if base == "object":
+                continue
+            resolved = class_path(base if "." in base else owner + "." + base)
+            bases.append(ancestry(resolved, target, seen | {path}) if resolved else None)
+        return True if True in bases else None if None in bases else False
+
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                and node.func.id == "isinstance" and getattr(node.func, "_binding", None) is None
+                and len(node.args) == 2 and not node.keywords and isinstance(node.args[0], ast.Name)):
+            continue
+        subject, target = node.args
+        target_path = getattr(target, "_class_path", "")
+        type_id = getattr(subject, "_type", None)
+        if not target_path or type_id is None:
+            continue
+        value = raw.p.types[type_id]
+        if value["k"] != "instance":
+            continue
+        cls = local.get(value.get("class_binding"))
+        subject_path = (project.module_name + "." + cls.name if cls else class_path(value["name"]))
+        if subject_path and (result := ancestry(subject_path, target_path, set())) is not None:
+            node._isinstance_nominal = "true" if result else "false"
 
 
 def _mark_local_sequence_rebindings(tree: ast.Module, table: symbols.SymbolTable) -> None:
@@ -3408,6 +4038,12 @@ def write_summaries(root: str, out_path: str) -> None:
             break
     prefix = os.path.basename(os.path.abspath(root)) + "."
     type_imports = _project_type_imports(parsed, root)
+    # Imports may be re-exported through the summaries, but they don't add V declarations.
+    for name, _, _, table in parsed:
+        if name in summaries:
+            summaries[name]["local_bindings"] = [
+                binding.name for binding in table.bindings if binding.scope == 0
+                and any(how != "import" for _, _, how in binding.sites)]
     for name in summaries:
         summaries[name]["type_imports"] = type_imports.get(name, [])
     for name in list(summaries):
@@ -5778,6 +6414,9 @@ def _mark_module_constants(tree: ast.Module, table: Optional[symbols.SymbolTable
             continue
         if not isinstance(target, ast.Name):
             continue
+        if getattr(stmt, "_module_branch_choice", False):
+            names.append(target.id)
+            continue
         binding_id = getattr(target, "_binding", None)
         needed_by_initializer = isinstance(stmt, ast.AnnAssign) and binding_id in read_in_initializer
         if binding_id is None or (binding_id not in read_in_function and not needed_by_initializer):
@@ -7716,7 +8355,7 @@ def process_file(file_path: str, project: Optional[ProjectFacts] = None) -> str:
         source = f.read()
 
     tree = ast.parse(source, filename=file_path)
-    _drop_overwritten_class_bindings(tree)
+    _drop_overwritten_definitions(tree)
     _plan_overload_definitions(tree)
     _refuse_unsupported_format_fields(tree)
 
@@ -7739,6 +8378,15 @@ def process_file(file_path: str, project: Optional[ProjectFacts] = None) -> str:
 
     # Lexical bindings on the final scope structure, then the types the code shows
     table = _resolve_bindings(tree)
+    if _select_target_definitions(tree, table, project):
+        table = _resolve_bindings(tree)
+    siblings = _sibling_summaries(project)
+    selected = _select_module_branch_functions(tree, table, project, siblings)
+    qualified = _qualify_guard_classes(tree, table, project, siblings)
+    qualified_locals = _qualify_nested_functions(tree, table, project, siblings)
+    returned = _return_branch_definitions(tree, table)
+    if selected or qualified or qualified_locals or returned:
+        table = _resolve_bindings(tree)
     _mark_math_members(tree, table)
     _unquote_annotations(tree, table)
     if _encode_local_identifiers(tree, table):
@@ -7754,6 +8402,9 @@ def process_file(file_path: str, project: Optional[ProjectFacts] = None) -> str:
     _erase_typing_casts(tree, table)
     _expand_bool_calls(tree)
     facts = _infer_types(tree, table, project)
+    if _lower_colliding_accessors(tree, table, facts):
+        table = _resolve_bindings(tree)
+        facts = _infer_types(tree, table, project)
     _plan_closures(tree, table, facts)
     _lower_named_dunder_operations(tree, facts)
     _plan_bound_appends(tree, table, facts)
@@ -7838,6 +8489,7 @@ def process_file(file_path: str, project: Optional[ProjectFacts] = None) -> str:
 
     # Detect class methods
     _detect_class_methods(tree)
+    _mark_project_class_references(tree, table, project)
 
     # Detect nesting levels
     _detect_nesting_levels(tree)

@@ -277,6 +277,10 @@ fn (t VTranspiler) imported_init_constructor(path string) ?InitConstructor {
 }
 
 fn (t VTranspiler) resolve_init_constructor(expr Expr) ?InitConstructor {
+	path := expr_class_path(expr)
+	if path in t.registry.class_names {
+		return t.registry.init_constructors[path] or { return none }
+	}
 	if expr is Name {
 		if expr.id in t.local_idents || expr.id in t.module_idents
 			|| expr.id in t.renamed_idents || t.escaped_identifiers[expr.id] {

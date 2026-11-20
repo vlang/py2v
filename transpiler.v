@@ -193,6 +193,34 @@ fn emitted_class_name(name string) string {
 	return name
 }
 
+fn (t &VTranspiler) local_class_name(name string) string {
+	return t.registry.class_names['${t.current_dotted}.${name}'] or { emitted_class_name(name) }
+}
+
+fn expr_class_path(expr Expr) string {
+	return match expr {
+		Name { expr.class_path }
+		Attribute { expr.class_path }
+		else { '' }
+	}
+}
+
+fn (mut t VTranspiler) renamed_class(path string) ?string {
+	name := t.registry.class_names[path] or { return none }
+	owner := t.registry.lookup(path.all_before_last('.'))
+	if owner.v_module == t.module_name { return name }
+	t.add_using(owner.v_module)
+	return '${owner.v_module}.${name}'
+}
+
+fn (mut t VTranspiler) renamed_static_member(node Attribute) ?string {
+	path := expr_class_path(*node.value)
+	if !t.registry.class_static_members['${path}.${node.attr}'] { return none }
+	owner := t.renamed_class(path) or { return none }
+	name := '${to_symbol_ident(owner.all_after_last('.'))}_${escape_leading_underscore(node.attr)}'
+	return if owner.contains('.') { '${owner.all_before_last('.')}.${name}' } else { name }
+}
+
 // new_transpiler creates a new VTranspiler instance
 pub fn new_transpiler() VTranspiler {
 	return VTranspiler{
@@ -393,6 +421,13 @@ pub fn (mut t VTranspiler) visit_module(node Module) string {
 			}
 		}
 	}
+	for name, first in node.rebound_functions {
+		spelling := t.module_value_name(name, shared)
+		t.module_idents[name] = spelling
+		t.global_vars[name] = true
+		t.has_global_decl = true
+		type_decls << '__global ${spelling} = ${t.emitted_fn_name(first)}'
+	}
 
 	// A library module has no entry point, and V merges a directory into a
 	// single module, so two files that each define `main` would collide. The
@@ -522,9 +557,44 @@ pub fn (mut t VTranspiler) visit_module(node Module) string {
 	mut main_str := ''
 	if t.emit_pub && main_fn_override.len == 0 {
 		library_decls << comment_lines
+		initializer := t.registry.file_initializers[t.current_dotted]
+		mut runtime_lines := []string{}
 		for i, line in main_fn_body {
-			decl := module_scope_decl(main_fn_stmts[i], line, t.module_idents)
+			stmt := main_fn_stmts[i]
+			if initializer != '' {
+				if stmt is ExprStmt || contains_module_rebinding(stmt, node.rebound_functions) {
+					runtime_lines << line
+					continue
+				}
+				if stmt is Assign && stmt.targets.len == 1 && stmt.targets[0] is Name
+					&& (stmt.value is Call || stmt.value is Name || runtime_lines.len > 0) {
+					if left, right := line.split_once(' := ') {
+						id := left.trim_string_left('mut ')
+						value := stmt.value
+						first := if value is Name { node.rebound_functions[value.id] } else { '' }
+						typ := t.infer_expr_type(value)
+						if first != '' || (typ != '' && typ != 'Any' && typ != 'void') {
+							type_decls << if first != '' {
+								'__global ${id} = ${t.emitted_fn_name(first)}'
+							} else {
+								'__global ${id} ${typ}'
+							}
+							runtime_lines << '${id} = ${right}'
+							continue
+						}
+					}
+				}
+			}
+			decl := module_scope_decl(stmt, line, t.module_idents)
 			library_decls << if decl.starts_with('const ') { 'pub ' + decl } else { decl }
+		}
+		if initializer != '' {
+			func_decls << 'fn ${initializer}() {\n${indent(runtime_lines.join('\n'), 1, '\t')}\n}'
+			initializers := t.registry.module_initializers[t.module_name]
+			if initializers.len > 0 && initializer == initializers[0] {
+				startup_calls := initializers.map('\t${it}()')
+				func_decls << 'fn init() {\n${startup_calls.join('\n')}\n}'
+			}
 		}
 	} else {
 		// Merge the guard-rewritten body with module-level inits.
@@ -1392,9 +1462,11 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 	// @classmethod / @staticmethod: emit as free function named ClassName_funcname
 	if node.is_class_method && node.decorator_kind in ['classmethod', 'staticmethod'] {
 		member := if node.dunder_op.starts_with('py2v_overload_') { emit_name } else { node.name }
-		owner := emitted_class_name(node.class_name)
+		owner := t.local_class_name(node.class_name)
 		emit_name = if t.nominal_enums[node.class_name] {
 			'${owner}.${escape_keyword(escape_leading_underscore(member))}'
+		} else if '${t.current_dotted}.${node.class_name}' in t.registry.class_names {
+			'${to_symbol_ident(owner)}_${escape_leading_underscore(member)}'
 		} else {
 			'${owner}_${member}'
 		}
@@ -1405,7 +1477,7 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 	// requires both operands of an operator to have the same type.
 	is_binop_dunder := node.dunder_op in ['+', '-', '*', '/', '%', '==', '!=', '<', '<=', '>',
 		'>=']
-	mut emitted_receiver_type := emitted_class_name(node.class_name)
+	mut emitted_receiver_type := t.local_class_name(node.class_name)
 	if tp := t.class_type_params[node.class_name] {
 		if tp.len > 0 {
 			emitted_receiver_type = '${emitted_receiver_type}[${tp.join(', ')}]'
@@ -1414,7 +1486,7 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 
 	// Handle class method receiver (skip for staticmethod / classmethod)
 	if node.is_class_method && node.decorator_kind !in ['staticmethod', 'classmethod'] {
-		base_receiver := emitted_class_name(node.class_name)
+		base_receiver := t.local_class_name(node.class_name)
 		// Append generic type params if the class is generic (e.g. Stack[T])
 		mut emitted_receiver := base_receiver
 		if tp := t.class_type_params[node.class_name] {
@@ -1964,7 +2036,7 @@ fn (mut t VTranspiler) visit_protocol_class(node ClassDef, emitted_name string) 
 // visit_class_def emits V code for a ClassDef node.
 pub fn (mut t VTranspiler) visit_class_def(node ClassDef) string {
 	t.init_import_aliases.delete(node.name)
-	emitted_name := emitted_class_name(node.name)
+	emitted_name := t.local_class_name(node.name)
 	if node.bases.len == 1 && native_enum_base(node.bases[0]) {
 		return t.visit_nominal_enum(node, emitted_name)
 	}
@@ -2034,7 +2106,8 @@ pub fn (mut t VTranspiler) visit_class_def(node ClassDef) string {
 				if stmt.targets.len == 1 && stmt.targets[0] is Name {
 					attr_name := (stmt.targets[0] as Name).id
 					if !is_v_field_ident(attr_name) {
-						symbol := class_attr_symbol_name(node.name, attr_name)
+						class_name := t.registry.class_names['${t.current_dotted}.${node.name}'] or { node.name }
+						symbol := class_attr_symbol_name(class_name, attr_name)
 						// A package can export Status.VALID under STATUS_VALID.
 						// Keep the generated storage distinct from that alias.
 						class_attr_syms[attr_name] = if symbol in module_names {
@@ -2102,7 +2175,7 @@ pub fn (mut t VTranspiler) visit_class_def(node ClassDef) string {
 	if node.declarations.len > 0 {
 		mut field_annotations := map[string]Expr{}
 		for stmt in node.body {
-			if stmt is AnnAssign && stmt.target is Name && has_class_annotation(stmt.annotation) {
+			if stmt is AnnAssign && stmt.target is Name && t.has_class_annotation(stmt.annotation) {
 				field_annotations[(stmt.target as Name).id] = stmt.annotation
 			}
 		}
@@ -2152,7 +2225,13 @@ pub fn (mut t VTranspiler) visit_class_def(node ClassDef) string {
 		}
 	}
 	for base in node.bases {
-		if base is Name {
+		path := expr_class_path(base)
+		if name := t.renamed_class(path) {
+			base_fields := t.registry.class_fields_by_path[path]
+			t.known_classes[name] = base_fields
+			t.class_direct_fields[name] = base_fields
+			base_names << name
+		} else if base is Name {
 			base_name := (base as Name).id
 			if base_name.len > 0 {
 				base_names << base_name
@@ -3375,6 +3454,19 @@ fn module_const_decl(stmt Stmt, rendered string, names []string) ?string {
 		return none
 	}
 	return 'const ${rendered[..eq]} = ${rendered[eq + 4..]}'
+}
+
+fn contains_module_rebinding(stmt Stmt, functions map[string]string) bool {
+	return match stmt {
+		Assign {
+			stmt.targets.len == 1 && stmt.targets[0] is Name && stmt.targets[0].id in functions
+		}
+		If {
+			stmt.body.any(contains_module_rebinding(it, functions))
+				|| stmt.orelse.any(contains_module_rebinding(it, functions))
+		}
+		else { false }
+	}
 }
 
 // module_scope_decl renders one module-level statement as a V module-scope
@@ -5566,6 +5658,9 @@ pub fn (mut t VTranspiler) visit_constant(node Constant) string {
 
 // visit_name emits V code for a Name expression.
 pub fn (mut t VTranspiler) visit_name(node Name) string {
+	if name := t.renamed_class(node.class_path) {
+		return name
+	}
 	if t.condition_walrus_vars[node.id] {
 		if renamed := t.renamed_idents[node.id] { return renamed }
 		if local := t.local_idents[node.id] { return local }
@@ -6441,6 +6536,14 @@ pub fn (mut t VTranspiler) visit_call(original Call) string {
 	if constructor := t.visit_init_constructor(original) {
 		return constructor
 	}
+	class_path := expr_class_path(*original.func)
+	if name := t.renamed_class(class_path) {
+		fields := t.registry.class_fields_by_path[class_path]
+		t.known_classes[name] = fields
+		t.class_direct_fields[name] = fields
+		ctor_args := original.args.map(t.visit_expr(it))
+		return t.ctor_struct_literal(name, name, original, ctor_args)
+	}
 	if completed := t.complete_imported_call(original) {
 		return t.visit_call(completed)
 	}
@@ -6547,6 +6650,9 @@ pub fn (mut t VTranspiler) visit_call(original Call) string {
 	// Handle string/list methods that need translation
 	if node.func is Attribute {
 		attr_node := node.func as Attribute
+		if member := t.renamed_static_member(attr_node) {
+			return '${member}(${vargs.join(', ')})'
+		}
 		if renamed := t.imported_colliding_function(t.init_python_path(node.func)) {
 			return '${renamed}(${vargs.join(', ')})'
 		}
@@ -7714,7 +7820,10 @@ fn collect_super_calls_in_expr(expr Expr, mut names []string) {
 }
 
 // has_class_annotation finds resolved class metadata retained on a field's AST.
-fn has_class_annotation(annotation Expr) bool {
+fn (t &VTranspiler) has_class_annotation(annotation Expr) bool {
+	if expr_class_path(annotation) in t.registry.class_names {
+		return true
+	}
 	return match annotation {
 		Name {
 			annotation.api.starts_with('__project_type__.') || annotation.api in runtime_class_types || annotation.api in runtime_api
@@ -7723,10 +7832,12 @@ fn has_class_annotation(annotation Expr) bool {
 			annotation.api.starts_with('__project_type__.') || annotation.api in runtime_class_types || annotation.api in runtime_api
 		}
 		Subscript {
-			has_class_annotation(*annotation.value) || has_class_annotation(*annotation.slice)
+			t.has_class_annotation(*annotation.value) || t.has_class_annotation(*annotation.slice)
 		}
-		Tuple { annotation.elts.any(has_class_annotation(it)) }
-		BinOp { has_class_annotation(*annotation.left) || has_class_annotation(*annotation.right) }
+		Tuple { annotation.elts.any(t.has_class_annotation(it)) }
+		BinOp {
+			t.has_class_annotation(*annotation.left) || t.has_class_annotation(*annotation.right)
+		}
 		else { false }
 	}
 }
@@ -7835,6 +7946,12 @@ fn lower_first_ascii(name string) string {
 
 // visit_attribute emits V code for attribute access (Attribute).
 pub fn (mut t VTranspiler) visit_attribute(node Attribute) string {
+	if name := t.renamed_class(node.class_path) {
+		return name
+	}
+	if member := t.renamed_static_member(node) {
+		return member
+	}
 	if node.bound_append == 'list' {
 		return '${t.runtime_helper('append_method')}(mut ${t.visit_expr(node.value)})'
 	}
@@ -9315,6 +9432,9 @@ fn (mut t VTranspiler) annotation_typename(ann ?Expr) string {
 	// fallbacks). This avoids assigning a concrete default type where
 	// the caller may prefer to apply other inference heuristics.
 	a := ann or { return '' }
+	if name := t.renamed_class(expr_class_path(a)) {
+		return name
+	}
 
 	// A class of the runtime library named in an annotation
 	api := match a {
@@ -10639,7 +10759,18 @@ fn v_return_type(typ string) string {
 // returned list.
 pub fn (mut t VTranspiler) hoist_block_fns(stmts []Stmt, mut out []string, in_block bool) []Stmt {
 	mut result := []Stmt{}
-	for stmt in stmts {
+	for index, stmt in stmts {
+		// A local function returned by its defining branch can stay a closure.
+		if in_block && stmt is FunctionDef && stmt.is_nested && index + 2 == stmts.len
+			&& stmts[index + 1] is Return {
+			tail := stmts[index + 1] as Return
+			if value := tail.value {
+				if value is Name && value.id == stmt.name {
+					result << stmt
+					continue
+				}
+			}
+		}
 		result << t.hoist_in_stmt(stmt, mut out, in_block)
 	}
 	return result

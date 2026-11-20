@@ -137,6 +137,13 @@ fn parse_module(m map[string]json2.Any) !Module {
 			docstring = s
 		}
 	}
+	mut rebound := map[string]string{}
+	if raw := m['rebound_functions'] {
+		for item in raw.as_array() {
+			pair := item.as_array()
+			if pair.len == 2 { rebound[pair[0].str()] = pair[1].str() }
+		}
+	}
 	return Module{
 		list_identity_module_errors: (m['list_identity_module_errors'] or { json2.Any([]json2.Any{}) }).as_array().map(it.str())
 		body:                        body
@@ -144,6 +151,7 @@ fn parse_module(m map[string]json2.Any) !Module {
 		docstring_comment:           docstring
 		condition_walrus_names:      (m['condition_walrus_names'] or { json2.Any([]json2.Any{}) }).as_array().map(it.str())
 		module_consts:               (m['module_consts'] or { json2.Any([]json2.Any{}) }).as_array().map(it.str())
+		rebound_functions:           rebound
 	}
 }
 
@@ -1059,6 +1067,7 @@ fn parse_name(m map[string]json2.Any) Name {
 		v_annotation: parse_type_annotation(m) or { '' }
 		math_member:  (m['math_member'] or { json2.Any('') }).str()
 		api:          (m['api'] or { json2.Any('') }).str()
+		class_path:   (m['class_path'] or { json2.Any('') }).str()
 	}
 }
 
@@ -1224,6 +1233,7 @@ fn parse_call(m map[string]json2.Any) Call {
 	}
 	return Call{
 		isinstance_dynamic_types: (m['isinstance_dynamic_types'] or { json2.Any(false) }).bool()
+		isinstance_nominal:       (m['isinstance_nominal'] or { json2.Any('') }).str()
 		subject_class:            (m['subject_class'] or { json2.Any('') }).str()
 		api:                      (m['api'] or { json2.Any('') }).str()
 		propagate:                (m['propagate'] or { json2.Any(false) }).bool()
@@ -1254,6 +1264,7 @@ fn parse_attribute(m map[string]json2.Any) Attribute {
 		loc:          parse_location(m)
 		v_annotation: parse_type_annotation(m) or { '' }
 		api:          (m['api'] or { json2.Any('') }).str()
+		class_path:   (m['class_path'] or { json2.Any('') }).str()
 	}
 }
 

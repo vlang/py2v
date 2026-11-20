@@ -349,7 +349,7 @@ fn copy_runtime(frontend_dir string, out_root string) ! {
 // collect_module_symbols returns the top-level names a module defines. These are
 // the names other modules may import from it.
 fn collect_module_symbols(mod Module) []string {
-	mut names := []string{}
+	mut names := mod.rebound_functions.keys()
 	for stmt in mod.body {
 		match stmt {
 			FunctionDef {
@@ -382,6 +382,7 @@ fn collect_module_symbols(mod Module) []string {
 // collect_module_values lists names emitted as module-level value declarations.
 fn collect_module_values(mod Module) []string {
 	mut names := mod.module_consts.clone()
+	names << mod.rebound_functions.keys()
 	for stmt in mod.body {
 		if stmt is Assign && !stmt.is_typevar_assign && stmt.targets.len == 1
 			&& stmt.targets[0] is Name {
@@ -412,6 +413,48 @@ fn register_colliding_functions(parsed map[string]Module, dupes map[string][]str
 			serial := registry.function_names.len + 1
 			kind := 'def_${to_symbol_ident(name)}_${serial}_'
 			registry.function_names[symbol] = registry.helper_name(info.v_module, kind, [])
+		}
+	}
+}
+
+// Reserve one V type name per Python file that defines the colliding class.
+fn register_colliding_classes(parsed map[string]Module, dupes map[string][]string, mut registry ModuleRegistry) {
+	mut keys := parsed.keys()
+	keys.sort()
+	mut taken := map[string]bool{}
+	for key in keys {
+		info := registry.lookup(key)
+		for stmt in parsed[key]!.body {
+			if stmt is ClassDef {
+				taken['${info.v_module}.${emitted_class_name(stmt.name)}'] = true
+			}
+		}
+	}
+	mut serial := 0
+	for key in keys {
+		info := registry.lookup(key)
+		for stmt in parsed[key]!.body {
+			if stmt !is ClassDef {
+				continue
+			}
+			class_def := stmt as ClassDef
+			if '${info.v_module}.${class_def.name}' !in dupes { continue }
+			mut name := ''
+			for {
+				serial++
+				name = 'Py2v${emitted_class_name(class_def.name)}${serial}'
+				if '${info.v_module}.${name}' !in taken && name !in registry.module_words[info.v_module] {
+					break
+				}
+			}
+			taken['${info.v_module}.${name}'] = true
+			path := '${info.dotted}.${class_def.name}'
+			registry.class_names[path] = name
+			for member in class_def.body {
+				if member is FunctionDef && member.decorator_kind in ['staticmethod', 'classmethod'] {
+					registry.class_static_members['${path}.${member.name}'] = true
+				}
+			}
 		}
 	}
 }
@@ -555,6 +598,7 @@ fn translate_package(python_cmd string, ast_dump string, package_dir string, out
 	register_defaulted_functions(parsed, mut registry)
 	dupes := registry.collisions()
 	register_colliding_functions(parsed, dupes, mut registry)
+	register_colliding_classes(parsed, dupes, mut registry)
 	if dupes.len > 0 {
 		mut keys := dupes.keys()
 		keys.sort()
@@ -568,6 +612,14 @@ fn translate_package(python_cmd string, ast_dump string, package_dir string, out
 	mut count := 0
 	mut dotted_keys := parsed.keys()
 	dotted_keys.sort()
+	for key in dotted_keys {
+		if parsed[key]!.rebound_functions.len == 0 { continue }
+		info := registry.lookup(key)
+		kind := 'startup_${v_file_stem(info.v_relpath)}_'
+		name := registry.helper_name(info.v_module, kind, [])
+		registry.file_initializers[key] = name
+		registry.module_initializers[info.v_module] << name
+	}
 	// A class named Sequence, Iterable or Mapping anywhere in the package keeps that
 	// name from being mapped to an array or map in every module of it.
 	mut abc_scan := new_transpiler()

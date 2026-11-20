@@ -368,7 +368,7 @@ pub const python_dunder_method_names = {
 	'__post_init__': 'post_init'
 	'__enter__':     'enter'
 	'__exit__':      'exit'
-	'__new__':       'new'
+	'__new__':       'py2v_dunder_new'
 	'__del__':       'del'
 	// Numeric protocol hooks. V has no reserved spellings for these, and they
 	// read better as explicit conversion methods than as mangled names.
