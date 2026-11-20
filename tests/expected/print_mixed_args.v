@@ -6,7 +6,7 @@ fn main() {
 	c := [4, 5, 6]
 	n := 7
 	println('${a.len} ${b.len} ${n} ${c.len}')
-	println((1).str() + ' ' + (2.5).str() + ' ' + ('word').str() + ' ' + (if true {
+	println((1).str() + ' ' + ('2.5').str() + ' ' + ('word').str() + ' ' + (if true {
 		'True'
 	} else {
 		'False'

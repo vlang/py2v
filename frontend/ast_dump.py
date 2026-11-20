@@ -4102,6 +4102,66 @@ def _truth_kind(node: ast.expr, facts: infer.TypeFacts) -> str:
     return facts.types[type_id]["k"] if type_id is not None else "unknown"
 
 
+def _literal_scalar(node: ast.expr) -> Optional[ast.Constant]:
+    """Recover exact builtin values without evaluating source expressions."""
+    if isinstance(node, ast.Constant) and type(node.value) in (type(None), bool, int, float, str):
+        return node
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub)):
+        operand = _literal_scalar(node.operand)
+        if operand is not None and type(operand.value) in (int, float):
+            value = -operand.value if isinstance(node.op, ast.USub) else operand.value
+            return ast.copy_location(ast.Constant(value=value), node)
+    if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+            and node.func.id == "float" and getattr(node.func, "_binding", None) is None
+            and len(node.args) == 1 and not node.keywords
+            and isinstance(node.args[0], ast.Constant) and type(node.args[0].value) is str):
+        try:
+            value = float(node.args[0].value)
+        except ValueError:
+            return None
+        return ast.copy_location(ast.Constant(value=value), node)
+    return None
+
+
+def _lower_scalar_text(tree: ast.Module, table: Optional[symbols.SymbolTable]) -> None:
+    """Precompute text when the value is an exact literal, including nonfinite floats."""
+    if table is None or table.scopes[0].has_star_import:
+        return
+
+    def text(node: ast.expr, for_str: bool) -> ast.expr:
+        literal = _literal_scalar(node)
+        if literal is None:
+            return node
+        value = literal.value
+        # A large JSON integer can reach the V backend as an f64. Even the
+        # negative 32-bit minimum has an out-of-range positive AST operand.
+        if (type(value) is float
+                or type(value) is int and abs(value) >= 1 << 31
+                or for_str and (value is None or type(value) is bool)):
+            try:
+                rendered = str(value)
+            except ValueError:
+                return node
+            return ast.copy_location(ast.Constant(value=rendered), node)
+        return node
+
+    class Lower(ast.NodeTransformer):
+        def visit_Call(self, node: ast.Call) -> ast.AST:
+            self.generic_visit(node)
+            if not isinstance(node.func, ast.Name) or getattr(node.func, "_binding", None) is not None:
+                return node
+            if node.func.id == "print":
+                node.args = [text(arg, False) for arg in node.args]
+            elif node.func.id == "str" and len(node.args) == 1 and not node.keywords:
+                arg = node.args[0]
+                converted = text(arg, True)
+                if converted is not arg:
+                    return ast.copy_location(converted, node)
+            return node
+
+    Lower().visit(tree)
+
+
 def _expand_bool_calls(tree: ast.Module) -> None:
     """The builtin bool(x) is exactly not not x, including its one truth evaluation."""
     class Lower(ast.NodeTransformer):
@@ -8693,6 +8753,7 @@ def process_file(file_path: str, project: Optional[ProjectFacts] = None) -> str:
     _lower_local_dict_methods(tree, table)
     _lower_exit_statements(tree, table)
     _erase_typing_casts(tree, table)
+    _lower_scalar_text(tree, table)
     _expand_bool_calls(tree)
     facts = _infer_types(tree, table, project)
     if _lower_colliding_accessors(tree, table, facts):
