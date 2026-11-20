@@ -137,6 +137,13 @@ fn parse_module(m map[string]json2.Any) !Module {
 			docstring = s
 		}
 	}
+	mut rebound := map[string]string{}
+	if raw := m['rebound_functions'] {
+		for item in raw.as_array() {
+			pair := item.as_array()
+			if pair.len == 2 { rebound[pair[0].str()] = pair[1].str() }
+		}
+	}
 	return Module{
 		list_identity_module_errors: (m['list_identity_module_errors'] or { json2.Any([]json2.Any{}) }).as_array().map(it.str())
 		body:                        body
@@ -144,6 +151,7 @@ fn parse_module(m map[string]json2.Any) !Module {
 		docstring_comment:           docstring
 		condition_walrus_names:      (m['condition_walrus_names'] or { json2.Any([]json2.Any{}) }).as_array().map(it.str())
 		module_consts:               (m['module_consts'] or { json2.Any([]json2.Any{}) }).as_array().map(it.str())
+		rebound_functions:           rebound
 	}
 }
 

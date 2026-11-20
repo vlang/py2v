@@ -44,6 +44,9 @@ pub mut:
 	// Renamed classes and their non-instance members, keyed by defining Python path.
 	class_names          map[string]string
 	class_static_members map[string]bool
+	// Startup functions for modules with a Python function binding replaced at import time.
+	file_initializers   map[string]string
+	module_initializers map[string][]string
 	// class_bases_by_path maps `module.Class` to its base class names, so a
 	// struct literal built in another module can fill the embedded bases.
 	class_bases_by_path map[string][]string

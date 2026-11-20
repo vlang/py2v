@@ -421,6 +421,13 @@ pub fn (mut t VTranspiler) visit_module(node Module) string {
 			}
 		}
 	}
+	for name, first in node.rebound_functions {
+		spelling := t.module_value_name(name, shared)
+		t.module_idents[name] = spelling
+		t.global_vars[name] = true
+		t.has_global_decl = true
+		type_decls << '__global ${spelling} = ${t.emitted_fn_name(first)}'
+	}
 
 	// A library module has no entry point, and V merges a directory into a
 	// single module, so two files that each define `main` would collide. The
@@ -550,9 +557,44 @@ pub fn (mut t VTranspiler) visit_module(node Module) string {
 	mut main_str := ''
 	if t.emit_pub && main_fn_override.len == 0 {
 		library_decls << comment_lines
+		initializer := t.registry.file_initializers[t.current_dotted]
+		mut runtime_lines := []string{}
 		for i, line in main_fn_body {
-			decl := module_scope_decl(main_fn_stmts[i], line, t.module_idents)
+			stmt := main_fn_stmts[i]
+			if initializer != '' {
+				if stmt is ExprStmt || contains_module_rebinding(stmt, node.rebound_functions) {
+					runtime_lines << line
+					continue
+				}
+				if stmt is Assign && stmt.targets.len == 1 && stmt.targets[0] is Name
+					&& (stmt.value is Call || stmt.value is Name || runtime_lines.len > 0) {
+					if left, right := line.split_once(' := ') {
+						id := left.trim_string_left('mut ')
+						value := stmt.value
+						first := if value is Name { node.rebound_functions[value.id] } else { '' }
+						typ := t.infer_expr_type(value)
+						if first != '' || (typ != '' && typ != 'Any' && typ != 'void') {
+							type_decls << if first != '' {
+								'__global ${id} = ${t.emitted_fn_name(first)}'
+							} else {
+								'__global ${id} ${typ}'
+							}
+							runtime_lines << '${id} = ${right}'
+							continue
+						}
+					}
+				}
+			}
+			decl := module_scope_decl(stmt, line, t.module_idents)
 			library_decls << if decl.starts_with('const ') { 'pub ' + decl } else { decl }
+		}
+		if initializer != '' {
+			func_decls << 'fn ${initializer}() {\n${indent(runtime_lines.join('\n'), 1, '\t')}\n}'
+			initializers := t.registry.module_initializers[t.module_name]
+			if initializers.len > 0 && initializer == initializers[0] {
+				startup_calls := initializers.map('\t${it}()')
+				func_decls << 'fn init() {\n${startup_calls.join('\n')}\n}'
+			}
 		}
 	} else {
 		// Merge the guard-rewritten body with module-level inits.
@@ -1423,6 +1465,8 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 		owner := t.local_class_name(node.class_name)
 		emit_name = if t.nominal_enums[node.class_name] {
 			'${owner}.${escape_keyword(escape_leading_underscore(member))}'
+		} else if '${t.current_dotted}.${node.class_name}' in t.registry.class_names {
+			'${to_symbol_ident(owner)}_${escape_leading_underscore(member)}'
 		} else {
 			'${owner}_${member}'
 		}
@@ -1465,8 +1509,6 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 		if use_mut_recv {
 			signature << '(mut self ${emitted_receiver})'
 		} else if node.class_name in t.ref_classes {
-		} else if '${t.current_dotted}.${node.class_name}' in t.registry.class_names {
-			'${to_symbol_ident(owner)}_${escape_leading_underscore(member)}'
 			// `return self` and `node = self` hand out the object, not a copy.
 			signature << '(self &${emitted_receiver})'
 		} else {
@@ -3412,6 +3454,19 @@ fn module_const_decl(stmt Stmt, rendered string, names []string) ?string {
 		return none
 	}
 	return 'const ${rendered[..eq]} = ${rendered[eq + 4..]}'
+}
+
+fn contains_module_rebinding(stmt Stmt, functions map[string]string) bool {
+	return match stmt {
+		Assign {
+			stmt.targets.len == 1 && stmt.targets[0] is Name && stmt.targets[0].id in functions
+		}
+		If {
+			stmt.body.any(contains_module_rebinding(it, functions))
+				|| stmt.orelse.any(contains_module_rebinding(it, functions))
+		}
+		else { false }
+	}
 }
 
 // module_scope_decl renders one module-level statement as a V module-scope
@@ -5603,6 +5658,9 @@ pub fn (mut t VTranspiler) visit_constant(node Constant) string {
 
 // visit_name emits V code for a Name expression.
 pub fn (mut t VTranspiler) visit_name(node Name) string {
+	if name := t.renamed_class(node.class_path) {
+		return name
+	}
 	if t.condition_walrus_vars[node.id] {
 		if renamed := t.renamed_idents[node.id] { return renamed }
 		if local := t.local_idents[node.id] { return local }
@@ -5658,9 +5716,6 @@ pub fn (mut t VTranspiler) visit_name(node Name) string {
 	// `from other_module import *` makes that module's names visible without a
 	// binding, so they have to be qualified at every use site instead.
 	star_prefix := t.star_import_owner(node.id)
-	if name := t.renamed_class(node.class_path) {
-		return name
-	}
 	if star_prefix != '' {
 		return '${star_prefix}.${escape_local_ident(node.id)}'
 	}
@@ -6481,6 +6536,14 @@ pub fn (mut t VTranspiler) visit_call(original Call) string {
 	if constructor := t.visit_init_constructor(original) {
 		return constructor
 	}
+	class_path := expr_class_path(*original.func)
+	if name := t.renamed_class(class_path) {
+		fields := t.registry.class_fields_by_path[class_path]
+		t.known_classes[name] = fields
+		t.class_direct_fields[name] = fields
+		ctor_args := original.args.map(t.visit_expr(it))
+		return t.ctor_struct_literal(name, name, original, ctor_args)
+	}
 	if completed := t.complete_imported_call(original) {
 		return t.visit_call(completed)
 	}
@@ -6536,14 +6599,6 @@ pub fn (mut t VTranspiler) visit_call(original Call) string {
 		return 'Any(pyrt.map_get(${vargs.join(', ')}))'
 	}
 
-	class_path := expr_class_path(*original.func)
-	if name := t.renamed_class(class_path) {
-		fields := t.registry.class_fields_by_path[class_path]
-		t.known_classes[name] = fields
-		t.class_direct_fields[name] = fields
-		ctor_args := original.args.map(t.visit_expr(it))
-		return t.ctor_struct_literal(name, name, original, ctor_args)
-	}
 	// re module → regex module dispatch
 	re_result, re_handled := dispatch_re_func(mut t, fname, vargs)
 	if re_handled {
@@ -6595,6 +6650,9 @@ pub fn (mut t VTranspiler) visit_call(original Call) string {
 	// Handle string/list methods that need translation
 	if node.func is Attribute {
 		attr_node := node.func as Attribute
+		if member := t.renamed_static_member(attr_node) {
+			return '${member}(${vargs.join(', ')})'
+		}
 		if renamed := t.imported_colliding_function(t.init_python_path(node.func)) {
 			return '${renamed}(${vargs.join(', ')})'
 		}
@@ -6650,9 +6708,6 @@ pub fn (mut t VTranspiler) visit_call(original Call) string {
 				if base_args.len > 0 && base_args[0] == 'self' {
 					base_args = base_args[1..]
 				}
-		if member := t.renamed_static_member(attr_node) {
-			return '${member}(${vargs.join(', ')})'
-		}
 				if base_args.len > 0 {
 					return 'self.${emitted_class_name(recv)}.${init_method}(${base_args.join(', ')})'
 				}
@@ -7891,6 +7946,12 @@ fn lower_first_ascii(name string) string {
 
 // visit_attribute emits V code for attribute access (Attribute).
 pub fn (mut t VTranspiler) visit_attribute(node Attribute) string {
+	if name := t.renamed_class(node.class_path) {
+		return name
+	}
+	if member := t.renamed_static_member(node) {
+		return member
+	}
 	if node.bound_append == 'list' {
 		return '${t.runtime_helper('append_method')}(mut ${t.visit_expr(node.value)})'
 	}
@@ -7946,12 +8007,6 @@ pub fn (mut t VTranspiler) visit_attribute(node Attribute) string {
 	// must call the method as declared.
 	//
 	// Everything else has to shed a leading underscore. V reads `x._foo` as the
-	if name := t.renamed_class(node.class_path) {
-		return name
-	}
-	if member := t.renamed_static_member(node) {
-		return member
-	}
 	// string literal `x.'foo'`, because `_` is a string prefix character, and a
 	// leading underscore is not a legal field name either. Python reaches these
 	// constantly for private attributes, so the rewrite matches the one the
@@ -9377,6 +9432,9 @@ fn (mut t VTranspiler) annotation_typename(ann ?Expr) string {
 	// fallbacks). This avoids assigning a concrete default type where
 	// the caller may prefer to apply other inference heuristics.
 	a := ann or { return '' }
+	if name := t.renamed_class(expr_class_path(a)) {
+		return name
+	}
 
 	// A class of the runtime library named in an annotation
 	api := match a {
@@ -9432,9 +9490,6 @@ fn (mut t VTranspiler) annotation_typename(ann ?Expr) string {
 			subscripted := *a.value
 			value := if subscripted is Name
 				&& subscripted.id in ['list', 'List', 'set', 'Set', 'Dict', 'Callable',
-	if name := t.renamed_class(expr_class_path(a)) {
-		return name
-	}
 					'MutableSequence', 'type', 'Type'] {
 				subscripted.id
 			} else {

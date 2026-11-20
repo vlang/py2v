@@ -1,0 +1,1 @@
+from .choice import total

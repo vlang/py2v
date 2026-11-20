@@ -163,7 +163,8 @@ const expected_dir = os.join_path(script_dir, 'expected')
 const package_fixtures = ['pkg_imports', 'pkg_lib_main', 'pkg_multi', 'pkg_multi2', 'pkg_true_div',
 	'pkg_init_execution', 'pkg_private_names', 'pkg_call_defaults', 'pkg_type_only',
 	'pkg_qualified_construct', 'pkg_colliding_functions', 'pkg_annotated_constants',
-	'pkg_class_constant_alias', 'pkg_module_string_product', 'pkg_guard_class', 'pkg_class_owners']!
+	'pkg_class_constant_alias', 'pkg_module_string_product', 'pkg_guard_class', 'pkg_class_owners',
+	'pkg_import_branch', 'pkg_runtime_binding']!
 
 mut py2v := resolve_py2v()
 
@@ -420,11 +421,15 @@ call_results_cases := ['dict_get_missing', 'dict_get_eager', 'dict_get_chain', '
 	'list_slice_unit_step_grow', 'list_frozenset_alias', 'dict_widen_local', 'dict_widen_reassign',
 	'list_scoped_refusal', 'refused_walrus', 'module_branch_definitions', 'dunder_new_collision',
 	'property_accessor_collision', 'returned_branch_definitions', 'overwritten_module_definition',
-	'decl_defaultdict', 'decl_kwonly_none', 'decl_callable_field', 'decl_callable_missing_return',
-	'decl_callable_optional', 'decl_digit_name', 'decl_duplicate_init', 'decl_duplicate_dunder',
-	'decl_duplicate_overwritten', 'decl_reserved_prefix_field', 'decl_reserved_numeric_field',
-	'decl_defaultdict_int_key', 'decl_defaultdict_alias', 'external_dynamic', 'scheduling_refusal',
-	'nominal_enum_classmethod', 'nominal_enum_unannotated', 'dynamic_empty_tuple', 'sequence_rebind', 'reserved_map_name', 'generic_none_type_arguments', 'uppercase_while_binding', 'uppercase_range_step', 'reserved_volatile_name', 'read_underscore_binding', 'keyword_named_call', 'bubble_sort', 'condition_walrus_bindings', 'dict', 'nested_dict']
+	'module_branch_chain', 'target_class_choice', 'rebound_module_function', 'decl_defaultdict',
+	'decl_kwonly_none', 'decl_callable_field', 'decl_callable_missing_return', 'decl_callable_optional',
+	'decl_digit_name', 'decl_duplicate_init', 'decl_duplicate_dunder', 'decl_duplicate_overwritten',
+	'decl_reserved_prefix_field', 'decl_reserved_numeric_field', 'decl_defaultdict_int_key',
+	'decl_defaultdict_alias', 'external_dynamic', 'scheduling_refusal', 'nominal_enum_classmethod',
+	'nominal_enum_unannotated', 'dynamic_empty_tuple', 'sequence_rebind', 'reserved_map_name',
+	'generic_none_type_arguments', 'uppercase_while_binding', 'uppercase_range_step',
+	'reserved_volatile_name', 'read_underscore_binding', 'keyword_named_call', 'bubble_sort',
+	'condition_walrus_bindings', 'dict', 'nested_dict']
 mut execution_args := [][]string{}
 mut execution_names := []string{}
 for name in call_results_cases {
@@ -829,7 +834,7 @@ for pkg in package_fixtures {
 		}
 		if pkg in ['pkg_type_only', 'pkg_colliding_functions', 'pkg_annotated_constants',
 			'pkg_class_constant_alias', 'pkg_module_string_product', 'pkg_guard_class',
-			'pkg_class_owners'] {
+			'pkg_class_owners', 'pkg_import_branch', 'pkg_runtime_binding'] {
 			fixtures := match pkg {
 				'pkg_type_only' {
 					['acyclic/consumer', 'cycle_b/consumer', 'model/holder', 'model/frozen']
@@ -837,6 +842,8 @@ for pkg in package_fixtures {
 				'pkg_colliding_functions' { ['__init__', 'left', 'right'] }
 				'pkg_guard_class' { ['__init__', 'choice', 'demo', 'public'] }
 				'pkg_class_owners' { ['__init__', 'consumer', 'left', 'owner_check', 'right'] }
+				'pkg_import_branch' { ['__init__', 'available', 'choice'] }
+				'pkg_runtime_binding' { ['__init__', 'choice'] }
 				else { ['__init__'] }
 			}
 			for fixture in fixtures {

@@ -24,7 +24,9 @@ Usage:
 import ast
 import copy
 import functools
+import importlib.util
 import json
+import operator
 import sys
 import os
 import unicodedata
@@ -2211,6 +2213,7 @@ def _node_to_dict(node: ast.AST, mutable_vars: Set[str],
             and not isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda))]
         result["condition_walrus_names"] = getattr(node, "_condition_walrus_names", [])
         result["module_consts"] = getattr(node, "_module_consts", [])
+        result["rebound_functions"] = list(getattr(node, "_rebound_functions", {}).items())
         result["body"] = [_node_to_dict(n, mutable_vars, redefined, ctx) for n in node.body]
         docstring = _extract_docstring(node)
         if docstring:
@@ -3154,28 +3157,44 @@ def _select_module_branch_functions(tree, table, project, siblings):
                 and not getattr(fn, "type_params", []) and not _is_generator(fn))
 
     def branch(stmt: ast.If):
-        if not stmt.body or len(stmt.body) != len(stmt.orelse):
-            return []
-        if not all(plain(fn) for fn in stmt.body + stmt.orelse):
-            return []
-        right = {fn.name: fn for fn in stmt.orelse}
-        pairs = []
-        for first in stmt.body:
-            second = right.pop(first.name, None)
-            if second is None or first.name in sibling_names:
-                return []
+        tests = []
+        arms = []
+        while True:
+            tests.append(stmt.test)
+            arms.append(stmt.body)
+            if len(stmt.orelse) != 1 or not isinstance(stmt.orelse[0], ast.If):
+                arms.append(stmt.orelse)
+                break
+            stmt = stmt.orelse[0]
+        if not all(arm and all(plain(fn) for fn in arm) for arm in arms):
+            return None
+        by_arm = [{fn.name: fn for fn in arm} for arm in arms]
+        names = by_arm[0].keys()
+        if any(len(arm) != len(names) or items.keys() != names for arm, items in zip(arms, by_arm)):
+            return None
+        groups = []
+        for name in names:
+            defs = [items[name] for items in by_arm]
+            first = defs[0]
+            if name in sibling_names:
+                return None
             binding = table.bindings[first._binding]
-            if binding.scope != 0 or binding.declared_global or len(binding.sites) != 2:
-                return []
-            if (ast.dump(first.args) != ast.dump(second.args)
-                    or ast.dump(first.returns or ast.Constant(None))
-                    != ast.dump(second.returns or ast.Constant(None))):
-                return []
-            pairs.append((first, second))
-        return pairs
+            if binding.scope != 0 or binding.declared_global or len(binding.sites) != len(defs):
+                return None
+            signature = (ast.dump(first.args), ast.dump(first.returns or ast.Constant(None)))
+            if any((ast.dump(fn.args), ast.dump(fn.returns or ast.Constant(None))) != signature
+                   for fn in defs[1:]):
+                return None
+            groups.append(defs)
+        return tests, groups
 
-    def choice(name: str, test: ast.expr, yes: ast.expr, no: ast.expr, origin: ast.AST) -> ast.Assign:
-        value = ast.IfExp(test=test, body=yes, orelse=no)
+    def select(tests: List[ast.expr], values: List[ast.expr]) -> ast.expr:
+        value = values[-1]
+        for test, selected in reversed(list(zip(tests, values))):
+            value = ast.IfExp(test=test, body=selected, orelse=value)
+        return value
+
+    def choice(name: str, value: ast.expr, origin: ast.AST) -> ast.Assign:
         target = ast.Name(id=name, ctx=ast.Store())
         stmt = ast.Assign(targets=[target], value=value)
         stmt._module_branch_choice = True
@@ -3185,17 +3204,26 @@ def _select_module_branch_functions(tree, table, project, siblings):
     changed = False
     # V constants run before main. Leave groups after runtime statements in place.
     for index, stmt in enumerate(tree.body):
-        pairs = branch(stmt) if isinstance(stmt, ast.If) else []
-        if pairs:
+        matched = branch(stmt) if isinstance(stmt, ast.If) else None
+        if matched is not None:
+            tests, groups = matched
             selector = fresh()
-            body.append(choice(selector, stmt.test, ast.Constant(True), ast.Constant(False), stmt))
-            for first, second in pairs:
-                name = first.name
-                first.name, second.name = fresh(), fresh()
-                body.extend((first, second, choice(
-                    name, ast.Name(id=selector, ctx=ast.Load()),
-                    ast.Name(id=first.name, ctx=ast.Load()),
-                    ast.Name(id=second.name, ctx=ast.Load()), stmt)))
+            selected = ast.Name(id=selector, ctx=ast.Load())
+            if len(tests) == 1:
+                selectors = [ast.Constant(True), ast.Constant(False)]
+                chosen = [selected]
+            else:
+                selectors = [ast.Constant(arm) for arm in range(len(tests) + 1)]
+                chosen = [ast.Compare(left=copy.deepcopy(selected), ops=[ast.Eq()],
+                                      comparators=[ast.Constant(arm)]) for arm in range(len(tests))]
+            body.append(choice(selector, select(tests, selectors), stmt))
+            for defs in groups:
+                name = defs[0].name
+                for fn in defs:
+                    fn.name = fresh()
+                values = [ast.Name(id=fn.name, ctx=ast.Load()) for fn in defs]
+                body.extend(defs)
+                body.append(choice(name, select(copy.deepcopy(chosen), values), stmt))
             changed = True
             continue
         body.append(stmt)
@@ -3206,6 +3234,66 @@ def _select_module_branch_functions(tree, table, project, siblings):
         body.extend(tree.body[index + 1:])
         break
     tree.body = body
+    # A later def is an assignment to the existing module binding. Keep the
+    # implementations at file scope and leave each replacement in its branch.
+    originals = {stmt._binding: stmt for stmt in tree.body if plain(stmt)
+                 and getattr(stmt, "_binding", None) is not None}
+    branches = {}
+
+    def collect(stmts):
+        for stmt in stmts:
+            if isinstance(stmt, ast.FunctionDef):
+                binding_id = getattr(stmt, "_binding", None)
+                if binding_id in originals:
+                    branches.setdefault(binding_id, []).append(stmt)
+            elif isinstance(stmt, ast.If):
+                collect(stmt.body)
+                collect(stmt.orelse)
+
+    for stmt in tree.body:
+        if isinstance(stmt, ast.If):
+            collect(stmt.body)
+            collect(stmt.orelse)
+
+    rebound = {}
+    replacements = {}
+    declarations = []
+    for binding_id, choices in branches.items():
+        first = originals[binding_id]
+        binding = table.bindings[binding_id]
+        if (first.name in sibling_names or binding.scope != 0 or binding.declared_global
+                or len(binding.sites) != 1 + len(choices)
+                or not all(how == "def" for _, _, how in binding.sites)):
+            continue
+        signature = (ast.dump(first.args), ast.dump(first.returns or ast.Constant(None)))
+        if any(not plain(fn) or fn.lineno < first.end_lineno
+               or (ast.dump(fn.args), ast.dump(fn.returns or ast.Constant(None))) != signature
+               for fn in choices):
+            continue
+        name = first.name
+        first.name = fresh()
+        rebound[name] = first.name
+        for fn in choices:
+            fn.name = fresh()
+            declarations.append(fn)
+            target = ast.Name(id=name, ctx=ast.Store())
+            value = ast.Name(id=fn.name, ctx=ast.Load())
+            replacements[id(fn)] = ast.fix_missing_locations(ast.copy_location(
+                ast.Assign(targets=[target], value=value), fn))
+
+    def replace(stmts):
+        for index, stmt in enumerate(stmts):
+            if id(stmt) in replacements:
+                stmts[index] = replacements[id(stmt)]
+            elif isinstance(stmt, ast.If):
+                replace(stmt.body)
+                replace(stmt.orelse)
+
+    if rebound:
+        replace(tree.body)
+        tree.body.extend(declarations)
+        tree._rebound_functions = rebound
+        changed = True
     return changed
 
 
@@ -3234,6 +3322,159 @@ def _qualified_import(node: ast.AST, paths: Dict[int, str]) -> str:
         base = _qualified_import(node.value, paths)
         return base + "." + node.attr if base else ""
     return ""
+
+
+def _select_target_definitions(tree, table, project) -> bool:
+    """Choose definition branches fixed by the native translation target."""
+    if table is None:
+        return False
+    paths = _stable_import_paths(tree, table)
+    if not paths and not any(isinstance(stmt, ast.Try) for stmt in tree.body):
+        return False
+    written = {_qualified_import(node, paths) for node in ast.walk(tree)
+               if isinstance(node, ast.Attribute) and not isinstance(node.ctx, ast.Load)}
+    values = {"sys.platform": sys.platform, "os.name": os.name, "sys.version_info": sys.version_info}
+    compares = {ast.Eq: operator.eq, ast.NotEq: operator.ne, ast.Lt: operator.lt,
+                ast.LtE: operator.le, ast.Gt: operator.gt, ast.GtE: operator.ge}
+    missing = object()
+    externals = project.externals if project is not None else {}
+
+    def value(node):
+        path = _qualified_import(node, paths)
+        if path in values and path not in written:
+            return values[path], True
+        if path.startswith("sys.version_info.") and "sys.version_info" not in written and path not in written:
+            field = path.rsplit(".", 1)[1]
+            if field in ("major", "minor", "micro", "releaselevel", "serial"):
+                return getattr(sys.version_info, field), True
+        if isinstance(node, ast.Subscript):
+            source, target = value(node.value)
+            if source is sys.version_info:
+                index = node.slice
+                try:
+                    if isinstance(index, ast.Slice):
+                        parts = [ast.literal_eval(item) if item is not None else None
+                                 for item in (index.lower, index.upper, index.step)]
+                        return source[slice(*parts)], True
+                    return source[ast.literal_eval(index)], True
+                except (ValueError, TypeError, IndexError):
+                    pass
+        try:
+            return ast.literal_eval(node), False
+        except (ValueError, TypeError):
+            return missing, False
+
+    def condition(node) -> Optional[bool]:
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
+            test = condition(node.operand)
+            return None if test is None else not test
+        if isinstance(node, ast.BoolOp):
+            stop = isinstance(node.op, ast.Or)
+            for operand in node.values:
+                test = condition(operand)
+                if test is None or test == stop:
+                    return test
+            return not stop
+        if not isinstance(node, ast.Compare):
+            return None
+        left, target = value(node.left)
+        for op, right_node in zip(node.ops, node.comparators):
+            right, right_target = value(right_node)
+            compare = compares.get(type(op))
+            if compare is None or left is missing or right is missing or not (target or right_target):
+                return None
+            try:
+                if not compare(left, right):
+                    return False
+            except TypeError:
+                return None
+            left, target = right, right_target
+        return True
+
+    def imported(statement) -> Optional[bool]:
+        if isinstance(statement, ast.Import):
+            for alias in statement.names:
+                if alias.name in externals:
+                    continue
+                if alias.name not in sys.stdlib_module_names:
+                    return None
+                if importlib.util.find_spec(alias.name) is None:
+                    return False
+            return True
+        if not isinstance(statement, ast.ImportFrom):
+            return None
+        module = statement.module or ""
+        if statement.level:
+            if project is None or not project.module_name:
+                return None
+            package = project.module_name if project.is_package else project.module_name.rpartition(".")[0]
+            try:
+                module = importlib.util.resolve_name("." * statement.level + module, package)
+            except ImportError:
+                return None
+        info = externals.get(module)
+        if info is None:
+            return None
+        exports = set(info.get("variables", {})) | set(info.get("classes", {})) | set(info.get("functions", {}))
+        if all(alias.name in exports or module + "." + alias.name in externals for alias in statement.names):
+            return True
+        return None
+
+    def candidate(node) -> bool:
+        classes = False
+        functions = set()
+        pending = [node]
+        while pending:
+            item = pending.pop()
+            if isinstance(item, ast.ClassDef):
+                classes = True
+            elif isinstance(item, ast.FunctionDef):
+                if item.name in functions:
+                    return True
+                functions.add(item.name)
+            elif isinstance(item, (ast.If, ast.Try, ast.ExceptHandler)):
+                pending.extend(ast.iter_child_nodes(item))
+        return classes
+
+    class Select(ast.NodeTransformer):
+        changed = False
+
+        def visit_If(self, node):
+            if candidate(node) and (yes := condition(node.test)) is not None:
+                self.changed = True
+                return self.visit(ast.Module(body=node.body if yes else node.orelse, type_ignores=[])).body
+            return self.generic_visit(node)
+
+        def visit_Try(self, node):
+            if not candidate(node) or len(node.handlers) != 1:
+                return self.generic_visit(node)
+            handler = node.handlers[0]
+            if (not isinstance(handler.type, ast.Name) or handler.type.id != "ImportError"
+                    or getattr(handler.type, "_binding", None) is not None or handler.name):
+                return self.generic_visit(node)
+            retained = []
+            for stmt in node.body:
+                if not isinstance(stmt, (ast.Import, ast.ImportFrom)):
+                    break
+                status = imported(stmt)
+                if status is None:
+                    return self.generic_visit(node)
+                if not status:
+                    self.changed = True
+                    chosen = retained + handler.body + node.finalbody
+                    return self.visit(ast.Module(body=chosen, type_ignores=[])).body
+                retained.append(stmt)
+            if retained and all(isinstance(stmt, ast.FunctionDef) and not stmt.decorator_list
+                                and not stmt.args.defaults and not any(stmt.args.kw_defaults)
+                                for stmt in node.body[len(retained):]):
+                self.changed = True
+                chosen = node.body + node.orelse + node.finalbody
+                return self.visit(ast.Module(body=chosen, type_ignores=[])).body
+            return self.generic_visit(node)
+
+    selector = Select()
+    selector.visit(tree)
+    return selector.changed
 
 
 def _mark_project_class_references(tree, table, project):
@@ -8137,6 +8378,8 @@ def process_file(file_path: str, project: Optional[ProjectFacts] = None) -> str:
 
     # Lexical bindings on the final scope structure, then the types the code shows
     table = _resolve_bindings(tree)
+    if _select_target_definitions(tree, table, project):
+        table = _resolve_bindings(tree)
     siblings = _sibling_summaries(project)
     selected = _select_module_branch_functions(tree, table, project, siblings)
     qualified = _qualify_guard_classes(tree, table, project, siblings)

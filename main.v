@@ -349,7 +349,7 @@ fn copy_runtime(frontend_dir string, out_root string) ! {
 // collect_module_symbols returns the top-level names a module defines. These are
 // the names other modules may import from it.
 fn collect_module_symbols(mod Module) []string {
-	mut names := []string{}
+	mut names := mod.rebound_functions.keys()
 	for stmt in mod.body {
 		match stmt {
 			FunctionDef {
@@ -382,6 +382,7 @@ fn collect_module_symbols(mod Module) []string {
 // collect_module_values lists names emitted as module-level value declarations.
 fn collect_module_values(mod Module) []string {
 	mut names := mod.module_consts.clone()
+	names << mod.rebound_functions.keys()
 	for stmt in mod.body {
 		if stmt is Assign && !stmt.is_typevar_assign && stmt.targets.len == 1
 			&& stmt.targets[0] is Name {
@@ -611,6 +612,14 @@ fn translate_package(python_cmd string, ast_dump string, package_dir string, out
 	mut count := 0
 	mut dotted_keys := parsed.keys()
 	dotted_keys.sort()
+	for key in dotted_keys {
+		if parsed[key]!.rebound_functions.len == 0 { continue }
+		info := registry.lookup(key)
+		kind := 'startup_${v_file_stem(info.v_relpath)}_'
+		name := registry.helper_name(info.v_module, kind, [])
+		registry.file_initializers[key] = name
+		registry.module_initializers[info.v_module] << name
+	}
 	// A class named Sequence, Iterable or Mapping anywhere in the package keeps that
 	// name from being mapped to an array or map in every module of it.
 	mut abc_scan := new_transpiler()

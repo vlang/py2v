@@ -173,6 +173,8 @@ pub mut:
 	condition_walrus_names []string
 	// module_consts names the module-level values that functions read.
 	module_consts []string
+	// rebound_functions maps a module function value to its first implementation.
+	rebound_functions map[string]string
 }
 
 // Expressions
