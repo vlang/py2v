@@ -1,0 +1,5 @@
+print(f'{[1, True]}')
+print('{x:+08d} {val:.2f}'.format(x=32, val=2.5))
+print('{0[1]:>8} {user[name]!r}'.format([4, 'hello'], user={'name': "it's"}))
+print('{value:{width}.{precision}f}'.format(value=2.5, width=8, precision=2))
+print('{0.real} {0.__class__}'.format(1))

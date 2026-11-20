@@ -1500,6 +1500,13 @@ def _refuse_unsupported_format_fields(tree):
             unsupported = True
         if not unsupported:
             continue
+        # Keep constant-only calls intact for the later, proof-based text pass.
+        # Binding resolution has not run yet, so do not assume calls to float()
+        # or set() name their builtins at this point.
+        inputs = node.args + [kw.value for kw in node.keywords]
+        if (not any(isinstance(part, ast.Call) for arg in inputs for part in ast.walk(arg))
+                and _literal_format_text(node) is not None):
+            continue
         arguments = [node.func.value] + node.args
         for keyword in node.keywords:
             arguments += [ast.Constant(value=keyword.arg or "**"), keyword.value]
@@ -4148,20 +4155,35 @@ def _literal_text_value(node: ast.expr) -> Optional[ast.Constant]:
             return None
         items = [item.value for item in members]
         if isinstance(node, ast.Set):
-            # Larger displays can be built by CPython's constant-set optimization.
-            # Two members must also have platform-independent, unseeded hashes.
-            if len(items) > 2 or (len(items) == 2 and not all(
-                    type(item) in (int, bool) and abs(item) < (1 << 31) - 1 for item in items)):
-                return None
+            # A pair that collapses to one member has no ordering ambiguity,
+            # including mixed numeric equality (1 == 1.0, False == 0).
+            # Keep two distinct members only for small, unseeded integer hashes.
             try:
                 value = set(items)
             except TypeError:
+                return None
+            if len(items) > 2 or (len(value) > 1 and not all(
+                    type(item) in (int, bool) and abs(item) < (1 << 31) - 1 for item in items)):
                 return None
         else:
             value = tuple(items) if isinstance(node, ast.Tuple) else items
     else:
         return None
     return ast.copy_location(ast.Constant(value=value), node)
+
+
+def _literal_format_text(node: ast.Call) -> Optional[str]:
+    """Format exact built-in literal inputs, never evaluating user code."""
+    args = [_literal_text_value(arg) for arg in node.args]
+    kwargs = [(kw.arg, _literal_text_value(kw.value)) for kw in node.keywords]
+    if (any(arg is None for arg in args) or any(k is None or v is None for k, v in kwargs)
+            or len({k for k, _ in kwargs}) != len(kwargs)):
+        return None
+    try:
+        return node.func.value.value.format(*(arg.value for arg in args),
+                                            **{k: v.value for k, v in kwargs})
+    except (AttributeError, IndexError, KeyError, OverflowError, TypeError, ValueError):
+        return None
 
 
 def _lower_literal_text(tree: ast.Module, table: Optional[symbols.SymbolTable],
@@ -4233,38 +4255,22 @@ def _lower_literal_text(tree: ast.Module, table: Optional[symbols.SymbolTable],
                     or type(node.left.value) is not str):
                 return node
             template = node.left.value
-            # Leave width, precision, and mapping fields to the existing formatter.
-            if "%" in template.replace("%%", "").replace("%s", "").replace("%r", "").replace("%a", ""):
-                return node
+            # Constant arguments make all %-format directives safe to evaluate,
+            # including width, precision, mapping, and Python repr conversions.
             argument = _literal_text_value(node.right)
             if argument is None:
                 return node
             try:
                 return ast.copy_location(ast.Constant(value=template % argument.value), node)
-            except (TypeError, ValueError, OverflowError):
+            except (KeyError, TypeError, ValueError, OverflowError):
                 return node
-
-        def string_format(self, node: ast.Call, template: str) -> ast.AST:
-            args = [_literal_text_value(arg) for arg in node.args]
-            kwargs = [(kw.arg, _literal_text_value(kw.value)) for kw in node.keywords]
-            if (any(arg is None for arg in args) or any(k is None or v is None for k, v in kwargs)
-                    or len({k for k, _ in kwargs}) != len(kwargs)):
-                return node
-            try:
-                fields = list(Formatter().parse(template))
-                if any(spec or conversion or "." in field or "[" in field
-                       for _, field, spec, conversion in fields if field is not None):
-                    return node
-                rendered = template.format(*(arg.value for arg in args),
-                                           **{k: v.value for k, v in kwargs})
-            except (IndexError, KeyError, TypeError, ValueError):
-                return node
-            return ast.copy_location(ast.Constant(value=rendered), node)
 
         def visit_Call(self, node: ast.Call) -> ast.AST:
             if (isinstance(node.func, ast.Attribute) and node.func.attr == "format"
                     and isinstance(node.func.value, ast.Constant) and type(node.func.value.value) is str):
-                return self.string_format(node, node.func.value.value)
+                rendered = _literal_format_text(node)
+                return (ast.copy_location(ast.Constant(value=rendered), node)
+                        if rendered is not None else node)
             if not isinstance(node.func, ast.Name) or getattr(node.func, "_binding", None) is not None:
                 return node
             if node.func.id == "print":
