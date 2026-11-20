@@ -2895,6 +2895,98 @@ class ProjectFacts:
     is_package: bool = False
 
 
+def _sibling_summaries(project: Optional[ProjectFacts]):
+    if project is None or project.module_name is None:
+        return []
+    owner = (project.module_name if project.is_package
+             else project.module_name.rpartition(".")[0])
+    return [summary for name, summary in project.externals.items()
+            if name == summary.get("module") and name != project.module_name
+            and (name if summary["is_package"] else name.rpartition(".")[0]) == owner]
+
+
+def _select_module_branch_functions(tree, table, project, siblings):
+    """Bind matching plain functions once, using the branch Python would execute."""
+    if table is None:
+        return False
+    sibling_names = {name for summary in siblings for name in summary.get("local_bindings", ())}
+    used = {b.name for b in table.bindings} | sibling_names
+    module_name = project.module_name if project is not None else None
+    stem = (module_name or "script").encode("utf-8").hex()
+    serial = 0
+
+    def fresh() -> str:
+        nonlocal serial
+        while True:
+            serial += 1
+            name = f"py2v_branch_{stem}_{serial}"
+            if name not in used:
+                used.add(name)
+                return name
+
+    def plain(fn: ast.stmt) -> bool:
+        return (isinstance(fn, ast.FunctionDef) and fn.name not in ("main", "_")
+                and not fn.name.startswith("__") and not fn.decorator_list
+                and not fn.args.defaults and not any(fn.args.kw_defaults)
+                and fn.args.vararg is None and fn.args.kwarg is None
+                and not getattr(fn, "type_params", []) and not _is_generator(fn))
+
+    def branch(stmt: ast.If):
+        if not stmt.body or len(stmt.body) != len(stmt.orelse):
+            return []
+        if not all(plain(fn) for fn in stmt.body + stmt.orelse):
+            return []
+        right = {fn.name: fn for fn in stmt.orelse}
+        pairs = []
+        for first in stmt.body:
+            second = right.pop(first.name, None)
+            if second is None or first.name in sibling_names:
+                return []
+            binding = table.bindings[first._binding]
+            if binding.scope != 0 or binding.declared_global or len(binding.sites) != 2:
+                return []
+            if (ast.dump(first.args) != ast.dump(second.args)
+                    or ast.dump(first.returns or ast.Constant(None))
+                    != ast.dump(second.returns or ast.Constant(None))):
+                return []
+            pairs.append((first, second))
+        return pairs
+
+    def choice(name: str, test: ast.expr, yes: ast.expr, no: ast.expr, origin: ast.AST) -> ast.Assign:
+        value = ast.IfExp(test=test, body=yes, orelse=no)
+        target = ast.Name(id=name, ctx=ast.Store())
+        stmt = ast.Assign(targets=[target], value=value)
+        stmt._module_branch_choice = True
+        return ast.fix_missing_locations(ast.copy_location(stmt, origin))
+
+    body = []
+    changed = False
+    # V constants run before main. Leave groups after runtime statements in place.
+    for index, stmt in enumerate(tree.body):
+        pairs = branch(stmt) if isinstance(stmt, ast.If) else []
+        if pairs:
+            selector = fresh()
+            body.append(choice(selector, stmt.test, ast.Constant(True), ast.Constant(False), stmt))
+            for first, second in pairs:
+                name = first.name
+                first.name, second.name = fresh(), fresh()
+                body.extend((first, second, choice(
+                    name, ast.Name(id=selector, ctx=ast.Load()),
+                    ast.Name(id=first.name, ctx=ast.Load()),
+                    ast.Name(id=second.name, ctx=ast.Load()), stmt)))
+            changed = True
+            continue
+        body.append(stmt)
+        if (isinstance(stmt, (ast.Import, ast.ImportFrom)) or plain(stmt)
+                or index == 0 and isinstance(stmt, ast.Expr)
+                and isinstance(stmt.value, ast.Constant) and isinstance(stmt.value.value, str)):
+            continue
+        body.extend(tree.body[index + 1:])
+        break
+    tree.body = body
+    return changed
+
+
 def _stable_import_paths(tree: ast.Module, table: symbols.SymbolTable) -> Dict[int, str]:
     """Absolute imports indexed by lexical binding, including imports inside functions."""
     paths: Dict[int, str] = {}
@@ -3408,6 +3500,12 @@ def write_summaries(root: str, out_path: str) -> None:
             break
     prefix = os.path.basename(os.path.abspath(root)) + "."
     type_imports = _project_type_imports(parsed, root)
+    # Imports may be re-exported through the summaries, but they don't add V declarations.
+    for name, _, _, table in parsed:
+        if name in summaries:
+            summaries[name]["local_bindings"] = [
+                binding.name for binding in table.bindings if binding.scope == 0
+                and any(how != "import" for _, _, how in binding.sites)]
     for name in summaries:
         summaries[name]["type_imports"] = type_imports.get(name, [])
     for name in list(summaries):
@@ -5778,6 +5876,9 @@ def _mark_module_constants(tree: ast.Module, table: Optional[symbols.SymbolTable
             continue
         if not isinstance(target, ast.Name):
             continue
+        if getattr(stmt, "_module_branch_choice", False):
+            names.append(target.id)
+            continue
         binding_id = getattr(target, "_binding", None)
         needed_by_initializer = isinstance(stmt, ast.AnnAssign) and binding_id in read_in_initializer
         if binding_id is None or (binding_id not in read_in_function and not needed_by_initializer):
@@ -7739,6 +7840,10 @@ def process_file(file_path: str, project: Optional[ProjectFacts] = None) -> str:
 
     # Lexical bindings on the final scope structure, then the types the code shows
     table = _resolve_bindings(tree)
+    siblings = _sibling_summaries(project)
+    selected = _select_module_branch_functions(tree, table, project, siblings)
+    if selected:
+        table = _resolve_bindings(tree)
     _mark_math_members(tree, table)
     _unquote_annotations(tree, table)
     if _encode_local_identifiers(tree, table):
