@@ -17,16 +17,14 @@ fn define_in_finally() int {
 	return 5
 }
 
-fn exit_later() {
-	println('inner exit')
-	pyrt.fail(IError(pyrt.exception('SystemExit', [pyrt.box(0)])))
-}
-
 fn make_exit() fn () {
 	defer {
 		println('outer cleanup')
 	}
-	// pass
+	exit_later := fn () {
+		println('inner exit')
+		pyrt.fail(IError(pyrt.exception('SystemExit', [pyrt.box(0)])))
+	}
 	return exit_later
 }
 
