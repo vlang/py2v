@@ -56,7 +56,7 @@ fn main_func() {
 	mut b := py2v_new_box(pyrt.list_ref[int]([1, 2]))
 	b.put()
 	b.bump()
-	println(pyrt.str(pyrt.box(b.items)))
+	println(b.items.items.str())
 	mut points := [py2v_new_point(1), py2v_new_point(2)]
 	points[0].x = 7
 	println(points[0].x)

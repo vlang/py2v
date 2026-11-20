@@ -16,7 +16,7 @@ fn main_func() {
 		'False'
 	}).str() + ' ' + (if a.items == c.items { 'True' } else { 'False' }).str())
 	b.items << 2
-	println('${pyrt.str(pyrt.box(a))} ${pyrt.str(pyrt.box(c))}')
+	println('${a.items.str()} ${c.items.str()}')
 	x := pyrt.list_ref[&pyrt.ListRef[int]]([a])
 	y := [[1, 2]]
 	println(if pyrt.eq(pyrt.box(x), pyrt.box(y)) { 'True' } else { 'False' })

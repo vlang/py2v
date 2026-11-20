@@ -37,7 +37,7 @@ fn main_func_py() ! {
 	source.items << 2
 	println('${pyrt.length(rows[1])} ${pyrt.length(rows[2])}')
 	pyrt.call_method(pyrt.box(rows[1]), 'append', [pyrt.box(3)])!
-	println(pyrt.str(pyrt.box(source)))
+	println(source.items.str())
 }
 
 fn main_func() {

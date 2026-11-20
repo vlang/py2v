@@ -10,8 +10,8 @@ fn edit(py2v_a_in1 &pyrt.ListRef[int]) &pyrt.ListRef[int] {
 
 fn check() {
 	mut x := pyrt.list_ref[int]([1, 2])
-	println(pyrt.str(pyrt.box(edit(x))))
-	println(pyrt.str(pyrt.box(x)))
+	println(edit(x).items.str())
+	println(x.items.str())
 }
 
 fn main() {

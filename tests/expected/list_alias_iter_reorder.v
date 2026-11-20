@@ -11,5 +11,5 @@ fn main() {
 		}
 		println(x)
 	}
-	println(pyrt.str(pyrt.box(a)))
+	println(a.items.str())
 }

@@ -18,9 +18,9 @@ fn main_func() {
 	mut a := pyrt.list_ref[int]([1, 2, 3])
 	b := a
 	pyrt.list_ref_assign_slice[int](replacement(a), b, bound(), 2, true, true)
-	println('${pyrt.str(pyrt.box(a))} ${pyrt.str(pyrt.box(b))}')
+	println('${a.items.str()} ${b.items.str()}')
 	pyrt.list_ref_assign_slice[int](pyrt.list_ref_slice[int](b, 0, 2, false, true).reverse(), b, 0, 2, false, true)
-	println(pyrt.str(pyrt.box(a)))
+	println(a.items.str())
 }
 
 fn main() {

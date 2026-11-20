@@ -40,5 +40,5 @@ fn main() {
 	a := pyrt.list_ref[int]([1])
 	b := a
 	inspect(pyrt.box(a))
-	println(pyrt.str(pyrt.box(b)))
+	println(b.items.str())
 }

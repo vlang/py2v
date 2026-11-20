@@ -8,5 +8,5 @@ fn main() {
 	println(pyrt.list_ref_slice_step(a, 0, 0, -1, false, false))
 	println(pyrt.list_ref_slice_step(a, 0, 0, 2, false, false))
 	b.items << 5
-	println(pyrt.str(pyrt.box(a)))
+	println(a.items.str())
 }

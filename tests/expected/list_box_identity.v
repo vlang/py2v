@@ -39,9 +39,9 @@ fn main_func_py() ! {
 	println((pyrt.length(records['list'])).str() + ' ' + (pyrt.length(rows[0])).str())
 	pyrt.call_method(pyrt.box(records['list']), 'append', [pyrt.box(3)])!
 	pyrt.call_method(pyrt.box(rows[0]), 'append', [pyrt.box(4)])!
-	println(pyrt.str(pyrt.box(source)))
+	println(source.items.str())
 	pyrt.set_index(rows[0], pyrt.box(0), pyrt.box(9))
-	println(pyrt.str(pyrt.box(source)))
+	println(source.items.str())
 }
 
 fn main_func() {

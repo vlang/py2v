@@ -40,7 +40,7 @@ fn append_number(values Any, number Any) {
 fn main_func_py() ! {
 	source := pyrt.list_ref[int]([1])
 	append_number_py(pyrt.box(source), math.powi(2, 40))!
-	println(pyrt.str(pyrt.box(source)))
+	println(source.items.str())
 }
 
 fn main_func() {

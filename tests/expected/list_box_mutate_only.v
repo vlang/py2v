@@ -34,7 +34,7 @@ fn main_func_py() ! {
 	rows << 0
 	rows << pyrt.box(source)
 	pyrt.call_method(pyrt.box(rows[1]), 'append', [pyrt.box(2)])!
-	println(pyrt.str(pyrt.box(source)))
+	println(source.items.str())
 }
 
 fn main_func() {

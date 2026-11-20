@@ -1,0 +1,6 @@
+print([1, 2], [], {}, ())
+print(["a'b", 'a"b', 'a\'b"c', "café", "雪\n", "\u00a0", "\u2028"])
+print({"a'b": [True, 1, None], "雪": ("é",)}, (1, "a"), (1,))
+print({1, 2}, set(), {'雪'})
+print(str({}), str([1, False, None]), str((1, "a")))
+print([9223372036854775808, -0.0, [None, "雪"]])

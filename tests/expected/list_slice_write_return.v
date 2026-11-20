@@ -9,6 +9,6 @@ fn edit(a &pyrt.ListRef[int]) &pyrt.ListRef[int] {
 
 fn main() {
 	x := pyrt.list_ref[int]([1, 2, 3])
-	println(pyrt.str(pyrt.box(edit(x))))
-	println(pyrt.str(pyrt.box(x)))
+	println(edit(x).items.str())
+	println(x.items.str())
 }

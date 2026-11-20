@@ -15,6 +15,6 @@ fn copy_second(py2v_values_in2 &pyrt.ListRef[int]) {
 
 fn main() {
 	mut items := pyrt.list_ref[int]([1, 2])
-	println(pyrt.str(pyrt.box(edit(items))))
-	println(pyrt.str(pyrt.box(items)))
+	println(edit(items).items.str())
+	println(items.items.str())
 }

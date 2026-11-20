@@ -9,10 +9,10 @@ fn main_func() {
 	mut copied := pyrt.list_ref_slice[int](a, 0, 0, false, false)
 	copied[0] = 9
 	b.items << 3
-	println('${pyrt.str(pyrt.box(a))} ${pyrt.str(pyrt.box(b))} ${copied}')
+	println('${a.items.str()} ${b.items.str()} ${copied}')
 	mut other := a.items.clone()
 	other[0] = 8
-	println('${pyrt.str(pyrt.box(a))} ${other}')
+	println('${a.items.str()} ${other}')
 }
 
 fn main() {

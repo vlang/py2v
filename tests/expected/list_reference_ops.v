@@ -40,8 +40,8 @@ fn main_func_py() ! {
 	a := pyrt.list_ref[int]([1])
 	mut b := a
 	b.items << 2
-	println('a=${pyrt.str(pyrt.box(a))}')
-	println((pyrt.str(pyrt.box(a))).str() + ' ' + ('${pyrt.str(pyrt.box(a))}').str())
+	println('a=${a.items.str()}')
+	println((a.items.str()).str() + ' ' + ('${a.items.str()}').str())
 	println((if true { 'True' } else { 'False' }).str() + ' ' + (if !!(a.items.len > 0) {
 		'True'
 	} else {
@@ -53,7 +53,7 @@ fn main_func_py() ! {
 	println((pyrt.to_int(pyrt.invoke(pyrt.box(a), 'index', pyrt.box(2)))).str() + ' ' + (pyrt.to_int(pyrt.invoke(pyrt.box(a), 'count', pyrt.box(2)))).str())
 	c := pyrt.list_ref[int]([7])
 	touch_py(pyrt.box(c))!
-	println(pyrt.str(pyrt.box(c)))
+	println(c.items.str())
 	words := pyrt.list_ref[string](['a'])
 	mut other := words
 	other.items << 'b'
