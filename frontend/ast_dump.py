@@ -1289,18 +1289,20 @@ def _detect_decorator_kind(decorator_list) -> str:
     return ""
 
 
-def _drop_overwritten_class_bindings(tree: ast.Module) -> None:
-    """Drop plain class members overwritten before anything can read them."""
-    for cls in ast.walk(tree):
-        if not isinstance(cls, ast.ClassDef) or cls.bases or cls.keywords or cls.decorator_list:
+def _drop_overwritten_definitions(tree: ast.Module) -> None:
+    """Drop plain definitions overwritten before anything can read them."""
+    for scope in ast.walk(tree):
+        if not isinstance(scope, (ast.Module, ast.ClassDef)):
             continue
-        methods = [stmt for stmt in cls.body if isinstance(stmt, ast.FunctionDef)]
-        if len(methods) == len({stmt.name for stmt in methods}):
+        if isinstance(scope, ast.ClassDef) and (scope.bases or scope.keywords or scope.decorator_list):
+            continue
+        definitions = [stmt for stmt in scope.body if isinstance(stmt, ast.FunctionDef)]
+        if len(definitions) == len({stmt.name for stmt in definitions}):
             continue
         plain: dict[ast.stmt, str] = {}
         aliases: dict[ast.stmt, tuple[str, str]] = {}
         defined: set[str] = set()
-        for stmt in cls.body:
+        for stmt in scope.body:
             if isinstance(stmt, ast.FunctionDef):
                 args = stmt.args
                 if (not stmt.decorator_list and stmt.returns is None and not args.defaults
@@ -1320,7 +1322,7 @@ def _drop_overwritten_class_bindings(tree: ast.Module) -> None:
 
         later_writes: set[str] = set()
         discarded: set[ast.stmt] = set()
-        for stmt in reversed(cls.body):
+        for stmt in reversed(scope.body):
             if stmt in plain:
                 name = plain[stmt]
                 if name in later_writes:
@@ -1336,7 +1338,7 @@ def _drop_overwritten_class_bindings(tree: ast.Module) -> None:
             else:
                 later_writes.clear()
         if discarded:
-            cls.body = [stmt for stmt in cls.body if stmt not in discarded]
+            scope.body = [stmt for stmt in scope.body if stmt not in discarded]
 
 
 def _lower_colliding_accessors(tree, table, facts):
@@ -8033,7 +8035,7 @@ def process_file(file_path: str, project: Optional[ProjectFacts] = None) -> str:
         source = f.read()
 
     tree = ast.parse(source, filename=file_path)
-    _drop_overwritten_class_bindings(tree)
+    _drop_overwritten_definitions(tree)
     _plan_overload_definitions(tree)
     _refuse_unsupported_format_fields(tree)
 
