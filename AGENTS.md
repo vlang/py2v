@@ -21,6 +21,7 @@ Plain V first
 - The goal is V a V programmer would write: plain V types, vlib calls and readable names. The runtime library `pyrt` is only for Python behavior that plain V cannot express (a value whose type cannot be proven, Python-only semantics). Prove the type and emit the plain form before reaching for `pyrt`.
 - `tests/purity_budget.tsv` holds, per expected file, how many lines may mention `pyrt.`; an unlisted file allows none, so a new fixture's expected output is plain V. `v run tests/purity.vsh` fails when a file is over its budget and also when it is under, so the budget follows every improvement down: run `v run tests/purity.vsh -lower` and commit the result.
 - Raise a budget line only by hand, in the same change, and say in the pull request which Python behavior needs the runtime. The row `@encoded-identifiers` bounds `py2v_ident_<hex>` names the same way.
+- The rows `@runtime-lines`, `@runtime-public-functions` and `@runtime-unsafe` bound the runtime library itself (non-test V files under `pyrt/`). A change that grows it raises the row by hand and says why generated typed code or vlib could not do the job; a change that shrinks it runs `-lower`.
 
 Change workflow (required)
 - If behavior depends on semantic context, implement it in `frontend/ast_dump.py` first.
