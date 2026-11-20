@@ -17,7 +17,7 @@ pub fn run() {
 	println(py_pkg_call_defaults.side_effect(mark(), 2))
 	println(py_pkg_call_defaults.greet('Ada', 'Explicit'))
 	println(py_pkg_call_defaults.flag_name(false))
-	println(py2v_float_text1(f64(py_pkg_call_defaults.scale_value(1.5))))
+	println(py2v_float_text1(py_pkg_call_defaults.scale_value(1.5)))
 	run_keywords()
 	py_pkg_call_defaults.checked_optional(none)
 	py_pkg_call_defaults.checked_optional('allowed')

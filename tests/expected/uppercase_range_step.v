@@ -2,9 +2,9 @@ module main
 
 fn count() {
 	d := 2
-	py2v_range_start1 := 0
-	py2v_range_stop2 := 5
-	py2v_range_step3 := d
+	py2v_range_start1 := int(0)
+	py2v_range_stop2 := int(5)
+	py2v_range_step3 := int(d)
 	if py2v_range_step3 == 0 { panic('ValueError: range() arg 3 must not be zero') }
 	for r := py2v_range_start1; if py2v_range_step3 > 0 {
 		r < py2v_range_stop2

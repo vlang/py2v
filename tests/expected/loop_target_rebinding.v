@@ -7,9 +7,9 @@ type Any = pyrt.Value
 fn unpacked(upper int) int {
 	left, mut value := 1, 8
 	mut py2v_broke4 := false
-	py2v_range_start1 := 0
-	py2v_range_stop2 := upper
-	py2v_range_step3 := 1
+	py2v_range_start1 := int(0)
+	py2v_range_stop2 := int(upper)
+	py2v_range_step3 := int(1)
 	if py2v_range_step3 == 0 { panic('ValueError: range() arg 3 must not be zero') }
 	for value_ := py2v_range_start1; if py2v_range_step3 > 0 {
 		value_ < py2v_range_stop2
@@ -30,9 +30,9 @@ fn unpacked(upper int) int {
 }
 
 fn distinct(n int) int {
-	py2v_range_start5 := 0
-	py2v_range_stop6 := n
-	py2v_range_step7 := 1
+	py2v_range_start5 := int(0)
+	py2v_range_stop6 := int(n)
+	py2v_range_step7 := int(1)
 	if py2v_range_step7 == 0 { panic('ValueError: range() arg 3 must not be zero') }
 	for n_ := py2v_range_start5; if py2v_range_step7 > 0 {
 		n_ < py2v_range_stop6
@@ -46,9 +46,9 @@ fn distinct(n int) int {
 
 fn parameter(py2v_value_in8 int) int {
 	mut value := py2v_value_in8
-	py2v_range_start9 := 0
-	py2v_range_stop10 := value
-	py2v_range_step11 := 1
+	py2v_range_start9 := int(0)
+	py2v_range_stop10 := int(value)
+	py2v_range_step11 := int(1)
 	if py2v_range_step11 == 0 { panic('ValueError: range() arg 3 must not be zero') }
 	for value_ := py2v_range_start9; if py2v_range_step11 > 0 {
 		value_ < py2v_range_stop10

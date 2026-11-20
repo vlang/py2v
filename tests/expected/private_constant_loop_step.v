@@ -6,9 +6,9 @@ const limit = 3
 
 fn walk(n int) int {
 	mut total := 0
-	py2v_range_start1 := 0
-	py2v_range_stop2 := n
-	py2v_range_step3 := block_
+	py2v_range_start1 := int(0)
+	py2v_range_stop2 := int(n)
+	py2v_range_step3 := int(block_)
 	if py2v_range_step3 == 0 { panic('ValueError: range() arg 3 must not be zero') }
 	for start := py2v_range_start1; if py2v_range_step3 > 0 {
 		start < py2v_range_stop2
@@ -17,9 +17,9 @@ fn walk(n int) int {
 	}; start = py2v_range_next1(start, py2v_range_stop2, py2v_range_step3) {
 		total += start
 	}
-	py2v_range_start4 := 0
-	py2v_range_stop5 := n
-	py2v_range_step6 := limit
+	py2v_range_start4 := int(0)
+	py2v_range_stop5 := int(n)
+	py2v_range_step6 := int(limit)
 	if py2v_range_step6 == 0 { panic('ValueError: range() arg 3 must not be zero') }
 	for start := py2v_range_start4; if py2v_range_step6 > 0 {
 		start < py2v_range_stop5

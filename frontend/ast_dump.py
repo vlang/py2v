@@ -4858,8 +4858,20 @@ def _iterate_string_characters(tree: ast.Module, facts: Optional[infer.TypeFacts
         return new
 
     for node in ast.walk(tree):
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                and node.func.id == "list" and getattr(node.func, "_binding", None) is None
+                and len(node.args) == 1 and not node.keywords):
+            converted = characters(node.args[0])
+            if converted is not node.args[0]:
+                assert isinstance(converted, ast.Call)
+                node.func, node.args = converted.func, converted.args
         if isinstance(node, (ast.For, ast.AsyncFor, ast.comprehension)):
-            node.iter = characters(node.iter)
+            iterable = node.iter
+            if (isinstance(iterable, ast.Call) and isinstance(iterable.func, ast.Name)
+                    and iterable.func.id == "enumerate"
+                    and getattr(iterable.func, "_binding", None) is None and iterable.args):
+                iterable.args[0] = characters(iterable.args[0])
+            node.iter = characters(iterable)
 
 
 def _state_module_name(tree: ast.Module, module_name: Optional[str]) -> None:

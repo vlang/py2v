@@ -862,23 +862,27 @@ fn runtime_helper_declaration(kind string, name string) string {
 }"
 		}
 		'float_text' {
-			'fn ${name}(value f64) string {\n' + r"
-	scientific := strconv.f64_to_str(value, 16)
-	marker := scientific.index('e') or { return scientific.trim_left('+') }
-	exponent := scientific[marker + 1..].int()
-	if exponent < -4 || exponent >= 16 {
-		return scientific
+			'fn ${name}[T](value T) string {\n' + r"
+	$if T is $float {
+		scientific := strconv.f64_to_str(f64(value), 16)
+		marker := scientific.index('e') or { return scientific.trim_left('+') }
+		exponent := scientific[marker + 1..].int()
+		if exponent < -4 || exponent >= 16 {
+			return scientific
+		}
+		sign := if scientific.starts_with('-') { '-' } else { '' }
+		digits := scientific[sign.len..marker].replace('.', '')
+		point := exponent + 1
+		if point <= 0 {
+			return sign + '0.' + '0'.repeat(-point) + digits
+		}
+		if point >= digits.len {
+			return sign + digits + '0'.repeat(point - digits.len) + '.0'
+		}
+		return sign + digits[..point] + '.' + digits[point..]
+	} $else {
+		return value.str()
 	}
-	sign := if scientific.starts_with('-') { '-' } else { '' }
-	digits := scientific[sign.len..marker].replace('.', '')
-	point := exponent + 1
-	if point <= 0 {
-		return sign + '0.' + '0'.repeat(-point) + digits
-	}
-	if point >= digits.len {
-		return sign + digits + '0'.repeat(point - digits.len) + '.0'
-	}
-	return sign + digits[..point] + '.' + digits[point..]
 }"
 		}
 		'native_map_pop' {
@@ -3957,7 +3961,8 @@ pub fn (mut t VTranspiler) visit_for(node For) string {
 				}
 				end := t.visit_for_iter(call.args.last(), saved_renames)
 				for_expr = '${start} .. ${end}'
-			} else if fname == 'range' && call.args.len in [1, 2, 3] {
+			} else if fname == 'range' && call.args.len in [1, 2, 3]
+				&& call.args.all(is_v_int_type(t.division_operand_type(it, t.infer_expr_type(it)))) {
 				start := if call.args.len > 1 {
 					t.visit_for_iter(call.args[0], saved_renames)
 				} else {
@@ -3979,14 +3984,25 @@ pub fn (mut t VTranspiler) visit_for(node For) string {
 				} else {
 					target
 				}
-				buf << '${initial} := ${start}'
-				buf << '${stop} := ${end}'
-				buf << '${stride} := ${step}'
+				buf << '${initial} := int(${start})'
+				buf << '${stop} := int(${end})'
+				buf << '${stride} := int(${step})'
 				buf << "if ${stride} == 0 { panic('ValueError: range() arg 3 must not be zero') }"
 				buf << 'for ${counter} := ${initial}; if ${stride} > 0 { ${counter} < ${stop} } else { ${counter} > ${stop} }; ${counter} = ${next}(${counter}, ${stop}, ${stride}) {'
 				if counter != target && target != '_' {
 					buf << '\t${target} := ${counter}'
 				}
+				body, flag := t.visit_for_body(node, 1, has_else, writebacks)
+				buf << body
+				buf << '}'
+				t.emit_for_else(mut buf, node.orelse, flag, saved_renames)
+				return buf.join('\n')
+			} else if fname == 'range' && call.args.len == 3 {
+				start := t.visit_for_iter(call.args[0], saved_renames)
+				end := t.visit_for_iter(call.args[1], saved_renames)
+				step := t.visit_for_iter(call.args[2], saved_renames)
+				step_op := if step == '-1' { '${target}--' } else { '${target} += ${step}' }
+				buf << 'for ${target} := ${start}; ${target} < ${end}; ${step_op} {'
 				body, flag := t.visit_for_body(node, 1, has_else, writebacks)
 				buf << body
 				buf << '}'

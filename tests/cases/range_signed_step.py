@@ -9,3 +9,5 @@ for value in range(0, 8, 3):
     print(value)
 for value in range(-2):
     print(value)
+for value in range(3 ** 2, 11, 2):
+    print(value)

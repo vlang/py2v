@@ -18,5 +18,5 @@ pub fn run_keyword_only_defaults() {
 	println(py_pkg_call_defaults.required_keyword_default(mark_keyword_only(3), mark_keyword_only(4), 5))
 	println(py_pkg_call_defaults.keyword_none_default(pyrt.none_))
 	println(py_pkg_call_defaults.keyword_none_default('present'))
-	println(py2v_float_text1(f64(py_pkg_call_defaults.keyword_float_default(0.0))))
+	println(py2v_float_text1(py_pkg_call_defaults.keyword_float_default(0.0)))
 }

@@ -392,7 +392,7 @@ fn (mut t VTranspiler) native_scalar_text(expr Expr, code string) ?string {
 	}
 	if typ in ['f32', 'f64', 'float'] {
 		t.add_using('strconv')
-		return '${t.runtime_helper('float_text')}(f64(${code}))'
+		return '${t.runtime_helper('float_text')}(${code})'
 	}
 	if get_expr_annotation(expr) == 'bytes' || (expr is Constant && expr.value is BytesValue) {
 		t.add_using('strings')

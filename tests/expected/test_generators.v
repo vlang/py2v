@@ -20,9 +20,9 @@ fn generator_with_type(ch chan int) {
 
 fn generator_with_args(a int, b int, ch chan i64) {
 	defer { ch.close() }
-	py2v_range_start1 := a
-	py2v_range_stop2 := b
-	py2v_range_step3 := 1
+	py2v_range_start1 := int(a)
+	py2v_range_stop2 := int(b)
+	py2v_range_step3 := int(1)
 	if py2v_range_step3 == 0 { panic('ValueError: range() arg 3 must not be zero') }
 	for i := py2v_range_start1; if py2v_range_step3 > 0 {
 		i < py2v_range_stop2
@@ -51,9 +51,9 @@ fn generator_with_yield_from(ch chan int) {
 
 fn generator_with_condition(ch chan int) {
 	defer { ch.close() }
-	py2v_range_start5 := 0
-	py2v_range_stop6 := 10
-	py2v_range_step7 := 1
+	py2v_range_start5 := int(0)
+	py2v_range_stop6 := int(10)
+	py2v_range_step7 := int(1)
 	if py2v_range_step7 == 0 { panic('ValueError: range() arg 3 must not be zero') }
 	for i := py2v_range_start5; if py2v_range_step7 > 0 {
 		i < py2v_range_stop6

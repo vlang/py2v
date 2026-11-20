@@ -17,4 +17,8 @@ fn main() {
 	for char_ in word.runes().reverse().map(it.str()) {
 		println(char_)
 	}
+	for index, char_ in word.split('') {
+		println(if char_ == py2v_string_index1(word, index) { 'True' } else { 'False' })
+	}
+	println(('12'.split('')[1].int()).str() + ' ' + (word.split('')[word.split('').len - 1]).str())
 }

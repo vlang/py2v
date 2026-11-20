@@ -23,9 +23,9 @@ fn main_func() {
 		println('no 5')
 	}
 	mut py2v_broke10 := false
-	py2v_range_start3 := 0
-	py2v_range_stop4 := 4
-	py2v_range_step5 := 1
+	py2v_range_start3 := int(0)
+	py2v_range_stop4 := int(4)
+	py2v_range_step5 := int(1)
 	if py2v_range_step5 == 0 { panic('ValueError: range() arg 3 must not be zero') }
 	for i := py2v_range_start3; if py2v_range_step5 > 0 {
 		i < py2v_range_stop4
@@ -33,9 +33,9 @@ fn main_func() {
 		i > py2v_range_stop4
 	}; i = py2v_range_next1(i, py2v_range_stop4, py2v_range_step5) {
 		mut py2v_broke9 := false
-		py2v_range_start6 := 0
-		py2v_range_stop7 := 4
-		py2v_range_step8 := 1
+		py2v_range_start6 := int(0)
+		py2v_range_stop7 := int(4)
+		py2v_range_step8 := int(1)
 		if py2v_range_step8 == 0 { panic('ValueError: range() arg 3 must not be zero') }
 		for j := py2v_range_start6; if py2v_range_step8 > 0 {
 			j < py2v_range_stop7
