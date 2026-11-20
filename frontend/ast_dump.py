@@ -7671,14 +7671,22 @@ def _encode_local_identifiers(tree, table):
         return False
     used = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)}
     used.update(binding.name for binding in table.bindings)
+    read_underscores = {getattr(n, "_binding", None) for n in ast.walk(tree)
+                        if isinstance(n, ast.Name) and n.id == "_"
+                        and isinstance(n.ctx, ast.Load)}
     renamed = {}
     for binding in table.bindings:
         name = binding.name
         if (table.scopes[binding.scope].kind != "function" or binding.is_param
                 or binding.captured or binding.kind in ("class", "function", "import")):
             continue
-        # `C.field` is parsed as a C reference even if Python's C is a local.
-        if name != "C" and name.isascii() and not name.lstrip("_")[:1].isdigit():
+        # Only rename sites represented by Name nodes. Except and match bind
+        # names through string fields.
+        if any(how in ("except", "match") for _, _, how in binding.sites):
+            continue
+        # V treats capitals as type names and a bare underscore as a discard.
+        if (name.isascii() and not name.lstrip("_")[:1].isdigit()
+                and not any(c.isupper() for c in name) and binding.id not in read_underscores):
             continue
         candidate = "py2v_ident_" + "_".join(f"{ord(c):x}" for c in name)
         while candidate in used:

@@ -134,6 +134,7 @@ pub const v_keywords = [..]string[
 	'typeof',
 	'union',
 	'unsafe',
+	'volatile',
 ]
 
 // V built-in type names that conflict when used as identifiers (variable/parameter names)
@@ -475,6 +476,12 @@ const v_reserved_fn_names = ['spawn', 'exit', 'malloc', 'free']!
 // still reaches the module that declares it.
 pub fn escape_fn_name(name string) string {
 	i := name.last_index('.') or {
+		// `Or(...)` looks like a cast and vfmt can change the argument list.
+		// Escape its lowercased spelling when it would be a V keyword.
+		lower := lower_first_ascii(name)
+		if lower != name && is_keyword(lower) {
+			return escape_keyword(lower)
+		}
 		return if name in v_reserved_fn_names {
 			'${name}_'
 		} else {
