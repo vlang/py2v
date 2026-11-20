@@ -95,6 +95,7 @@ list_box_widening.v	13
 list_container_alias.v	5
 list_copy_boundary.v	4
 list_delete_alias.v	2
+list_delete_return.v	4
 list_field_alias.v	6
 list_forwarded_return.v	5
 list_frozenset_alias.v	4
@@ -111,6 +112,7 @@ list_slice_step_assign.v	5
 list_slice_step_delete.v	5
 list_slice_unit_step_grow.v	5
 list_slice_unit_step_resize.v	9
+list_slice_write_return.v	5
 logging_calls.v	2
 logging_runtime.v	6
 long_wrap.v	10

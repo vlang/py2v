@@ -390,6 +390,38 @@ pub fn (mut t VTranspiler) visit_module(node Module) string {
 	// there: V only allows `fn` declarations at module top level.
 	mut hoisted_body := t.hoist_module_fns(node.body, mut nested_fndefs)
 
+	// A caller may be emitted before its callee. Predeclare native mutable
+	// parameters so those earlier calls include V's required `mut` keyword.
+	for stmt in hoisted_body {
+		if stmt is FunctionDef && stmt.name in signatures && !stmt.is_class_method {
+			mut indices := []int{}
+			mut args := stmt.args.posonlyargs.clone()
+			args << stmt.args.args
+			mut index := 0
+			for arg in args {
+				if arg.arg == 'self' || (arg.arg == 'cls' && stmt.decorator_kind == 'classmethod') {
+					continue
+				}
+				if arg.arg in stmt.mutable_vars && arg.is_mutable
+					&& !for_rebinds_parameter(stmt.body, arg.arg) {
+					mut typ := ''
+					if ann := arg.annotation {
+						typ = t.typename_from_annotation(*ann)
+					} else if arg.v_annotation != '' {
+						typ = t.map_type(arg.v_annotation)
+					}
+					if typ.starts_with('[]') || typ.starts_with('map[') {
+						indices << index
+					}
+				}
+				index++
+			}
+			if indices.len > 0 {
+				t.mut_param_indices[stmt.name] = indices
+			}
+		}
+	}
+
 	// Record the V spelling of every module-level binding before anything is
 	// rendered, so that a constant's value refers to it by that same spelling.
 	// A private module-level value (`_logger`) that a sibling file of the same V module

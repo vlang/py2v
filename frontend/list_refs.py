@@ -59,7 +59,12 @@ class Plan:
             fn = self.functions.get(binding)
             if (binding is None or not isinstance(fn, ast.FunctionDef)
                     or self.parents[id(fn)] is not self.tree or fn.decorator_list
-                    or self.table.bindings[binding].rebound):
+                    or self.table.bindings[binding].rebound
+                    or any(isinstance(part, ast.Subscript)
+                           and (isinstance(part.ctx, ast.Del)
+                                or isinstance(part.ctx, ast.Store)
+                                and isinstance(part.slice, ast.Slice))
+                           for part in ast.walk(fn))):
                 continue
             call = self.parents.get(id(node))
             if (not isinstance(call, ast.Call) or call.func is not node
