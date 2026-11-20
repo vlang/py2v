@@ -423,7 +423,7 @@ call_results_cases := ['dict_get_missing', 'dict_get_eager', 'dict_get_chain', '
 	'decl_duplicate_init', 'decl_duplicate_dunder', 'decl_duplicate_overwritten',
 	'decl_reserved_prefix_field', 'decl_reserved_numeric_field', 'decl_defaultdict_int_key',
 	'decl_defaultdict_alias', 'external_dynamic', 'scheduling_refusal', 'nominal_enum_classmethod',
-	'nominal_enum_unannotated', 'dynamic_empty_tuple', 'sequence_rebind']
+	'nominal_enum_unannotated', 'dynamic_empty_tuple', 'sequence_rebind', 'reserved_map_name']
 mut execution_args := [][]string{}
 mut execution_names := []string{}
 for name in call_results_cases {

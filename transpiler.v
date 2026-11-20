@@ -5624,6 +5624,11 @@ pub fn (mut t VTranspiler) visit_name(node Name) string {
 	if star_prefix != '' {
 		return '${star_prefix}.${escape_local_ident(node.id)}'
 	}
+	// Leave the unbound Python builtin available to call dispatch.
+	if node.id == 'map' && node.ctx is Load && !t.is_bound_in_scope(node.id)
+		&& !t.loop_idents[escape_local_ident(node.id)] && t.lambda_params[node.id] == 0 {
+		return node.id
+	}
 	return escape_local_ident(node.id)
 }
 

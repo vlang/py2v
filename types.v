@@ -457,7 +457,8 @@ pub fn escape_identifier(name string) string {
 // fields keep escape_leading_underscore and stay consistent with their uses.
 //
 // `char` is a V type name the compiler refuses as a variable or parameter name.
-const v_reserved_idents = ['v', 'sql', 'char']!
+// `map` is also a V type name, and a bare `map {` starts a map literal.
+const v_reserved_idents = ['v', 'sql', 'char', 'map']!
 
 // v_reserved_fn_names are Python names that V reserves for its own C-backed
 // intrinsics. A user `fn` declared under one of these names cannot be called at
