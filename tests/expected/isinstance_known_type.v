@@ -1,11 +1,10 @@
 module main
 
-import pyrt
 import math
 
-fn trailing_zeros_py(a int) !int {
+fn trailing_zeros(a int) int {
 	if !true {
-		return pyrt.raise('TypeError', 'Input value must be an integer')
+		// pass
 	}
 	mut count := 0
 	mut rest := a
@@ -14,10 +13,6 @@ fn trailing_zeros_py(a int) !int {
 		count += 1
 	}
 	return count
-}
-
-fn trailing_zeros(a int) int {
-	return trailing_zeros_py(a) or { pyrt.fail(err) }
 }
 
 fn describe(x f64, name string) string {
@@ -45,16 +40,12 @@ fn total(items []int) int {
 	return result
 }
 
-fn run_py() ! {
+fn run() {
 	values := [int(1), 2, 3]
-	println(trailing_zeros_py(8)!)
+	println(trailing_zeros(8))
 	println(describe(2.5, 'x'))
 	println(is_text(4))
 	println(total(values))
-}
-
-fn run() {
-	run_py() or { pyrt.fail(err) }
 }
 
 fn main() {

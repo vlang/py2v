@@ -26,6 +26,7 @@ import copy
 import functools
 import importlib.util
 import json
+import keyword
 import operator
 import sys
 import os
@@ -4828,6 +4829,75 @@ def _annotate_returns(tree: ast.Module, facts: Optional[infer.TypeFacts]) -> Non
             fn.returns = _annotation_node(text, fn)
 
 
+def _lower_local_tuple_returns(tree: ast.Module, table: Optional[symbols.SymbolTable],
+                               facts: Optional[infer.TypeFacts]) -> None:
+    """Use V multiple returns for fixed heterogeneous tuples only unpacked here."""
+    if table is None or facts is None:
+        return
+    functions = [fn for fn in tree.body if isinstance(fn, ast.FunctionDef)
+                 and isinstance(fn.returns, ast.Subscript)
+                 and isinstance(fn.returns.slice, ast.Tuple) and not fn.decorator_list
+                 and fn.body and isinstance(fn.body[-1], ast.Return) and not _is_generator(fn)]
+    if not functions:
+        return
+    returns = {f["binding"]: f.get("ret_inferred") for f in facts.functions}
+    parents = {id(child): parent for parent in ast.walk(tree)
+               for child in ast.iter_child_nodes(parent)}
+    reads: dict[int, list[ast.Name]] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
+            binding = getattr(node, "_binding", None)
+            if binding in returns:
+                reads.setdefault(binding, []).append(node)
+    paths = _stable_import_paths(tree, table)
+    for fn in functions:
+        binding = getattr(fn, "_binding", None)
+        inferred = returns.get(binding)
+        annotation = fn.returns
+        if inferred is None or binding is None or table.bindings[binding].rebound:
+            continue
+        if not isinstance(annotation, ast.Subscript) or not isinstance(annotation.slice, ast.Tuple):
+            continue
+        base = annotation.value
+        if not (_qualified_import(base, paths) == "typing.Tuple"
+                or isinstance(base, ast.Name) and base.id == "tuple"
+                and getattr(base, "_binding", None) is None):
+            continue
+        typ = facts.types[inferred]
+        if typ["k"] != "tuple" or len(typ["elems"]) != len(annotation.slice.elts):
+            continue
+        scalar = {"int": "int", "str": "string", "bool": "bool", "float": "f64"}
+        kinds = [facts.types[element]["k"] for element in typ["elems"]]
+        if len(set(kinds)) < 2 or any(kind not in scalar for kind in kinds):
+            continue
+        if not all(isinstance(ann, ast.Name) and ann.id == kind
+                   and getattr(ann, "_binding", None) is None
+                   for ann, kind in zip(annotation.slice.elts, kinds)):
+            continue
+        if any(not isinstance(node.value, ast.Tuple) for node in ast.walk(fn)
+               if isinstance(node, ast.Return)):
+            continue
+        calls: list[ast.Call] = []
+        for read in reads.get(binding, []):
+            call = parents[id(read)]
+            consumer = parents.get(id(call))
+            if not (isinstance(call, ast.Call) and call.func is read
+                    and isinstance(consumer, ast.Assign) and consumer.value is call
+                    and len(consumer.targets) == 1 and isinstance(consumer.targets[0], ast.Tuple)
+                    and len(consumer.targets[0].elts) == len(kinds)
+                    and all(isinstance(target, ast.Name) and target.id != "_"
+                            and (bid := getattr(target, "_binding", None)) is not None
+                            and len(table.bindings[bid].sites) == 1
+                            for target in consumer.targets[0].elts)):
+                break
+            calls.append(call)
+        else:
+            name = "(" + ", ".join(scalar[kind] for kind in kinds) + ")"
+            fn.returns = ast.copy_location(ast.Name(id=name, ctx=ast.Load()), annotation)
+            for call in calls:
+                call._runtime_annotation = name
+
+
 def _lower_exit_statements(tree: ast.Module, table: Optional[symbols.SymbolTable]) -> None:
     """A resolved exit statement raises SystemExit with its original argument."""
     if table is None:
@@ -4909,6 +4979,25 @@ def _lower_exit_statements(tree: ast.Module, table: Optional[symbols.SymbolTable
             return self.generic_visit(node)
 
     Lower().visit(tree)
+
+
+def _drop_unreachable_type_errors(tree: ast.Module) -> None:
+    """A type guard the emitter has proved true cannot raise in the output."""
+    for node in ast.walk(tree):
+        if (not isinstance(node, ast.If) or node.orelse or len(node.body) != 1
+                or not isinstance(node.body[0], ast.Raise) or not isinstance(node.test, ast.UnaryOp)
+                or not isinstance(node.test.op, ast.Not)):
+            continue
+        call = node.test.operand
+        if (not isinstance(call, ast.Call) or call.keywords or len(call.args) != 2
+                or not isinstance(call.func, ast.Name) or call.func.id != "isinstance"
+                or getattr(call.func, "_binding", None) is not None):
+            continue
+        subject, cls = call.args
+        if (isinstance(subject, ast.Name) and isinstance(cls, ast.Name)
+                and getattr(cls, "_binding", None) is None and cls.id in ("int", "float", "str", "bool")
+                and cls.id == getattr(call, "_subject_class", "")):
+            node.body = [ast.copy_location(ast.Pass(), node.body[0])]
 
 
 def _erase_typing_casts(tree: ast.Module, table: Optional[symbols.SymbolTable]) -> None:
@@ -5287,12 +5376,24 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
 
     # Functions and bindings declared as lists with no known element type.
     any_list_functions = set()
+    int_list_result_scopes = {
+        f["scope"] for f in facts.functions
+        if (inferred := f.get("ret_inferred")) is not None
+        and (result := facts.types[inferred])["k"] == "list"
+        and facts.types[result["elem"]]["k"] == "int"
+    }
+    native_int_list_functions: set[int] = set()
     any_list_parameters: Dict[int, List[bool]] = {}
     for fn in ast.walk(tree):
         if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            if any_list_annotation(fn.returns):
-                any_list_functions.add(getattr(fn, "_binding", None))
             binding_id = getattr(fn, "_binding", None)
+            if any_list_annotation(fn.returns):
+                any_list_functions.add(binding_id)
+                if (binding_id is not None and not table.bindings[binding_id].rebound
+                        and not fn.decorator_list and isinstance(fn.returns, ast.Name)
+                        and fn.returns.id in ("list", "List")
+                        and getattr(fn, "_scope_id", None) in int_list_result_scopes):
+                    native_int_list_functions.add(binding_id)
             flags = [any_list_annotation(a.annotation, getattr(a, "_binding", None))
                      for a in fn.args.args]
             if binding_id is not None and any(flags) and not table.bindings[binding_id].rebound:
@@ -5953,7 +6054,10 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
                     node.args = [_runtime_call("str", [a], a) if dynamic(a) else a
                                  for a in node.args]
                     node.args = [_runtime_call("str", [_runtime_call("box", [a], a)], a)
-                                 if any_list(a) else a for a in node.args]
+                                 if any_list(a) and not (
+                                     isinstance(a, ast.Call) and isinstance(a.func, ast.Name)
+                                     and getattr(a.func, "_binding", None) in native_int_list_functions)
+                                 else a for a in node.args]
             if (isinstance(node.func, ast.Attribute) and node.func.attr == "append"
                     and any_list(node.func.value) and len(node.args) == 1
                     and not node.keywords and sequence(node.args[0])
@@ -8308,11 +8412,30 @@ def _encode_local_identifiers(tree, table):
     """
     if table is None:
         return False
-    used = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)}
-    used.update(binding.name for binding in table.bindings)
+    def local_key(name: str) -> str:
+        bare = name.lstrip("_")
+        return bare + "_" * (len(name) - len(bare))
+
+    scope_names: dict[int, set[str]] = {scope.id: set() for scope in table.scopes}
+    for binding in table.bindings:
+        name = binding.name
+        if binding.is_param:
+            name = name.lower()
+        scope_names[binding.scope].add(local_key(name))
+    for occurrence in table._occurrences:
+        if occurrence.role == "load":
+            scope = occurrence.scope
+            binding = getattr(occurrence.node, "_binding", None)
+            owner = table.bindings[binding].scope if binding is not None else 0
+            while scope is not None and scope not in (owner, 0):
+                scope_names[scope].add(local_key(occurrence.name))
+                scope = table.scopes[scope].parent
+
     read_underscores = {getattr(n, "_binding", None) for n in ast.walk(tree)
                         if isinstance(n, ast.Name) and n.id == "_"
                         and isinstance(n.ctx, ast.Load)}
+    used = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)}
+    used.update(binding.name for binding in table.bindings)
     renamed = {}
     for binding in table.bindings:
         name = binding.name
@@ -8327,9 +8450,25 @@ def _encode_local_identifiers(tree, table):
         if (name.isascii() and not name.lstrip("_")[:1].isdigit()
                 and not any(c.isupper() for c in name) and binding.id not in read_underscores):
             continue
-        candidate = "py2v_ident_" + "_".join(f"{ord(c):x}" for c in name)
-        while candidate in used:
-            candidate += "_"
+        if name.isascii() and any(c.isupper() for c in name):
+            stem = name.lower()
+            candidate = stem
+            suffix = 2
+            visible = []
+            scope = binding.scope
+            while scope is not None:
+                visible.append(scope_names[scope])
+                scope = table.scopes[scope].parent
+            while (keyword.iskeyword(candidate) or candidate in infer.BUILTINS
+                   or candidate in ("pyrt", "err", "v", "sql", "char", "os", "math", "arrays", "strings")
+                   or any(local_key(candidate) in names for names in visible)):
+                candidate = f"{stem}_{suffix}"
+                suffix += 1
+            scope_names[binding.scope].add(local_key(candidate))
+        else:
+            candidate = "py2v_ident_" + "_".join(f"{ord(c):x}" for c in name)
+            while candidate in used:
+                candidate += "_"
         used.add(candidate)
         renamed[binding.id] = candidate
     if not renamed:
@@ -8415,10 +8554,13 @@ def process_file(file_path: str, project: Optional[ProjectFacts] = None) -> str:
     _choose_boolop_values(tree, facts)
     _state_truth_tests(tree, table, facts)
     _mark_isinstance_inferred(tree, table, facts)
+    _drop_unreachable_type_errors(tree)
     _iterate_string_characters(tree, facts)
     if project is None:
         _annotate_parameters_from_calls(tree, table, facts)
     _annotate_returns(tree, facts)
+    if project is None:
+        _lower_local_tuple_returns(tree, table, facts)
     _lower_frozensets(tree, table)
     original = tree
     source_nodes = list(ast.walk(original))

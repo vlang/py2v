@@ -1,33 +1,5 @@
 module main
 
-import pyrt
-
-type Any = pyrt.Value
-
-fn (a Any) + (b Any) Any {
-	return pyrt.add(a, b) or { panic(err) }
-}
-
-fn (a Any) - (b Any) Any {
-	return pyrt.sub(a, b) or { panic(err) }
-}
-
-fn (a Any) * (b Any) Any {
-	return pyrt.mul(a, b) or { panic(err) }
-}
-
-fn (a Any) / (b Any) Any {
-	return pyrt.truediv(a, b) or { panic(err) }
-}
-
-fn (a Any) % (b Any) Any {
-	return pyrt.mod(a, b) or { panic(err) }
-}
-
-fn (a Any) < (b Any) bool {
-	return pyrt.lt(a, b) or { panic(err) }
-}
-
 const direction_north = 'north'
 const direction_south = 'south'
 const direction_east = 'east'
@@ -49,9 +21,8 @@ fn rgb() (int, int, int) {
 	return 255, 0, 128
 }
 
-// NOTE: Tuple[int, string] — define a struct with named fields
-fn mixed() []Any {
-	return [1, 'hello']
+fn mixed() (int, string) {
+	return 1, 'hello'
 }
 
 fn variable_len() []int {

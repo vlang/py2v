@@ -1,9 +1,9 @@
 module main
 
 fn bubble_sort(mut seq []int) []int {
-	py2v_ident_4c := seq.len
-	for _ in []int{len: py2v_ident_4c, init: index} {
-		for n in []int{len: py2v_ident_4c - 1, init: index + 1} {
+	l := seq.len
+	for _ in []int{len: l, init: index} {
+		for n in []int{len: l - 1, init: index + 1} {
 			if seq[n] < seq[n - 1] {
 				seq[n - 1], seq[n] = seq[n], seq[n - 1]
 			}

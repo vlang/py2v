@@ -1,7 +1,5 @@
 module main
 
-import pyrt
-
 fn squares_above(n int) []int {
 	return (fn () []int {
 		mut result := []int{}
@@ -44,7 +42,7 @@ fn nested_walrus(matrix [][]int) []int {
 }
 
 fn main() {
-	println(pyrt.str(pyrt.box(squares_above(8))))
-	println(pyrt.str(pyrt.box(evens_doubled([1, 2, 3, 4, 5, 6]))))
-	println(pyrt.str(pyrt.box(nested_walrus([[1, 2, 3], [4, 5, 6]]))))
+	println(squares_above(8))
+	println(evens_doubled([1, 2, 3, 4, 5, 6]))
+	println(nested_walrus([[1, 2, 3], [4, 5, 6]]))
 }

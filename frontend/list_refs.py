@@ -1128,6 +1128,14 @@ def lower(tree, chosen, runtime_call):
                 node.ops = [ast.Eq() if isinstance(node.ops[0], ast.Is) else ast.NotEq()]
                 return node
             if has_reference and len(node.ops) == 1 and isinstance(node.ops[0], (ast.Eq, ast.NotEq)):
+                right = node.comparators[0]
+                # Stable integer-list references can compare their native elements.
+                if all(isinstance(value, ast.Name)
+                       and getattr(value, '_ref_vtype', '') == '&pyrt.ListRef[int]'
+                       for value in (node.left, right)):
+                    node.left = items(node.left)
+                    node.comparators = [items(right)]
+                    return node
                 compared = runtime_call('eq', [runtime_call('box', [node.left], node.left),
                     runtime_call('box', [node.comparators[0]], node.comparators[0])], node)
                 return (ast.copy_location(ast.UnaryOp(op=ast.Not(), operand=compared), node)

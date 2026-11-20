@@ -16,9 +16,9 @@ pub fn py2v_new_limit(end int) Limit {
 }
 
 fn count() int {
-	py2v_ident_43 := py2v_new_limit(3)
+	c := py2v_new_limit(3)
 	mut i := 0
-	for i < py2v_ident_43.end {
+	for i < c.end {
 		i += 1
 	}
 	return i

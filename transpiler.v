@@ -2619,8 +2619,10 @@ fn (mut t VTranspiler) visit_assignment(node Assign, package_initializer bool) s
 					// Check if value is a tuple/list literal with same length - can unpack directly
 					is_tuple_swap := node.value is Tuple
 						&& (node.value as Tuple).elts.len == elts.len
+					is_multi_return := node.value is Call
+						&& get_expr_annotation(node.value).starts_with('(')
 
-					if is_tuple_swap {
+					if is_tuple_swap || is_multi_return {
 						// Direct tuple swap: x, y = y, x or a, b, c = 1, 2, 3
 						mut subtargets := []string{}
 						mut any_redefined := false
@@ -4339,6 +4341,11 @@ pub fn (mut t VTranspiler) visit_raise(node Raise) string {
 		}
 	}
 	exits = exits && 'SystemExit' !in t.known_classes
+	if exits && node.mode == '' && !t.fn_returns_result && t.exit_finally_bodies.len == 0 {
+		if plain := t.plain_system_exit(node) {
+			return plain
+		}
+	}
 	if node.mode in ['result', 'guard'] || exits {
 		if made := t.raised_error(node) {
 			t.add_using('pyrt')
@@ -4393,6 +4400,34 @@ pub fn (mut t VTranspiler) visit_raise(node Raise) string {
 	}
 	// bare `raise` — re-raise inside except handler; use generic panic
 	return "panic('re-raise')"
+}
+
+// plain_system_exit emits literal exit codes or messages once an exception can
+// leave directly. Other arguments still need Python's runtime classification.
+fn (mut t VTranspiler) plain_system_exit(node Raise) ?string {
+	exc := node.exc or { return none }
+	if exc is Name {
+		return 'exit(0)'
+	}
+	if exc is Call && exc.keywords.len == 0 {
+		if exc.args.len == 0 {
+			return 'exit(0)'
+		}
+		if exc.args.len == 1 && exc.args[0] is Constant {
+			arg := exc.args[0] as Constant
+			return match arg.value {
+				NoneValue { 'exit(0)' }
+				bool {
+					if arg.value as bool { 'exit(1)' } else { 'exit(0)' }
+				}
+				int { 'exit(${arg.value as int})' }
+				i64 { 'exit(int(${arg.value as i64}))' }
+				string { 'eprintln(${t.visit_constant(arg)})\nexit(1)' }
+				else { none }
+			}
+		}
+	}
+	return none
 }
 
 // raised_error is the V error value of `raise C(args)` or `raise C`: the runtime's

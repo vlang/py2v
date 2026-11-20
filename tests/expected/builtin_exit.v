@@ -118,17 +118,18 @@ fn main() {
 	if mode == 'caught' {
 		caught()
 	} else if mode == 'zero' {
-		pyrt.fail(IError(pyrt.exception('SystemExit', []pyrt.Value{})))
+		exit(0)
 	} else if mode == 'int' {
-		pyrt.fail(IError(pyrt.exception('SystemExit', [pyrt.box(7)])))
+		exit(7)
 	} else if mode == 'true' {
-		pyrt.fail(IError(pyrt.exception('SystemExit', [pyrt.box(true)])))
+		exit(1)
 	} else if mode == 'false' {
-		pyrt.fail(IError(pyrt.exception('SystemExit', [pyrt.box(false)])))
+		exit(0)
 	} else if mode == 'none' {
 		pyrt.fail(IError(pyrt.exception('SystemExit', [pyrt.none_])))
 	} else if mode == 'message' {
-		pyrt.fail(pyrt.raise('SystemExit', 'message'))
+		eprintln('message')
+		exit(1)
 	} else if mode == 'direct_finally' {
 		direct_finally()
 	} else if mode == 'sys_finally' {
