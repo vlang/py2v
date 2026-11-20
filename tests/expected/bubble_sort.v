@@ -1,14 +1,11 @@
 module main
 
-import pyrt
-
-fn bubble_sort(py2v_seq_in1 &pyrt.ListRef[int]) &pyrt.ListRef[int] {
-	mut seq := unsafe { py2v_seq_in1 }
-	py2v_ident_4c := seq.items.len
+fn bubble_sort(mut seq []int) []int {
+	py2v_ident_4c := seq.len
 	for _ in []int{len: py2v_ident_4c, init: index} {
 		for n in []int{len: py2v_ident_4c - 1, init: index + 1} {
-			if seq.items[n] < seq.items[n - 1] {
-				seq.items[n - 1], seq.items[n] = seq.items[n], seq.items[n - 1]
+			if seq[n] < seq[n - 1] {
+				seq[n - 1], seq[n] = seq[n], seq[n - 1]
 			}
 		}
 	}
@@ -16,8 +13,8 @@ fn bubble_sort(py2v_seq_in1 &pyrt.ListRef[int]) &pyrt.ListRef[int] {
 }
 
 fn main() {
-	mut unsorted := pyrt.list_ref[int]([14, 11, 19, 5, 16, 10, 19, 12, 5, 12])
+	mut unsorted := [14, 11, 19, 5, 16, 10, 19, 12, 5, 12]
 	expected := [5, 5, 10, 11, 12, 12, 14, 16, 19, 19]
-	assert pyrt.eq(pyrt.box(bubble_sort(unsorted)), pyrt.box(expected))
+	assert bubble_sort(mut unsorted) == expected
 	println('OK')
 }

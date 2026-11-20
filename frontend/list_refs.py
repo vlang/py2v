@@ -22,8 +22,9 @@ class UnsupportedListIdentity(Exception):
 
 
 class Plan:
-    def __init__(self, tree, table, facts):
+    def __init__(self, tree, table, facts, closed_file=False):
         self.tree, self.table, self.facts = tree, table, facts
+        self.closed_file = closed_file
         self.parent = {}
         self.types = defaultdict(set)
         self.children = {}
@@ -44,6 +45,51 @@ class Plan:
                 self.functions[getattr(node, '_binding', None)] = node
         self.parents = {id(c): n for n in ast.walk(tree) for c in ast.iter_child_nodes(n)}
         self.node_objects = {id(n): n for n in ast.walk(tree)}
+
+    def immediate_return_uses(self) -> dict[int, list[tuple[ast.Call, Optional[ast.Name]]]]:
+        """Find module functions whose returned list is only observed immediately."""
+        if not self.closed_file:
+            return {}
+        uses: dict[int, list[tuple[ast.Call, Optional[ast.Name]]]] = defaultdict(list)
+        unsafe: set[int] = set()
+        for node in self.node_objects.values():
+            if not isinstance(node, ast.Name) or not isinstance(node.ctx, ast.Load):
+                continue
+            binding = getattr(node, '_binding', None)
+            fn = self.functions.get(binding)
+            if (binding is None or not isinstance(fn, ast.FunctionDef)
+                    or self.parents[id(fn)] is not self.tree or fn.decorator_list
+                    or self.table.bindings[binding].rebound):
+                continue
+            call = self.parents.get(id(node))
+            if (not isinstance(call, ast.Call) or call.func is not node
+                    or call.keywords or any(not (isinstance(arg, ast.Name)
+                        or isinstance(arg, ast.List)
+                        and all(isinstance(elt, ast.Constant) for elt in arg.elts))
+                        for arg in call.args)):
+                unsafe.add(id(fn))
+                continue
+            consumer = self.parents.get(id(call))
+            if isinstance(consumer, ast.Expr):
+                uses[id(fn)].append((call, None))
+            elif (isinstance(consumer, ast.Call) and consumer.args == [call]
+                  and not consumer.keywords and isinstance(consumer.func, ast.Name)
+                  and consumer.func.id == 'print' and getattr(consumer.func, '_binding', None) is None):
+                uses[id(fn)].append((call, None))
+            elif (isinstance(consumer, ast.Compare) and len(consumer.ops) == 1
+                  and isinstance(consumer.ops[0], (ast.Eq, ast.NotEq))):
+                other = consumer.comparators[0] if consumer.left is call else consumer.left
+                bid = getattr(other, '_binding', None)
+                owner = self.own_function(call)
+                if (isinstance(other, ast.Name) and bid is not None and owner is not None
+                        and self.table.bindings[bid].scope == getattr(owner, '_scope_id', None)
+                        and not self.table.bindings[bid].captured):
+                    uses[id(fn)].append((call, other))
+                else:
+                    unsafe.add(id(fn))
+            else:
+                unsafe.add(id(fn))
+        return {fn: others for fn, others in uses.items() if fn not in unsafe}
 
     def walk(self, root: Optional[ast.AST] = None) -> Iterator[ast.AST]:
         """Keep refused signatures in the graph, excluding their discarded bodies."""
@@ -310,6 +356,8 @@ class Plan:
             self.shared.add(self.key(target))
 
     def graph(self):
+        immediate_uses = self.immediate_return_uses()
+        returned_parameters = set()
         for node in ast.walk(self.tree):
             if isinstance(node, (ast.expr, ast.arg)):
                 self.key(node)
@@ -356,6 +404,13 @@ class Plan:
                     key = ('return', id(fn))
                     self.union(key, self.key(node.value))
                     value = node.value
+                    if (isinstance(value, ast.Name) and getattr(value, '_binding', None) is not None
+                            and self.table.bindings[value._binding].is_param
+                            and not self.table.bindings[value._binding].captured
+                            and not self.table.bindings[value._binding].rebound
+                            and id(fn) in immediate_uses):
+                        returned_parameters.add(id(fn))
+                        continue
                     if isinstance(value, (ast.Attribute, ast.Subscript)) or (
                             isinstance(value, ast.Name) and getattr(value, '_binding', None) is not None
                             and (self.table.bindings[value._binding].is_param
@@ -547,6 +602,27 @@ class Plan:
         for key, kinds in self.types.items():
             self.kinds[self.find(key)].update(kinds)
         self.slots = {self.find(k): self.find(v) for k, v in self.children.items()}
+        def native_int_list(root):
+            elem = self.slots.get(root)
+            return self.kinds[root] == {'list'} and elem is not None and self.kinds[elem] == {'int'}
+
+        shared_inputs = {self.find(key) for key in self.shared}
+
+        def stable_comparison_other(call, other, result_root):
+            if other is None:
+                return True
+            root = self.find(self.nodes[id(other)])
+            return (native_int_list(root) and root != result_root and root not in shared_inputs
+                    and all(self.find(self.nodes[id(arg)]) != root for arg in call.args))
+
+        for fn in returned_parameters:
+            key = self.returns[fn]
+            root = self.find(key)
+            # Only native integer arrays have the same value operations at these
+            # uses. A comparison against another alias can read a stale V length.
+            if not native_int_list(root) or not all(
+                    stable_comparison_other(call, other, root) for call, other in immediate_uses[fn]):
+                self.shared.add(key)
         mutated = {self.find(k) for k in self.mutated}
         self.mutation_roots = mutated
         shared = {self.find(k) for k in self.shared}
@@ -784,10 +860,10 @@ class Plan:
         return self
 
 
-def plan(tree, table, facts):
+def plan(tree, table, facts, closed_file=False):
     if table is None or facts is None:
         return None
-    return Plan(tree, table, facts).graph().validate().annotate()
+    return Plan(tree, table, facts, closed_file).graph().validate().annotate()
 
 
 def lower(tree, chosen, runtime_call):

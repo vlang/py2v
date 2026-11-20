@@ -8434,7 +8434,7 @@ def process_file(file_path: str, project: Optional[ProjectFacts] = None) -> str:
         snapshot = [(node, copy.deepcopy(vars(node), memo)) for node in source_nodes] if needs_copy else []
         tree = original
         try:
-            references = list_refs.plan(tree, table, facts)
+            references = list_refs.plan(tree, table, facts, closed_file=project is None)
             # Dynamic lowering adds lifted lists to its input set. Start each retry fresh.
             _lower_dynamic_values(tree, table, facts, any_lists.copy())
             _box_mixed_displays(tree, table, facts)
