@@ -10,7 +10,8 @@ import runtime
 // Replaces the previous run_tests.sh / run_tests.ps1 pair with a single V script
 // so both platforms run exactly the same logic. Invoke it with:
 //
-//   v tests/run_tests.vsh
+//   v tests/run_tests.vsh [-lower]
+//   -lower removes passing defect exemptions that name no other platform.
 //
 // Environment:
 //   VERBOSE=1    print expected/generated excerpts for failing cases
@@ -67,10 +68,18 @@ fn excerpt_n(text string, n int) string {
 	return lines[..limit].join('\n')
 }
 
+fn generated_binary(source string) string {
+	return source + $if windows { '.exe' } $else { '.bin' }
+}
+
+fn build_generated(source string, bin string) os.Result {
+	return os.exec([@VEXE, '-path', '@vlib|${project_dir}|@vmodules', '-o', bin, source])
+}
+
 // run_generated separates compiler diagnostics from the program's output.
 fn run_generated(source string) os.Result {
-	bin := source + $if windows { '.exe' } $else { '.bin' }
-	build := os.exec([@VEXE, '-path', '@vlib|${project_dir}|@vmodules', '-o', bin, source])
+	bin := generated_binary(source)
+	build := build_generated(source, bin)
 	if build.exit_code != 0 {
 		return build
 	}
@@ -94,28 +103,66 @@ fn translate_source(py2v string, source string) os.Result {
 	}
 }
 
-// compare_execution checks observable output against CPython, beyond fixture text.
-fn compare_execution(args []string) os.Result {
-	// A package supplies its prepared entry point with an empty translator path.
-	if args[0] != '' {
-		translation := translate_source(args[0], args[2])
-		if translation.exit_code != 0 {
-			return translation
+struct ExecutionResult {
+	exit_code      int
+	output         string
+	compile_failed bool
+	reason         string
+}
+
+fn first_difference(cpython os.Result, native os.Result) string {
+	py_lines := cpython.output.replace('\r', '').split('\n')
+	v_lines := native.output.replace('\r', '').split('\n')
+	line_count := if py_lines.len > v_lines.len { py_lines.len } else { v_lines.len }
+	for i in 0 .. line_count {
+		py_line := py_lines[i] or { '<end of output>' }
+		v_line := v_lines[i] or { '<end of output>' }
+		if py_line != v_line {
+			return 'line ${i + 1}: CPython [${py_line}], V [${v_line}]'
 		}
-		os.write_file(args[3], translation.output) or {
-			return os.Result{ exit_code: 1, output: err.msg() }
+	}
+	return 'CPython exit ${cpython.exit_code}, V exit ${native.exit_code}'
+}
+
+// compare_execution checks observable output against CPython, beyond fixture text.
+fn compare_execution(python string, source string, generated string, expected_failure string) ExecutionResult {
+	bin := generated_binary(generated)
+	build := build_generated(generated, bin)
+	if build.exit_code != 0 {
+		lines := build.output.split_into_lines()
+		mut reason := lines[0] or { 'V compiler exited ${build.exit_code}' }
+		for line in lines {
+			if line.contains(': error: ') {
+				reason = line.all_after(': error: ')
+				break
+			}
+		}
+		return ExecutionResult{
+			exit_code:      1
+			output:         build.output
+			compile_failed: true
+			reason:         reason
 		}
 	}
 	// UTF-8 mode: on Windows CPython would otherwise use the console code page.
-	python_run := os.exec([args[1], '-X', 'utf8', '-I', args[2]])
-	v_run := run_generated(args[3])
-	if python_run.exit_code == 0 && v_run.exit_code == 0
-		&& python_run.output.replace('\r', '') == v_run.output.replace('\r', '') {
-		return os.Result{}
+	cpython := os.exec([python, '-X', 'utf8', '-I', source])
+	native := os.exec([bin])
+	py_output := cpython.output.replace('\r', '')
+	v_output := native.output.replace('\r', '')
+	if expected_failure != '' {
+		// For uncaught exceptions CPython prints a traceback before the class and message.
+		if cpython.exit_code == 1 && native.exit_code == 1
+			&& py_output.trim_space().split('\n').last() == expected_failure
+			&& v_output.trim_space() == expected_failure {
+			return ExecutionResult{}
+		}
+	} else if cpython.exit_code == 0 && native.exit_code == 0 && py_output == v_output {
+		return ExecutionResult{}
 	}
-	return os.Result{
+	return ExecutionResult{
 		exit_code: 1
-		output:    'CPython (exit ${python_run.exit_code}):\n${python_run.output}\nV (exit ${v_run.exit_code}):\n${v_run.output}'
+		output:    'CPython (exit ${cpython.exit_code}):\n${cpython.output}\nV (exit ${native.exit_code}):\n${native.output}'
+		reason:    first_difference(cpython, native)
 	}
 }
 
@@ -139,21 +186,91 @@ fn check_parser(args []string) os.Result {
 	}
 }
 
-// compare_uncaught_execution requires matching exception classes, messages and exit status.
-fn compare_uncaught_execution(args []string) os.Result {
-	result := compare_execution(args[..4])
-	want := args[4]
-	parts := result.output.replace('\r', '').split('\nV (exit 1):\n')
-	if result.exit_code == 1 && parts.len == 2
-		&& parts[0].starts_with('CPython (exit 1):\n')
-		&& parts[0].trim_space().split_into_lines().last() == want
-		&& parts[1].trim_space() == want {
-		return os.Result{}
+struct ExecutionCase {
+	python    string
+	source    string
+	generated string
+}
+
+fn compare_fixture(fixture ExecutionCase) ExecutionResult {
+	name := os.file_name(fixture.source).trim_string_right('.py')
+	expected_failure := match name {
+		'dynamic_method_uncaught_type' {
+			'TypeError: sequence item 0: expected str instance, int found'
+		}
+		'dynamic_method_uncaught_attr' { "AttributeError: 'int' object has no attribute 'append'" }
+		'empty_set_uncaught' { "AttributeError: 'set' object has no attribute 'append'" }
+		'sys_exit' { 'OK' }
+		else { '' }
 	}
-	return os.Result{
-		exit_code: 1
-		output:    'Expected ${want}\n${result.output}'
+	return compare_execution(fixture.python, fixture.source, fixture.generated, expected_failure)
+}
+
+struct ExecutionExemption {
+	kind      string
+	reason    string
+	platforms []string
+}
+
+const exemption_classes = ['needs-input', 'needs-dependency', 'nondeterministic', 'does-not-compile',
+	'differs', 'python-version', 'needs-sqlite']!
+const exemption_platforms = ['macos', 'linux', 'windows']!
+
+fn (exemption ExecutionExemption) for_platform(platform string) ExecutionExemption {
+	if exemption.platforms.len == 0 || platform in exemption.platforms {
+		return exemption
 	}
+	return ExecutionExemption{}
+}
+
+fn read_execution_exemptions(lines []string, files []string) !map[string]ExecutionExemption {
+	mut exemptions := map[string]ExecutionExemption{}
+	for i, line in lines {
+		if line == '' || line.starts_with('#') {
+			continue
+		}
+		parts := line.split('\t')
+		if parts.len !in [3, 4] || parts[1] !in exemption_classes || parts[2].trim_space() == '' {
+			return error('execution_exempt.tsv:${i + 1}: expected case<TAB>class<TAB>reason[<TAB>platforms]')
+		}
+		mut platforms := []string{}
+		if parts.len == 4 && parts[3] != '' {
+			for platform in parts[3].split(',') {
+				if platform !in exemption_platforms || platform in platforms {
+					return error('execution_exempt.tsv:${i + 1}: invalid or duplicate platform "${platform}"')
+				}
+				platforms << platform
+			}
+		}
+		name := parts[0]
+		if name + '.py' !in files {
+			return error('execution_exempt.tsv:${i + 1}: no such case: ${name}')
+		}
+		if name in exemptions {
+			return error('execution_exempt.tsv:${i + 1}: duplicate case: ${name}')
+		}
+		exemptions[name] = ExecutionExemption{parts[1], parts[2], platforms}
+	}
+	return exemptions
+}
+
+fn compare_fixtures(fixtures []ExecutionCase, root string) ![]ExecutionResult {
+	// File-writing fixtures run with a scratch working directory and TMPDIR.
+	work := os.join_path(root, 'work')
+	os.mkdir(work)!
+	previous_dir := os.getwd()
+	previous_tmp := os.getenv_opt('TMPDIR')
+	os.chdir(work)!
+	os.setenv('TMPDIR', work, true)
+	defer {
+		os.chdir(previous_dir) or { panic(err) }
+		if value := previous_tmp {
+			os.setenv('TMPDIR', value, true)
+		} else {
+			os.unsetenv('TMPDIR')
+		}
+	}
+	return parallel.amap(fixtures, compare_fixture, workers: runtime.nr_jobs())
 }
 
 const script_dir = os.dir(os.abs_path(@FILE))
@@ -183,8 +300,8 @@ suite_watch := time.new_stopwatch()
 println('Running tests...')
 println('')
 
-mut case_files := os.ls(cases_dir) or { []string{} }
-mut case_names := case_files.filter(it.ends_with('.py'))
+case_files := os.ls(cases_dir) or { panic(err) }
+mut case_names := case_files.filter(it.ends_with('.py') && os.is_file(os.join_path(cases_dir, it)))
 case_names.sort()
 
 mut passed := 0
@@ -194,26 +311,42 @@ mut failures := []string{}
 mut verbose := os.getenv('VERBOSE') == '1'
 mut fmt_seq := 0
 python := $if windows { 'python' } $else { 'python3' }
-// Cases written in syntax only CPython 3.15 parses. The frontend runs under the same
-// interpreter (main.v), so where that is older they cannot translate and are skipped.
-newer_syntax_cases := ['dict_unpack_typechecking']
-python_parses_newer := os.exec([python, '-c',
-	'import sys; sys.exit(0 if sys.version_info >= (3, 15) else 1)']).exit_code == 0
+platform := os.user_os()
+exemption_path := os.join_path(script_dir, 'execution_exempt.tsv')
+exemption_lines := os.read_lines(exemption_path) or { panic(err) }
+exemptions := read_execution_exemptions(exemption_lines, case_names) or {
+	eprintln(err.msg())
+	exit(1)
+}
+lower := '-lower' in os.args
+execution_root := os.join_path(os.temp_dir(), 'py2v_execution_${os.getpid()}')
+os.mkdir(execution_root, mode: 0o700) or { panic(err) }
+mut fixtures := []ExecutionCase{}
+mut exemption_counts := map[string]int{}
 
 for entry in case_names {
 	case_name := entry.trim_string_right('.py')
 	expected_file := os.join_path(expected_dir, case_name + '.v')
 	case_path := os.join_path(cases_dir, entry)
 
-	if !os.exists(expected_file) {
-		report('SKIP', case_name, ' (no expected file)')
-		skipped++
-		continue
-	}
-	if case_name in newer_syntax_cases && !python_parses_newer {
-		report('SKIP', case_name, ' (needs Python 3.15 syntax)')
-		skipped++
-		continue
+	exemption := exemptions[case_name].for_platform(platform)
+	if exemption.kind == 'python-version' {
+		// Parse the marked source without importing it or writing bytecode.
+		syntax := os.exec([python, '-X', 'utf8', '-I', '-c',
+			'import ast, pathlib, sys; ast.parse(pathlib.Path(sys.argv[1]).read_bytes())', case_path])
+		if syntax.exit_code != 0 {
+			if syntax.output.contains('\nSyntaxError:') {
+				report('SKIP', case_name, ' (${exemption.reason})')
+				skipped++
+				exemption_counts[exemption.kind]++
+			} else {
+				report('FAIL', case_name, ' (CPython syntax probe failed)')
+				println(syntax.output)
+				failed++
+				failures << fail_line('FAIL', case_name, ' (CPython syntax probe failed)')
+			}
+			continue
+		}
 	}
 
 	res := translate_source(py2v, case_path)
@@ -224,11 +357,29 @@ for entry in case_names {
 		continue
 	}
 
-	expected := os.read_file(expected_file) or { '' }
-	fmt_seq++
-	generated := normalize_v_code(res.output, fmt_seq)
-	fmt_seq++
-	expected_norm := normalize_v_code(expected, fmt_seq)
+	generated_path := os.join_path(execution_root, case_name + '.v')
+	os.write_file(generated_path, res.output) or { panic(err) }
+	if exemption.kind in ['', 'python-version', 'needs-sqlite', 'does-not-compile', 'differs'] {
+		fixtures << ExecutionCase{python, case_path, generated_path}
+	} else {
+		report('SKIP', 'runtime execution: ' + case_name, ' (${exemption.kind}: ${exemption.reason})')
+		skipped++
+		exemption_counts[exemption.kind]++
+	}
+	if !os.exists(expected_file) {
+		report('SKIP', case_name, ' (no expected file)')
+		skipped++
+		continue
+	}
+	expected := os.read_file(expected_file) or { panic(err) }
+	mut generated := res.output
+	mut expected_norm := expected
+	if generated != expected_norm {
+		fmt_seq++
+		generated = normalize_v_code(generated, fmt_seq)
+		fmt_seq++
+		expected_norm = normalize_v_code(expected_norm, fmt_seq)
+	}
 
 	if generated == expected_norm {
 		report('PASS', case_name, '')
@@ -261,69 +412,60 @@ init_expected := os.read_file(os.join_path(script_dir, 'baseline', 'init_executi
 }
 init_v_run := run_generated(init_v)
 
-dynamic_cases := ['dynamic_container_elements', 'dynamic_membership', 'dynamic_comprehensions',
-	'dynamic_methods', 'dynamic_or_default', 'dynamic_stores', 'dynamic_runtime_returns',
-	'dynamic_attributes', 'dynamic_truth', 'dynamic_mixed_membership', 'dynamic_boxed_bytes',
-	'dynamic_unpacking', 'dynamic_optional', 'dynamic_conditional', 'native_map_types',
-	'truth_container_values', 'truth_optional_values', 'truth_dynamic_negation', 'truth_dynamic_lazy',
-	'truth_optional_instances', 'truth_runtime_lists', 'truth_optional_calls', 'truth_optional_dynamic',
-	'truth_literals', 'truth_storage_default', 'truth_mixed_list_body', 'truth_mixed_list_else',
-	'truth_mixed_list_default', 'truth_boxed_floats', 'mixed_display_dynamic', 'json_runtime_options',
-	'truth_bool_context', 'truth_optional_returns', 'truth_native_objects', 'truth_local_class_hooks',
-	'dynamic_isinstance', 'dynamic_method_errors', 'empty_set_runtime', 'runtime_field_types',
-	'dynamic_locals', 'frozenset_annotations', 'dynamic_method_comprehension_errors',
-	'sqlite_row_comprehension', 'sqlite_untyped_handles', 'try_comprehension']
-dynamic_root := os.join_path(os.temp_dir(), 'py2v_dynamic_${os.getpid()}')
-os.mkdir_all(dynamic_root) or { panic(err) }
-mut dynamic_args := [][]string{}
-for name in dynamic_cases {
-	dynamic_args << [py2v, python, os.join_path(cases_dir, name + '.py'),
-		os.join_path(dynamic_root, name.replace('/', '_') + '.v')]
-}
-dynamic_results := parallel.amap(dynamic_args, compare_execution, workers: 2)
-for i, result in dynamic_results {
-	name := 'runtime execution: ' + dynamic_cases[i]
-	$if windows {
-		// A V install without the SQLite object (as on the Windows CI runner) cannot link
-		// pyrt.sqlite3; that case's generated text is still compared above.
-		if result.exit_code != 0 && result.output.contains('thirdparty/sqlite') {
-			report('SKIP', name, ' (no SQLite library to link on this platform)')
+execution_results := compare_fixtures(fixtures, execution_root) or { panic(err) }
+mut compared := 0
+mut obsolete_exemptions := []string{}
+for i, result in execution_results {
+	case_name := os.file_name(fixtures[i].source).trim_string_right('.py')
+	name := 'runtime execution: ' + case_name
+	exemption := exemptions[case_name].for_platform(platform)
+	if exemption.kind in ['does-not-compile', 'differs'] {
+		if result.exit_code == 0 {
+			if lower && exemption.platforms.len <= 1 {
+				obsolete_exemptions << case_name
+			} else {
+				guidance := if exemption.platforms.len > 1 {
+					'review on ${exemption.platforms.join(', ')} before editing this row'
+				} else {
+					'run `v tests/run_tests.vsh -lower`'
+				}
+				detail := ' (exemption now passes on ${platform}, ${guidance})'
+				report('FAIL', name, detail)
+				failures << fail_line('FAIL', name, detail)
+				failed++
+				exemption_counts[exemption.kind]++
+				continue
+			}
+		} else {
+			report('SKIP', name, ' (${exemption.kind}: ${exemption.reason})')
 			skipped++
+			exemption_counts[exemption.kind]++
 			continue
 		}
 	}
+	if exemption.kind == 'needs-sqlite' && result.compile_failed
+		&& result.output.contains('thirdparty/sqlite') {
+		report('SKIP', name, ' (${exemption.reason})')
+		skipped++
+		exemption_counts[exemption.kind]++
+		continue
+	}
+	compared++
 	if result.exit_code == 0 {
 		report('PASS', name, '')
 		passed++
 	} else {
-		report('FAIL', name, '')
+		kind := if result.compile_failed { 'does-not-compile' } else { 'differs' }
+		detail := ' (${kind}: ${result.reason})'
+		report('FAIL', name, detail)
 		println(result.output)
 		failed++
-		failures << fail_line('FAIL', name, '')
+		failures << fail_line('FAIL', name, detail)
 	}
 }
-uncaught_cases := ['dynamic_method_uncaught_type', 'dynamic_method_uncaught_attr', 'empty_set_uncaught']
-uncaught_messages := ['TypeError: sequence item 0: expected str instance, int found',
-	"AttributeError: 'int' object has no attribute 'append'",
-	"AttributeError: 'set' object has no attribute 'append'"]
-mut uncaught_args := [][]string{}
-for i, name in uncaught_cases {
-	uncaught_args << [py2v, python, os.join_path(cases_dir, name + '.py'),
-		os.join_path(dynamic_root, name + '.v'), uncaught_messages[i]]
-}
-uncaught_results := parallel.amap(uncaught_args, compare_uncaught_execution, workers: 2)
-for i, result in uncaught_results {
-	name := 'runtime exception: ' + uncaught_cases[i]
-	if result.exit_code == 0 {
-		report('PASS', name, '')
-		passed++
-	} else {
-		report('FAIL', name, '')
-		println(result.output)
-		failed++
-		failures << fail_line('FAIL', name, '')
-	}
-}
+
+dynamic_root := os.join_path(os.temp_dir(), 'py2v_dynamic_${os.getpid()}')
+os.mkdir_all(dynamic_root) or { panic(err) }
 // This program needs native dict aliasing that pyrt.box cannot preserve. Its
 // compilation rejection is a guard against silently compiling wrong code, NOT
 // a passing CPython/V execution comparison.
@@ -392,69 +534,6 @@ if init_translation.output.contains('p := Plain{}')
 }
 os.rmdir_all(init_root) or { panic(err) }
 
-// Call results and syntax lowerings must preserve CPython's observable output.
-// Each case gets its own generated source and binary.
-call_results_root := os.join_path(os.temp_dir(), 'py2v_call_results_${os.getpid()}')
-os.mkdir_all(call_results_root) or { panic(err) }
-call_results_cases := ['dict_get_missing', 'dict_get_eager', 'dict_get_chain', 'dict_get_receiver',
-	'dict_get_mutating', 'dict_get_compare', 'with_return', 'rebound_optional_params',
-	'argparse_join_value', 'join_string_iterable', 'subparser_parameter', 'nested_closures',
-	'os_path_dirname', 'nested_functions', 'nonlocal_closure', 'closure_uses_class',
-	'module_name_shadowed', 'closure_exit_finally', 'constructor_closure_captures', 'bound_append',
-	'conditional_condition', 'conditional_map', 'custom_remove', 'divmod_value', 'empty_isinstance',
-	'expression_walrus', 'independent_dunders', 'local_identifier_encoding', 'loop_scope_bindings',
-	'loop_target_rebinding', 'loop_parameter_alias', 'loop_unpack_targets', 'uppercase_condition',
-	'async', 'variadic_generator', 'variadic_generator_kwonly', 'overload_definitions',
-	'parameter_bindings', 'private_method_calls', 'closure_capture_discriminator',
-	'review_nested_default', 'review_nested_default_snapshot', 'review_nested_default_once',
-	'review_nested_if', 'review_nested_loop', 'review_nested_literal_block',
-	'review_divmod_negative_float', 'modulo_signed', 'modulo_float', 'modulo_generic',
-	'modulo_target_once', 'modulo_dynamic_target', 'dict_local_any_writes', 'dict_local_inferred_writes',
-	'modulo_loop_value', 'list_name_alias', 'list_function_alias', 'list_field_alias',
-	'list_container_alias', 'list_return_alias', 'list_copy_boundary', 'list_identity_compare',
-	'list_nested_paths', 'list_slice_alias', 'list_reference_ops', 'list_heterogeneous_alias',
-	'list_delete_alias', 'list_augassign_target', 'list_box_source', 'list_box_identity',
-	'list_box_mutate_only', 'list_box_widening', 'augassign_side_effects', 'comb_sort',
-	'element_store_mut', 'mut_inplace_methods', 'typing_abc_annotations', 'dict_unpack_typechecking',
-	'list_box_any_id', 'list_alias_iter_reorder', 'list_alias_slice_reverse', 'list_alias_slice_delete',
-	'list_slice_step_assign', 'list_slice_step_delete', 'list_slice_unit_step_resize',
-	'list_slice_unit_step_grow', 'list_frozenset_alias', 'dict_widen_local', 'dict_widen_reassign',
-	'list_scoped_refusal', 'refused_walrus', 'module_branch_definitions', 'dunder_new_collision',
-	'property_accessor_collision', 'returned_branch_definitions', 'overwritten_module_definition',
-	'module_branch_chain', 'target_class_choice', 'rebound_module_function', 'decl_defaultdict',
-	'decl_kwonly_none', 'decl_callable_field', 'decl_callable_missing_return', 'decl_callable_optional',
-	'decl_digit_name', 'decl_duplicate_init', 'decl_duplicate_dunder', 'decl_duplicate_overwritten',
-	'decl_reserved_prefix_field', 'decl_reserved_numeric_field', 'decl_defaultdict_int_key',
-	'decl_defaultdict_alias', 'external_dynamic', 'scheduling_refusal', 'nominal_enum_classmethod',
-	'nominal_enum_unannotated', 'dynamic_empty_tuple', 'sequence_rebind', 'reserved_map_name',
-	'generic_none_type_arguments', 'uppercase_while_binding', 'uppercase_range_step',
-	'reserved_volatile_name', 'read_underscore_binding', 'keyword_named_call', 'bubble_sort',
-	'condition_walrus_bindings', 'dict', 'nested_dict']
-mut execution_args := [][]string{}
-mut execution_names := []string{}
-for name in call_results_cases {
-	if name in newer_syntax_cases && !python_parses_newer {
-		report('SKIP', 'call results: ${name} execution', ' (needs Python 3.15 syntax)')
-		skipped++
-		continue
-	}
-	execution_names << name
-	execution_args << [py2v, python, os.join_path(cases_dir, name + '.py'),
-		os.join_path(call_results_root, name + '.v')]
-}
-execution_results := parallel.amap(execution_args, compare_execution, workers: runtime.nr_jobs())
-for i, result in execution_results {
-	name := 'call results: ${execution_names[i]} execution'
-	if result.exit_code == 0 {
-		report('PASS', name, '')
-		passed++
-	} else {
-		report('FAIL', name, '')
-		println(result.output)
-		failed++
-		failures << fail_line('FAIL', name, '')
-	}
-}
 // Exercise the paths that require a dependency or scheduler on purpose.
 for control in [
 	['external_dynamic', 'println(from_context(', 'lookup()', 'ImportError: untranslated Python import'],
@@ -462,14 +541,14 @@ for control in [
 		'V panic: py2v_unsupported_coroutine'],
 ] {
 	case_name := control[0]
-	source := os.read_file(os.join_path(call_results_root, case_name + '.v')) or { panic(err) }
+	source := os.read_file(os.join_path(execution_root, case_name + '.v')) or { panic(err) }
 	mut lines := source.split_into_lines()
 	for index, line in lines {
 		if line.trim_space().starts_with(control[1]) {
 			lines[index] = '\t' + control[2]
 		}
 	}
-	driver := os.join_path(call_results_root, case_name + '_failure.v')
+	driver := os.join_path(execution_root, case_name + '_failure.v')
 	os.write_file(driver, lines.join('\n') + '\n') or { panic(err) }
 	result := run_generated(driver)
 	name := '${case_name} fails loudly'
@@ -484,9 +563,9 @@ for control in [
 	}
 }
 // Calling the isolated refusal must fail while its unrelated neighbor still runs.
-scoped_source := os.join_path(call_results_root, 'list_scoped_refusal.v')
+scoped_source := os.join_path(execution_root, 'list_scoped_refusal.v')
 scoped_code := os.read_file(scoped_source) or { panic(err) }
-scoped_refused := os.join_path(call_results_root, 'list_scoped_refused.v')
+scoped_refused := os.join_path(execution_root, 'list_scoped_refused.v')
 scoped_targets := ['refused', 'refused_groups', 'refused_lambda_callback', 'refused_caller',
 	'refused_default', 'refused_received']
 mut scoped_dispatch := []string{}
@@ -520,8 +599,8 @@ for i, scoped_run in scoped_results {
 }
 
 // An unprovable module-level list also blocks an importing package explicitly.
-scoped_package := os.join_path(call_results_root, 'scope_pkg')
-scoped_output := os.join_path(call_results_root, 'scope_out')
+scoped_package := os.join_path(execution_root, 'scope_pkg')
+scoped_output := os.join_path(execution_root, 'scope_out')
 os.mkdir_all(scoped_package) or { panic(err) }
 os.mkdir_all(scoped_output) or { panic(err) }
 os.write_file(os.join_path(scoped_package, '__init__.py'), os.read_file(os.join_path(cases_dir,
@@ -556,7 +635,7 @@ for refusal in [
 ] {
 	refusal_source := os.join_path(cases_dir, refusal[0] + '.py')
 	refusal_translation := translate_source(py2v, refusal_source)
-	refusal_v := os.join_path(call_results_root, refusal[0] + '.v')
+	refusal_v := os.join_path(execution_root, refusal[0] + '.v')
 	os.write_file(refusal_v, refusal_translation.output) or { panic(err) }
 	refusal_run := run_generated(refusal_v)
 	refusal_python := os.exec([python, '-X', 'utf8', '-I', refusal_source])
@@ -579,7 +658,7 @@ for refusal in [
 ] {
 	refusal_source := os.join_path(cases_dir, refusal[0] + '.py')
 	refusal_translation := os.exec([py2v, refusal_source])
-	refusal_v := os.join_path(call_results_root, refusal[0] + '.v')
+	refusal_v := os.join_path(execution_root, refusal[0] + '.v')
 	os.write_file(refusal_v, refusal_translation.output) or { panic(err) }
 	refusal_run := run_generated(refusal_v)
 	refusal_python := os.exec([python, '-X', 'utf8', '-I', refusal_source])
@@ -596,7 +675,7 @@ for refusal in [
 		failures << fail_line('FAIL', name, '')
 	}
 }
-os.rmdir_all(call_results_root) or { panic(err) }
+os.rmdir_all(execution_root) or { panic(err) }
 
 // Definite assignment must preserve both Python results and unproven paths.
 assignment_root := os.join_path(os.temp_dir(), 'py2v_assignment_${os.getpid()}')
@@ -820,7 +899,7 @@ for pkg in package_fixtures {
 			driver := os.join_path(out_dir, 'driver.py')
 			os.write_file(os.join_path(out_dir, 'source_path.txt'), cases_dir) or { panic(err) }
 			os.write_file(driver, 'import sys\nfrom pathlib import Path\nsys.path.insert(0, Path(__file__).with_name("source_path.txt").read_text(encoding="utf-8"))\nfrom pkg_qualified_construct.use import total\nprint(total())\n') or { panic(err) }
-			result := compare_execution(['', python, driver, entry])
+			result := compare_execution(python, driver, entry, '')
 			name := 'qualified constructor: package execution'
 			if result.exit_code == 0 {
 				report('PASS', name, '')
@@ -892,7 +971,7 @@ for pkg in package_fixtures {
 				else { '' }
 			}
 			os.write_file(entry, 'module main\n\nimport py_${pkg}\n\nfn main() {\n\tprintln(py_${pkg}.total())\n${v_extra}}\n') or { panic(err) }
-			result := compare_execution(['', python, driver, entry])
+			result := compare_execution(python, driver, entry, '')
 			name := '${pkg}: execution'
 			if result.exit_code == 0 {
 				report('PASS', name, '')
@@ -1242,8 +1321,32 @@ for i, result in parser_results {
 }
 os.rmdir_all(parser_root) or { panic(err) }
 
+if lower && obsolete_exemptions.len > 0 && failed == 0 {
+	if (os.read_lines(exemption_path) or { panic(err) }) != exemption_lines {
+		eprintln('execution_exempt.tsv changed during the suite. Rerun -lower.')
+		exit(1)
+	}
+	mut retained := []string{}
+	for line in exemption_lines {
+		if line.all_before('\t') !in obsolete_exemptions {
+			retained << line
+		}
+	}
+	os.write_file(exemption_path, retained.join('\n') + '\n') or { panic(err) }
+	println('removed ${obsolete_exemptions.len} passing execution exemptions')
+}
+mut exempt := 0
+mut by_class := []string{}
+for kind in exemption_classes {
+	if count := exemption_counts[kind] {
+		exempt += count
+		by_class << '${count} ${kind}'
+	}
+}
+class_detail := if by_class.len > 0 { by_class.join(', ') } else { 'none' }
 println('')
 println('----------------------------------------')
+println('execution: ${compared} of ${case_names.len} cases compared with CPython, ${exempt} exempt (${class_detail})')
 println('Summary: ' + passed.str() + ' passed, ' + failed.str() +
 	' failed, ' + skipped.str() + ' skipped')
 println('Timing: ${suite_watch.elapsed().milliseconds()} ms; execution jobs: ${runtime.nr_jobs()}')
