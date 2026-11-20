@@ -30,7 +30,8 @@ mut:
 	call_before_def      map[string]bool
 	func_return_types    map[string]string
 	// Methods whose receiver must be `mut` in V, keyed ClassName_method.
-	mut_receiver_methods        map[string]bool
+	mut_receiver_methods map[string]bool
+	// Constructor factories mark an emitted fallback parameter here.
 	generated_code_has_any_type bool
 	global_vars                 map[string]bool
 	has_global_decl             bool
@@ -224,44 +225,43 @@ fn (mut t VTranspiler) renamed_static_member(node Attribute) ?string {
 // new_transpiler creates a new VTranspiler instance
 pub fn new_transpiler() VTranspiler {
 	return VTranspiler{
-		class_attr_symbols:          map[string]map[string]string{}
-		class_base_names:            map[string][]string{}
-		class_direct_fields:         map[string][]string{}
-		class_field_escapes:         map[string]map[string]string{}
-		current_class_name:          ''
-		escaped_identifiers:         map[string]bool{}
-		extra_mut_vars:              map[string]bool{}
-		func_defaults:               map[string][]string{}
-		func_param_count:            map[string]int{}
-		func_return_types:           map[string]string{}
-		generated_code_has_any_type: false
-		has_global_decl:             false
-		global_vars:                 map[string]bool{}
-		import_aliases:              map[string]string{}
-		imported_modules:            map[string]bool{}
-		import_prefixes:             map[string]bool{}
-		loop_idents:                 map[string]bool{}
-		scope_idents:                map[string]string{}
-		unmapped_modules:            map[string]bool{}
-		unmapped_calls:              []string{}
-		exception_handlers:          []string{}
-		renamed_idents:              map[string]string{}
-		module_aliases:              map[string]string{}
-		imported_classes:            map[string][]string{}
-		submodule_aliases:           map[string]string{}
-		local_idents:                map[string]string{}
-		module_idents:               map[string]string{}
-		known_classes:               map[string][]string{}
-		module_name:                 ''
-		current_return_count:        0
-		mut_param_indices:           map[string][]int{}
-		mut_receiver_methods:        map[string]bool{}
-		namedtuple_fields:           map[string][]string{}
-		path_vars:                   map[string]bool{}
-		regex_vars:                  map[string]bool{}
-		tmp_gen:                     new_tmp_var_gen()
-		usings:                      []string{}
-		var_types:                   map[string]string{}
+		class_attr_symbols:   map[string]map[string]string{}
+		class_base_names:     map[string][]string{}
+		class_direct_fields:  map[string][]string{}
+		class_field_escapes:  map[string]map[string]string{}
+		current_class_name:   ''
+		escaped_identifiers:  map[string]bool{}
+		extra_mut_vars:       map[string]bool{}
+		func_defaults:        map[string][]string{}
+		func_param_count:     map[string]int{}
+		func_return_types:    map[string]string{}
+		has_global_decl:      false
+		global_vars:          map[string]bool{}
+		import_aliases:       map[string]string{}
+		imported_modules:     map[string]bool{}
+		import_prefixes:      map[string]bool{}
+		loop_idents:          map[string]bool{}
+		scope_idents:         map[string]string{}
+		unmapped_modules:     map[string]bool{}
+		unmapped_calls:       []string{}
+		exception_handlers:   []string{}
+		renamed_idents:       map[string]string{}
+		module_aliases:       map[string]string{}
+		imported_classes:     map[string][]string{}
+		submodule_aliases:    map[string]string{}
+		local_idents:         map[string]string{}
+		module_idents:        map[string]string{}
+		known_classes:        map[string][]string{}
+		module_name:          ''
+		current_return_count: 0
+		mut_param_indices:    map[string][]int{}
+		mut_receiver_methods: map[string]bool{}
+		namedtuple_fields:    map[string][]string{}
+		path_vars:            map[string]bool{}
+		regex_vars:           map[string]bool{}
+		tmp_gen:              new_tmp_var_gen()
+		usings:               []string{}
+		var_types:            map[string]string{}
 	}
 }
 
@@ -518,26 +518,28 @@ pub fn (mut t VTranspiler) visit_module(node Module) string {
 		main_fn_body.prepend(condition_declarations)
 	}
 
+	func_decls << nested_fndefs
+	code_sections := [type_decls, struct_decls, func_decls, main_fn_body, [main_fn_override]]
+
 	// Any type alias must be first among type_decls. A package is merged into
 	// one V module per subpackage, so the alias belongs to that module and only
 	// the first file of it declares it.
 	// Code that calls the runtime imports it, whether or not it also names `Any`.
-	for part in [type_decls, struct_decls, func_decls, main_fn_body, [main_fn_override]] {
+	for part in code_sections {
 		if part.any(it.contains('pyrt.')) {
 			t.add_using('pyrt')
 			break
 		}
 	}
-	// A type that reached the output through a type table also needs the alias.
-	if !t.generated_code_has_any_type {
-		for part in [type_decls, struct_decls, func_decls, main_fn_body, [main_fn_override]] {
-			if part.any(mentions_word(it, 'Any')) {
-				t.generated_code_has_any_type = true
-				break
-			}
+	// Inference can consider types that never reach the rendered code.
+	mut needs_any := t.generated_code_has_any_type
+	for part in code_sections {
+		if part.any(mentions_word(it, 'Any')) {
+			needs_any = true
+			break
 		}
 	}
-	if t.generated_code_has_any_type && !t.registry.any_declared_in[t.module_name] {
+	if needs_any && !t.registry.any_declared_in[t.module_name] {
 		t.registry.any_declared_in[t.module_name] = true
 		// A value whose type is not known is the runtime's value. Its operators are
 		// declared on the alias here: V resolves an operator on a sum type only when it
@@ -669,9 +671,6 @@ pub fn (mut t VTranspiler) visit_module(node Module) string {
 	}
 	if struct_decls.len > 0 {
 		parts << struct_decls.join('\n\n')
-	}
-	for f in nested_fndefs {
-		func_decls << f
 	}
 	if t.uses_py2v_format && !t.registry.py2v_format_declared_in[t.module_name] {
 		t.registry.py2v_format_declared_in[t.module_name] = true
@@ -1168,7 +1167,6 @@ fn (mut t VTranspiler) visit_closure_from_funcdef(node FunctionDef, nl_names []s
 		local := t.visit_name(Name{ id: py_name })
 		mut typ := t.map_type(node.capture_types[py_name] or { saved_types[py_name] })
 		if typ == '' || typ == 'auto' { typ = 'Any' }
-		if typ.contains('Any') { t.generated_code_has_any_type = true }
 		if refusal != '' {
 			formal := escape_local_decl(py_name)
 			capture_params << '${formal} ${typ}'
@@ -1213,7 +1211,6 @@ fn (mut t VTranspiler) visit_closure_from_funcdef(node FunctionDef, nl_names []s
 		mut typ := t.typename_from_annotation(arg.annotation)
 		if typ == '' { typ = t.map_type(arg.v_annotation) }
 		if typ == '' || typ == 'auto' { typ = 'Any' }
-		if typ.contains('Any') { t.generated_code_has_any_type = true }
 		t.local_idents[arg.arg] = local
 		t.scope_idents[local] = arg.arg
 		t.param_idents[arg.arg] = arg.arg in node.mutable_vars
@@ -1238,7 +1235,6 @@ fn (mut t VTranspiler) visit_closure_from_funcdef(node FunctionDef, nl_names []s
 		local := escape_local_decl(kwarg.arg)
 		t.local_idents[kwarg.arg] = local
 		declarations << '${local} map[string]Any'
-		t.generated_code_has_any_type = true
 	}
 	if node.is_generator {
 		typ := t.infer_generator_yield_type(node.body)
@@ -1254,7 +1250,6 @@ fn (mut t VTranspiler) visit_closure_from_funcdef(node FunctionDef, nl_names []s
 		mut typ := t.typename_from_annotation(vararg.annotation)
 		if typ == '' {
 			typ = 'Any'
-			t.generated_code_has_any_type = true
 		}
 		t.local_idents[vararg.arg] = local
 		declarations << '${local} ...${typ}'
@@ -1267,7 +1262,6 @@ fn (mut t VTranspiler) visit_closure_from_funcdef(node FunctionDef, nl_names []s
 			ret = t.map_type(node.v_annotation)
 			if ret == '' || ret == 'auto' { ret = 'Any' }
 		}
-		if ret.contains('Any') { t.generated_code_has_any_type = true }
 		if ret.starts_with('(') { t.current_return_count = ret.count(',') + 1 }
 	}
 	t.func_return_types[node.name] = ret
@@ -1593,7 +1587,6 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 		if typename == '' {
 			// V functions require explicit parameter types.
 			typename = 'Any'
-			t.generated_code_has_any_type = true
 		} else {
 			// A single uppercase letter is a generic, alone (`T`) or inside a type (`[]T`)
 			for letter in generic_letters(typename) {
@@ -1623,7 +1616,6 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 		t.scope_idents[kwname] = kwonly.arg
 		t.param_idents[kwonly.arg] = kwonly.arg in node.mutable_vars
 		mut kwtype := 'Any'
-		t.generated_code_has_any_type = true
 		if ann := kwonly.annotation {
 			kwtype = t.typename_from_annotation(*ann)
 			if kwtype == '' {
@@ -1667,7 +1659,6 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 	// **kwargs has to precede *args: V requires the variadic parameter to be
 	// last, so a signature with both cannot put kwargs after it.
 	if kwarg := node.args.kwarg {
-		t.generated_code_has_any_type = true
 		// No trailing comment: a `//` after the last parameter would swallow the
 		// opening brace of the function body.
 		local := escape_local_decl(kwarg.arg)
@@ -1688,7 +1679,6 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 			typename = '...' + typename[2..]
 		} else if typename == '' {
 			typename = '...Any'
-			t.generated_code_has_any_type = true
 		} else {
 			typename = '...' + typename
 		}
@@ -1741,14 +1731,12 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 			mut ret_type := t.map_type(node.v_annotation)
 			if ret_type == 'auto' {
 				ret_type = 'Any'
-				t.generated_code_has_any_type = true
 			}
 			signature << ret_type
 			t.func_return_types[node.name] = ret_type
 		} else {
 			// Fallback to Any if no type information available
 			inferred := 'Any'
-			t.generated_code_has_any_type = true
 			signature << inferred
 			t.func_return_types[node.name] = inferred
 		}
@@ -2004,7 +1992,6 @@ fn (mut t VTranspiler) visit_protocol_class(node ClassDef, emitted_name string) 
 					continue
 				}
 				mut typename := 'Any'
-				t.generated_code_has_any_type = true
 				if ann := arg.annotation {
 					typename = t.typename_from_annotation(*ann)
 					if typename == '' {
@@ -2194,7 +2181,6 @@ pub fn (mut t VTranspiler) visit_class_def(node ClassDef) string {
 			if decl_type == '' {
 				// Preserve untyped __init__ fields so method assignments compile.
 				decl_type = 'Any'
-				t.generated_code_has_any_type = true
 			}
 			if !has_typed_fields {
 				fields << 'pub mut:'
@@ -2207,7 +2193,6 @@ pub fn (mut t VTranspiler) visit_class_def(node ClassDef) string {
 			}
 			if typ == 'auto' {
 				typ = 'Any'
-				t.generated_code_has_any_type = true
 			}
 			if should_emit_ref_field_type(typ) {
 				typ = '&${typ}'
@@ -2503,7 +2488,6 @@ fn (mut t VTranspiler) visit_assignment(node Assign, package_initializer bool) s
 						val_type := if call.args.len > 0 {
 							t.typename_from_annotation(call.args[0])
 						} else {
-							t.generated_code_has_any_type = true
 							'Any'
 						}
 						return '${tname} := map[string]${val_type}{}'
@@ -2522,7 +2506,6 @@ fn (mut t VTranspiler) visit_assignment(node Assign, package_initializer bool) s
 					}
 					'deque' {
 						// deque(list) → []Any (V arrays support append/prepend)
-						t.generated_code_has_any_type = true
 						if call.args.len > 0 {
 							inner := t.visit_expr(call.args[0])
 							return 'mut ${tname} := []Any(${inner})'
@@ -2531,7 +2514,6 @@ fn (mut t VTranspiler) visit_assignment(node Assign, package_initializer bool) s
 					}
 					'OrderedDict' {
 						// OrderedDict() → map[string]Any{} (V maps are insertion-ordered)
-						t.generated_code_has_any_type = true
 						return 'mut ${tname} := map[string]Any{}'
 					}
 					else {}
@@ -3368,7 +3350,8 @@ fn mentions_word(code string, word string) bool {
 		before := if i > 0 { code[i - 1] } else { u8(` `) }
 		end := i + word.len
 		after := if end < code.len { code[end] } else { u8(` `) }
-		if !(before.is_letter() || before.is_digit() || before == `_` || before == `.`)
+		qualified := before == `.` && !(i >= 3 && code[i - 3..i] == '...')
+		if !qualified && !(before.is_letter() || before.is_digit() || before == `_`)
 			&& !(after.is_letter() || after.is_digit() || after == `_`) {
 			return true
 		}
@@ -4109,9 +4092,6 @@ pub fn (mut t VTranspiler) visit_async_for(node AsyncFor) string {
 		}
 		buf << arg_prefix
 		ch_type := if elem_type.len > 0 { elem_type } else { 'Any' }
-		if ch_type == 'Any' {
-			t.generated_code_has_any_type = true
-		}
 		buf << '${ch} := chan ${ch_type}{}'
 		if channel_first {
 			producer_args.prepend(ch)
@@ -6595,7 +6575,6 @@ pub fn (mut t VTranspiler) visit_call(original Call) string {
 
 	// Keep the local Value alias, which carries this module's Python operators.
 	if fname == 'pyrt.map_get' {
-		t.generated_code_has_any_type = true
 		return 'Any(pyrt.map_get(${vargs.join(', ')}))'
 	}
 
@@ -6715,7 +6694,6 @@ pub fn (mut t VTranspiler) visit_call(original Call) string {
 			}
 			if !t.is_known_module_receiver(recv) {
 				t.note_unmapped_call(fname)
-				t.generated_code_has_any_type = true
 				return 'Any(0)'
 			}
 		}
@@ -7597,7 +7575,6 @@ pub fn (mut t VTranspiler) visit_call(original Call) string {
 		t.note_unmapped_call(fname)
 		// The stub yields a value. `Any` is a sum type alias, so it has to be
 		// converted to a concrete variant rather than named bare.
-		t.generated_code_has_any_type = true
 		return 'Any(0)'
 	}
 
@@ -8148,9 +8125,6 @@ pub fn (mut t VTranspiler) visit_list(node List) string {
 		annotation := node.v_annotation or { '' }
 		if annotation.starts_with('list[') {
 			typ := map_type(annotation)
-			if typ.contains('Any') {
-				t.generated_code_has_any_type = true
-			}
 			return '${typ}{}'
 		}
 	}
@@ -8274,14 +8248,10 @@ pub fn (mut t VTranspiler) visit_dict(node Dict) string {
 		annotation := node.v_annotation or { '' }
 		if annotation.starts_with('dict[') {
 			typ := map_type(annotation)
-			if typ.contains('Any') {
-				t.generated_code_has_any_type = true
-			}
 			return '${typ}{}'
 		}
 		// V has no untyped empty map literal; fall back to a string-keyed map,
 		// which is what Python code almost always means for `{}`.
-		t.generated_code_has_any_type = true
 		return 'map[string]Any{}'
 	}
 	return t.dict_literal_body(node)
@@ -8309,7 +8279,6 @@ fn (mut t VTranspiler) dict_literal_body(node Dict) string {
 // explicit element type V cannot infer in argument position.
 pub fn (mut t VTranspiler) typed_literal_arg(arg Expr) string {
 	if arg is Dict && (arg as Dict).keys.len > 0 {
-		t.generated_code_has_any_type = true
 		return 'map[${t.dict_key_type(arg)}]Any' + t.visit_expr(arg)
 	}
 	return t.visit_expr(arg)
@@ -8561,9 +8530,6 @@ pub fn (mut t VTranspiler) visit_dict_comp(node DictComp) string {
 	val_type := t.infer_expr_type(node.value)
 	k := if key_type.len > 0 { key_type } else { 'string' }
 	v := if val_type.len > 0 { val_type } else { 'Any' }
-	if v == 'Any' {
-		t.generated_code_has_any_type = true
-	}
 	mtype := 'map[${k}]${v}'
 
 	buf << '(fn () ${mtype} {'
@@ -9142,7 +9108,6 @@ fn (mut t VTranspiler) visit_generator_exp_impl_walrus(elt Expr, generators []Co
 	arr_type := if elem_type.len > 0 && elem_type != 'Any' {
 		'[]${elem_type}'
 	} else {
-		t.generated_code_has_any_type = true
 		'[]Any'
 	}
 
@@ -9446,7 +9411,6 @@ fn (mut t VTranspiler) annotation_typename(ann ?Expr) string {
 		target := api.trim_string_left('__project_type__.')
 		owner := t.registry.lookup(target.all_before_last('.'))
 		if owner.dotted == '' {
-			t.generated_code_has_any_type = true
 			return 'Any'
 		}
 		name := emitted_class_name(target.all_after_last('.'))
@@ -9472,7 +9436,6 @@ fn (mut t VTranspiler) annotation_typename(ann ?Expr) string {
 			if name.contains('pyrt.ListRef[') { t.add_using('pyrt') }
 			// A parameter that holds a class (`unit: type = int`) has no V type.
 			if name == 'type' {
-				t.generated_code_has_any_type = true
 				return 'Any'
 			}
 			if name in v_type_map {
@@ -9499,7 +9462,6 @@ fn (mut t VTranspiler) annotation_typename(ann ?Expr) string {
 				return t.annotation_typename(*a.slice)
 			}
 			if value in ['type', 'Type'] {
-				t.generated_code_has_any_type = true
 				return 'Any'
 			}
 
@@ -9524,7 +9486,6 @@ fn (mut t VTranspiler) annotation_typename(ann ?Expr) string {
 				}
 				// General multi-type union — V requires a named sum type.
 				// Return Any (compiles cleanly); store a hint comment for the caller.
-				t.generated_code_has_any_type = true
 				union_str := members.join(' | ')
 				t.pending_type_notes << '// NOTE: Union[${members.join(', ')}] — define: type X = ${union_str}'
 				return 'Any'
@@ -9561,7 +9522,6 @@ fn (mut t VTranspiler) annotation_typename(ann ?Expr) string {
 
 			raw_index := t.annotation_typename(*a.slice)
 			index := if raw_index == '' { 'Any' } else { raw_index }
-			if raw_index == '' { t.generated_code_has_any_type = true }
 
 			// A class of this module named Sequence or Iterable stays that class.
 			mapped := if value in t.abc_named_classes() {
@@ -9607,7 +9567,6 @@ fn (mut t VTranspiler) annotation_typename(ann ?Expr) string {
 					return '[${elem_types.len}]${mapped_et}'
 				}
 				// Mixed types — no direct V equivalent; emit []Any with a hint.
-				t.generated_code_has_any_type = true
 				joined := elem_types.join(', ')
 				t.pending_type_notes << '// NOTE: Tuple[${joined}] — define a struct with named fields'
 				return '[]Any'
@@ -9632,9 +9591,6 @@ fn (mut t VTranspiler) annotation_typename(ann ?Expr) string {
 					}
 				}
 				base_type := if unique.len == 1 { t.map_type(unique[0]) } else { 'Any' }
-				if unique.len > 1 {
-					t.generated_code_has_any_type = true
-				}
 				t.pending_type_notes << '// NOTE: Literal[${index}] — allowed values are ${index}'
 				return base_type
 			}
@@ -9648,7 +9604,6 @@ fn (mut t VTranspiler) annotation_typename(ann ?Expr) string {
 						return 'map[${map_key}]${element}'
 					}
 				}
-				t.generated_code_has_any_type = true
 				return 'map[string]Any'
 			}
 			if base_name == 'Dict' || base_name == 'dict'
@@ -9662,16 +9617,13 @@ fn (mut t VTranspiler) annotation_typename(ann ?Expr) string {
 						mut v := t.annotation_typename(kvs[1])
 						if k == '' {
 							k = 'Any'
-							t.generated_code_has_any_type = true
 						}
 						if v == '' {
 							v = 'Any'
-							t.generated_code_has_any_type = true
 						}
 						return 'map[${k}]${v}'
 					}
 				}
-				t.generated_code_has_any_type = true
 				return 'map[${index}]Any'
 			}
 			// A None type argument denotes the singleton type. In a generic
@@ -9746,7 +9698,6 @@ fn (mut t VTranspiler) annotation_typename(ann ?Expr) string {
 					}
 				}
 				// General union: V needs a named sum type; emit Any with a hint.
-				t.generated_code_has_any_type = true
 				l := t.map_type(left)
 				r := t.map_type(right)
 				t.pending_type_notes << '// NOTE: ${l} | ${r} — define: type X = ${l} | ${r}'
@@ -9770,7 +9721,6 @@ fn (mut t VTranspiler) annotation_typename(ann ?Expr) string {
 					if is_plain_v_type(mapped) {
 						return mapped
 					}
-					t.generated_code_has_any_type = true
 					t.pending_type_notes << '// NOTE: annotation "${s}" has no V type here'
 					return 'Any'
 				}

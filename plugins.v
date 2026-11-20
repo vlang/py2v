@@ -1626,7 +1626,6 @@ pub fn dispatch_itertools_func(mut t VTranspiler, fname string, args []string) (
 		}
 		'repeat' {
 			// itertools.repeat(x, n) → []T{len: n, init: x}
-			t.generated_code_has_any_type = true
 			if args.len >= 2 {
 				return '[]Any{len: ${args[1]}, init: ${args[0]}} /* itertools.repeat */', true
 			}
@@ -1645,24 +1644,19 @@ pub fn dispatch_itertools_func(mut t VTranspiler, fname string, args []string) (
 		'zip_longest' {
 			// itertools.zip_longest(*its) — no direct equivalent
 			t.add_using('arrays')
-			t.generated_code_has_any_type = true
 			return '[][]Any{} /* itertools.zip_longest: use arrays.group or manual padding loop */', true
 		}
 		'product' {
 			// itertools.product(a, b) — nested loops; emit stub
-			t.generated_code_has_any_type = true
 			return '[][]Any{} /* itertools.product(${args.join(', ')}): use nested for loops */', true
 		}
 		'combinations', 'combinations_with_replacement' {
-			t.generated_code_has_any_type = true
 			return '[][]Any{} /* itertools.${fn_name}(${args.join(', ')}): no direct V equivalent */', true
 		}
 		'permutations' {
-			t.generated_code_has_any_type = true
 			return '[][]Any{} /* itertools.permutations(${args.join(', ')}): no direct V equivalent */', true
 		}
 		'groupby' {
-			t.generated_code_has_any_type = true
 			return '[][]Any{} /* itertools.groupby(${args.join(', ')}): no direct V equivalent */', true
 		}
 		'takewhile' {
@@ -1672,15 +1666,12 @@ pub fn dispatch_itertools_func(mut t VTranspiler, fname string, args []string) (
 			return '', false
 		}
 		'dropwhile' {
-			t.generated_code_has_any_type = true
 			return '[]Any{} /* itertools.dropwhile(${args.join(', ')}): no direct V equivalent */', true
 		}
 		'starmap' {
-			t.generated_code_has_any_type = true
 			return '[]Any{} /* itertools.starmap(${args.join(', ')}): use .map() with destructuring */', true
 		}
 		'accumulate' {
-			t.generated_code_has_any_type = true
 			return '[]Any{} /* itertools.accumulate(${args.join(', ')}): use a manual accumulate loop */', true
 		}
 		'flatten' {
