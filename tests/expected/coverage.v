@@ -1,5 +1,7 @@
 module main
 
+import strconv
+
 fn inline_pass() {
 	// pass
 }
@@ -11,7 +13,15 @@ fn inline_ellipsis() {
 fn indexing() int {
 	mut sum := 0
 	mut a := []int{}
-	for i in []int{len: 10, init: index} {
+	py2v_range_start1 := int(0)
+	py2v_range_stop2 := int(10)
+	py2v_range_step3 := int(1)
+	if py2v_range_step3 == 0 { panic('ValueError: range() arg 3 must not be zero') }
+	for i := py2v_range_start1; if py2v_range_step3 > 0 {
+		i < py2v_range_stop2
+	} else {
+		i > py2v_range_stop2
+	}; i = py2v_range_next1(i, py2v_range_stop2, py2v_range_step3) {
 		a << i
 		sum += a[i]
 	}
@@ -32,11 +42,27 @@ fn show() {
 	b10 := 2
 	assert b9 == b10
 	a2 := 2.1
-	println(a2)
-	for i in []int{len: 10 - 0, init: index + 0} {
+	println(py2v_float_text1(a2))
+	py2v_range_start4 := int(0)
+	py2v_range_stop5 := int(10)
+	py2v_range_step6 := int(1)
+	if py2v_range_step6 == 0 { panic('ValueError: range() arg 3 must not be zero') }
+	for i := py2v_range_start4; if py2v_range_step6 > 0 {
+		i < py2v_range_stop5
+	} else {
+		i > py2v_range_stop5
+	}; i = py2v_range_next1(i, py2v_range_stop5, py2v_range_step6) {
 		println(i)
 	}
-	for i := 0; i < 10; i += 2 {
+	py2v_range_start7 := int(0)
+	py2v_range_stop8 := int(10)
+	py2v_range_step9 := int(2)
+	if py2v_range_step9 == 0 { panic('ValueError: range() arg 3 must not be zero') }
+	for i := py2v_range_start7; if py2v_range_step9 > 0 {
+		i < py2v_range_stop8
+	} else {
+		i > py2v_range_stop8
+	}; i = py2v_range_next1(i, py2v_range_stop8, py2v_range_step9) {
 		println(i)
 	}
 	a3 := -a1
@@ -85,6 +111,40 @@ fn show() {
 	assert 'aaabbccc'.contains('bbc')
 	assert !!(1 != 0)
 	c1_, _, c2_ = 1, 2, 3
+}
+
+fn py2v_range_next1(current int, stop int, step int) int {
+	if step > 0 {
+		if u64(step) >= u64(stop) - u64(current) {
+			return stop
+		}
+	} else if u64(0) - u64(step) >= u64(current) - u64(stop) {
+		return stop
+	}
+	return current + step
+}
+
+fn py2v_float_text1[T](value T) string {
+	$if T is $float {
+		scientific := strconv.f64_to_str(f64(value), 16)
+		marker := scientific.index('e') or { return scientific.trim_left('+') }
+		exponent := scientific[marker + 1..].int()
+		if exponent < -4 || exponent >= 16 {
+			return scientific
+		}
+		sign := if scientific.starts_with('-') { '-' } else { '' }
+		digits := scientific[sign.len..marker].replace('.', '')
+		point := exponent + 1
+		if point <= 0 {
+			return sign + '0.' + '0'.repeat(-point) + digits
+		}
+		if point >= digits.len {
+			return sign + digits + '0'.repeat(point - digits.len) + '.0'
+		}
+		return sign + digits[..point] + '.' + digits[point..]
+	} $else {
+		return value.str()
+	}
 }
 
 fn main() {

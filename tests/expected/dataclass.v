@@ -10,7 +10,7 @@ pub mut:
 pub struct Circle {
 pub mut:
 	center &Point
-	radius f64 = 1
+	radius f64 = 1.0
 }
 
 fn show() {
@@ -22,7 +22,7 @@ fn show() {
 	println(p.label)
 	c := Circle{
 		center: p
-		radius: 3
+		radius: 3.0
 	}
 	println(c.radius)
 }

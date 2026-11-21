@@ -11,7 +11,7 @@ fn describe(name string, items []int, count int, ratio f64) string {
 	if count != 0 && items.len > 0 {
 		parts << 'counted'
 	}
-	if !(ratio != 0) || !(name != '') {
+	if !(ratio != 0.0) || !(name != '') {
 		parts << 'zero or anonymous'
 	}
 	mut left := count
@@ -42,7 +42,7 @@ fn main() {
 	some_words := ['a', '', 'bb']
 	no_words := []string{}
 	println(describe('x', full, 2, 0.5))
-	println(describe('', empty, 0, 0))
+	println(describe('', empty, 0, 0.0))
 	println(tally(some_words))
 	println(tally(no_words))
 }

@@ -58,8 +58,7 @@ class AnalysisContext:
     facts: Optional[Any] = None
 
     def scalar_annotation(self, node: ast.AST) -> str:
-        """`int`, `float`, `string` or `bool` when that is the type of the expression (the
-        type the code shows, else the one its annotations declare), else an empty string."""
+        """The native annotation for an expression whose type is known or declared."""
         if self.facts is None:
             return ""
         type_id = getattr(node, "_assumed", None)
@@ -73,10 +72,16 @@ class AnalysisContext:
             elem = self.facts.types[type_id].get("elem")
             inner = self.facts.types[elem]["k"] if isinstance(elem, int) else ""
             return {"str": "[]string", "bool": "[]bool"}.get(inner, "")
+        if kind in ("tuple", "tuple_of"):
+            shape = self.facts.types[type_id]
+            members = shape["elems"] if kind == "tuple" else [shape["elem"]]
+            if members and all(self.facts.types[member]["k"] == "int" for member in members):
+                return "tuple[int, ...]"
         if kind == "int" and self._holds_declared_float(node):
             # `x: float` called with 1 holds an int in Python, but V declares it f64
             return ""
-        return {"int": "int", "float": "float", "str": "string", "bool": "bool"}.get(kind, "")
+        return {"int": "int", "float": "float", "str": "string", "bool": "bool",
+                "bytes": "bytes"}.get(kind, "")
 
     def _holds_declared_float(self, node: ast.AST) -> bool:
         for part in ast.walk(node):
@@ -2635,6 +2640,9 @@ def _node_to_dict(node: ast.AST, mutable_vars: Set[str],
     elif isinstance(node, ast.Constant):
         result["value"] = _constant_value(node.value)
         result["kind"] = node.kind
+        if type(node.value) is int and not -(1 << 63) <= node.value < 1 << 63:
+            result["value"] = str(node.value)
+            result["kind"] = "py2v_large_int"
         # Provide v_annotation for primitive literal types to help downstream
         # type-aware transpilation in the backend.
         if isinstance(node.value, bool):
@@ -2642,7 +2650,9 @@ def _node_to_dict(node: ast.AST, mutable_vars: Set[str],
         elif isinstance(node.value, int):
             result["v_annotation"] = "int"
         elif isinstance(node.value, float):
-            result["v_annotation"] = "float"
+            # An explicit empty annotation also blocks inferred fallback below.
+            result["v_annotation"] = ("" if getattr(node, "_integral_float_rebound", False)
+                                      else "float")
         elif isinstance(node.value, str):
             result["v_annotation"] = "string"
         elif isinstance(node.value, bytes):
@@ -2686,6 +2696,18 @@ def _node_to_dict(node: ast.AST, mutable_vars: Set[str],
             result["v_annotation"] = var_annotations[node.id]
 
     elif isinstance(node, (ast.List, ast.Tuple)):
+        # Native V lists cannot preserve a separate float tag for an integral
+        # float beside ints. Do not turn formerly integral native lists into
+        # f64 lists until the mixed-element representation can preserve tags.
+        if (isinstance(node, ast.List) and node.elts
+                and all(isinstance(e, ast.Constant)
+                        and (type(e.value) is int or type(e.value) is float
+                             and e.value.is_integer() and -(1 << 31) <= e.value < (1 << 31))
+                        for e in node.elts)
+                and any(type(e.value) is int for e in node.elts)):
+            for element in node.elts:
+                if type(element.value) is float:
+                    element._integral_float_rebound = True
         result["elts"] = [_node_to_dict(e, mutable_vars, redefined, ctx) for e in node.elts]
         result["ctx"] = {"node_type": type(node.ctx).__name__}
 
@@ -4131,6 +4153,8 @@ def _literal_scalar(node: ast.expr) -> Optional[ast.Constant]:
 
 
 def _literal_text_value(node: ast.expr) -> Optional[ast.Constant]:
+    if isinstance(node, ast.Constant) and type(node.value) is bytes:
+        return node
     scalar = _literal_scalar(node)
     if scalar is not None:
         return scalar
@@ -4219,7 +4243,7 @@ def _lower_literal_text(tree: ast.Module, table: Optional[symbols.SymbolTable],
         value = literal.value
         # A large JSON integer can reach the V backend as an f64. Even the
         # negative 32-bit minimum has an out-of-range positive AST operand.
-        if (type(value) in (float, list, tuple, dict, set)
+        if (type(value) in (float, bytes, list, tuple, dict, set)
                 or type(value) is int and abs(value) >= 1 << 31
                 or for_str and (value is None or type(value) is bool)):
             try:
@@ -4251,6 +4275,15 @@ def _lower_literal_text(tree: ast.Module, table: Optional[symbols.SymbolTable],
                 return node
 
         def visit_BinOp(self, node: ast.BinOp) -> ast.AST:
+            if isinstance(node.op, ast.Pow):
+                left, right = _literal_scalar(node.left), _literal_scalar(node.right)
+                if (left is not None and right is not None and type(left.value) is int
+                        and type(right.value) is int and 0 <= right.value <= 4096
+                        and left.value.bit_length() * right.value <= 4096):
+                    value = left.value ** right.value
+                    if not -(1 << 63) <= value < 1 << 63:
+                        return ast.copy_location(ast.Constant(value=value), node)
+                return node
             if (not isinstance(node.op, ast.Mod) or not isinstance(node.left, ast.Constant)
                     or type(node.left.value) is not str):
                 return node
@@ -4273,6 +4306,16 @@ def _lower_literal_text(tree: ast.Module, table: Optional[symbols.SymbolTable],
                         if rendered is not None else node)
             if not isinstance(node.func, ast.Name) or getattr(node.func, "_binding", None) is not None:
                 return node
+            if node.func.id == "round" and len(node.args) in (1, 2) and not node.keywords:
+                args = [_literal_scalar(arg) for arg in node.args]
+                if (args[0] is not None and type(args[0].value) in (int, float, bool)
+                        and (len(args) == 1 or args[1] is not None
+                             and type(args[1].value) in (int, bool, type(None)))):
+                    try:
+                        value = round(args[0].value, args[1].value if len(args) == 2 else None)
+                    except (OverflowError, ValueError):
+                        return node
+                    return ast.copy_location(ast.Constant(value=value), node)
             if node.func.id == "print":
                 node.args = [text(arg, False) for arg in node.args]
             elif node.func.id == "str" and len(node.args) == 1 and not node.keywords:
@@ -4299,8 +4342,11 @@ def _lower_literal_text(tree: ast.Module, table: Optional[symbols.SymbolTable],
             converted = lower.visit_Call(node)
         elif isinstance(node, ast.FormattedValue):
             converted = lower.visit_FormattedValue(node)
-        elif isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mod):
+        elif isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Mod, ast.Pow)):
             converted = lower.visit_BinOp(node)
+        elif (isinstance(node, ast.UnaryOp) and isinstance(node.operand, ast.Constant)
+              and type(node.operand.value) is int and node.operand.value >= 1 << 63):
+            converted = _literal_scalar(node) or node
         else:
             continue
         if converted is not node:
@@ -4826,8 +4872,149 @@ def _iterate_string_characters(tree: ast.Module, facts: Optional[infer.TypeFacts
         return new
 
     for node in ast.walk(tree):
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                and node.func.id == "list" and getattr(node.func, "_binding", None) is None
+                and len(node.args) == 1 and not node.keywords):
+            converted = characters(node.args[0])
+            if converted is not node.args[0]:
+                assert isinstance(converted, ast.Call)
+                node.func, node.args = converted.func, converted.args
         if isinstance(node, (ast.For, ast.AsyncFor, ast.comprehension)):
-            node.iter = characters(node.iter)
+            iterable = node.iter
+            if (isinstance(iterable, ast.Call) and isinstance(iterable.func, ast.Name)
+                    and iterable.func.id == "enumerate"
+                    and getattr(iterable.func, "_binding", None) is None and iterable.args):
+                iterable.args[0] = characters(iterable.args[0])
+            node.iter = characters(iterable)
+
+
+
+def _cache_indexed_string_loops(tree: ast.Module, facts: Optional[infer.TypeFacts]) -> None:
+    """Decode an unchanged string once for range(len(s)) indexing loops.
+
+    V's native string index is a byte; decoding runes for each s[i] is quadratic.
+    Restrict caching to a loop with simple, side-effect-free index operations so
+    no rebind of s can make the cached characters stale.
+    """
+    if facts is None:
+        return
+    used = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)}
+    counter = 0
+
+    def transform(block: List[ast.stmt]) -> List[ast.stmt]:
+        nonlocal counter
+        out = []
+        for stmt in block:
+            if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef,
+                                 ast.For, ast.While, ast.If, ast.With, ast.Try)):
+                for field_name in ("body", "orelse", "finalbody"):
+                    nested = getattr(stmt, field_name, None)
+                    if isinstance(nested, list):
+                        setattr(stmt, field_name, transform(nested))
+            if not isinstance(stmt, ast.For) or not isinstance(stmt.target, ast.Name):
+                out.append(stmt)
+                continue
+            iterator = stmt.iter
+            if (not isinstance(iterator, ast.Call) or not isinstance(iterator.func, ast.Name)
+                    or iterator.func.id != "range"
+                    or getattr(iterator.func, "_binding", None) is not None
+                    or len(iterator.args) != 1 or iterator.keywords):
+                out.append(stmt)
+                continue
+            count = iterator.args[0]
+            if (not isinstance(count, ast.Call) or not isinstance(count.func, ast.Name)
+                    or count.func.id != "len" or getattr(count.func, "_binding", None) is not None
+                    or len(count.args) != 1 or count.keywords
+                    or not isinstance(count.args[0], ast.Name)):
+                out.append(stmt)
+                continue
+            original = count.args[0]
+            if _truth_kind(original, facts) != "str":
+                out.append(stmt)
+                continue
+            target = stmt.target.id
+            string_name = original.id
+            parts = [part for body_stmt in stmt.body for part in ast.walk(body_stmt)]
+            # Only primitive accumulation and expression statements can use
+            # the snapshot. A user-defined __iadd__, attribute access, or
+            # another subscript may mutate a global string indirectly.
+            if (any(not isinstance(body_stmt, (ast.AugAssign, ast.Expr, ast.Pass))
+                    for body_stmt in stmt.body)
+                    or any(isinstance(body_stmt, ast.AugAssign)
+                           and (not isinstance(body_stmt.target, ast.Name)
+                                or _truth_kind(body_stmt.target, facts)
+                                not in ("int", "float"))
+                           for body_stmt in stmt.body)):
+                out.append(stmt)
+                continue
+            if any(isinstance(part, (ast.Attribute, ast.ListComp, ast.SetComp,
+                                     ast.DictComp, ast.GeneratorExp, ast.BinOp,
+                                     ast.Compare, ast.Yield, ast.YieldFrom,
+                                     ast.Await, ast.Raise, ast.Return))
+                   for part in parts):
+                out.append(stmt)
+                continue
+            # No nested control flow, rebinding, or unproved function calls.
+            if any(isinstance(part, (ast.For, ast.While, ast.If, ast.With, ast.Try,
+                                     ast.FunctionDef, ast.AsyncFunctionDef,
+                                     ast.Lambda, ast.NamedExpr, ast.Delete))
+                   for part in parts):
+                out.append(stmt)
+                continue
+            if any(isinstance(part, ast.Name) and part.id in (target, string_name)
+                   and isinstance(part.ctx, (ast.Store, ast.Del)) for part in parts):
+                out.append(stmt)
+                continue
+            if any(isinstance(part, ast.Call)
+                   and (not isinstance(part.func, ast.Name)
+                        or part.func.id != "ord"
+                        or getattr(part.func, "_binding", None) is not None
+                        or len(part.args) != 1 or part.keywords
+                        or not isinstance(part.args[0], ast.Subscript)
+                        or not isinstance(part.args[0].value, ast.Name)
+                        or part.args[0].value.id != string_name
+                        or not isinstance(part.args[0].slice, ast.Name)
+                        or part.args[0].slice.id != target)
+                   for part in parts):
+                out.append(stmt)
+                continue
+            if any(isinstance(part, ast.Subscript)
+                   and (not isinstance(part.value, ast.Name)
+                        or part.value.id != string_name
+                        or not isinstance(part.slice, ast.Name)
+                        or part.slice.id != target)
+                   for part in parts):
+                out.append(stmt)
+                continue
+            accesses = [part for part in parts if isinstance(part, ast.Subscript)
+                        and isinstance(part.value, ast.Name)
+                        and part.value.id == string_name
+                        and isinstance(part.slice, ast.Name) and part.slice.id == target]
+            if not accesses:
+                out.append(stmt)
+                continue
+            counter += 1
+            cache = f"py2v_cached_chars_{counter}"
+            while cache in used:
+                counter += 1
+                cache = f"py2v_cached_chars_{counter}"
+            used.add(cache)
+            split = ast.Call(func=ast.Attribute(value=ast.copy_location(
+                                 ast.Name(id=string_name, ctx=ast.Load()), original),
+                                 attr="split", ctx=ast.Load()),
+                             args=[ast.Constant(value="")], keywords=[])
+            assignment = ast.copy_location(ast.Assign(
+                targets=[ast.copy_location(ast.Name(id=cache, ctx=ast.Store()), original)],
+                value=split), stmt)
+            count.args[0] = ast.copy_location(ast.Name(id=cache, ctx=ast.Load()), original)
+            for access in accesses:
+                access.value = ast.copy_location(ast.Name(id=cache, ctx=ast.Load()), access.value)
+                access._runtime_annotation = "string"
+            out.append(assignment)
+            out.append(stmt)
+        return out
+
+    tree.body = transform(tree.body)
 
 
 def _state_module_name(tree: ast.Module, module_name: Optional[str]) -> None:
@@ -8916,6 +9103,7 @@ def process_file(file_path: str, project: Optional[ProjectFacts] = None) -> str:
     _mark_isinstance_inferred(tree, table, facts)
     _drop_unreachable_type_errors(tree)
     _iterate_string_characters(tree, facts)
+    _cache_indexed_string_loops(tree, facts)
     if project is None:
         _annotate_parameters_from_calls(tree, table, facts)
     _annotate_returns(tree, facts)
@@ -9016,6 +9204,44 @@ def process_file(file_path: str, project: Optional[ProjectFacts] = None) -> str:
         facts=facts,
     )
     ctx.class_field_types = _class_field_types(tree, ctx.slots_by_class)
+
+    # An integral float literal is unsafe to preserve as native f64 when an
+    # ordinary int is later assigned to the same Python binding.
+    int_writes = set()
+    float_starts = []
+    int_returns = set()
+    for fn in tree.body:
+        if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            returns = [n.value for n in ast.walk(fn) if isinstance(n, ast.Return)]
+            if (fn.name in ctx.func_ret_annotations
+                    and ctx.func_ret_annotations[fn.name] == "int"
+                    or returns and all(isinstance(v, ast.Constant)
+                                       and type(v.value) is int for v in returns)):
+                int_returns.add(fn.name)
+    for stmt in ast.walk(tree):
+        if not isinstance(stmt, ast.Assign) or len(stmt.targets) != 1:
+            continue
+        target = stmt.targets[0]
+        if not isinstance(target, ast.Name):
+            continue
+        binding = getattr(target, "_binding", None)
+        if binding is None:
+            continue
+        rhs = stmt.value
+        if (ctx.scalar_annotation(rhs) == "int"
+                or getattr(rhs, "_runtime_annotation", "") == "int"
+                or isinstance(rhs, ast.Constant) and type(rhs.value) is int
+                or isinstance(rhs, ast.Name) and ctx.var_annotations.get(rhs.id) == "int"
+                or isinstance(rhs, ast.Call) and isinstance(rhs.func, ast.Name)
+                and rhs.func.id in int_returns):
+            int_writes.add(binding)
+        if (isinstance(stmt.value, ast.Constant)
+                and type(stmt.value.value) is float and stmt.value.value.is_integer()
+                and -(1 << 31) <= stmt.value.value < (1 << 31)):
+            float_starts.append((binding, stmt.value))
+    for binding, literal in float_starts:
+        if binding in int_writes:
+            literal._integral_float_rebound = True
 
     result = _node_to_dict(tree, mutable_vars, redefined, ctx)
     return json.dumps(result)

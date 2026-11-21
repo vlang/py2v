@@ -23,7 +23,7 @@ fn show_py(text string) ! {
 	println(if found == none { 'True' } else { 'False' })
 	println(if re.fullmatch('\\d+', '123', 0)!.opt() != none { 'True' } else { 'False' })
 	elapsed := pytime.time_() - start
-	println((if elapsed >= 0 { 'True' } else { 'False' }).str() + ' ' + (if pytime.monotonic() > 0 {
+	println((if elapsed >= 0.0 { 'True' } else { 'False' }).str() + ' ' + (if pytime.monotonic() > 0 {
 		'True'
 	} else {
 		'False'

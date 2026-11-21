@@ -9,18 +9,21 @@ fn main_func() {
 	println(if 'hi'.len < 6 { strings.repeat(' '[0], 6 - 'hi'.len) + 'hi' } else { 'hi' })
 	println(if 'hi'.len < 6 { 'hi' + strings.repeat('*'[0], 6 - 'hi'.len) } else { 'hi' })
 	println(if 'hi'.len < 6 { strings.repeat('-'[0], 6 - 'hi'.len) + 'hi' } else { 'hi' })
-	println(if 'hi'.len < 6 {
-		lpad := (6 - 'hi'.len) / 2
-		strings.repeat(' '[0], lpad) + 'hi' + strings.repeat(' '[0], 6 - 'hi'.len - lpad)
-	} else {
-		'hi'
-	})
-	println(if 'hi'.len < 7 {
-		lpad := (7 - 'hi'.len) / 2
-		strings.repeat('-'[0], lpad) + 'hi' + strings.repeat('-'[0], 7 - 'hi'.len - lpad)
-	} else {
-		'hi'
-	})
+	println(py2v_string_center1('hi', 6, ' '))
+	println(py2v_string_center1('hi', 7, '-'))
+}
+
+fn py2v_string_center1(value string, width int, fill string) string {
+	if fill.runes().len != 1 {
+		panic('TypeError: The fill character must be exactly one character long')
+	}
+	length := value.runes().len
+	if width <= length {
+		return value
+	}
+	padding := width - length
+	left := padding / 2 + (padding & width & 1)
+	return fill.repeat(left) + value + fill.repeat(padding - left)
 }
 
 fn main() {

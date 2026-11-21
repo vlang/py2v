@@ -11,8 +11,14 @@ fn main_func() {
 	println(e)
 	println(a.len)
 	println(c.len)
-	println(c[0])
-	println(c[c.len - 1])
+	println(py2v_string_index1(c, 0))
+	println(py2v_string_index1(c, -1))
+}
+
+fn py2v_string_index1(value string, index int) string {
+	chars := value.runes()
+	offset := if index < 0 { chars.len + index } else { index }
+	return chars[offset].str()
 }
 
 fn main() {

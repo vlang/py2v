@@ -38,7 +38,15 @@ fn forward() int {
 
 fn loop() int {
 	mut result := 0
-	for value in []int{len: 2, init: index} {
+	py2v_range_start1 := int(0)
+	py2v_range_stop2 := int(2)
+	py2v_range_step3 := int(1)
+	if py2v_range_step3 == 0 { panic('ValueError: range() arg 3 must not be zero') }
+	for value := py2v_range_start1; if py2v_range_step3 > 0 {
+		value < py2v_range_stop2
+	} else {
+		value > py2v_range_stop2
+	}; value = py2v_range_next1(value, py2v_range_stop2, py2v_range_step3) {
 		read := py2v_unsupported_closure_loop_capture(fn (value int) int {
 			return value + 2
 		})
@@ -48,11 +56,11 @@ fn loop() int {
 }
 
 fn default(n int) int {
-	py2v_default1 := n + 1
+	py2v_default4 := n + 1
 	read := fn (x int) int {
 		return x + 3
 	}
-	return read(py2v_default1)
+	return read(py2v_default4)
 }
 
 fn rebound_function() int {
@@ -66,4 +74,15 @@ fn rebound_function() int {
 		return 2
 	}
 	return read()
+}
+
+fn py2v_range_next1(current int, stop int, step int) int {
+	if step > 0 {
+		if u64(step) >= u64(stop) - u64(current) {
+			return stop
+		}
+	} else if u64(0) - u64(step) >= u64(current) - u64(stop) {
+		return stop
+	}
+	return current + step
 }

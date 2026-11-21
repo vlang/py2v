@@ -206,6 +206,10 @@ fn visit_print(mut t VTranspiler, node Call, args []string) (string, bool) {
 			parts << bool_to_python_str(arg_str)
 			continue
 		}
+		if text := t.native_scalar_text(arg, arg_str) {
+			parts << text
+			continue
+		}
 		// Native maps with runtime values need Python's recursive representation.
 		if inferred.starts_with('map[') && (inferred.ends_with(']Any')
 			|| inferred.ends_with(']pyrt.Value')) {
@@ -333,10 +337,6 @@ fn visit_int(node Call, args []string) (string, bool) {
 		}
 		ann := get_v_annotation(node.args[0])
 		if ann == 'string' {
-			// One character of a string is a byte in V (vk:string-index-is-a-byte)
-			if node.args[0] is Subscript && (node.args[0] as Subscript).slice !is Slice {
-				return '${args[0]}.ascii_str().int()', true
-			}
 			return '${as_receiver(args[0])}.int()', true
 		}
 	}
@@ -365,11 +365,14 @@ fn visit_float(node Call, args []string) (string, bool) {
 }
 
 // Handle str() call
-fn visit_str(args []string) (string, bool) {
+fn visit_str(mut t VTranspiler, node Call, args []string) (string, bool) {
 	if args.len == 0 {
 		return "''", true
 	}
 	arg := args[0]
+	if text := t.native_scalar_text(node.args[0], arg) {
+		return text, true
+	}
 	// A string literal is its own text; anything else is converted, which V's
 	// `.str()` also accepts on a string.
 	if arg.len > 1 && arg[0] in [`'`, `"`] && arg[arg.len - 1] == arg[0] {
@@ -379,6 +382,26 @@ fn visit_str(args []string) (string, bool) {
 		return '${arg}.str()', true
 	}
 	return '(${arg}).str()', true
+}
+
+// native_scalar_text converts V values whose default text differs from Python's.
+fn (mut t VTranspiler) native_scalar_text(expr Expr, code string) ?string {
+	typ := t.infer_expr_type(expr)
+	if typ == 'bool' {
+		return '${t.runtime_helper('bool_text')}(${code})'
+	}
+	if typ in ['f32', 'f64', 'float'] {
+		t.add_using('strconv')
+		return '${t.runtime_helper('float_text')}(${code})'
+	}
+	if get_expr_annotation(expr) == 'bytes' || (expr is Constant && expr.value is BytesValue) {
+		t.add_using('strings')
+		return '${t.runtime_helper('bytes_text')}(${code})'
+	}
+	if get_expr_annotation(expr) in ['tuple[int, ...]', 'tuple[int, Ellipsis]'] {
+		return '${t.runtime_helper('int_tuple_text')}(${code})'
+	}
+	return none
 }
 
 fn is_simple_identifier(s string) bool {
@@ -1049,7 +1072,10 @@ fn visit_divmod(mut t VTranspiler, node Call, args []string) (string, bool) {
 }
 
 // Handle ord() call - get unicode code point of character
-fn visit_ord(args []string) (string, bool) {
+fn visit_ord(mut t VTranspiler, node Call, args []string) (string, bool) {
+	if t.infer_expr_type(node.args[0]) == 'string' {
+		return 'int(${as_receiver(args[0])}.runes()[0])', true
+	}
 	return '${as_receiver(args[0])}[0]', true
 }
 
@@ -1060,7 +1086,13 @@ fn visit_chr(args []string) (string, bool) {
 }
 
 // Handle reversed() call
-fn visit_reversed(args []string) (string, bool) {
+fn visit_reversed(mut t VTranspiler, node Call, args []string) (string, bool) {
+	if args.len != 1 {
+		return '', false
+	}
+	if t.infer_expr_type(node.args[0]) == 'string' {
+		return '${as_receiver(args[0])}.runes().reverse().map(it.str())', true
+	}
 	return '${as_receiver(args[0])}.reverse()', true
 }
 
@@ -1125,7 +1157,7 @@ fn dispatch_builtin_impl(mut t VTranspiler, fname string, node Call, args []stri
 			return DispatchResult{code, handled, ''}
 		}
 		'str' {
-			code, handled := visit_str(args)
+			code, handled := visit_str(mut t, node, args)
 			return DispatchResult{code, handled, ''}
 		}
 		'len' {
@@ -1330,7 +1362,7 @@ fn dispatch_builtin_impl(mut t VTranspiler, fname string, node Call, args []stri
 			return DispatchResult{code, handled, ''}
 		}
 		'ord' {
-			code, handled := visit_ord(args)
+			code, handled := visit_ord(mut t, node, args)
 			return DispatchResult{code, handled, ''}
 		}
 		'chr' {
@@ -1344,7 +1376,7 @@ fn dispatch_builtin_impl(mut t VTranspiler, fname string, node Call, args []stri
 			return DispatchResult{'${t.runtime_helper('bin')}(i64(${args[0]}))', true, 'strconv'}
 		}
 		'reversed' {
-			code, handled := visit_reversed(args)
+			code, handled := visit_reversed(mut t, node, args)
 			return DispatchResult{code, handled, ''}
 		}
 		'logging.debug', 'logging.info', 'logging.warning', 'logging.warn', 'logging.error',

@@ -1,7 +1,6 @@
 # case	class	reason	platforms
 # An omitted or empty platforms column applies everywhere.
 # Use v tests/run_tests.vsh -lower for passing defects whose rows name no other platform.
-abs_round	differs	Line 4: CPython prints 4, V prints 4.0. round() without ndigits returns an int.
 annotation_syntax	does-not-compile	undefined ident: `int`
 async_def_in_async_with	does-not-compile	unknown function: py2v_unsupported_qualified_call
 await_wrappers	differs	Line 1: CPython starts a traceback for asyncio.run() inside a running event loop. V prints nothing.
@@ -32,12 +31,10 @@ exception_union_init	needs-dependency	Requires a package context for the relativ
 exceptions	differs	line 1: CPython [caught], V [V panic: Exception: foo]
 fib_with_argparse	needs-dependency	Imports argparse_dataclass, which the suite does not install.
 format_dotted	does-not-compile	type `P_struct` has no field named `name`
-fstring_format_specs	differs	line 1: CPython [0.12 2 10000000000000000000000.00 -0.0], V [0.13 3 10000000000000000000000.00 -0.0]	windows
 functools_decorators	does-not-compile	unknown function: func
 generator	does-not-compile	expected 1 argument, but got 0
 generator_value_context	does-not-compile	unknown function: py2v_unsupported_generator_send
 generic_annotation_optional_argument	does-not-compile	undefined ident: `var`
-generics_long_names	differs	Linux line 3: CPython [1], V [140732161421512]. Windows line 3: CPython [1], V [38338032]. V prints an uninitialized memory value.	linux,windows
 generics_protocol	does-not-compile	no argument generic function must add concrete types, e.g. foo[int]()
 getattr_computed_name	does-not-compile	left operand for `||` is not a boolean
 getattr_setattr	does-not-compile	`c` is immutable, declare it with `mut` to make it mutable
@@ -57,7 +54,6 @@ list_iteration_call_refusal	differs	line 1: CPython [[1, 2, 3]], V [V panic: py2
 list_iteration_slice_refusal	differs	line 1: CPython [[4, 5, 6] [1, 5, 6]], V [V panic: py2v_unsupported_list_identity: list aliases cannot be preserved]
 list_ops	does-not-compile	mismatched types `[]int` and `[]int`
 list_scoped_escape_refusal	does-not-compile	unknown function: py2v_unsupported_list_identity_module1
-list_slice	differs	line 6: CPython [[0, 2, 4, 6, 8]], V [[0, 1, 2, 3, 4, 5, 6, 7, 8, 9]]
 literals_annot	does-not-compile	invalid number of operand for `+`. Only one allowed on each side.
 literals_more	does-not-compile	cannot assign a `none` value to a variable
 logging_calls	differs	line 2: CPython [logging_calls.py:11: DeprecationWarning: The 'warn' function is deprecated, use 'warning' instead], V [WARNING:root:also a warning]
@@ -73,10 +69,8 @@ property_decorator	does-not-compile	`t` is immutable, declare it with `mut` to m
 pydantic_field_defaults	needs-dependency	Imports pydantic, which the suite does not install.
 qualified_constant_conditions	does-not-compile	undefined ident: `token`
 random_module	nondeterministic	Prints whether an unseeded sequence of dice rolls contains a six.
-range_loops	differs	line 12: CPython [5], V []
 rebound_optional_float	does-not-compile	mutable arguments are only allowed for arrays, interfaces, maps, pointers, structs or their aliases
 rebound_optional_int	does-not-compile	mutable arguments are only allowed for arrays, interfaces, maps, pointers, structs or their aliases
-reversed_func	differs	line 6: CPython [o], V [111]
 runtime_block_locals	needs-sqlite	V cannot link thirdparty/sqlite.	windows
 runtime_class_annotations	needs-sqlite	V cannot link thirdparty/sqlite.	windows
 runtime_process_and_hashes	differs	line 3: CPython [hi], V [failed CreateFileW stdin: The system cannot find the path specified.]	windows
@@ -91,9 +85,6 @@ sqlite_runtime	needs-sqlite	V cannot link thirdparty/sqlite.	windows
 sqlite_untyped_handles	needs-sqlite	V cannot link thirdparty/sqlite.	windows
 staticmethod_classmethod	does-not-compile	function name `MathHelper_add` cannot contain uppercase letters, use snake_case instead
 stdio	does-not-compile	undefined ident: `sys`
-string_methods_extended	differs	line 5: CPython [b'hello'], V [[104, 101, 108, 108, 111]]
-string_ops	differs	line 6: CPython [H], V [72]
-string_padding	differs	line 8: CPython [---hi--], V [--hi---]
 subparser_nonargparse	does-not-compile	cannot use `CustomBuilder` as `Any` in argument 1 to `add_custom_py`
 subscript_slice_axis	does-not-compile	field `start` does not exist or have the same type in these sumtype `pyrt.Value` variants:
 super_calls	does-not-compile	unknown function: py2v_unsupported_super_init
@@ -110,7 +101,6 @@ try_comprehension_unproven	does-not-compile	undefined ident: `values`
 try_else	differs	line 2: CPython [else], V [finally]
 try_except_runtime	needs-sqlite	V cannot link thirdparty/sqlite.	windows
 try_finally_in_finally_jump	does-not-compile	unknown function: py2v_unsupported_jump_out_of_try_finally_inside_finally
-tuple_ops	differs	line 1: CPython [(1, 2, 3)], V [[1, 2, 3]]
 typing_constructs	does-not-compile	Option type `int` cannot be called directly, you should unwrap it first
 unresolved_qualified_call	needs-dependency	Imports the intentionally unavailable module.
 unsupported_closure_capture	does-not-compile	unknown function: py2v_unsupported_closure_forward_capture

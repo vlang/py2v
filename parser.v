@@ -987,12 +987,17 @@ fn parse_expr_stmt(m map[string]json2.Any) ExprStmt {
 // Parse Constant
 fn parse_constant(m map[string]json2.Any) Constant {
 	raw_val := m['value'] or { json2.Any(json2.Null{}) }
-	value := parse_constant_value(raw_val)
+	annotation := parse_type_annotation(m) or { '' }
+	value := if annotation == 'float' && raw_val !is json2.Null {
+		ConstantValue(raw_val.f64())
+	} else {
+		parse_constant_value(raw_val)
+	}
 	return Constant{
 		value:        value
 		kind:         parse_optional_string(m['kind'] or { json2.Any(json2.Null{}) })
 		loc:          parse_location(m)
-		v_annotation: parse_type_annotation(m) or { '' }
+		v_annotation: annotation
 	}
 }
 

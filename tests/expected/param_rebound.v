@@ -1,5 +1,7 @@
 module main
 
+import strconv
+
 pub struct Counter {
 pub mut:
 	total int
@@ -53,13 +55,36 @@ fn clamp(py2v_x_in4 f64, lo f64) f64 {
 	return x
 }
 
+fn py2v_float_text1[T](value T) string {
+	$if T is $float {
+		scientific := strconv.f64_to_str(f64(value), 16)
+		marker := scientific.index('e') or { return scientific.trim_left('+') }
+		exponent := scientific[marker + 1..].int()
+		if exponent < -4 || exponent >= 16 {
+			return scientific
+		}
+		sign := if scientific.starts_with('-') { '-' } else { '' }
+		digits := scientific[sign.len..marker].replace('.', '')
+		point := exponent + 1
+		if point <= 0 {
+			return sign + '0.' + '0'.repeat(-point) + digits
+		}
+		if point >= digits.len {
+			return sign + digits + '0'.repeat(point - digits.len) + '.0'
+		}
+		return sign + digits[..point] + '.' + digits[point..]
+	} $else {
+		return value.str()
+	}
+}
+
 fn main() {
 	value := 3
 	println(countdown(value))
 	println(value)
 	println(shout('hi', 3))
-	println(clamp(-1.5, 0))
-	println(clamp(2.5, 0))
+	println(py2v_float_text1(clamp(-1.5, 0.0)))
+	println(py2v_float_text1(clamp(2.5, 0.0)))
 	mut c := py2v_new_counter()
 	println(c.add(-4))
 	println(c.add(5))

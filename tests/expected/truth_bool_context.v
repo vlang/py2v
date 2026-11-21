@@ -60,6 +60,6 @@ fn main() {
 	println(if !!pyrt.has_text(optional_text(true)) { 'True' } else { 'False' })
 	println(if !!('literal' != '') { 'True' } else { 'False' })
 	println(if !!false { 'True' } else { 'False' })
-	println(if !!(0 != 0) { 'True' } else { 'False' })
-	println(if !!(-0.25 != 0) { 'True' } else { 'False' })
+	println(if !!(0.0 != 0.0) { 'True' } else { 'False' })
+	println(if !!(-0.25 != 0.0) { 'True' } else { 'False' })
 }

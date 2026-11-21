@@ -4,7 +4,7 @@ import math
 
 fn test_python(iterations int) {
 	mut iteration := 0
-	mut total := f64(0)
+	mut total := f64(0.0)
 	array_length := 1000
 	array := []int{len: array_length, init: index}.map(it)
 	println('iterations ${iterations}')

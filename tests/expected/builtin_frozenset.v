@@ -7,7 +7,7 @@ const global = (pyrt.frozenset_from(pyrt.box(pyrt.Value((pyrt.new_set([
 	pyrt.box('beta'),
 ]) or { pyrt.fail(err) })))) or { pyrt.fail(err) })
 
-const signed = (pyrt.frozenset_from(pyrt.box(pyrt.box([pyrt.box(-pyrt.to_float(pyrt.box(0)))]))) or { pyrt.fail(err) })
+const signed = (pyrt.frozenset_from(pyrt.box(pyrt.box([pyrt.box(-pyrt.to_float(pyrt.box(0.0)))]))) or { pyrt.fail(err) })
 
 fn item() int {
 	println('left')
@@ -30,16 +30,16 @@ fn show_py() ! {
 		pyrt.Value(pyrt.new_tuple([pyrt.box(3), pyrt.box(4)])),
 	])))!
 	equivalent := pyrt.frozenset_from(pyrt.box(pyrt.box([pyrt.box(true), pyrt.box(1),
-		pyrt.box(pyrt.to_float(pyrt.box(1)))])))!
+		pyrt.box(pyrt.to_float(pyrt.box(1.0)))])))!
 	println('${pyrt.length(empty)} ${pyrt.length(numbers)} ${pyrt.length(words)} ${pyrt.length(nested)} ${pyrt.length(equivalent)}')
 	println('${pyrt.str(pyrt.item_in(pyrt.box(pyrt.box(1)), pyrt.box(numbers))!)} ${pyrt.str(pyrt.item_in(pyrt.box(pyrt.box(3)), pyrt.box(numbers))!)}')
 	println('${pyrt.length(global)} ${pyrt.length(pyrt.frozenset_from(pyrt.box(pyrt.Value(pyrt.new_tuple(pyrt.elements(pyrt.empty_list())))))!)} ${pyrt.length(pyrt.frozenset_from(pyrt.box(pyrt.empty_dict()))!)}')
 	println(pyrt.str(pyrt.item_in(pyrt.box(pyrt.box(item())), pyrt.box(pyrt.frozenset_from(pyrt.box(pyrt.box(members())))!))!))
-	println(pyrt.str(pyrt.frozenset_from(pyrt.box(pyrt.box([pyrt.box(pyrt.to_float(pyrt.box(1)))])))!))
-	println(pyrt.str(pyrt.frozenset_from(pyrt.box(pyrt.box([pyrt.box(-pyrt.to_float(pyrt.box(0)))])))!))
-	number := 1
-	assert number == 1
-	println(pyrt.str(pyrt.frozenset_from(pyrt.box(pyrt.box([pyrt.box(pyrt.to_float(pyrt.box(1)))])))!))
+	println(pyrt.str(pyrt.frozenset_from(pyrt.box(pyrt.box([pyrt.box(pyrt.to_float(pyrt.box(1.0)))])))!))
+	println(pyrt.str(pyrt.frozenset_from(pyrt.box(pyrt.box([pyrt.box(-pyrt.to_float(pyrt.box(0.0)))])))!))
+	number := 1.0
+	assert number == 1.0
+	println(pyrt.str(pyrt.frozenset_from(pyrt.box(pyrt.box([pyrt.box(pyrt.to_float(pyrt.box(1.0)))])))!))
 	println(pyrt.str(signed))
 	println((if !pyrt.truth(pyrt.item_in(pyrt.box(pyrt.box(1)), pyrt.box(numbers))!) {
 		'True'

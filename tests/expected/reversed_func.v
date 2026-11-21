@@ -6,7 +6,7 @@ fn main_func() {
 		println(x)
 	}
 	s := 'hello'
-	for c in s.reverse() {
+	for c in s.runes().reverse().map(it.str()) {
 		println(c)
 	}
 	unsorted := [3, 1, 4, 1, 5]

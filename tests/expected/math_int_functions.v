@@ -4,7 +4,15 @@ import math
 
 fn count_coprime(limit int) int {
 	mut total := 0
-	for n in []int{len: limit - 1, init: index + 1} {
+	py2v_range_start1 := int(1)
+	py2v_range_stop2 := int(limit)
+	py2v_range_step3 := int(1)
+	if py2v_range_step3 == 0 { panic('ValueError: range() arg 3 must not be zero') }
+	for n := py2v_range_start1; if py2v_range_step3 > 0 {
+		n < py2v_range_stop2
+	} else {
+		n > py2v_range_stop2
+	}; n = py2v_range_next1(n, py2v_range_stop2, py2v_range_step3) {
 		if math.gcd(n, limit) == 1 {
 			total += 1
 		}
@@ -26,6 +34,17 @@ fn is_prime(number int) bool {
 
 fn choose(n int, r int) int {
 	return math.divide_floored(int(math.factoriali(n)), int(math.factoriali(r)) * int(math.factoriali(n - r))).quot
+}
+
+fn py2v_range_next1(current int, stop int, step int) int {
+	if step > 0 {
+		if u64(step) >= u64(stop) - u64(current) {
+			return stop
+		}
+	} else if u64(0) - u64(step) >= u64(current) - u64(stop) {
+		return stop
+	}
+	return current + step
 }
 
 fn main() {
