@@ -7248,7 +7248,7 @@ def _v_spelling(name: str) -> str:
 
 
 def _plan_error_propagation(tree: ast.Module, table: Optional[symbols.SymbolTable],
-                            standalone: bool) -> None:
+                            standalone: bool, facts: Optional[Any]) -> None:
     """Decide which functions return a V result, which calls pass their error on, and
     which `try` statements run their handlers.
 
@@ -7273,31 +7273,132 @@ def _plan_error_propagation(tree: ast.Module, table: Optional[symbols.SymbolTabl
         return
     api = _runtime_api()
     candidates: Dict[int, ast.FunctionDef] = {}
-    # Preserve a source function when its generated result helper would collide.
-    existing_functions = {_v_spelling(s.name) for s in tree.body
-                          if isinstance(s, ast.FunctionDef)}
-    for stmt in tree.body:
+
+    def candidate_for(stmt: ast.stmt, existing: Set[str]) -> Optional[int]:
         if not isinstance(stmt, ast.FunctionDef) or stmt.name == "main" or stmt.decorator_list:
-            continue
+            return None
         if stmt.args.vararg or stmt.args.kwarg or _is_generator(stmt):
-            continue
+            return None
         if stmt.returns is not None:
             declared = _unparse_expr(stmt.returns).replace("typing.", "")
             if declared.startswith("Optional[") or (
                     "|" in declared and "None" in [p.strip() for p in declared.split("|")]):
                 # V has no result of an option (vk:no-result-of-option): such a function
                 # keeps ending the program on an error until results carry a Maybe
-                continue
-        if _v_spelling(stmt.name) + "_py" in existing_functions:
-            continue
+                return None
+        if _v_spelling(stmt.name) + "_py" in existing:
+            return None
         binding_id = getattr(stmt, "_binding", None)
         if binding_id is None or table.bindings[binding_id].rebound:
-            continue
-        candidates[binding_id] = stmt
+            return None
+        return binding_id
+
+    existing_functions = {_v_spelling(s.name) for s in tree.body
+                          if isinstance(s, ast.FunctionDef)}
+    for stmt in tree.body:
+        binding = candidate_for(stmt, existing_functions)
+        if binding is not None and isinstance(stmt, ast.FunctionDef):
+            candidates[binding] = stmt
+
+    methods: Dict[Tuple[int, str], int] = {}
+    receivers: Dict[int, int] = {}
+    if standalone:
+        nodes = list(ast.walk(tree))
+        written_attrs = {n.attr for n in nodes if isinstance(n, ast.Attribute) and
+                         not isinstance(n.ctx, ast.Load)}
+        if any(isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+               and n.func.id in ("setattr", "delattr") for n in nodes):
+            written_attrs.update(n.attr for n in nodes if isinstance(n, ast.Attribute))
+        for cls in tree.body:
+            if not isinstance(cls, ast.ClassDef) or cls.bases or cls.keywords or cls.decorator_list:
+                continue
+            owner = getattr(cls, "_binding", None)
+            if owner is None or table.bindings[owner].rebound:
+                continue
+            functions = [n for n in cls.body if isinstance(n, ast.FunctionDef)]
+            if any(n.name.startswith("__") and n.name != "__init__" for n in functions):
+                continue
+            names = {_v_spelling(n.name) for n in functions}
+            for method in functions:
+                if method.name.startswith("_") or method.name in written_attrs:
+                    continue
+                method_binding = candidate_for(method, names)
+                if method_binding is not None:
+                    methods[owner, method.name] = method_binding
+        for stmt in nodes:
+            if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1:
+                target, value = stmt.targets[0], stmt.value
+            elif isinstance(stmt, ast.AnnAssign):
+                target, value = stmt.target, stmt.value
+            else:
+                continue
+            if isinstance(target, ast.Name) and isinstance(value, ast.Call) and isinstance(value.func, ast.Name):
+                receiver = getattr(target, "_binding", None)
+                cls = getattr(value.func, "_binding", None)
+                if (receiver is not None and cls is not None
+                        and len(table.bindings[receiver].sites) == 1
+                        and not table.bindings[receiver].rebound):
+                    receivers[receiver] = cls
+        direct_receivers = {id(n.func.value) for n in nodes if isinstance(n, ast.Call)
+                            and isinstance(n.func, ast.Attribute) and isinstance(n.func.value, ast.Name)}
+        for node in nodes:
+            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load) and id(node) not in direct_receivers:
+                receivers.pop(getattr(node, "_binding", None), None)
+        exact = {(receivers.get(getattr(n.func.value, "_binding", None)), n.func.attr)
+                 for n in nodes if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+                 and isinstance(n.func.value, ast.Name)}
+        definitions = {getattr(n, "_binding", None): n for n in nodes if isinstance(n, ast.FunctionDef)}
+        for method, binding in methods.items():
+            if method in exact:
+                candidates[binding] = definitions[binding]
+
+    def local_callee(call: ast.Call) -> Optional[int]:
+        if isinstance(call.func, ast.Name):
+            return getattr(call.func, "_binding", None)
+        if isinstance(call.func, ast.Attribute) and isinstance(call.func.value, ast.Name):
+            owner = receivers.get(getattr(call.func.value, "_binding", None))
+            if owner is not None:
+                return methods.get((owner, call.func.attr))
+        return None
 
     closed = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef,
               ast.DictComp, ast.GeneratorExp)
     loops = (ast.For, ast.AsyncFor, ast.While)
+
+    def plain_cleanup(stmts: List[ast.stmt]) -> bool:
+        return all(isinstance(stmt, ast.Pass) or (
+            isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call)
+            and isinstance(stmt.value.func, ast.Name) and stmt.value.func.id == "print"
+            and getattr(stmt.value.func, "_binding", None) is None
+            and not stmt.value.keywords
+            and all(isinstance(arg, ast.Constant) for arg in stmt.value.args))
+            for stmt in stmts)
+
+    def native_cleanup_allowed() -> bool:
+        if not standalone:
+            return False
+        for item in ast.walk(tree):
+            if isinstance(item, ast.Call):
+                name = getattr(item, "_api", "")
+                runtime = api.get(name) or api.get("__pyrt__." + name)
+                if runtime and runtime.get("raises"):
+                    return False
+            if isinstance(item, ast.Raise):
+                exc = item.exc
+                if exc is None:
+                    continue
+                if (item.cause is not None or not isinstance(exc, ast.Call)
+                        or not isinstance(exc.func, ast.Name)
+                        or getattr(exc.func, "_binding", None) is not None
+                        or exc.func.id not in ("Exception", "ValueError", "RuntimeError",
+                                               "TypeError", "LookupError", "IndexError")
+                        or exc.keywords or len(exc.args) > 1
+                        or any(not isinstance(arg, ast.Constant) or not isinstance(arg.value, str)
+                               for arg in exc.args)):
+                    return False
+        return True
+
+    cleanup_supported = native_cleanup_allowed()
 
     def leaves_loop(stmts: List[ast.stmt]) -> bool:
         """Whether the statements hold a `break` or `continue` of an enclosing loop."""
@@ -7312,7 +7413,8 @@ def _plan_error_propagation(tree: ast.Module, table: Optional[symbols.SymbolTabl
         return False
 
     def lowerable(node: ast.AST) -> bool:
-        return (isinstance(node, ast.Try) and bool(node.handlers) and not node.finalbody
+        return (isinstance(node, ast.Try) and bool(node.handlers)
+                and (not node.finalbody or (cleanup_supported and plain_cleanup(node.finalbody)))
                 and not leaves_loop(node.body))
 
     builtin_exceptions = _builtin_exception_names()
@@ -7415,6 +7517,108 @@ def _plan_error_propagation(tree: ast.Module, table: Optional[symbols.SymbolTabl
             names.append("JSONDecodeError" if text == "json.JSONDecodeError" else text)
         return names
 
+    if standalone:
+        import builtins
+
+        sites = list(ast.walk(tree))
+        numeric_context = AnalysisContext(table=table, facts=facts)
+        checked_prefix = "__py2v__.checked_"
+
+        def static_handlers(node: ast.Try) -> bool:
+            for handler in node.handlers:
+                if handler.type is None:
+                    continue
+                types = handler.type.elts if isinstance(handler.type, ast.Tuple) else [handler.type]
+                if not types or any(
+                        not isinstance(part, ast.Name) or part.id not in builtin_exceptions
+                        or getattr(part, "_binding", None) is not None for part in types):
+                    return False
+            return True
+
+        native_operations = not any(
+            isinstance(node, (ast.Raise, ast.ClassDef))
+            or (isinstance(node, ast.Attribute) and node.attr == "__cause__")
+            or (isinstance(node, ast.Try) and not static_handlers(node))
+            or (isinstance(node, ast.Call)
+                and (api.get(getattr(node, "_api", ""))
+                     or api.get("__pyrt__." + getattr(node, "_api", "")) or {}).get("raises"))
+            for node in sites)
+
+        if native_operations:
+            class CheckedOperations(ast.NodeTransformer):
+                def __init__(self, caught: Set[str]) -> None:
+                    self.caught = caught
+
+                def visit(self, node: ast.AST) -> ast.AST:
+                    if isinstance(node, closed + (ast.Try, ast.ListComp, ast.SetComp)):
+                        return node
+                    return super().visit(node)
+
+                @staticmethod
+                def make_call(node: ast.expr, operation: str, args: List[ast.expr],
+                              annotation: str) -> ast.Call:
+                    call = ast.copy_location(ast.Call(
+                        func=ast.Name(id="py2v_checked_operation", ctx=ast.Load()),
+                        args=args, keywords=[]), node)
+                    call._api = checked_prefix + operation
+                    call._runtime_annotation = annotation
+                    return call
+
+                def visit_BinOp(self, node: ast.BinOp) -> ast.expr:
+                    if "ZeroDivisionError" not in self.caught or not isinstance(
+                            node.op, (ast.Div, ast.FloorDiv, ast.Mod)):
+                        return self.generic_visit(node)
+                    left = numeric_context.scalar_annotation(node.left)
+                    right = numeric_context.scalar_annotation(node.right)
+                    if left not in ("int", "float") or right not in ("int", "float"):
+                        return self.generic_visit(node)
+                    divisor = node.right.operand if isinstance(node.right, ast.UnaryOp) \
+                        and isinstance(node.right.op, (ast.UAdd, ast.USub)) else node.right
+                    if isinstance(divisor, ast.Constant) and divisor.value != 0:
+                        return self.generic_visit(node)
+                    floating = "float" in (left, right)
+                    operation, message = {
+                        ast.Div: ("true_div", "float division by zero" if floating else "division by zero"),
+                        ast.FloorDiv: ("float_floor_div", "float floor division by zero") if floating
+                        else ("floor_div", "integer division or modulo by zero"),
+                        ast.Mod: ("float_mod", "float modulo") if floating else ("mod", "integer modulo by zero"),
+                    }[type(node.op)]
+                    if sys.version_info >= (3, 15):
+                        message = "division by zero"
+                    self.generic_visit(node)
+                    return self.make_call(node, operation,
+                                          [node.left, node.right, ast.Constant(value=message)],
+                                          "float" if floating or isinstance(node.op, ast.Div) else "int")
+
+                def visit_Subscript(self, node: ast.Subscript) -> ast.expr:
+                    if ("IndexError" not in self.caught or not isinstance(node.ctx, ast.Load)
+                            or not isinstance(node.value, ast.List) or not node.value.elts
+                            or numeric_context.scalar_annotation(node.slice) != "int"):
+                        return self.generic_visit(node)
+                    element_type = numeric_context.scalar_annotation(node)
+                    if not element_type:
+                        return self.generic_visit(node)
+                    index = node.slice
+                    if (isinstance(index, ast.Constant) and type(index.value) is int
+                            and -len(node.value.elts) <= index.value < len(node.value.elts)):
+                        return self.generic_visit(node)
+                    self.generic_visit(node)
+                    return self.make_call(node, "list_index", [node.value, node.slice], element_type)
+
+            for node in sites:
+                if not lowerable(node):
+                    continue
+                caught: Set[str] = set()
+                for name in ("ZeroDivisionError", "IndexError"):
+                    bases = {base.__name__ for base in getattr(builtins, name).__mro__}
+                    for handler in node.handlers:
+                        types = handler_classes(handler)
+                        if types == [] or (types and bases.intersection(types)):
+                            caught.add(name)
+                if caught:
+                    lower = CheckedOperations(caught)
+                    node.body = [lower.visit(stmt) for stmt in node.body]
+
     def takes_every_exception(node: ast.Try) -> bool:
         for handler in node.handlers:
             classes = handler_classes(handler)
@@ -7429,14 +7633,15 @@ def _plan_error_propagation(tree: ast.Module, table: Optional[symbols.SymbolTabl
             # a bare `raise` is planned with the handler it stands in
             return call.exc is not None and raised_class(call) != ""
         api_name = getattr(call, "_api", "")
-        if api_name in ("__py2v__.enum_lookup", "__py2v__.max_integer_key",
-                         "__py2v__.checked_text_index", "__py2v__.native_list_index",
-                         "__py2v__.modular_pow", "__py2v__.int_base"):
+        if (api_name.startswith("__py2v__.checked_")
+                or api_name in ("__py2v__.enum_lookup", "__py2v__.max_integer_key",
+                                "__py2v__.native_list_index", "__py2v__.modular_pow",
+                                "__py2v__.int_base")):
             return True
         entry = api.get(api_name) or api.get("__pyrt__." + api_name)
         if entry and entry.get("raises"):
             return True
-        return isinstance(call.func, ast.Name) and getattr(call.func, "_binding", None) in fallible
+        return local_callee(call) in fallible
 
     def tries_of(stmts: List[ast.stmt]) -> List[ast.Try]:
         found: List[ast.Try] = []
@@ -7470,9 +7675,10 @@ def _plan_error_propagation(tree: ast.Module, table: Optional[symbols.SymbolTabl
             break
         fallible |= grown
 
+    scopes = [tree] + [n for n in ast.walk(tree)
+                       if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
     counter = 0
-    for scope in [tree] + [n for n in ast.walk(tree)
-                           if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]:
+    for scope in scopes:
         own = scope.body
         for node in tries_of(own):
             guarded = [c for c in body_calls(node) if can_fail(c)]
@@ -7525,10 +7731,130 @@ def _plan_error_propagation(tree: ast.Module, table: Optional[symbols.SymbolTabl
             entry.extend(calls_in(explicit_main.body, False))
         passing = [c for c in entry if isinstance(c, ast.Call)
                    and can_fail(c) and not getattr(c, "_guard", 0)]
-        if any(isinstance(c.func, ast.Name) and getattr(c.func, "_binding", None) in fallible
-               for c in passing):
+        if any(local_callee(c) in fallible for c in passing):
             for call in passing:
                 call._propagate = True
+        if _plan_native_exceptions(tree, table, entry, facts):
+            for scope in scopes:
+                for node in tries_of(scope.body):
+                    if getattr(node, "_guard", 0) or not any(
+                            can_fail(c) for c in calls_in(node.body, True)):
+                        continue
+                    counter += 1
+                    node._guard = counter
+                    for handler in node.handlers:
+                        handler._classes = handler_classes(handler)
+
+
+def _plan_native_exceptions(tree: ast.Module, table: symbols.SymbolTable,
+                            entry: List[ast.AST], facts: Optional[Any]) -> bool:
+    """Use concrete V errors in a file whose planned errors have known classes."""
+    import builtins
+
+    classes = {getattr(node, "_binding", None): node for node in tree.body
+               if isinstance(node, ast.ClassDef)}
+    if any(cls.name.startswith("Py2vError") for cls in classes.values()):
+        return False
+    api = _runtime_api()
+    context = AnalysisContext(table=table, facts=facts)
+
+    def hierarchy(expr: ast.AST, seen: Set[int]) -> Optional[List[str]]:
+        if not isinstance(expr, ast.Name):
+            return None
+        binding = getattr(expr, "_binding", None)
+        if binding is None:
+            cls = getattr(builtins, expr.id, None)
+            if not isinstance(cls, type) or not issubclass(cls, BaseException):
+                return None
+            if cls.__str__ is not BaseException.__str__ or issubclass(cls, SystemExit):
+                return None
+            return [base.__name__ for base in cls.__mro__ if issubclass(base, BaseException)]
+        cls = classes.get(binding)
+        if (cls is None or binding in seen or table.bindings[binding].rebound
+                or cls.decorator_list or cls.keywords or len(cls.bases) != 1
+                or any(not isinstance(stmt, ast.Pass) for stmt in cls.body)):
+            return None
+        bases = hierarchy(cls.bases[0], seen | {binding})
+        return [expr.id, *bases] if bases else None
+
+    entry_raises = {id(node) for node in entry if isinstance(node, ast.Raise)}
+    nodes = list(ast.walk(tree))
+    args_reads = {id(node) for node in nodes if isinstance(node, ast.Attribute) and node.attr == "args"}
+    displays = {id(arg) for node in nodes if isinstance(node, ast.Call)
+                     and isinstance(node.func, ast.Name) and node.func.id in ("print", "str")
+                     and getattr(node.func, "_binding", None) is None for arg in node.args}
+    handlers = {getattr(node, "_binding", None) for node in nodes
+                if isinstance(node, ast.ExceptHandler) and node.name is not None}
+    handlers.discard(None)
+
+    def caught_name(expr: ast.AST) -> bool:
+        if not isinstance(expr, ast.Name):
+            return False
+        binding = getattr(expr, "_binding", None)
+        return binding in handlers and not table.bindings[binding].rebound
+
+    if not args_reads <= displays or any(
+            isinstance(node, ast.Attribute) and node.attr == "__cause__"
+            and (id(node) not in displays or not caught_name(node.value)) for node in nodes):
+        return False
+    planned: List[Tuple[ast.Raise, str, List[str]]] = []
+    annotations: List[Tuple[ast.expr, str]] = []
+    for node in nodes:
+        if isinstance(node, ast.Call):
+            name = getattr(node, "_api", "")
+            runtime = api.get(name) or api.get("__pyrt__." + name)
+            if runtime and runtime.get("raises"):
+                return False
+        if isinstance(node, ast.Try):
+            for handler in node.handlers:
+                expr = handler.type
+                if expr is None:
+                    continue
+                types = expr.elts if isinstance(expr, ast.Tuple) else [expr]
+                if not types or any(hierarchy(item, set()) is None for item in types):
+                    return False
+        if not isinstance(node, ast.Raise):
+            continue
+        mode = getattr(node, "_mode", "")
+        if mode == "reraise":
+            continue
+        if mode not in ("guard", "result") and id(node) not in entry_raises:
+            return False
+        if node.cause is not None and not caught_name(node.cause) and not (
+                isinstance(node.cause, ast.Constant) and node.cause.value is None):
+            return False
+        expr = node.exc
+        if isinstance(expr, ast.Call):
+            if expr.keywords:
+                return False
+            for arg in expr.args:
+                kind = context.scalar_annotation(arg)
+                if isinstance(arg, ast.Constant):
+                    kind = {str: "string", bool: "bool", int: "int"}.get(type(arg.value), "")
+                    if kind == "int" and not -(1 << 63) <= arg.value < 1 << 63:
+                        return False
+                elif isinstance(arg, ast.JoinedStr):
+                    kind = "string"
+                if kind not in ("string", "int", "bool"):
+                    return False
+                if kind == "string" and (args_reads or len(expr.args) > 1) and (
+                        not isinstance(arg, ast.Constant) or
+                        not all(c.isprintable() or c in "\n\r\t" for c in arg.value)):
+                    return False
+                annotations.append((arg, kind))
+            expr = expr.func
+        bases = hierarchy(expr, set()) if expr is not None else None
+        if (bases is None or "Exception" not in bases or not isinstance(expr, ast.Name)
+                or expr.id != bases[0] or not expr.id.isascii() or not expr.id.isalnum()):
+            return False
+        planned.append((node, "native_guard" if mode == "guard" else "native_result", bases[1:]))
+
+    for node, mode, bases in planned:
+        node._mode = mode
+        node._bases = bases
+    for arg, kind in annotations:
+        arg._runtime_annotation = kind
+    return bool(planned)
 
 
 @functools.lru_cache(maxsize=None)
@@ -9946,7 +10272,7 @@ def process_file(file_path: str, project: Optional[ProjectFacts] = None) -> str:
             for node in ast.walk(tree):
                 if isinstance(node, ast.Name) and getattr(node, "_binding", None) in renamed:
                     node.id = renamed[node._binding]
-            _plan_error_propagation(tree, table, standalone=project is None)
+            _plan_error_propagation(tree, table, standalone=project is None, facts=facts)
             _drop_type_checking_blocks(tree, table)
             list_refs.lower(tree, references, _runtime_call)
             break

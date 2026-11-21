@@ -26,9 +26,7 @@ equations	needs-dependency	Imports py2many.smt, which the suite does not install
 exception_group	differs	line 1: CPython [caught value error group], V [V panic: ExceptionGroup: multiple]
 exception_group_else_finally	differs	line 2: CPython [no group], V [cleanup]
 exception_group_nested	differs	line 1: CPython [caught value], V [V panic: ExceptionGroup: mixed]
-exception_names	differs	line 1: CPython [ZeroDivisionError], V [V panic: division by zero]
 exception_union_init	needs-dependency	Requires a package context for the relative .exceptions import.
-exceptions	differs	line 1: CPython [caught], V [V panic: Exception: foo]
 fib_with_argparse	needs-dependency	Imports argparse_dataclass, which the suite does not install.
 format_dotted	does-not-compile	type `P_struct` has no field named `name`
 functools_decorators	does-not-compile	unknown function: func
@@ -97,7 +95,6 @@ truth_optional_instances	needs-sqlite	V cannot link thirdparty/sqlite.	windows
 truth_runtime_lists	needs-sqlite	V cannot link thirdparty/sqlite.	windows
 try_comprehension	needs-sqlite	V cannot link thirdparty/sqlite.	windows
 try_comprehension_unproven	does-not-compile	undefined ident: `values`
-try_else	differs	line 2: CPython [else], V [finally]
 try_except_runtime	needs-sqlite	V cannot link thirdparty/sqlite.	windows
 try_finally_in_finally_jump	does-not-compile	unknown function: py2v_unsupported_jump_out_of_try_finally_inside_finally
 typing_constructs	does-not-compile	Option type `int` cannot be called directly, you should unwrap it first

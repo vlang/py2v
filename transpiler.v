@@ -95,6 +95,10 @@ mut:
 	in_entry             bool
 	entry_returns_result bool
 	result_wrappers      map[string]string
+	native_exceptions    map[string][]string
+	binds_native_error   bool
+	reports_native_error bool
+	active_error_guard   int
 	// current_stem is this file's stem, used to disambiguate a Python `main`
 	// when several files of one V module define one.
 	current_stem string
@@ -320,7 +324,10 @@ pub fn (mut t VTranspiler) visit_module(node Module) string {
 	t.prepare_init_constructors(node)
 	mut bindings := map[string]int{}
 	mut calls := []BindingCall{}
-	count_call_bindings(node, mut bindings, mut calls, false)
+	t.native_exceptions = map[string][]string{}
+	t.binds_native_error = false
+	t.reports_native_error = false
+	collect_module_info(node, mut bindings, mut calls, mut t.native_exceptions, false)
 	t.default_import_names = imported_default_names(node, bindings)
 	t.prepare_local_default_names(node)
 	mut signatures := map[string]FunctionDef{}
@@ -690,10 +697,11 @@ pub fn (mut t VTranspiler) visit_module(node Module) string {
 
 	if t.entry_returns_result && main_str.contains('fn main() {') {
 		entry := t.runtime_helper_name('entry')
-		t.add_using('pyrt')
+		failure := t.report_uncaught_error('err')
 		main_str = main_str.replace_once('fn main() {', 'fn ${entry}() ! {') +
-			'\n\nfn main() {\n\t${entry}() or { pyrt.fail(err) }\n}'
+			'\n\nfn main() {\n\t${entry}() or { ${failure} }\n}'
 	}
+	struct_decls << t.native_exception_declarations()
 
 	// Assemble output sections in order
 	mut parts := []string{}
@@ -1234,6 +1242,40 @@ fn (mut t VTranspiler) runtime_helper_declaration(kind string) string {
 			'fn ${name}(a f64, b f64) f64 {\n' + '\tif b == 0 {\n' +
 				"\t\tpanic('division by zero')\n" + '\t}\n' + '\treturn a / b\n' + '}'
 		}
+		'checked_true_div', 'checked_floor_div', 'checked_mod', 'checked_float_floor_div',
+		'checked_float_mod' {
+			kind_type := match kind {
+				'checked_floor_div', 'checked_mod' { 'int' }
+				else { 'f64' }
+			}
+			zero := '\tif b == 0 {\n\t\treturn IError(Py2vErrorZeroDivisionError{ data: Py2vErrorData{ args: Py2vErrorArgs{ values: [Py2vErrorArg(message)] } } })\n\t}\n'
+			body := match kind {
+				'checked_true_div' { '\treturn a / b' }
+				'checked_floor_div' { '\treturn math.divide_floored(a, b).quot' }
+				'checked_mod' { '\treturn math.modulo_floored(a, b)' }
+				'checked_float_mod' {
+					'\tmut remainder := math.fmod(a, b)\n' +
+						'\tif remainder == 0 { return math.copysign(0.0, b) }\n' +
+						'\tif (remainder < 0) != (b < 0) { remainder += b }\n' +
+						'\treturn remainder'
+				}
+				else {
+					'\tremainder := math.fmod(a, b)\n\tmut quotient := (a - remainder) / b\n' +
+						'\tif remainder != 0 && (remainder < 0) != (b < 0) { quotient-- }\n' +
+						'\tif quotient == 0 { return math.copysign(0.0, a / b) }\n' +
+						'\tfloored := math.floor(quotient)\n' +
+						'\treturn if quotient - floored > 0.5 { floored + 1.0 } else { floored }'
+				}
+			}
+			'fn ${name}(a ${kind_type}, b ${kind_type}, message string) !${kind_type} {\n${zero}${body}\n}'
+		}
+		'checked_list_index' {
+			'fn ${name}[T](items []T, index int) !T {\n' +
+				'\tposition := if index < 0 { items.len + index } else { index }\n' +
+				'\tif position < 0 || position >= items.len {\n' +
+				"\t\treturn IError(Py2vErrorIndexError{ data: Py2vErrorData{ args: Py2vErrorArgs{ values: [Py2vErrorArg('list index out of range')] } } })\n" +
+				'\t}\n\treturn items[position]\n}'
+		}
 		'bin' {
 			// Python's bin(): the sign comes before the `0b` prefix.
 			'fn ${name}(n i64) string {\n' + '\tif n < 0 {\n' +
@@ -1365,6 +1407,9 @@ pub fn (mut t VTranspiler) visit_body_stmts(stmts []Stmt, level int) string {
 
 // visit_return emits V code for a Return statement.
 pub fn (mut t VTranspiler) visit_return(node Return) string {
+	if t.defer_depth > 0 {
+		return 'py2v_unsupported_return_from_finally()'
+	}
 	if val := node.value {
 		// A function with an N-tuple return type must return N separate values;
 		// returning the V array literal is not a multi-return.
@@ -1728,6 +1773,7 @@ fn (mut t VTranspiler) visit_closure_from_funcdef(node FunctionDef, nl_names []s
 	saved_return_type := t.current_return_type
 	saved_result := t.fn_returns_result
 	saved_entry := t.in_entry
+	saved_error_guard := t.active_error_guard
 	saved_init_aliases := t.init_import_aliases.clone()
 	saved_init_captures := t.init_capture_locals.clone()
 	defer {
@@ -1750,6 +1796,7 @@ fn (mut t VTranspiler) visit_closure_from_funcdef(node FunctionDef, nl_names []s
 		t.current_return_type = saved_return_type
 		t.fn_returns_result = saved_result
 		t.in_entry = saved_entry
+		t.active_error_guard = saved_error_guard
 		t.init_import_aliases = saved_init_aliases
 		t.init_capture_locals = saved_init_captures
 		t.init_capture_locals[node.name] = true
@@ -1822,6 +1869,7 @@ fn (mut t VTranspiler) visit_closure_from_funcdef(node FunctionDef, nl_names []s
 	t.current_return_count = 0
 	t.fn_returns_result = false
 	t.in_entry = false
+	t.active_error_guard = 0
 	t.init_capture_locals = init_function_capture_names(node)
 	for py_name in capture_names { t.init_capture_locals[py_name] = true }
 
@@ -2026,11 +2074,14 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 	saved_classmethod := t.current_classmethod
 	saved_returns_result := t.fn_returns_result
 	saved_entry := t.in_entry
-	t.fn_returns_result = node.raises && !node.is_class_method
+	saved_error_guard := t.active_error_guard
+	t.fn_returns_result = node.raises
 	t.in_entry = !t.emit_pub && !node.is_class_method && !node.is_nested && node.name == 'main'
+	t.active_error_guard = 0
 	defer {
 		t.fn_returns_result = saved_returns_result
 		t.in_entry = saved_entry
+		t.active_error_guard = saved_error_guard
 	}
 	t.current_classmethod = node.is_class_method && node.decorator_kind == 'classmethod'
 	saved_init_aliases := t.init_import_aliases.clone()
@@ -2484,7 +2535,7 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 	body := body_lines.join('\n')
 
 	mut func_code := '${dunder_comment}${signature.join(' ')} {\n${body}\n}'
-	if node.raises && !node.is_class_method {
+	if node.raises {
 		// Keep the original signature for indirect and external callers.
 		params := '${emit_name}${generic_list}(${args_strs.join(', ')})'
 		at := signature.index(params)
@@ -2500,11 +2551,17 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 					words[0]
 				}
 			}
-			call := '${emit_name}_py(${forwarded.join(', ')}) or { pyrt.fail(err) }'
+			failure := if t.native_exceptions.len == 0 {
+				'pyrt.fail(err)'
+			} else {
+				t.report_uncaught_error('err')
+			}
+			receiver := if node.is_class_method { 'self.' } else { '' }
+			call := '${receiver}${emit_name}_py(${forwarded.join(', ')}) or { ${failure} }'
 			wrapper_body := if ret == '' { call } else { 'return ${call}' }
 			wrapper := '${head} ${params} ${ret} {\n\t${wrapper_body}\n}'
 			func_code = '${dunder_comment}${head} ${emit_name}_py${generic_list}(${args_strs.join(', ')}) !${ret} {\n${body}\n}'
-			if t.emit_pub {
+			if t.emit_pub || node.is_class_method {
 				func_code += '\n\n' + wrapper
 			} else {
 				t.result_wrappers[emit_name] = wrapper
@@ -5202,11 +5259,35 @@ pub fn (mut t VTranspiler) visit_async_with(node AsyncWith) string {
 pub fn (mut t VTranspiler) visit_raise(node Raise) string {
 	if node.mode == 'reraise' {
 		// a bare `raise` in a handler: the error that handler's try caught goes on
-		t.add_using('pyrt')
-		return if t.fn_returns_result {
-			'return py2v_raised_${node.guard}'
-		} else {
-			'pyrt.fail(py2v_raised_${node.guard})'
+		return t.escape_exception('py2v_raised_${node.guard}')
+	}
+	if node.mode in ['native_guard', 'native_result'] {
+		name := raised_name(node)
+		if name != '' {
+			exc := node.exc or { panic('native exception without a value') }
+			mut values := []string{}
+			if exc is Call {
+				for arg in exc.args {
+					code := t.visit_expr(arg)
+					values << if get_v_annotation(arg) == 'int' {
+						'Py2vErrorArg(i64(${code}))'
+					} else {
+						'Py2vErrorArg(${code})'
+					}
+				}
+			}
+			args := if values.len == 0 { '[]Py2vErrorArg{}' } else { '[${values.join(', ')}]' }
+			mut fields := 'args: Py2vErrorArgs{ values: ${args} }'
+			if cause := node.cause {
+				if cause is Name {
+					fields += ', cause: ${t.visit_expr(cause)}.original'
+				}
+			}
+			value := 'IError(Py2vError${name}{ data: Py2vErrorData{ ${fields} } })'
+			if node.mode == 'native_guard' {
+				return 'py2v_err_${node.guard} = ${value}\nbreak py2v_try_${node.guard}'
+			}
+			return t.escape_exception(value)
 		}
 	}
 	mut exits := false
@@ -5277,6 +5358,106 @@ pub fn (mut t VTranspiler) visit_raise(node Raise) string {
 	}
 	// bare `raise` — re-raise inside except handler; use generic panic
 	return "panic('re-raise')"
+}
+
+fn raised_name(node Raise) string {
+	exc := node.exc or { return '' }
+	if exc is Name {
+		return exc.id
+	}
+	if exc is Call && exc.func is Name {
+		return (exc.func as Name).id
+	}
+	return ''
+}
+
+fn (mut t VTranspiler) escape_exception(value string) string {
+	if t.active_error_guard > 0 {
+		guard := t.active_error_guard
+		return 'py2v_err_${guard} = ${value}\nbreak py2v_try_${guard}'
+	}
+	if t.in_entry && t.native_exceptions.len > 0 {
+		t.entry_returns_result = true
+		return 'return ${value}'
+	}
+	if t.fn_returns_result {
+		return 'return ${value}'
+	}
+	return t.report_uncaught_error(value)
+}
+
+fn (mut t VTranspiler) report_uncaught_error(value string) string {
+	if t.native_exceptions.len == 0 {
+		t.add_using('pyrt')
+		return 'pyrt.fail(${value})'
+	}
+	t.reports_native_error = true
+	return '${t.runtime_helper_name('uncaught_exception')}(${value})'
+}
+
+fn (mut t VTranspiler) native_exception_declarations() []string {
+	if t.native_exceptions.len == 0 {
+		return []
+	}
+	mut definitions := [r"type Py2vErrorArg = bool | i64 | string
+
+fn (arg Py2vErrorArg) str() string {
+	return match arg {
+		bool { if arg { 'True' } else { 'False' } }
+		i64 { arg.str() }
+		string { arg }
+	}
+}
+
+struct Py2vErrorArgs {
+	values []Py2vErrorArg
+}
+
+fn (args Py2vErrorArgs) str() string {
+	mut parts := []string{cap: args.values.len}
+	for value in args.values {
+		if value is string {
+			quote := if value.contains('\x27') && !value.contains('\x22') { '\x22' } else { '\x27' }
+			escaped := value.replace('\\', '\\\\').replace('\n', '\\n').replace('\r', '\\r').replace('\t', '\\t').replace(quote, '\\' + quote)
+			parts << quote + escaped + quote
+		} else {
+			parts << value.str()
+		}
+	}
+	suffix := if parts.len == 1 { ',)' } else { ')' }
+	return '(' + parts.join(', ') + suffix
+}
+
+struct Py2vErrorData {
+	args Py2vErrorArgs
+	original ?IError
+	cause ?IError
+}
+
+fn (data Py2vErrorData) str() string {
+	if data.args.values.len > 1 {
+		return data.args.str()
+	}
+	value := data.args.values[0] or { return '' }
+	return value.str()
+}"]
+	names := t.native_exceptions.keys().sorted()
+	for name in names {
+		typ := 'Py2vError${name}'
+		definitions << 'struct ${typ} {\n\tError\n\tdata Py2vErrorData\n}'
+		definitions << 'fn (err ${typ}) msg() string {\n\treturn err.data.str()\n}'
+	}
+	if t.binds_native_error {
+		bind := t.runtime_helper_name('bind_exception')
+		cases := names.map('\t\tPy2vError${it} { Py2vErrorData{ ...err.data, original: IError(err) } }').join('\n')
+		definitions << 'fn ${bind}(err IError) Py2vErrorData {\n\treturn match err {\n${cases}\n\t\telse { panic(err) }\n\t}\n}'
+	}
+	if t.reports_native_error {
+		report := t.runtime_helper_name('uncaught_exception')
+		cases := names.map("\t\tPy2vError${it} { '${it}' }").join('\n')
+		definitions << "@[noreturn]\nfn ${report}(err IError) {\n\tclass_name := match err {\n${cases}\n\t\telse { panic(err) }\n\t}\n\tmessage := err.msg()\n\teprintln(if message == '' { class_name } else { class_name + ': ' + message })\n\texit(1)\n}"
+	}
+	return definitions
 }
 
 // plain_system_exit emits literal exit codes or messages once an exception can
@@ -5365,6 +5546,12 @@ fn (mut t VTranspiler) raised_error(node Raise) ?string {
 // unreachable once no exception can be observed.
 pub fn (mut t VTranspiler) visit_try(node Try) string {
 	if node.guard > 0 {
+		if node.finalbody.len > 0 {
+			mut block := []string{}
+			t.emit_try_finally_defer(mut block, node.finalbody)
+			block << t.visit_guarded_try(node)
+			return '{\n${t.indent_code(block.join('\n'), 1)}\n}'
+		}
 		return t.visit_guarded_try(node)
 	}
 	mut buf := []string{}
@@ -5421,13 +5608,21 @@ pub fn (mut t VTranspiler) visit_try(node Try) string {
 // function that returns a result, and ends the program elsewhere.
 fn (mut t VTranspiler) visit_guarded_try(node Try) string {
 	n := node.guard
-	t.add_using('pyrt')
+	native := t.native_exceptions.len > 0
+	if !native {
+		t.add_using('pyrt')
+	}
 	mut buf := []string{}
 	buf << 'mut py2v_err_${n} := ?IError(none)'
 	buf << 'py2v_try_${n}: for {'
+	outer_guard := t.active_error_guard
+	if native {
+		t.active_error_guard = n
+	}
 	for stmt in node.body {
 		buf << t.indent_code(t.visit_stmt(stmt), 1)
 	}
+	t.active_error_guard = outer_guard
 	mut leaves := false
 	if node.body.len > 0 {
 		last := node.body.last()
@@ -5435,7 +5630,7 @@ fn (mut t VTranspiler) visit_guarded_try(node Try) string {
 			leaves = true
 		} else if last is Raise {
 			// a guarded `raise` has left the loop already
-			leaves = last.mode == 'guard' && last.guard == n
+			leaves = last.mode in ['guard', 'native_guard'] && last.guard == n
 		}
 	}
 	if !leaves {
@@ -5458,6 +5653,26 @@ fn (mut t VTranspiler) visit_guarded_try(node Try) string {
 			chain << '{\n${body.join('\n')}\n}'
 			break
 		}
+		if native {
+			for class in handler.classes {
+				if class !in t.native_exceptions {
+					t.native_exceptions[class] = []string{}
+				}
+			}
+			mut types := []string{}
+			for class in t.native_exceptions.keys().sorted() {
+				if class in handler.classes || t.native_exceptions[class].any(it in handler.classes) {
+					types << 'py2v_raised_${n} is Py2vError${class}'
+				}
+			}
+			if name != '' {
+				t.binds_native_error = true
+				bind := t.runtime_helper_name('bind_exception')
+				body.prepend('\t${escape_local_decl(name)} := ${bind}(py2v_raised_${n})')
+			}
+			chain << 'if ${types.join(' || ')} {\n${body.join('\n')}\n}'
+			continue
+		}
 		classes := handler.classes.map("'${it}'").join(', ')
 		head := if name != '' {
 			'if ${escape_local_decl(name)} := pyrt.caught(py2v_raised_${n}, ${classes}) '
@@ -5467,11 +5682,7 @@ fn (mut t VTranspiler) visit_guarded_try(node Try) string {
 		chain << '${head}{\n${body.join('\n')}\n}'
 	}
 	if !takes_all {
-		escape := if t.fn_returns_result {
-			'return py2v_raised_${n}'
-		} else {
-			'pyrt.fail(py2v_raised_${n})'
-		}
+		escape := t.escape_exception('py2v_raised_${n}')
 		chain << '{\n\t${escape}\n}'
 	}
 	chain_code := chain.join(' else ')
@@ -5491,7 +5702,7 @@ fn (mut t VTranspiler) visit_guarded_try(node Try) string {
 		// The body always returns, so nothing follows a try that did not fail; V cannot
 		// see that through the loop and asks for a return after it.
 		buf << '} else {'
-		buf << '\tpyrt.unreachable()'
+		buf << if native { "\tpanic('unreachable try completion')" } else { '\tpyrt.unreachable()' }
 	}
 	buf << '}'
 	return buf.join('\n')
@@ -7651,8 +7862,26 @@ struct BindingCall {
 
 // Collect bindings and calls before emission, keeping definition-time expressions at module scope.
 fn count_call_bindings[T](node T, mut names map[string]int, mut calls []BindingCall, in_function bool) {
+	mut exceptions := map[string][]string{}
+	collect_module_info(node, mut names, mut calls, mut exceptions, in_function)
+}
+
+fn collect_module_info[T](node T, mut names map[string]int, mut calls []BindingCall, mut exceptions map[string][]string, in_function bool) {
 	$if T is Call {
 		calls << BindingCall{node, in_function}
+		if node.api == '__py2v__.checked_list_index' {
+			exceptions['IndexError'] = ['LookupError', 'Exception', 'BaseException']
+		} else if node.api.starts_with('__py2v__.checked_') {
+			exceptions['ZeroDivisionError'] = ['ArithmeticError', 'Exception', 'BaseException']
+		}
+	}
+	$if T is Raise {
+		if node.mode in ['native_guard', 'native_result'] {
+			name := raised_name(node)
+			if name != '' {
+				exceptions[name] = node.bases
+			}
+		}
 	}
 	$if T is Name {
 		if node.ctx !is Load { names[node.id]++ }
@@ -7668,14 +7897,20 @@ fn count_call_bindings[T](node T, mut names map[string]int, mut calls []BindingC
 		if name := node.rest { names[name]++ }
 	}
 	$if T is $option {
-		if value := node { count_call_bindings(value, mut names, mut calls, in_function) }
+		if value := node {
+			collect_module_info(value, mut names, mut calls, mut exceptions, in_function)
+		}
 	} $else $if T is $pointer {
-		count_call_bindings(*node, mut names, mut calls, in_function)
+		collect_module_info(*node, mut names, mut calls, mut exceptions, in_function)
 	} $else $if T is $array {
-		for value in node { count_call_bindings(value, mut names, mut calls, in_function) }
+		for value in node {
+			collect_module_info(value, mut names, mut calls, mut exceptions, in_function)
+		}
 	} $else $if T is $sumtype {
 		$for variant in T.variants {
-			if node is variant { count_call_bindings(node, mut names, mut calls, in_function) }
+			if node is variant {
+				collect_module_info(node, mut names, mut calls, mut exceptions, in_function)
+			}
 		}
 	} $else $if T is Raise {
 		if exc := node.exc {
@@ -7700,7 +7935,7 @@ fn count_call_bindings[T](node T, mut names map[string]int, mut calls []BindingC
 					body = in_function
 				}
 			}
-			count_call_bindings(node.$(field.name), mut names, mut calls, body)
+			collect_module_info(node.$(field.name), mut names, mut calls, mut exceptions, body)
 		}
 	}
 }
@@ -7804,7 +8039,7 @@ fn propagated_call(code string) string {
 	}
 	open := code.index('(') or { return code }
 	name := code[..open]
-	if name.len == 0 || !code.ends_with(')') || name.contains_any(' .\n{}[]=') {
+	if name.len == 0 || !code.ends_with(')') || !name.split('.').all(is_simple_identifier(it)) {
 		return code
 	}
 	return '${name}_py${code[open..]}!'
@@ -7824,6 +8059,25 @@ fn without_opt(code string) (string, bool) {
 		return code[..code.len - 6], true
 	}
 	return code, false
+}
+
+fn (mut t VTranspiler) visit_checked_operation(node Call) string {
+	kind := node.api.all_after('__py2v__.')
+	helper := t.runtime_helper(kind)
+	mut args := node.args.map(t.visit_expr(it))
+	if kind in ['checked_true_div', 'checked_float_floor_div', 'checked_float_mod'] {
+		args[0] = 'f64(${args[0]})'
+		args[1] = 'f64(${args[1]})'
+	}
+	if kind !in ['checked_true_div', 'checked_list_index'] {
+		t.add_using('math')
+	}
+	call := '${helper}(${args.join(', ')})'
+	guard := if node.guard > 0 { node.guard } else { t.active_error_guard }
+	if guard > 0 {
+		return '${call} or {\n\tpy2v_err_${guard} = err\n\tbreak py2v_try_${guard}\n}'
+	}
+	return '${call} or { ${t.escape_exception('err')} }'
 }
 
 // visit_call binds eligible module functions before rendering their arguments.
@@ -7874,6 +8128,9 @@ pub fn (mut t VTranspiler) visit_call(original Call) string {
 		&& original.func.attr in ['bit_length', 'bit_count'] && t.has_u64_bits(original.func.value) {
 		value := t.visit_expr_at(*original.func.value, .bit_measure, '')
 		return '${t.unsigned_bit_function(original.func.attr)}(${value})'
+	}
+	if original.api.starts_with('__py2v__.checked_') && original.api != '__py2v__.checked_text_index' {
+		return t.visit_checked_operation(original)
 	}
 	if original.api == '__py2v__.native_map_pop' && original.func is Attribute
 		&& original.args.len == 1 {
@@ -7968,6 +8225,10 @@ pub fn (mut t VTranspiler) visit_call(original Call) string {
 			propagate: false
 		}))
 		passed := propagated_call(code)
+		if t.active_error_guard > 0 {
+			guarded := guarded_call(code, t.active_error_guard)
+			return if optional { '(${guarded}).opt()' } else { guarded }
+		}
 		if t.in_entry && passed != code {
 			t.entry_returns_result = true
 		}
@@ -9450,6 +9711,10 @@ fn lower_first_ascii(name string) string {
 
 // visit_attribute emits V code for attribute access (Attribute).
 pub fn (mut t VTranspiler) visit_attribute(node Attribute) string {
+	if t.native_exceptions.len > 0 && node.attr == '__cause__' {
+		value := t.visit_expr(*node.value)
+		return "(${value}.cause or { error('None') })"
+	}
 	if name := t.renamed_class(node.class_path) {
 		return name
 	}

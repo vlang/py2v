@@ -74,9 +74,6 @@ env_mapping.v	1
 env_optional.v	6
 equations.v	8
 exception_lowering.v	1
-exception_propagation_rethrow.v	6
-exception_propagation_uncaught.v	2
-exceptions.v	4
 external_dynamic.v	4
 fallible_keyword_order.v	3
 frozenset_annotations.v	10
@@ -88,7 +85,6 @@ hello-wuffs.v	2
 independent_dunder_chain.v	1
 infer_ops.v	1
 int_base.v	8
-isinstance_checked_first.v	8
 isinstance_types.v	1
 itertools_basic.v	1
 join_string_iterable.v	14
@@ -159,10 +155,8 @@ pkg_type_only/acyclic/consumer.v	1
 pkg_type_only/cycle_b/consumer.v	1
 pkg_type_only/model/frozen.v	2
 quoted_annotation_subscript.v	1
-raise_and_handlers.v	15
 re_module.v	8
 re_runtime.v	6
-return_infer_scoped.v	3
 review_divmod_negative_float.v	5
 runtime_block_locals.v	4
 runtime_class_annotations.v	3
