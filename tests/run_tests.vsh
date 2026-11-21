@@ -1163,6 +1163,25 @@ for c in single_checks {
 		failures << fail_line('FAIL', name, '')
 	}
 }
+// Without -o, `--check` compiles a scratch copy in os.temp_dir() named after
+// py2v's process id; a failed check must remove it too.
+mut leak_check := os.new_process(py2v)
+leak_check.set_args([broken_py, '--check'])
+leak_check.set_redirect_stdio()
+leak_check.run()
+leak_scratch := os.join_path(os.temp_dir(), 'py2v_check_${leak_check.pid}')
+leak_check.wait()
+leak_check.close()
+leak_name := 'single-file check: failed check removes its scratch copy'
+if leak_check.code == 1 && !os.exists(leak_scratch) {
+	report('PASS', leak_name, '')
+	passed++
+} else {
+	report('FAIL', leak_name, ' (exit ${leak_check.code}, ${leak_scratch} exists: ${os.exists(leak_scratch)})')
+	failed++
+	failures << fail_line('FAIL', leak_name, '')
+}
+os.rmdir_all(leak_scratch) or {}
 for kind in ['float', 'int'] {
 	source := os.join_path(cases_dir, 'rebound_optional_${kind}.py')
 	out := os.join_path(check_root, 'numeric_${kind}.v')

@@ -192,15 +192,16 @@ fn run() {
 			target = os.join_path(scratch, 'main.v')
 			os.write_file(target, formatted_code) or {
 				eprintln('Error writing check target: ${err}')
+				os.rmdir_all(scratch) or {}
 				exit(1)
 			}
 		}
-		defer {
-			if scratch != '' {
-				os.rmdir_all(scratch) or {}
-			}
-		}
 		results := [check_v_file(os.abs_path(target))]
+		// Removed here, not in a `defer`: `exit` below skips deferred blocks, and
+		// a failed check would leave the scratch copy behind.
+		if scratch != '' {
+			os.rmdir_all(scratch) or {}
+		}
 		println(check_report(results))
 		eprintln(check_summary(results))
 		if results.len > 0 && results[0].error_count > 0 {
