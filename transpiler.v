@@ -1431,6 +1431,16 @@ fn (t VTranspiler) wide_call_argument(node Call, fname string, param_type string
 	}
 }
 
+// A string produced from a proven wide value retains that provenance for
+// secondary formatting decisions, even though its V type is plain string.
+fn (mut t VTranspiler) is_wide_text_source(expr Expr) bool {
+	if expr is Call && expr.func is Name && expr.args.len == 1
+		&& expr.keywords.len == 0 && expr.func.id in ['str', 'repr', 'bin', 'hex', 'oct'] {
+		return t.has_u64_bits(expr.args[0]) || t.has_large_integer(expr.args[0])
+	}
+	return false
+}
+
 // visit_function_def_or_closure keeps lexical function definitions inside their owner.
 fn (mut t VTranspiler) visit_function_def_or_closure(node FunctionDef) string {
 	mut nl_names := []string{}
@@ -6514,16 +6524,18 @@ pub fn (mut t VTranspiler) visit_binop(node BinOp) string {
 				// `str(u64)` is exact, but generic %-format folding can drop
 				// a string format's precision/width. A wide source cannot
 				// authorize that lossy secondary emission.
-				if node.right is Call && node.right.func is Name
-					&& node.right.func.id == 'str' && node.right.args.len == 1
-					&& (t.has_u64_bits(node.right.args[0]) || t.has_large_integer(node.right.args[0]))
-					&& fmt_str !in ['%s', '%r'] {
-					return t.refuse_wide('percent formatting of wide decimal text needs exact string width and precision')
+				if t.is_wide_text_source(*node.right) && fmt_str != '%s' {
+					return t.refuse_wide('percent formatting of wide-derived text needs exact Python string formatting')
 				}
 				mut values := []string{}
 				mut value_types := []string{}
 				if node.right is Tuple {
 					tup := node.right as Tuple
+					for member in tup.elts {
+						if t.is_wide_text_source(member) {
+							return t.refuse_wide('tuple percent formatting of wide-derived text is unproven')
+						}
+					}
 					if t.has_wide_args(tup.elts) {
 						return t.refuse_wide('compound percent formatting of an unsigned value')
 					}
@@ -7451,6 +7463,19 @@ fn without_opt(code string) (string, bool) {
 
 // visit_call binds eligible module functions before rendering their arguments.
 pub fn (mut t VTranspiler) visit_call(original Call) string {
+	// A literal Python format string must not silently lose the width,
+	// precision, conversion, or alignment of wide-derived decimal text.
+	if original.func is Attribute && original.func.attr == 'format'
+		&& original.func.value is Constant {
+		format_source := original.func.value as Constant
+		if format_source.value is string && (format_source.value as string) != '{}' {
+			for argument in original.args {
+				if t.is_wide_text_source(argument) {
+					return t.refuse_wide('formatting wide-derived text needs exact Python field handling')
+				}
+			}
+		}
+	}
 	if original.api == '__py2v__.unsupported_unicode_surrogate' && original.args.len == 1
 		&& original.args[0] is Constant && (original.args[0] as Constant).value is string {
 		reason := (original.args[0] as Constant).value as string
@@ -10054,6 +10079,9 @@ pub fn (mut t VTranspiler) visit_formatted_value(node FormattedValue) string {
 // fmtval_segment returns the inner interpolation text for one FormattedValue
 // node, to be embedded inside a surrounding single-quoted V string.
 fn (mut t VTranspiler) fmtval_segment(node FormattedValue) string {
+	if node.conversion != -1 && t.is_wide_text_source(node.value) {
+		return '\${${t.refuse_wide('f-string conversion of wide-derived text is unproven')}}'
+	}
 	sink := if node.format_spec == none && t.has_large_integer(node.value)
 		&& node.conversion in [-1, int(`s`), int(`r`), int(`a`)] {
 		WideSink.decimal_text
