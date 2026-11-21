@@ -9,16 +9,27 @@ fn main_func() {
 	println(d)
 	e := '-'.repeat(10)
 	println(e)
-	println(a.len)
-	println(c.len)
-	println(py2v_string_index1(c, 0))
-	println(py2v_string_index1(c, -1))
+	println(py2v_text_length1(a))
+	println(py2v_text_length1(c))
+	println((py2v_string_index1(c, 0, none) or { panic(err) }))
+	println((py2v_string_index1(c, -1, none) or { panic(err) }))
 }
 
-fn py2v_string_index1(value string, index int) string {
+fn py2v_text_length1(text string) int {
+	mut length := 0
+	for byte in text {
+		if (byte & 0xc0) != 0x80 { length++ }
+	}
+	return length
+}
+
+fn py2v_string_index1(value string, index i64, index_error ?IError) !string {
 	chars := value.runes()
-	offset := if index < 0 { chars.len + index } else { index }
-	return chars[offset].str()
+	offset := if index < 0 { i64(chars.len) + index } else { index }
+	if offset < 0 || offset >= i64(chars.len) {
+		return index_error or { error('IndexError: string index out of range') }
+	}
+	return chars[int(offset)].str()
 }
 
 fn main() {

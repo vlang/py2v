@@ -1,6 +1,6 @@
 module py_pkg_annotated_constants
 
-// TODO(py2v): module-level statement has no place in a V module; move it into a function and call it explicitly.
+pub type Index = int
 
 pub const base = 3
 

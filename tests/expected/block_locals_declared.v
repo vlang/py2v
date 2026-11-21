@@ -27,7 +27,7 @@ fn collected(words []string) int {
 	for w in words {
 		if w.starts_with('a') {
 			hits = [w]
-			total = w.len
+			total = py2v_text_length1(w)
 		} else {
 			hits = []
 			total = 0
@@ -45,6 +45,14 @@ fn only_inside(n int) int {
 		return local
 	}
 	return n
+}
+
+fn py2v_text_length1(text string) int {
+	mut length := 0
+	for byte in text {
+		if (byte & 0xc0) != 0x80 { length++ }
+	}
+	return length
 }
 
 fn main() {

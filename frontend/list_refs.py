@@ -918,8 +918,8 @@ def lower(tree, chosen, runtime_call):
             return out
         return runtime_call('str', [runtime_call('box', [node], node)], node)
 
-    def clone(node):
-        return ast.copy_location(ast.Call(func=ast.Attribute(value=node, attr='copy', ctx=ast.Load()),
+    def clone(node, method='copy'):
+        return ast.copy_location(ast.Call(func=ast.Attribute(value=node, attr=method, ctx=ast.Load()),
                                          args=[], keywords=[]), node)
 
     def wrap(node, like):
@@ -1073,7 +1073,8 @@ def lower(tree, chosen, runtime_call):
                         return runtime_call('truth', [runtime_call('box', [node.args[0]], node)], node)
                     node.args = [items(a) if ref(a) else a for a in node.args]
                     if name == 'list' and node.args:
-                        copied = clone(node.args[0])
+                        arg = node.args[0]
+                        copied = clone(arg, 'keys' if chosen.entry(arg).get('k') == 'dict' else 'copy')
                         return wrap(copied, node) if returns_ref else copied
                     if returns_ref and name in ('sorted',):
                         return wrap(node, node)

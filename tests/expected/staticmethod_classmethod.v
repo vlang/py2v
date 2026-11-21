@@ -14,12 +14,12 @@ fn (self MathHelper) double() int {
 }
 
 // @staticmethod
-fn MathHelper_add(a int, b int) int {
+fn MathHelper.add(a int, b int) int {
 	return a + b
 }
 
 // @classmethod
-fn MathHelper_create(v_ int) MathHelper {
+fn MathHelper.create(v_ int) MathHelper {
 	return py2v_new_math_helper(v_)
 }
 

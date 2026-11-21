@@ -11,6 +11,7 @@ argparse_join_value.v	11
 argparse_runtime.v	7
 argparse_untyped_namespace.v	7
 augassign_side_effects.v	12
+boxed_map_block_local.v	8
 builtin_exit.v	23
 builtin_frozenset.v	34
 builtin_frozenset_mutable_member.v	6
@@ -38,6 +39,7 @@ dict_local_inferred_writes.v	5
 dict_widen_local.v	5
 dict_widen_reassign.v	4
 divmod_value.v	10
+dynamic_attribute_store.v	22
 dynamic_attributes.v	31
 dynamic_boxed_bytes.v	6
 dynamic_comprehensions.v	11
@@ -107,6 +109,7 @@ list_frozenset_alias.v	4
 list_function_alias.v	5
 list_heterogeneous_alias.v	6
 list_identity_compare.v	6
+list_mapping_keys.v	3
 list_name_alias.v	2
 list_nested_paths.v	9
 list_reference_ops.v	9
@@ -122,12 +125,20 @@ logging_calls.v	2
 logging_runtime.v	6
 long_wrap.v	4
 loop_target_rebinding.v	2
+map_items_comprehensions.v	10
+map_items_tuple_bound.v	5
+map_items_tuple_pairs.v	4
+map_repr_strings.v	1
 match_basic.v	1
+max_by_integer_key.v	6
 mcp_types_runtime.v	7
 mixed_display_dynamic.v	14
 modulo_dynamic_target.v	13
+named_enum_lookup.v	6
+native_list_index.v	7
 native_map_types.v	12
 nested_untyped_dict.v	19
+optional_block_local.v	3
 optional_return_fallible.v	5
 os_path_dirname.v	1
 parameter_bindings.v	7
@@ -135,6 +146,7 @@ pathlib_path.v	7
 pathlib_runtime.v	4
 pkg_call_defaults/consumer/keyword_only.v	1
 pkg_call_defaults/consumer/local_defaults.v	7
+pkg_call_defaults/consumer/style_keywords.v	3
 pkg_call_defaults/consumer/use.v	1
 pkg_type_only/acyclic/consumer.v	1
 pkg_type_only/cycle_b/consumer.v	1
@@ -161,6 +173,7 @@ subparser_parameter.v	7
 subscript_slice_axis.v	1
 super_calls.v	1
 test_star.v	1
+text_index.v	6
 triangle_buggy.v	7
 truth_bool_context.v	5
 truth_boxed_floats.v	14

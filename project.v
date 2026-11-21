@@ -39,6 +39,9 @@ pub mut:
 	init_import_bindings map[string]string
 	// Module function signatures used to fill omitted scalar defaults.
 	defaulted_functions map[string]FunctionDef
+	// Source-level unsigned facts, keyed by kind and defining Python path.
+	wide_exports map[string]bool
+	wide_members map[string]bool
 	// Renamed free functions, keyed by the defining Python path and name.
 	function_names map[string]string
 	// Renamed classes and their non-instance members, keyed by defining Python path.
@@ -144,6 +147,22 @@ pub fn (r ModuleRegistry) resolve(dotted string) !PyModuleInfo {
 // lookup returns the registry entry for a Python module path, or the zero value.
 pub fn (r ModuleRegistry) lookup(dotted string) PyModuleInfo {
 	return r.by_dotted[dotted] or { PyModuleInfo{} }
+}
+
+fn (r ModuleRegistry) has_wide_export(path string, kind string) bool {
+	mut target := path
+	for _ in 0 .. max_reexport_hops {
+		if !target.contains('.') { return false }
+		owner := r.lookup(target.all_before_last('.'))
+		if owner.dotted == '' { return false }
+		canonical := '${owner.dotted}.${target.all_after_last('.')}'
+		if binding := r.init_import_bindings[canonical] {
+			target = binding
+			continue
+		}
+		return r.wide_exports['${kind}:${canonical}']
+	}
+	return false
 }
 
 // contains reports whether a Python module path belongs to the scanned project.

@@ -4,8 +4,10 @@ const max_generated_line_len = 121
 
 pub struct VTranspiler {
 mut:
-	tmp_gen TmpVarGen
-	usings  []string
+	wide_members      map[string]bool
+	unsupported_sites map[string]string
+	tmp_gen           TmpVarGen
+	usings            []string
 	// Above zero while emitting a match guard or a comprehension whose target is not
 	// one identifier (their text is rewritten by plain substring replacement
 	// afterwards), a comprehension with a walrus in its filter, or one whose loop
@@ -20,6 +22,7 @@ mut:
 	// Maps and state tracked during transpilation
 	current_class_name   string
 	current_classmethod  bool
+	emitting_function    bool
 	nominal_enums        map[string]bool
 	escaped_identifiers  map[string]bool
 	extra_mut_vars       map[string]bool
@@ -78,6 +81,7 @@ mut:
 	// current_return_count is the arity of the enclosing function's V return
 	// tuple, or 0 when it returns a single value.
 	current_return_count int
+	current_return_type  string
 	// Project translation state. `emit_pub` makes top-level symbols visible
 	// across V modules; `registry` maps Python module paths to V modules;
 	// `current_dotted` is this module's Python dotted path.
@@ -368,6 +372,7 @@ pub fn (mut t VTranspiler) visit_module(node Module) string {
 	t.prescan_ref_classes(node.body)
 	t.source_words = node.source_words
 	t.helpers_used = []
+	t.unsupported_sites.clear()
 	for name in node.source_words {
 		t.tmp_gen.taken[name] = true
 	}
@@ -743,7 +748,7 @@ pub fn (mut t VTranspiler) visit_module(node Module) string {
 		parts << main_str
 	}
 
-	return parts.join('\n\n') + '\n'
+	return t.keep_unsupported_checks(parts.join('\n\n')) + '\n'
 }
 
 // runtime_helper_name returns the name of the run-time helper `kind` in the current module.
@@ -777,10 +782,13 @@ fn runtime_helper_declaration(kind string, name string) string {
 }"
 		}
 		'string_index' {
-			'fn ${name}(value string, index int) string {\n' + r"
+			'fn ${name}(value string, index i64, index_error ?IError) !string {\n' + r"
 	chars := value.runes()
-	offset := if index < 0 { chars.len + index } else { index }
-	return chars[offset].str()
+	offset := if index < 0 { i64(chars.len) + index } else { index }
+	if offset < 0 || offset >= i64(chars.len) {
+		return index_error or { error('IndexError: string index out of range') }
+	}
+	return chars[int(offset)].str()
 }"
 		}
 		'string_center' {
@@ -946,6 +954,53 @@ fn runtime_helper_declaration(kind string, name string) string {
 				'\t} else { r = math.copysign(0.0, b) }\n' +
 				'\treturn r\n}'
 		}
+		'shift_left_u64', 'shift_right_u64' {
+			op := if kind == 'shift_left_u64' { '<<' } else { '>>' }
+			'fn ${name}[T](value u64, count T) u64 {\n' +
+				"\tif count < 0 { panic('ValueError: negative shift count') }\n" +
+				'\tif count >= 64 { return 0 }\n' +
+				'\treturn value ${op} int(count)\n}'
+		}
+		'cmp_u64_int', 'cmp_int_u64' {
+			args := if kind == 'cmp_u64_int' { 'a u64, b i64' } else { 'b i64, a u64' }
+			sign := if kind == 'cmp_u64_int' { 1 } else { -1 }
+			'fn ${name}(${args}) int {\n' +
+				'\tif b < 0 || a > u64(b) { return ${sign} }\n' +
+				'\tif a < u64(b) { return ${-sign} }\n' +
+				'\treturn 0\n}'
+		}
+		'ascii_swapcase' {
+			'fn ${name}(value string) string {\n' +
+				'\tmut bytes := value.bytes()\n' +
+				'\tfor i, b in bytes {\n' +
+				"\t\tif b >= 128 { panic('py2v: swapcase of non-ASCII text is unsupported') }\n" +
+				'\t\tif b.is_letter() { bytes[i] = b ^ 32 }\n' +
+				'\t}\n\treturn bytes.bytestr()\n}'
+		}
+		'text_length' {
+			'fn ${name}(text string) int {\n' +
+				'\tmut length := 0\n\tfor byte in text {\n' +
+				'\t\tif (byte & 0xc0) != 0x80 { length++ }\n' +
+				'\t}\n\treturn length\n}'
+		}
+		'typed_list_index' {
+			'fn ${name}[T](items []T, needle T) !int {\n' +
+				'\tindex := items.index(needle)\n' +
+				"\tif index < 0 { return pyrt.raise('ValueError', pyrt.repr(pyrt.box(needle)) + ' is not in list') }\n" +
+				'\treturn index\n}'
+		}
+		'dynamic_list_index' {
+			'fn ${name}[T, U](items T, needle U) !int {\n' +
+				"\treturn pyrt.to_int(pyrt.call_method(pyrt.box(items), 'index', [pyrt.box(needle)])!)\n}"
+		}
+		'max_integer_key' {
+			'fn ${name}[T](items []T, key fn (T) int) !T {\n' +
+				"\tif items.len == 0 { return pyrt.raise('ValueError', 'max() arg is an empty sequence') }\n" +
+				'\tmut best := items[0]\n\tmut best_key := key(best)\n' +
+				'\tfor i in 1 .. items.len {\n\t\titem := items[i]\n\t\titem_key := key(item)\n' +
+				'\t\tif item_key > best_key {\n\t\t\tbest = item\n\t\t\tbest_key = item_key\n\t\t}\n' +
+				'\t}\n\treturn best\n}'
+		}
 		'true_div' {
 			'fn ${name}(a f64, b f64) f64 {\n' + '\tif b == 0 {\n' +
 				"\t\tpanic('division by zero')\n" + '\t}\n' + '\treturn a / b\n' + '}'
@@ -1075,7 +1130,7 @@ pub fn (mut t VTranspiler) visit_return(node Return) string {
 		}
 		mut prelude := []string{}
 		bound := t.bind_chain_middle(val, mut prelude)
-		prelude << 'return ${t.visit_expr(bound)}'
+		prelude << 'return ${t.visit_integer_boundary(bound, .scalar_return, t.current_return_type)}'
 		return prelude.join('\n')
 	}
 	return 'return'
@@ -1200,8 +1255,53 @@ pub fn (mut t VTranspiler) visit_stmt(stmt Stmt) string {
 	}
 }
 
-// visit_expr visits an expression and dispatches to expression visitors.
+// WideSink lists the immediate consumers allowed to read a proven Python word.
+enum WideSink {
+	unapproved
+	scalar_storage
+	scalar_argument
+	scalar_return
+	bounded_bits
+	integer_comparison
+	decimal_text
+	binary_text
+	hexadecimal_text
+	bit_measure
+}
+
+const large_integer_type = 'py2v_big.Integer'
+
+fn wide_sink_allowed(sink WideSink, typ string, unbounded bool) bool {
+	if unbounded {
+		return sink == .decimal_text || (sink == .scalar_storage && typ == large_integer_type)
+	}
+	return match sink {
+		.unapproved { false }
+		.scalar_storage, .scalar_argument, .scalar_return { typ == 'u64' }
+		.bounded_bits, .integer_comparison, .decimal_text, .binary_text, .hexadecimal_text,
+		.bit_measure {
+			true
+		}
+	}
+}
+
+// visit_expr defaults to refusal. An approved consumer passes a permit for
+// exactly one operand. Rendering that operand does not authorize its children.
 pub fn (mut t VTranspiler) visit_expr(expr Expr) string {
+	return t.visit_expr_at(expr, .unapproved, '')
+}
+
+fn (mut t VTranspiler) visit_expr_at(expr Expr, sink WideSink, typ string) string {
+	target := (expr is Name && expr.ctx is Store) || (expr is Attribute && expr.ctx is Store)
+	if !target && t.has_wide_container_type(expr) {
+		return t.refuse_wide('unsigned values in containers are unsupported')
+	}
+	if !target && t.has_large_integer(expr) && !wide_sink_allowed(sink, typ, true) {
+		return t.refuse_wide('integer outside the native range needs exact decimal text or storage')
+	}
+	if !target && t.has_u64_bits(expr) && !wide_sink_allowed(sink, typ, false) {
+		return t.refuse_wide('this use has no proven unsigned lowering')
+	}
 	if get_v_annotation(expr).contains('pyrt.ListRef[') { t.add_using('pyrt') }
 
 	match expr {
@@ -1233,6 +1333,112 @@ pub fn (mut t VTranspiler) visit_expr(expr Expr) string {
 		NamedExpr { return t.visit_named_expr(expr) }
 		Starred { return t.visit_starred(expr) }
 	}
+}
+
+fn (mut t VTranspiler) visit_integer_boundary(expr Expr, sink WideSink, typ string) string {
+	return t.integer_boundary(expr, t.visit_expr_at(expr, sink, typ), typ)
+}
+
+fn proven_word_parameter(arg Arg) bool {
+	if ann := arg.annotation {
+		return ann is Name && ann.id == 'u64'
+	}
+	return arg.v_annotation == 'u64'
+}
+
+fn has_word_return(node FunctionDef) bool {
+	if ret := node.returns {
+		return ret is Name && ret.id == 'u64'
+	}
+	return node.v_annotation == 'u64'
+}
+
+fn register_wide_exports(parsed map[string]Module, mut registry ModuleRegistry) {
+	mut scan := new_transpiler()
+	for path, mod in parsed {
+		for stmt in mod.body {
+			match stmt {
+				Assign {
+					if stmt.targets.len == 1 && stmt.targets[0] is Name {
+						kind := if scan.has_u64_bits(stmt.value) {
+							'value'
+						} else if scan.has_large_integer(stmt.value) {
+							'large'
+						} else {
+							''
+						}
+						if kind != '' {
+							registry.wide_exports['${kind}:${path}.${stmt.targets[0].id}'] = true
+						}
+					}
+				}
+				AnnAssign {
+					if stmt.target is Name && stmt.annotation is Name && stmt.annotation.id == 'u64' {
+						registry.wide_exports['value:${path}.${stmt.target.id}'] = true
+					}
+				}
+				FunctionDef {
+					if has_word_return(stmt) {
+						registry.wide_exports['call:${path}.${stmt.name}'] = true
+					}
+				}
+				ClassDef {
+					v_module := registry.lookup(path).v_module
+					v_name := registry.class_names['${path}.${stmt.name}'] or { emitted_class_name(stmt.name) }
+					for name, typ in stmt.declarations {
+						if typ == 'u64' {
+							registry.wide_exports['field:${path}.${stmt.name}.${name}'] = true
+							registry.wide_members['field:${v_module}.${v_name}.${name}'] = true
+						}
+					}
+					for method in stmt.body {
+						if method is FunctionDef && has_word_return(method) {
+							registry.wide_exports['method:${path}.${stmt.name}.${method.name}'] = true
+							registry.wide_members['method:${v_module}.${v_name}.${method.name}'] = true
+						}
+					}
+				}
+				else {}
+			}
+		}
+	}
+}
+
+fn (t VTranspiler) imported_word(expr Expr, kind string) bool {
+	return t.registry.wide_exports.len > 0
+		&& t.registry.has_wide_export(t.init_python_path(expr), kind)
+}
+
+fn (t VTranspiler) wide_call_argument(node Call, fname string, param_type string) WideSink {
+	if param_type == 'u64' && node.func is Name {
+		return .scalar_argument
+	}
+	if node.func !is Name || node.func.id != fname || t.is_bound_in_scope(fname)
+		|| fname in t.call_signatures || fname in t.func_return_types || fname in t.init_import_aliases {
+		return .unapproved
+	}
+	if fname == 'print' {
+		return if node.keywords.len == 0 { .decimal_text } else { .unapproved }
+	}
+	if node.args.len != 1 || node.keywords.len != 0 {
+		return .unapproved
+	}
+	return match fname {
+		'str' { WideSink.decimal_text }
+		'bin' { WideSink.binary_text }
+		'hex' { WideSink.hexadecimal_text }
+		else { WideSink.unapproved }
+	}
+}
+
+// A string produced from a proven wide value retains that provenance for
+// secondary formatting decisions, even though its V type is plain string.
+fn (mut t VTranspiler) is_wide_text_source(expr Expr) bool {
+	if expr is Call && expr.func is Name && expr.args.len == 1
+		&& expr.keywords.len == 0 && expr.func.id in ['str', 'repr', 'bin', 'hex', 'oct'] {
+		return t.has_u64_bits(expr.args[0]) || t.has_large_integer(expr.args[0])
+	}
+	return false
 }
 
 // visit_function_def_or_closure keeps lexical function definitions inside their owner.
@@ -1269,6 +1475,7 @@ fn (mut t VTranspiler) visit_closure_from_funcdef(node FunctionDef, nl_names []s
 	saved_condition_initial := t.condition_walrus_initial
 	saved_condition_order := t.condition_walrus_order
 	saved_return_count := t.current_return_count
+	saved_return_type := t.current_return_type
 	saved_result := t.fn_returns_result
 	saved_init_aliases := t.init_import_aliases.clone()
 	saved_init_captures := t.init_capture_locals.clone()
@@ -1289,6 +1496,7 @@ fn (mut t VTranspiler) visit_closure_from_funcdef(node FunctionDef, nl_names []s
 		t.condition_walrus_initial = saved_condition_initial
 		t.condition_walrus_order = saved_condition_order
 		t.current_return_count = saved_return_count
+		t.current_return_type = saved_return_type
 		t.fn_returns_result = saved_result
 		t.init_import_aliases = saved_init_aliases
 		t.init_capture_locals = saved_init_captures
@@ -1394,7 +1602,7 @@ fn (mut t VTranspiler) visit_closure_from_funcdef(node FunctionDef, nl_names []s
 			}
 		}
 		declarations << '${incoming} ${typ}'
-		param_types << typ
+		param_types << if typ == 'u64' && !proven_word_parameter(arg) { '' } else { typ }
 	}
 	if kwarg := node.args.kwarg {
 		local := escape_local_decl(kwarg.arg)
@@ -1430,6 +1638,7 @@ fn (mut t VTranspiler) visit_closure_from_funcdef(node FunctionDef, nl_names []s
 		if ret.starts_with('(') { t.current_return_count = ret.count(',') + 1 }
 	}
 	t.func_return_types[node.name] = ret
+	t.current_return_type = ret
 	t.func_param_types[node.name] = param_types
 	t.mut_param_indices[node.name] = mut_indices
 	t.func_defaults[node.name] = default_values.clone()
@@ -1516,6 +1725,9 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 			})
 		}
 	}
+	was_emitting_function := t.emitting_function
+	t.emitting_function = true
+	defer { t.emitting_function = was_emitting_function }
 	saved_condition_vars := t.condition_walrus_vars
 	saved_condition_types := t.condition_walrus_types
 	saved_condition_initial := t.condition_walrus_initial
@@ -1621,16 +1833,15 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 			emit_name = escape_fn_name(emit_name)
 		}
 	}
-	// @classmethod / @staticmethod: emit as free function named ClassName_funcname
+	// V type methods implement direct calls to Python class and static methods.
 	if node.is_class_method && node.decorator_kind in ['classmethod', 'staticmethod'] {
 		member := if node.dunder_op.starts_with('py2v_overload_') { emit_name } else { node.name }
 		owner := t.local_class_name(node.class_name)
-		emit_name = if t.nominal_enums[node.class_name] {
-			'${owner}.${escape_keyword(escape_leading_underscore(member))}'
-		} else if '${t.current_dotted}.${node.class_name}' in t.registry.class_names {
+		emit_name = if !t.nominal_enums[node.class_name]
+			&& '${t.current_dotted}.${node.class_name}' in t.registry.class_names {
 			'${to_symbol_ident(owner)}_${escape_leading_underscore(member)}'
 		} else {
-			'${owner}_${member}'
+			'${owner}.${escape_keyword(escape_leading_underscore(member))}'
 		}
 		dunder_comment = '// @${node.decorator_kind}\n'
 	}
@@ -1687,12 +1898,12 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 
 	mut positional_args := node.args.posonlyargs.clone()
 	positional_args << node.args.args
-	for arg in positional_args {
+	for i, arg in positional_args {
 		if arg.arg == 'self' {
 			continue
 		}
-		// Skip `cls` for @classmethod
-		if arg.arg == 'cls' && node.decorator_kind == 'classmethod' {
+		// V type methods do not take the implicit class parameter.
+		if i == 0 && node.decorator_kind == 'classmethod' {
 			continue
 		}
 		// A parameter is already bound, so a `for` variable of the same name
@@ -1769,7 +1980,11 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 			t.any_parameter_names[arg.arg] = true
 		}
 		if !node.is_class_method {
-			t.func_param_types[node.name] << typename
+			t.func_param_types[node.name] << if typename == 'u64' && !proven_word_parameter(arg) {
+				''
+			} else {
+				typename
+			}
 		}
 		// Track parameter type for return type inference
 		if typename != '' && typename != 'Any' && !(typename.len == 1 && typename[0] >= `A`
@@ -1888,10 +2103,13 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 
 	// Return type
 	saved_return_count := t.current_return_count
+	saved_return_type := t.current_return_type
 	t.current_return_count = 0
+	t.current_return_type = ''
 	if !node.is_void && !node.is_generator && node.name != '__init__' {
 		if ret := node.returns {
 			ret_type := v_return_type(t.typename_from_annotation(*ret))
+			t.current_return_type = ret_type
 			if ret_type.starts_with('(') {
 				t.current_return_count = ret_type.count(',') + 1
 			}
@@ -2082,6 +2300,7 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 
 	// A nested function must not inherit the enclosing function's return arity.
 	t.current_return_count = saved_return_count
+	t.current_return_type = saved_return_type
 	if nested_fndefs.len > 0 {
 		t.current_class_name = saved_current_class
 		t.scope_idents = saved_scope_idents
@@ -2368,8 +2587,23 @@ pub fn (mut t VTranspiler) visit_class_def(node ClassDef) string {
 			if typ !in node.type_params && should_emit_ref_field_type(typ) {
 				typ = '&${typ}'
 			}
+			if typ == 'u64' && decl_type != 'c_uint64' {
+				t.wide_members['field:${emitted_name}.${decl}'] = true
+			}
 			if default_expr := node.class_defaults[decl] {
-				default_str := t.visit_expr(default_expr)
+				// Struct field defaults are evaluated outside the Python module's
+				// executable initialization. A module-local wide constant, a
+				// computed mask, or a call is not visible there merely because
+				// the field has type u64. Refuse rather than emitting an
+				// unbound V identifier or bypassing the wide-use check.
+				default_str := if typ == 'u64' && default_expr !is Constant
+					&& (t.has_u64_bits(default_expr) || t.has_wide_destination(default_expr)) {
+					t.refuse_wide('u64 class field default needs a compile-time constant')
+				} else if typ == 'u64' {
+					t.visit_integer_boundary(default_expr, .scalar_storage, typ)
+				} else {
+					t.visit_expr(default_expr)
+				}
 				fields << t.indent_code('${field_name} ${typ} = ${default_str}', 1)
 			} else if typ.starts_with('&pyrt.ListRef[') {
 				t.add_using('pyrt')
@@ -2481,6 +2715,9 @@ pub fn (mut t VTranspiler) visit_class_def(node ClassDef) string {
 					if ret_type.len > 0 {
 						t.func_return_types[stmt.name] = ret_type
 					}
+					if ret_type == 'u64' && ret is Name && ret.id == 'u64' {
+						t.wide_members['method:${emitted_name}.${stmt.name}'] = true
+					}
 				}
 			}
 		}
@@ -2588,6 +2825,57 @@ fn (mut t VTranspiler) visit_assignment(node Assign, package_initializer bool) s
 	for target in node.targets {
 		for name in for_target_names(target) {
 			t.note_scope_binding(name)
+		}
+	}
+	if node.targets.len == 1 {
+		target := node.targets[0]
+		if target is Name || target is Attribute {
+			rebind := target is Attribute || (target is Name
+				&& (was_bound[target.id] || t.global_vars[target.id]
+					|| target.id in node.redefined_targets))
+			stores_word := if target is Name {
+				t.var_types[target.id] == 'u64'
+			} else {
+				t.has_u64_bits(target)
+			}
+			if stores_word || (!rebind && t.has_u64_bits(node.value))
+				|| (rebind && target is Name && t.condition_walrus_vars[target.id]
+					&& t.condition_walrus_types[target.id] == 'u64') {
+				dest := t.visit_expr_at(target, .scalar_storage, 'u64')
+				value := t.visit_integer_boundary(node.value, .scalar_storage, 'u64')
+				if target is Name {
+					t.var_types[target.id] = 'u64'
+				}
+				if rebind {
+					return '${dest} = ${value}'
+				}
+				kw := if target is Name && (target.is_mutable || t.extra_mut_vars[target.id]) {
+					'mut '
+				} else {
+					''
+				}
+				return '${kw}${dest} := ${value}'
+			}
+			if target is Name && (t.has_large_integer(target)
+				|| (!rebind && t.has_large_integer(node.value))) {
+				dest := t.visit_expr(target)
+				value := if t.has_large_integer(node.value) {
+					t.visit_expr_at(node.value, .scalar_storage, large_integer_type)
+				} else {
+					t.refuse_wide('assignment changes the representation of an exact large integer')
+				}
+				t.var_types[target.id] = large_integer_type
+				if rebind {
+					return '${dest} = ${value}'
+				}
+				kw := if target.is_mutable || t.extra_mut_vars[target.id] { 'mut ' } else { '' }
+				return '${kw}${dest} := ${value}'
+			}
+		}
+	}
+	for target in node.targets {
+		if t.has_wide_destination(target) {
+			return t.refuse_wide('unsigned storage requires a single scalar assignment')
 		}
 	}
 	// Literal[v1, v2, ...] assignment — emit a const block or enum as documentation.
@@ -2774,6 +3062,10 @@ fn (mut t VTranspiler) visit_assignment(node Assign, package_initializer bool) s
 			t.visit_expr(node.value)
 		}
 
+		if target is Name && node.value is ListComp && value_str.contains('pyrt.new_tuple(') {
+			// The generated element is a boxed Python tuple, not a plain V array.
+			t.var_types[(target as Name).id] = '[]pyrt.Value'
+		}
 		match target {
 			Tuple {
 				// Tuple unpacking
@@ -3101,6 +3393,9 @@ fn (mut t VTranspiler) captured_aug_assign(node AugAssign, op_type string) strin
 
 // visit_aug_assign emits V code for an AugAssign statement.
 pub fn (mut t VTranspiler) visit_aug_assign(node AugAssign) string {
+	if t.has_u64_bits(node.target) || t.has_u64_bits(node.value) {
+		return t.refuse_wide('augmented assignment of an unsigned word is unsupported')
+	}
 	op_type := get_op_type(node.op)
 	if op_type == 'Mod' || (op_type in ['Pow', 'FloorDiv'] && has_list_reference(*node.target))
 		|| (op_type == 'Add' && t.infer_expr_type(*node.target).starts_with('&pyrt.ListRef[')) {
@@ -3402,8 +3697,8 @@ fn (mut t VTranspiler) visit_aug_assign_once(node AugAssign, op_type string, tar
 pub fn (mut t VTranspiler) visit_ann_assign(node AnnAssign) string {
 	was_bound := node.target is Name && t.is_bound_in_scope(node.target.id)
 	if node.target is Name { t.note_scope_binding(node.target.id) }
-	target := t.visit_expr(node.target)
 	type_str := t.typename_from_annotation(*node.annotation)
+	target := t.visit_expr_at(node.target, .scalar_storage, type_str)
 
 	mut kw := ''
 	if node.target is Name {
@@ -3426,7 +3721,10 @@ pub fn (mut t VTranspiler) visit_ann_assign(node AnnAssign) string {
 	}
 
 	if val := node.value {
-		val_str := t.visit_expr(val)
+		if is_wide_container_type(type_str) {
+			return '${kw}${target} ${op} ${t.refuse_wide('unsigned values in containers are unsupported')}'
+		}
+		val_str := t.visit_expr_at(val, .scalar_storage, type_str)
 
 		// Special handling for list initialization
 		if val is List {
@@ -3468,7 +3766,7 @@ pub fn (mut t VTranspiler) visit_ann_assign(node AnnAssign) string {
 			return '${kw}${target} ${op} ${type_str}(none)'
 		}
 
-		return '${kw}${target} ${op} ${val_str}'
+		return '${kw}${target} ${op} ${t.integer_boundary(val, val_str, type_str)}'
 	}
 
 	// A bare `name: type` declares the local, so a later `for name in ...`
@@ -3795,6 +4093,9 @@ fn (t VTranspiler) bind_op(v_name string) string {
 
 // visit_for emits V code for a For loop.
 pub fn (mut t VTranspiler) visit_for(node For) string {
+	if t.has_wide_destination(node.target) {
+		return t.refuse_wide('unsigned storage requires a single scalar assignment')
+	}
 	saved_renames := t.renamed_idents.clone()
 	mut rename := map[string]string{}
 	mut writebacks := map[string]string{}
@@ -3955,7 +4256,9 @@ pub fn (mut t VTranspiler) visit_for(node For) string {
 		call := node.iter as Call
 		if call.func is Name {
 			fname := (call.func as Name).id
-			if call.api == '__py2v__.native_range_loop' && call.args.len in [1, 2] {
+			if fname == 'range' && t.has_wide_args(call.args) {
+				for_expr = t.refuse_wide('range may narrow an unsigned bound')
+			} else if call.api == '__py2v__.native_range_loop' && call.args.len in [1, 2] {
 				start := if call.args.len == 1 {
 					'0'
 				} else {
@@ -5126,10 +5429,11 @@ pub fn (mut t VTranspiler) visit_assert(node Assert) string {
 pub fn (mut t VTranspiler) visit_type_alias(node TypeAlias) string {
 	name := t.visit_expr(node.name)
 	value := t.typename_from_annotation(*node.value)
+	prefix := if t.emit_pub { 'pub ' } else { '' }
 	if value.len > 0 {
-		return 'type ${name} = ${value}'
+		return '${prefix}type ${name} = ${value}'
 	}
-	return 'type ${name} = ${t.visit_expr(node.value)}'
+	return '${prefix}type ${name} = ${t.visit_expr(node.value)}'
 }
 
 // is_simple_match_pattern returns true if a pattern can be represented as a
@@ -5893,7 +6197,10 @@ pub fn (mut t VTranspiler) visit_constant(node Constant) string {
 			return '${node.value as int}'
 		}
 		i64 {
-			return '${node.value as i64}'
+			return 'i64(${node.value as i64})'
+		}
+		u64 {
+			return 'u64(${node.value as u64})'
 		}
 		f64 {
 			value := (node.value as f64).str()
@@ -5917,6 +6224,9 @@ pub fn (mut t VTranspiler) visit_constant(node Constant) string {
 pub fn (mut t VTranspiler) visit_name(node Name) string {
 	if name := t.renamed_class(node.class_path) {
 		return name
+	}
+	if node.api in ['__py2v__.unsigned_bit_count', '__py2v__.unsigned_bit_length'] {
+		return t.unsigned_bit_function(node.id)
 	}
 	if t.condition_walrus_vars[node.id] {
 		if renamed := t.renamed_idents[node.id] { return renamed }
@@ -6147,8 +6457,42 @@ fn mixes_and_or(p int, prec int) bool {
 
 // visit_binop emits V code for a binary operation (BinOp).
 pub fn (mut t VTranspiler) visit_binop(node BinOp) string {
+	if t.has_u64_bits(node) || t.has_u64_bits(node.left) || t.has_u64_bits(node.right) {
+		if node.op is BitAnd && (t.word_bound(node.left) != none || t.word_bound(node.right) != none) {
+			return '${t.unsigned_bits(*node.left, v_prec('&'))} & ${t.unsigned_bits(*node.right, v_prec('&'))}'
+		}
+		if (node.op is BitOr || node.op is BitXor)
+			&& t.word_bound(node.left) != none && t.word_bound(node.right) != none {
+			op := op_to_symbol(get_op_type(node.op))
+			prec := v_prec(op)
+			return '${t.unsigned_bits(*node.left, prec)} ${op} ${t.unsigned_bits(*node.right, prec)}'
+		}
+		if node.op is RShift && t.word_bound(node.left) != none {
+			return t.unsigned_bits(node, 0)
+		}
+		if node.op is LShift {
+			if bound := t.word_bound(node.left) {
+				if count := literal_word(node.right) {
+					if count < 64 && bound <= (max_unsigned_word >> int(count)) {
+						return t.unsigned_bits(node, 0)
+					}
+				}
+			}
+		}
+		if node.op is Mod && node.left is Constant && node.left.value is string {
+			// The format uses the unsigned operand's native type.
+		} else {
+			return t.refuse_wide('line ${node.loc.lineno}: ${op_to_symbol(get_op_type(node.op))} has no proven result within u64')
+		}
+	}
 	left := t.visit_expr(node.left)
-	right := t.visit_expr(node.right)
+	right_sink := if node.op is Mod && node.left is Constant && node.left.value is string
+		&& node.left.value == '%x' {
+		WideSink.hexadecimal_text
+	} else {
+		WideSink.unapproved
+	}
+	right := t.visit_expr_at(*node.right, right_sink, '')
 	mut op := op_to_symbol(get_op_type(node.op))
 
 	// Handle power operator - V doesn't have **, use math.pow/powi
@@ -6177,15 +6521,33 @@ pub fn (mut t VTranspiler) visit_binop(node BinOp) string {
 			c := node.left as Constant
 			if c.value is string {
 				fmt_str := c.value as string
+				// `str(u64)` is exact, but generic %-format folding can drop
+				// a string format's precision/width. A wide source cannot
+				// authorize that lossy secondary emission.
+				if t.is_wide_text_source(*node.right) && fmt_str != '%s' {
+					return t.refuse_wide('percent formatting of wide-derived text needs exact Python string formatting')
+				}
 				mut values := []string{}
 				mut value_types := []string{}
 				if node.right is Tuple {
 					tup := node.right as Tuple
+					for member in tup.elts {
+						if t.is_wide_text_source(member) {
+							return t.refuse_wide('tuple percent formatting of wide-derived text is unproven')
+						}
+					}
+					if t.has_wide_args(tup.elts) {
+						return t.refuse_wide('compound percent formatting of an unsigned value')
+					}
 					for elt in tup.elts {
 						values << t.visit_expr(elt)
 						value_types << t.infer_expr_type(elt)
 					}
 				} else {
+					if t.has_u64_bits(node.right) {
+						if fmt_str == '%x' { return '${as_receiver(right)}.hex()' }
+						return t.refuse_wide('percent format for an unsigned value: ${fmt_str}')
+					}
 					values << right
 					value_types << t.infer_expr_type(node.right)
 				}
@@ -6353,8 +6715,342 @@ pub fn (mut t VTranspiler) visit_binop(node BinOp) string {
 	return '${paren_left(left, prec)} ${op} ${paren_right(right, prec)}'
 }
 
+fn (t VTranspiler) has_large_integer(expr Expr) bool {
+	return match expr {
+		Constant { (expr.kind or { '' }) == 'py2v_large_int' }
+		Name { t.var_types[expr.id] == large_integer_type || t.imported_word(expr, 'large') }
+		Attribute { t.imported_word(expr, 'large') }
+		else { false }
+	}
+}
+
+// has_u64_bits identifies a native unsigned operand, including a previously inferred name.
+fn (mut t VTranspiler) has_u64_bits(expr Expr) bool {
+	annotation := get_expr_annotation(expr)
+	if annotation == 'c_uint64' {
+		// An explicit ctypes annotation uses the existing fixed-width lowering.
+		return false
+	}
+	if annotation == 'u64' {
+		return true
+	}
+	return match expr {
+		Constant { expr.value is u64 }
+		Name { t.var_types[expr.id] == 'u64' || t.imported_word(expr, 'value') }
+		Attribute { t.has_wide_member(expr, 'field') || t.imported_word(expr, 'value') }
+		Call {
+			if t.imported_word(expr.func, 'call') {
+				true
+			} else if expr.func is Name {
+				t.func_return_types[expr.func.id] == 'u64'
+					|| (t.var_types[expr.func.id].starts_with('fn (')
+						&& t.var_types[expr.func.id].ends_with(') u64'))
+			} else {
+				expr.func is Attribute && t.has_wide_member(expr.func, 'method')
+			}
+		}
+		Subscript {
+			typ := t.infer_expr_type(expr.value)
+			typ == '[]u64' || (typ.starts_with('map[') && typ.ends_with(']u64'))
+		}
+		BinOp {
+			if expr.op is LShift {
+				if count := literal_word(*expr.right) {
+					if left := literal_shift_word(*expr.left) {
+						if left != 0 && (count >= 63 || left > (u64(0x7fffffffffffffff) >> int(count))) {
+							return true
+						}
+					}
+				}
+				t.has_u64_bits(*expr.left)
+			} else if expr.op is RShift {
+				t.has_u64_bits(*expr.left)
+			} else {
+				(expr.op is BitAnd || expr.op is BitOr || expr.op is BitXor)
+					&& (t.has_u64_bits(*expr.left) || t.has_u64_bits(*expr.right))
+			}
+		}
+		else { false }
+	}
+}
+
+fn (mut t VTranspiler) has_wide_member(expr Attribute, kind string) bool {
+	if t.registry.wide_exports.len > 0 {
+		owner := expr_class_path(expr.value)
+		if owner != '' && t.registry.wide_exports['${kind}:${owner}.${expr.attr}'] {
+			return true
+		}
+	}
+	if t.wide_members.len == 0 && t.registry.wide_members.len == 0 {
+		return false
+	}
+	owner := if expr.value is Name && expr.value.id == 'self' {
+		emitted_class_name(t.current_class_name)
+	} else {
+		t.infer_expr_type(expr.value).trim_left('?&')
+	}
+	if t.wide_members['${kind}:${owner}.${expr.attr}'] {
+		return true
+	}
+	if owner == '' { return false }
+	if path := t.init_import_aliases[owner] {
+		if t.registry.wide_exports['${kind}:${path}.${expr.attr}'] {
+			return true
+		}
+	}
+	qualified := if owner.contains('.') { owner } else { '${t.module_name}.${owner}' }
+	return t.registry.wide_members['${kind}:${qualified}.${expr.attr}']
+}
+
+fn (mut t VTranspiler) has_wide_destination(target Expr) bool {
+	return match target {
+		Name { t.var_types[target.id] in ['u64', large_integer_type] }
+		Attribute { t.has_u64_bits(target) }
+		Tuple, List { target.elts.any(t.has_wide_destination(it)) }
+		Starred { t.has_wide_destination(target.value) }
+		else { false }
+	}
+}
+
+fn is_wide_container_type(typ string) bool {
+	return (typ.starts_with('[]') || typ.starts_with('map[') || typ.starts_with('&pyrt.ListRef[')
+		|| typ.starts_with('?')) && 'u64' in typ.split_any('[]? ')
+}
+
+fn (mut t VTranspiler) has_wide_container_type(expr Expr) bool {
+	if expr is Name && is_wide_container_type(t.var_types[expr.id]) {
+		return true
+	}
+	if expr is Call && expr.func is Name && is_wide_container_type(t.func_return_types[expr.func.id]) {
+		return true
+	}
+	annotation := get_expr_annotation(expr)
+	return annotation.contains('u64') && is_wide_container_type(t.map_type(annotation))
+}
+
+const max_unsigned_word = u64(0xffffffffffffffff)
+
+// refuse_wide leaves the expression visible to V's checker.
+fn (mut t VTranspiler) refuse_wide(reason string) string {
+	return t.unsupported_site('wide_integer', reason, '')
+}
+
+fn (mut t VTranspiler) unsupported_site(kind string, reason string, operand string) string {
+	base := 'py2v_unsupported_${kind}'
+	symbol := if base in t.source_words || base in t.registry.module_words[t.module_name] {
+		t.runtime_helper_name('unsupported_${kind}')
+	} else {
+		base
+	}
+	call := "${symbol}('${escape_string(reason)}')"
+	t.unsupported_sites[symbol] = call
+	if operand != '' {
+		return "${symbol}(${operand}, '${escape_string(reason)}')"
+	}
+	return call
+}
+
+// keep_unsupported_checks preserves a checker error if package lowering omits
+// an executable module-level statement that contained the original call.
+fn (mut t VTranspiler) keep_unsupported_checks(code string) string {
+	if t.unsupported_sites.len == 0 {
+		return code
+	}
+	lines := code.split_into_lines()
+	mut guards := []string{}
+	for symbol, call in t.unsupported_sites {
+		if lines.any(!it.trim_space().starts_with('//') && it.contains(symbol + '(')) {
+			continue
+		}
+		kind := symbol.trim_string_left('py2v_') + '_guard'
+		key := '${t.module_name}.${kind}'
+		if !t.registry.helper_declared[key] {
+			t.registry.helper_declared[key] = true
+			guards << 'const ${t.runtime_helper_name(kind)} = ${call}'
+		}
+	}
+	return if guards.len == 0 { code } else { code + '\n\n' + guards.join('\n') }
+}
+
+// literal_word recognizes a nonnegative integer literal.
+fn literal_word(expr Expr) ?u64 {
+	if expr is Constant {
+		return match expr.value {
+			u64 { expr.value }
+			i64 {
+				if expr.value >= 0 { u64(expr.value) } else { none }
+			}
+			int {
+				if expr.value >= 0 { u64(expr.value) } else { none }
+			}
+			else { none }
+		}
+	}
+	return none
+}
+
+fn literal_shift_word(expr Expr) ?u64 {
+	if expr is BinOp && expr.op is LShift {
+		left := literal_shift_word(*expr.left) or { return none }
+		count := literal_word(*expr.right) or { return none }
+		if count < 64 && left <= (max_unsigned_word >> int(count)) {
+			return left << int(count)
+		}
+		return none
+	}
+	return literal_word(expr)
+}
+
+// word_bound supplies a native bound for an unsigned value or a masked expression.
+fn (mut t VTranspiler) word_bound(expr Expr) ?u64 {
+	if bound := literal_word(expr) {
+		return bound
+	}
+	if expr is BinOp {
+		if expr.op is BitAnd {
+			left := t.word_bound(expr.left)
+			right := t.word_bound(expr.right)
+			if l := left {
+				r := right or { return l }
+				return if l <= r { l } else { r }
+			}
+			return right
+		}
+		if expr.op is LShift || expr.op is RShift || expr.op is BitOr || expr.op is BitXor {
+			left := t.word_bound(expr.left) or { return none }
+			if expr.op is RShift {
+				return left
+			}
+			if expr.op is LShift {
+				count := literal_word(expr.right) or { return none }
+				if count < 64 && left <= (max_unsigned_word >> int(count)) {
+					return left << int(count)
+				}
+			} else if t.word_bound(expr.right) != none {
+				return max_unsigned_word
+			}
+		}
+		return none
+	}
+	if expr is UnaryOp {
+		return if expr.op is UAdd { t.word_bound(expr.operand) } else { none }
+	}
+	return if t.has_u64_bits(expr) { max_unsigned_word } else { none }
+}
+
+// nonnegative_wide_compare_operand preserves a constant left shift that fits u64,
+// rather than passing its signed-V spelling through i64 (where bit 63 is negative).
+fn (mut t VTranspiler) nonnegative_wide_compare_operand(expr Expr) ?string {
+	bound := t.word_bound(expr) or { return none }
+	if bound <= u64(0x7fffffffffffffff) { return none }
+	if expr is BinOp && expr.op is LShift && t.word_bound(expr.left) != none
+		&& literal_word(expr.right) != none {
+		return t.unsigned_bits(expr, 0)
+	}
+	return none
+}
+
+// has_wide_args finds a wide value in a flat argument list.
+fn (mut t VTranspiler) has_wide_args(args []Expr) bool {
+	for arg in args {
+		if t.has_u64_bits(arg) {
+			return true
+		}
+	}
+	return false
+}
+
+// unsigned_bits computes the low 64 bits for an already-proven mask. A left shift must widen
+// its operand before shifting, and a masked complement needs only those bits.
+fn (mut t VTranspiler) unsigned_bits(expr Expr, prec int) string {
+	if expr is BinOp && (expr.op is LShift || expr.op is RShift) {
+		if expr.op is RShift && t.word_bound(expr.left) == none {
+			return t.refuse_wide('right shift before masking may need bits outside u64')
+		}
+		op := op_to_symbol(get_op_type(expr.op))
+		left := t.unsigned_bits(*expr.left, v_prec(op))
+		right := t.visit_expr(expr.right)
+		if expr.right is Constant && expr.right.value is int && expr.right.value >= 0
+			&& expr.right.value < 64 {
+			return '(${left} ${op} ${right})'
+		}
+		helper := if expr.op is LShift { 'shift_left_u64' } else { 'shift_right_u64' }
+		return '${t.runtime_helper(helper)}(${left}, ${right})'
+	}
+	if expr is UnaryOp && expr.op is Invert {
+		return '~${t.unsigned_bits(*expr.operand, prefix_prec)}'
+	}
+	if expr is UnaryOp && expr.op is USub {
+		return '(u64(0) - ${t.unsigned_bits(*expr.operand, v_prec('-'))})'
+	}
+	if expr is BinOp && (expr.op is Add || expr.op is Sub || expr.op is Mult) {
+		op := op_to_symbol(get_op_type(expr.op))
+		left := t.unsigned_bits(*expr.left, v_prec(op))
+		right := t.unsigned_bits(*expr.right, v_prec(op))
+		return '(${left} ${op} ${right})'
+	}
+	code := t.visit_expr_at(expr, .bounded_bits, '')
+	if t.has_u64_bits(expr) {
+		return paren_right(code, prec)
+	}
+	if t.infer_expr_type(expr) in ['string', 'f32', 'f64'] {
+		return t.refuse_wide('masking needs an integer operand')
+	}
+	return 'u64(${code})'
+}
+
+// unsigned_bit_function names a V bit helper with the native unsigned signature.
+fn (mut t VTranspiler) unsigned_bit_function(method string) string {
+	bits_module := t.runtime_helper_name('math_bits')
+	t.add_using('math.bits as ${bits_module}')
+	member := if method == 'bit_length' { 'len_64' } else { 'ones_count_64' }
+	return '${bits_module}.${member}'
+}
+
+// integer_boundary reconciles native widths when a declared type requires it.
+fn (mut t VTranspiler) integer_boundary(expr Expr, code string, typ string) string {
+	if typ == 'f64' {
+		if t.has_u64_bits(expr) {
+			return t.refuse_wide('conversion of an unsigned value at a float annotation')
+		}
+		// A wide literal can cross the existing float boundary if no digits are lost.
+		literal := if expr is UnaryOp && (expr.op is UAdd || expr.op is USub) {
+			*expr.operand
+		} else {
+			expr
+		}
+		if literal is Constant {
+			value := literal.value
+			limit := i64(1) << 53
+			if value is i64 && value >= -limit && value <= limit {
+				return 'f64(${code})'
+			}
+		}
+	}
+	if typ !in ['u64', 'int', 'i64'] {
+		return code
+	}
+	unsigned := t.has_u64_bits(expr)
+	if typ == 'u64' && !unsigned {
+		if t.word_bound(expr) == none {
+			return t.refuse_wide('conversion to u64 needs a nonnegative value with a proven bound')
+		}
+		if expr is BinOp {
+			return t.unsigned_bits(expr, 0)
+		}
+		return 'u64(${code})'
+	}
+	if typ in ['int', 'i64'] && unsigned {
+		return t.refuse_wide('unsigned conversion to ${typ} is unsupported')
+	}
+	return code
+}
+
 // visit_unaryop emits V code for a unary operation (UnaryOp).
 pub fn (mut t VTranspiler) visit_unaryop(node UnaryOp) string {
+	if (node.op is USub || node.op is Invert) && t.has_u64_bits(node.operand) {
+		return t.refuse_wide('line ${node.loc.lineno}: unary ${op_to_symbol(get_unary_op_type(node.op))} needs an enclosing mask')
+	}
 	op := op_to_symbol(get_unary_op_type(node.op))
 	operand := t.visit_expr(node.operand)
 	// A prefix binds tighter than any binary operator, so an operand that binds less tightly
@@ -6393,7 +7089,13 @@ pub fn (mut t VTranspiler) visit_compare(node Compare) string {
 	if node.ops.len > 1 && node.comparators.len == node.ops.len {
 		return t.visit_compare_chain(node)
 	}
-	left := t.visit_expr(node.left)
+	sink := if !node.truth_test && node.ops.len > 0
+		&& get_cmp_op_type(node.ops[0]) in ['Eq', 'NotEq', 'Lt', 'LtE', 'Gt', 'GtE'] {
+		WideSink.integer_comparison
+	} else {
+		WideSink.unapproved
+	}
+	left := t.visit_expr_at(*node.left, sink, '')
 
 	if node.ops.len > 0 && node.ops[0] is In {
 		// Check if right side is dict.values() - use .keys().map() for V compatibility
@@ -6436,7 +7138,33 @@ pub fn (mut t VTranspiler) visit_compare(node Compare) string {
 	}
 
 	op := op_to_symbol(get_cmp_op_type(node.ops[0]))
-	mut right := t.visit_expr(node.comparators[0])
+	mut right := t.visit_expr_at(node.comparators[0], sink, '')
+	if op in ['==', '!=', '<', '<=', '>', '>='] {
+		cmp := node.comparators[0]
+		left_wide := t.has_u64_bits(node.left)
+		right_wide := t.has_u64_bits(cmp)
+		if left_wide && !right_wide && t.infer_expr_type(cmp) in ['int', 'i64'] {
+			if native := t.nonnegative_wide_compare_operand(cmp) {
+				return '${cmp_operand(left)} ${op} ${cmp_operand(native)}'
+			}
+			if cmp is BinOp || (cmp is UnaryOp && (cmp as UnaryOp).operand is BinOp) {
+				return t.refuse_wide('signed comparison operand has no proven i64 bound')
+			}
+			return '${t.runtime_helper('cmp_u64_int')}(${left}, i64(${right})) ${op} 0'
+		}
+		if right_wide && !left_wide && t.infer_expr_type(node.left) in ['int', 'i64'] {
+			if native := t.nonnegative_wide_compare_operand(node.left) {
+				return '${cmp_operand(native)} ${op} ${cmp_operand(right)}'
+			}
+			if node.left is BinOp || (node.left is UnaryOp && (node.left as UnaryOp).operand is BinOp) {
+				return t.refuse_wide('signed comparison operand has no proven i64 bound')
+			}
+			return '${t.runtime_helper('cmp_int_u64')}(i64(${left}), ${right}) ${op} 0'
+		}
+		if left_wide != right_wide {
+			return t.refuse_wide('comparison of an unsigned value needs a native integer operand')
+		}
+	}
 
 	// When comparing a numeric CONSTANT with None, replace 'none' with '0'
 	if right == 'none' && node.left is Constant {
@@ -6735,10 +7463,61 @@ fn without_opt(code string) (string, bool) {
 
 // visit_call binds eligible module functions before rendering their arguments.
 pub fn (mut t VTranspiler) visit_call(original Call) string {
+	// A literal Python format string must not silently lose the width,
+	// precision, conversion, or alignment of wide-derived decimal text.
+	if original.func is Attribute && original.func.attr == 'format'
+		&& original.func.value is Constant {
+		format_source := original.func.value as Constant
+		if format_source.value is string && (format_source.value as string) != '{}' {
+			for argument in original.args {
+				if t.is_wide_text_source(argument) {
+					return t.refuse_wide('formatting wide-derived text needs exact Python field handling')
+				}
+			}
+		}
+	}
+	if original.api == '__py2v__.unsupported_unicode_surrogate' && original.args.len == 1
+		&& original.args[0] is Constant && (original.args[0] as Constant).value is string {
+		reason := (original.args[0] as Constant).value as string
+		return t.unsupported_site('unicode_surrogate', reason, '')
+	}
+	if original.api == '__py2v__.unsupported_annotated_call' && original.args.len == 2
+		&& original.args[1] is Constant && (original.args[1] as Constant).value is string {
+		reason := (original.args[1] as Constant).value as string
+		value := t.visit_expr(original.args[0])
+		return t.unsupported_site('annotated_call', reason, value)
+	}
+	if original.api == '__py2v__.text_length' && original.args.len == 1 {
+		helper := t.runtime_helper('text_length')
+		return '${helper}(${t.visit_expr(original.args[0])})'
+	}
+	if original.api == '__py2v__.text_characters' && original.args.len == 1 {
+		return '${as_receiver(t.visit_expr(original.args[0]))}.runes().map(it.str())'
+	}
+	// A proven u64 is not a pyrt.Value: implicit V union conversion loses
+	// the high bit and even renders some values as the empty string. Plain V
+	// string conversion is exact and needs no runtime or boxing.
+	if original.func is Attribute && original.args.len == 1 && original.keywords.len == 0 {
+		func := original.func as Attribute
+		if func.attr in ['str', 'repr'] && func.value is Name
+			&& (func.value as Name).id == 'pyrt'
+			&& (t.has_u64_bits(original.args[0]) || t.has_large_integer(original.args[0])) {
+			return '${as_receiver(t.visit_expr_at(original.args[0], .decimal_text, ''))}.str()'
+		}
+	}
+	if original.func is Attribute && original.args.len == 0 && original.keywords.len == 0
+		&& original.func.attr in ['bit_length', 'bit_count'] && t.has_u64_bits(original.func.value) {
+		value := t.visit_expr_at(*original.func.value, .bit_measure, '')
+		return '${t.unsigned_bit_function(original.func.attr)}(${value})'
+	}
 	if original.api == '__py2v__.native_map_pop' && original.func is Attribute
 		&& original.args.len == 1 {
 		helper := t.runtime_helper('native_map_pop')
 		return '${helper}(mut ${t.visit_expr(original.func.value)}, ${t.visit_expr(original.args[0])})'
+	}
+	if original.api == '__py2v__.required_text' && original.args.len == 1 {
+		value := t.visit_expr(original.args[0])
+		return "(${value} or { panic('unreachable None after string narrowing') })"
 	}
 	if original.api == '__py2v__.coroutine_refusal' && original.args.len == 2 {
 		message := original.args[0]
@@ -6777,6 +7556,12 @@ pub fn (mut t VTranspiler) visit_call(original Call) string {
 		return 'pyrt.list_ref[${elem}](${t.visit_expr(value)})'
 	}
 
+	if original.api == '__py2v__.checked_text_index' && original.args.len == 2 {
+		value := t.visit_expr(original.args[0])
+		code := t.emit_string_index(value, original.args[1], original.guard > 0 || original.propagate)
+		if original.guard > 0 { return guarded_call(code, original.guard) }
+		return if original.propagate { propagated_call(code) } else { code }
+	}
 	if original.guard > 0 {
 		// a call that can fail, in the body of a `try` whose handlers take the error
 		code, optional := without_opt(t.visit_call(Call{
@@ -6794,6 +7579,30 @@ pub fn (mut t VTranspiler) visit_call(original Call) string {
 		}))
 		passed := propagated_call(code)
 		return if optional { passed + '.opt()' } else { passed }
+	}
+	if original.api == '__py2v__.native_list_index' && original.args.len == 2 {
+		items := t.infer_expr_type(original.args[0])
+		elem := t.infer_expr_type(original.args[1])
+		kind := if elem in ['string', 'int', 'i64', 'bool'] && items == '[]${elem}' {
+			'typed_list_index'
+		} else {
+			'dynamic_list_index'
+		}
+		t.add_using('pyrt')
+		helper := t.runtime_helper(kind)
+		return '(${helper}(${original.args.map(t.visit_expr(it)).join(', ')}) or { pyrt.fail(err) })'
+	}
+	if original.api == '__py2v__.enum_lookup' && original.args.len == 1 {
+		t.add_using('pyrt')
+		class := t.visit_expr(original.func)
+		label := t.visit_expr(original.args[0])
+		return '(${class}.py2v_enum_lookup(${label}) or { pyrt.fail(err) })'
+	}
+	if original.api == '__py2v__.max_integer_key' && original.args.len == 1
+		&& original.keywords.len == 1 {
+		if code := t.visit_integer_key_max(original.args[0], original.keywords[0].value) {
+			return code
+		}
 	}
 	if original.api != '' {
 		if code := t.runtime_api_call(original) {
@@ -6825,11 +7634,20 @@ pub fn (mut t VTranspiler) visit_call(original Call) string {
 	mut list_arg_slots := []int{}
 	declared_params := t.func_param_types[fname] or { []string{} }
 	for i, arg in node.args {
-		mut arg_str := t.typed_literal_arg(arg)
+		param_type := declared_params[i] or { '' }
+		sink := t.wide_call_argument(node, fname, param_type)
+		mut arg_str := if sink == .unapproved {
+			t.typed_literal_arg(arg)
+		} else {
+			t.visit_expr_at(arg, sink, param_type)
+		}
 		// A dict literal for a parameter declared with a value type has that type
 		if arg is Dict && (arg as Dict).keys.len > 0 && i < declared_params.len
 			&& declared_params[i].starts_with('map[') && !declared_params[i].ends_with(']Any') {
-			arg_str = declared_params[i] + t.visit_expr(arg)
+			typ := declared_params[i]
+			arg_str = typ + t.visit_expr(arg)
+		} else if i < declared_params.len {
+			arg_str = t.integer_boundary(arg, arg_str, declared_params[i])
 		}
 		// Add mut keyword if this parameter index requires it
 		if i in mut_indices {
@@ -6958,6 +7776,10 @@ pub fn (mut t VTranspiler) visit_call(original Call) string {
 		method := attr_node.attr
 		// Append's operator spelling belongs to the call, never to a bound method value.
 		if method == 'append' && vargs.len > 0 {
+			if t.infer_expr_type(attr_node.value) == '[]u64'
+				&& t.word_bound(node.args[0]) == none {
+				return t.refuse_wide('appending an unbounded or negative integer would corrupt a native unsigned list')
+			}
 			return '${obj} << ${vargs[0]}'
 		}
 
@@ -7558,6 +8380,12 @@ pub fn (mut t VTranspiler) visit_call(original Call) string {
 			'capitalize' {
 				return '${obj}.capitalize()'
 			}
+			'swapcase' {
+				if vargs.len == 0 && node.keywords.len == 0
+					&& t.infer_expr_type(attr_node.value) == 'string' {
+					return '${t.runtime_helper('ascii_swapcase')}(${obj})'
+				}
+			}
 			'title' {
 				return '${obj}.title()'
 			}
@@ -7892,6 +8720,9 @@ pub fn (mut t VTranspiler) visit_call(original Call) string {
 		if 'pyrt.${module_name}' in t.usings {
 			mut rargs := []string{}
 			for i, arg in original.args {
+				if i < entry.boxed.len && entry.boxed[i] && t.has_u64_bits(arg) {
+					return t.refuse_wide('boxing a native unsigned argument in the runtime loses its value')
+				}
 				code := t.visit_expr(arg)
 				// A parameter that takes any Python value takes the runtime value
 				rargs << if i < entry.boxed.len && entry.boxed[i] {
@@ -8223,6 +9054,18 @@ pub fn (mut t VTranspiler) visit_attribute(node Attribute) string {
 		return 'py2v_unsupported_bound_append_${node.bound_append}(${t.visit_expr(node.value)})'
 	}
 	if node.api != '' {
+		match node.api {
+			'__py2v__.enum_constant' {
+				return '${t.visit_expr(node.value)}.${escape_keyword(node.attr.to_lower())}'
+			}
+			'__py2v__.enum_name' {
+				return '${as_receiver(t.visit_expr(node.value))}.py2v_enum_name()'
+			}
+			'__py2v__.enum_value' {
+				return 'int(${t.visit_expr(node.value)})'
+			}
+			else {}
+		}
 		if entry := runtime_api[node.api] {
 			if entry.kind == 'constant' {
 				t.add_using(entry.v_module)
@@ -8289,6 +9132,21 @@ pub fn (mut t VTranspiler) visit_attribute(node Attribute) string {
 	return '${value}.${attr}'
 }
 
+fn (mut t VTranspiler) emit_string_index(value string, index Expr, catchable bool) string {
+	helper := t.runtime_helper('string_index')
+	offset := t.visit_expr(index)
+	numeric_offset := if t.infer_expr_type(index) == 'bool' {
+		'if ${offset} { i64(1) } else { i64(0) }'
+	} else {
+		offset
+	}
+	if catchable {
+		t.add_using('pyrt')
+		return "(${helper}(${value}, ${numeric_offset}, pyrt.raise('IndexError', 'string index out of range')) or { pyrt.fail(err) })"
+	}
+	return '(${helper}(${value}, ${numeric_offset}, none) or { panic(err) })'
+}
+
 // visit_subscript emits V code for subscript access (Subscript).
 pub fn (mut t VTranspiler) visit_subscript(node Subscript) string {
 	value := as_receiver(t.visit_expr(node.value))
@@ -8314,15 +9172,16 @@ pub fn (mut t VTranspiler) visit_subscript(node Subscript) string {
 		}
 	}
 	if receiver_type == 'string' && node.slice !is Slice && node.slice !is Tuple {
-		return '${t.runtime_helper('string_index')}(${value}, ${t.visit_expr(node.slice)})'
+		return t.emit_string_index(value, node.slice, false)
 	}
 	if node.slice is Slice && (receiver_type.starts_with('[]') || receiver_type == 'string') {
 		slice := node.slice as Slice
-		if step := slice.step {
+		if slice.step != none || receiver_type == 'string' {
+			step := if stride := slice.step { t.visit_expr(stride) } else { '1' }
 			lower := if bound := slice.lower { t.visit_expr(bound) } else { '?int(none)' }
 			upper := if bound := slice.upper { t.visit_expr(bound) } else { '?int(none)' }
 			input := if receiver_type == 'string' { '${value}.runes()' } else { value }
-			result := '${t.runtime_helper('slice_step')}(${input}, ${lower}, ${upper}, ${t.visit_expr(step)})'
+			result := '${t.runtime_helper('slice_step')}(${input}, ${lower}, ${upper}, ${step})'
 			return if receiver_type == 'string' { '${result}.string()' } else { result }
 		}
 	}
@@ -8345,6 +9204,13 @@ pub fn (mut t VTranspiler) visit_subscript(node Subscript) string {
 	// Handle slice with potential negative indices
 	if node.slice is Slice {
 		slice_node := node.slice as Slice
+		for bound in [slice_node.lower, slice_node.upper, slice_node.step] {
+			if index := bound {
+				if t.has_u64_bits(index) {
+					return t.refuse_wide('slice bound may narrow an unsigned value')
+				}
+			}
+		}
 		mut lower := ''
 		mut upper := ''
 
@@ -8420,7 +9286,13 @@ pub fn (mut t VTranspiler) visit_subscript(node Subscript) string {
 		}
 	}
 
-	index := t.visit_expr(node.slice)
+	mut index := t.visit_expr(node.slice)
+	if t.infer_expr_type(node.slice) in ['u64', 'bool'] {
+		container := t.infer_expr_type(node.value)
+		if container.starts_with('[]') || container in ['string', 'array'] {
+			index = 'int(${index})'
+		}
+	}
 	return '${value}[${index}]'
 }
 
@@ -8579,9 +9451,7 @@ fn (mut t VTranspiler) dict_literal_body(node Dict) string {
 	mut pairs := []string{}
 	for i, key_opt in node.keys {
 		if key := key_opt {
-			k := t.visit_expr(key)
-			v := t.visit_expr(node.values[i])
-			pairs << '\t${k}: ${v}'
+			pairs << '\t${t.visit_expr(key)}: ${t.visit_expr(node.values[i])}'
 		}
 	}
 	return '{\n${pairs.join(',\n')},\n}'
@@ -8700,6 +9570,26 @@ fn (mut t VTranspiler) list_identity_refusal(reason string) string {
 	return '${t.runtime_helper('unsupported_list_identity')}() // ${message}'
 }
 
+// visit_integer_key_max keeps the callback's element and integer return types.
+fn (mut t VTranspiler) visit_integer_key_max(items Expr, key Expr) ?string {
+	if key !is Lambda { return none }
+	lambda := key as Lambda
+	if lambda.args.args.len != 1 { return none }
+	typ := t.infer_expr_type(items)
+	if !typ.starts_with('[]') || typ in ['[]', '[]Any'] { return none }
+	elem := typ[2..]
+	parameter := lambda.args.args[0].arg
+	name := escape_local_decl(parameter)
+	list := t.visit_expr(items)
+	saved_locals := t.local_idents.clone()
+	t.local_idents[parameter] = name
+	body := t.visit_expr(lambda.body)
+	t.local_idents = saved_locals
+	t.add_using('pyrt')
+	helper := t.runtime_helper('max_integer_key')
+	return '(${helper}[${elem}](${list}, fn (${name} ${elem}) int { return ${body} }) or { pyrt.fail(err) })'
+}
+
 // visit_lambda emits V code for lambda expressions (Lambda).
 pub fn (mut t VTranspiler) visit_lambda(node Lambda) string {
 	mut args := []string{}
@@ -8814,6 +9704,9 @@ fn (mut t VTranspiler) comp_binds_py2v_format(generators []Comprehension) bool {
 
 // visit_dict_comp emits V code for dict comprehensions (DictComp).
 pub fn (mut t VTranspiler) visit_dict_comp(node DictComp) string {
+	if code := t.visit_map_items_comprehension(node.generators, node.value, *node.key) {
+		return code
+	}
 	// A loop variable with the helper's own name would shadow it.
 	binds_helper := t.comp_binds_py2v_format(node.generators)
 	if binds_helper {
@@ -8887,6 +9780,9 @@ fn (mut t VTranspiler) visit_generator_exp_impl(elt Expr, generators []Comprehen
 	if generators.len == 0 {
 		return '[]'
 	}
+	if code := t.visit_map_items_comprehension(generators, elt, none) {
+		return code
+	}
 
 	// If any if-clause in any generator contains a walrus (NamedExpr), expand to
 	// an IIFE for-loop so V's type-safe closures are not required.
@@ -8925,6 +9821,9 @@ fn (mut t VTranspiler) visit_generator_exp_impl(elt Expr, generators []Comprehen
 		if call.func is Name {
 			fname := (call.func as Name).id
 			if fname == 'range' {
+				if t.has_wide_args(call.args) {
+					return t.refuse_wide('range may narrow an unsigned bound')
+				}
 				// Handle range() specially - convert to array
 				if call.args.len == 1 {
 					end := t.visit_expr(call.args[0])
@@ -8979,6 +9878,131 @@ fn (mut t VTranspiler) visit_generator_exp_impl(elt Expr, generators []Comprehen
 	result = '${as_receiver(result)}.map(${map_expr})'
 
 	return result
+}
+
+// map_comprehension_captures finds enclosing locals read by a filter or element.
+fn (t &VTranspiler) map_comprehension_captures(expr Expr, targets []string, mut captures []string) {
+	if expr is Name && expr.id !in targets
+		&& (t.is_bound_in_scope(expr.id) || (expr.id == 'self' && t.current_class_name != '')) {
+		name := t.binding_spelling(expr.id)
+		module_constant := t.emit_pub && !t.emitting_function && expr.id in t.module_idents
+		if !module_constant && name !in captures {
+			captures << name
+		}
+	}
+	for child in condition_walrus_children(expr) {
+		t.map_comprehension_captures(child, targets, mut captures)
+	}
+}
+
+// visit_map_items_comprehension uses the map's native pair iteration and moves
+// the first iterable into an explicit parameter so it is evaluated once.
+fn (mut t VTranspiler) visit_map_items_comprehension(generators []Comprehension, elt Expr, key ?Expr) ?string {
+	if generators.len != 1 || generators[0].is_async || contains_condition_walrus(elt) {
+		return none
+	}
+	gen := generators[0]
+	if gen.ifs.any(contains_condition_walrus(it)) {
+		return none
+	}
+	target := *gen.target
+	elts := match target {
+		Tuple { target.elts }
+		List { target.elts }
+		else { return none }
+	}
+	if elts.len != 2 || elts.any(it !is Name) || gen.iter !is Call {
+		return none
+	}
+	targets := for_target_names(target)
+	iter := gen.iter as Call
+	if iter.args.len != 0 || iter.keywords.len != 0 || iter.func !is Attribute {
+		return none
+	}
+	member := iter.func as Attribute
+	typ := t.infer_expr_type(member.value)
+	// V variable-length arrays do not retain Python tuple key equality in a map.
+	if member.attr != 'items' || !typ.starts_with('map[') || typ.starts_with('map[[]') {
+		return none
+	}
+	mut close := 4
+	mut depth := 1
+	for close < typ.len && depth > 0 {
+		match typ[close] {
+			`[` { depth++ }
+			`]` { depth-- }
+			else {}
+		}
+		close++
+	}
+	if depth != 0 || close == typ.len {
+		return none
+	}
+	source_expr := t.visit_expr(member.value)
+	mut captures := []string{}
+	for predicate in gen.ifs {
+		t.map_comprehension_captures(predicate, targets, mut captures)
+	}
+	if map_key := key {
+		t.map_comprehension_captures(map_key, targets, mut captures)
+	}
+	t.map_comprehension_captures(elt, targets, mut captures)
+	capture := if captures.len > 0 { ' [${captures.join(', ')}]' } else { '' }
+
+	saved_types := t.var_types.clone()
+	saved_renames := t.renamed_idents.clone()
+	defer {
+		t.var_types = saved_types
+		t.renamed_idents = saved_renames
+	}
+	source := t.new_tmp('comp_map')
+	result := t.new_tmp('comp_result')
+	pair_key := t.new_tmp('comp_key')
+	pair_value := t.new_tmp('comp_value')
+	t.renamed_idents[targets[0]] = pair_key
+	t.renamed_idents[targets[1]] = pair_value
+	t.var_types[targets[0]] = typ[4..close - 1]
+	t.var_types[targets[1]] = typ[close..]
+
+	mut value_type := t.infer_expr_type(elt)
+	// A Python tuple is one element of a list, not an array to flatten via V's <<.
+	// This is a heterogeneous tuple: keep its identity for indexing and repr.
+	tuples := key == none && elt is Tuple && (elt as Tuple).elts.all(it !is Starred)
+	if tuples {
+		value_type = 'pyrt.Value'
+		t.add_using('pyrt')
+	}
+	if value_type == '' {
+		value_type = 'Any'
+	}
+	mut result_type := '[]${value_type}'
+	mut append_lines := []string{}
+	if map_key := key {
+		key_type := t.infer_expr_type(map_key)
+		result_type = 'map[${if key_type == '' { 'string' } else { key_type }}]${value_type}'
+		entry_key := t.new_tmp('comp_entry_key')
+		entry_value := t.new_tmp('comp_entry_value')
+		append_lines << '\t\t${entry_key} := ${t.visit_expr(map_key)}'
+		append_lines << '\t\t${entry_value} := ${t.visit_expr(elt)}'
+		append_lines << '\t\t${result}[${entry_key}] = ${entry_value}'
+	} else if tuples {
+		pair := elt as Tuple
+		mut boxed := []string{}
+		for item in pair.elts {
+			boxed << 'pyrt.box(${t.visit_expr(item)})'
+		}
+		append_lines << '\t\t${result} << pyrt.Value(pyrt.new_tuple([${boxed.join(', ')}]))'
+	} else {
+		append_lines << '\t\t${result} << ${t.visit_expr(elt)}'
+	}
+	mut lines := ['(fn${capture} (${source} ${typ}) ${result_type} {',
+		'\tmut ${result} := ${result_type}{}', '\tfor ${pair_key}, ${pair_value} in ${source} {']
+	for predicate in gen.ifs {
+		lines << '\t\tif !(${t.visit_expr(predicate)}) { continue }'
+	}
+	lines << append_lines
+	lines << ['\t}', '\treturn ${result}', '})(${source_expr})']
+	return lines.join('\n')
 }
 
 // visit_await emits V code for await expressions (Await).
@@ -9049,14 +10073,22 @@ pub fn (mut t VTranspiler) visit_yield_from(node YieldFrom) string {
 // visit_formatted_value emits a bare `${expr}` interpolation segment.
 // Only called directly when a FormattedValue appears outside a JoinedStr context.
 pub fn (mut t VTranspiler) visit_formatted_value(node FormattedValue) string {
-	expr := t.visit_expr(node.value)
-	return "'\${${expr}}'"
+	return "'${t.fmtval_segment(node)}'"
 }
 
 // fmtval_segment returns the inner interpolation text for one FormattedValue
 // node, to be embedded inside a surrounding single-quoted V string.
 fn (mut t VTranspiler) fmtval_segment(node FormattedValue) string {
-	mut expr := t.visit_expr(node.value)
+	if node.conversion != -1 && t.is_wide_text_source(node.value) {
+		return '\${${t.refuse_wide('f-string conversion of wide-derived text is unproven')}}'
+	}
+	sink := if node.format_spec == none && t.has_large_integer(node.value)
+		&& node.conversion in [-1, int(`s`), int(`r`), int(`a`)] {
+		WideSink.decimal_text
+	} else {
+		WideSink.unapproved
+	}
+	mut expr := t.visit_expr_at(node.value, sink, '')
 	if node.format_spec == none {
 		if text := t.native_scalar_text(node.value, expr) {
 			expr = text
@@ -9352,6 +10384,9 @@ pub fn (mut t VTranspiler) visit_joined_str(node JoinedStr) string {
 // V has no assignment expression. Update a previously bound name through a
 // helper that yields the assigned value, preserving surrounding evaluation order.
 pub fn (mut t VTranspiler) visit_named_expr(node NamedExpr) string {
+	if t.has_wide_destination(node.target) {
+		return t.refuse_wide('unsigned storage requires a single scalar assignment')
+	}
 	target := t.visit_expr(node.target)
 	value := t.visit_expr(node.value)
 	if node.target is Name && t.is_bound_in_scope(node.target.id) {
@@ -10453,7 +11488,16 @@ fn get_expr_annotation(expr Expr) string {
 
 // Infer the type of an expression for variable tracking
 fn (mut t VTranspiler) infer_expr_type(expr Expr) string {
+	if t.has_u64_bits(expr) {
+		return 'u64'
+	}
+	if t.has_large_integer(expr) {
+		return large_integer_type
+	}
 	reference_annotation := get_v_annotation(expr)
+	if reference_annotation.contains('u64') {
+		return t.map_type(reference_annotation)
+	}
 	if reference_annotation.contains('pyrt.ListRef[') || (expr is Attribute && (expr as Attribute).attr == 'items' && reference_annotation.starts_with('[]')) {
 		return reference_annotation
 	}

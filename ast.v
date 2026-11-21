@@ -195,6 +195,7 @@ pub type ConstantValue = BytesValue
 	| i64
 	| int
 	| string
+	| u64
 
 pub struct BytesValue {
 pub:
@@ -256,6 +257,7 @@ pub mut:
 
 pub struct Compare {
 pub mut:
+	truth_test   bool
 	left         &Expr
 	ops          []CmpOp
 	comparators  []Expr

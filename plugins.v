@@ -210,6 +210,20 @@ fn visit_print(mut t VTranspiler, node Call, args []string) (string, bool) {
 			parts << text
 			continue
 		}
+		// Names holding boxed tuple lists need Python repr just like direct comprehensions.
+		if arg is Name && t.var_types[(arg as Name).id] == '[]pyrt.Value' {
+			t.add_using('pyrt')
+			parts << 'pyrt.str(pyrt.box(${arg_str}))'
+			continue
+		}
+		// A tuple-valued map comprehension retains Python tuple identity in Value.
+		// Print the containing list with Python's nested repr, not V's debug format.
+		if arg is ListComp && (arg as ListComp).elt is Tuple
+			&& arg_str.contains('pyrt.new_tuple(') {
+			t.add_using('pyrt')
+			parts << 'pyrt.str(pyrt.box(${arg_str}))'
+			continue
+		}
 		// Native maps with runtime values need Python's recursive representation.
 		if inferred.starts_with('map[') && (inferred.ends_with(']Any')
 			|| inferred.ends_with(']pyrt.Value')) {
@@ -716,6 +730,10 @@ fn map_conversion(mut t VTranspiler, node Call, args []string) ?string {
 		}
 	}
 	mut receiver := as_receiver(args[1])
+	if (node.args[0] as Name).api == 'builtins.repr' && iter_type == '[]string' {
+		t.add_using('pyrt')
+		return '${receiver}.map(pyrt.repr(pyrt.box(it)))'
+	}
 	if iter_type == 'string' {
 		receiver = "${receiver}.split('')"
 		iter_type = '[]string'
@@ -1054,6 +1072,10 @@ fn visit_dict_fn(args []string) (string, bool) {
 // Handle divmod() call
 fn visit_divmod(mut t VTranspiler, node Call, args []string) (string, bool) {
 	if args.len != 2 { return '', false }
+	// This helper boxes integers as i64: a proven u64 can lose its high bit.
+	if t.has_wide_args(node.args) {
+		return t.refuse_wide('divmod of an unsigned value would narrow through i64'), true
+	}
 	left_raw := t.division_operand_type(node.args[0], t.infer_expr_type(node.args[0]))
 	right_raw := t.division_operand_type(node.args[1], t.infer_expr_type(node.args[1]))
 	// A unary float retains the frontend annotation `float`, whereas a
@@ -1137,6 +1159,9 @@ pub fn dispatch_builtin(mut t VTranspiler, fname string, node Call, args []strin
 fn dispatch_builtin_impl(mut t VTranspiler, fname string, node Call, args []string) DispatchResult {
 	match fname {
 		'range' {
+			if t.has_wide_args(node.args) {
+				return DispatchResult{t.refuse_wide('range may narrow an unsigned bound'), true, ''}
+			}
 			code, handled := visit_range(args)
 			return DispatchResult{code, handled, ''}
 		}
@@ -1173,6 +1198,9 @@ fn dispatch_builtin_impl(mut t VTranspiler, fname string, node Call, args []stri
 			return DispatchResult{code, handled, using}
 		}
 		'abs' {
+			if node.args.len == 1 && t.has_u64_bits(node.args[0]) {
+				return DispatchResult{args[0], true, ''}
+			}
 			code, handled, using := visit_abs(args)
 			return DispatchResult{code, handled, using}
 		}
@@ -1185,10 +1213,17 @@ fn dispatch_builtin_impl(mut t VTranspiler, fname string, node Call, args []stri
 			return DispatchResult{code, handled, using}
 		}
 		'pow' {
+			if t.has_wide_args(node.args) {
+				return DispatchResult{t.refuse_wide('pow has no proven unsigned result bound'), true, ''}
+			}
 			code, handled, using := visit_pow(args)
 			return DispatchResult{code, handled, using}
 		}
 		'sum' {
+			if t.has_wide_args(node.args)
+				|| (node.args.len > 0 && t.infer_iter_elem_type(node.args[0]) == 'u64') {
+				return DispatchResult{t.refuse_wide('sum may exceed u64'), true, ''}
+			}
 			code, handled, using := visit_sum(mut t, node, args)
 			return DispatchResult{code, handled, using}
 		}
@@ -1373,7 +1408,16 @@ fn dispatch_builtin_impl(mut t VTranspiler, fname string, node Call, args []stri
 			if args.len != 1 {
 				return DispatchResult{'', false, ''}
 			}
+			if t.has_u64_bits(node.args[0]) {
+				return DispatchResult{"('0b' + strconv.format_uint(${args[0]}, 2))", true, 'strconv'}
+			}
 			return DispatchResult{'${t.runtime_helper('bin')}(i64(${args[0]}))', true, 'strconv'}
+		}
+		'hex' {
+			if args.len == 1 && t.has_u64_bits(node.args[0]) {
+				return DispatchResult{"('0x' + ${as_receiver(args[0])}.hex())", true, ''}
+			}
+			return DispatchResult{'', false, ''}
 		}
 		'reversed' {
 			code, handled := visit_reversed(mut t, node, args)

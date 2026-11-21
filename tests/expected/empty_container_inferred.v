@@ -19,7 +19,7 @@ fn squares(n int) []int {
 fn lengths(words []string) map[string]int {
 	mut table := map[string]int{}
 	for word in words {
-		table[word] = word.len
+		table[word] = py2v_text_length1(word)
 	}
 	return table
 }
@@ -53,6 +53,14 @@ fn py2v_range_next1(current int, stop int, step int) int {
 		return stop
 	}
 	return current + step
+}
+
+fn py2v_text_length1(text string) int {
+	mut length := 0
+	for byte in text {
+		if (byte & 0xc0) != 0x80 { length++ }
+	}
+	return length
 }
 
 fn main() {

@@ -15,7 +15,7 @@ fn show(ranks map[string]int, rank int, words []string) {
 	}
 	mut long_word := 'none'
 	for w in words {
-		if w.len > 3 {
+		if py2v_text_length1(w) > 3 {
 			long_word = w
 			break
 		}
@@ -37,6 +37,14 @@ fn show(ranks map[string]int, rank int, words []string) {
 		}
 	}
 	println(if missing == none { 'True' } else { 'False' })
+}
+
+fn py2v_text_length1(text string) int {
+	mut length := 0
+	for byte in text {
+		if (byte & 0xc0) != 0x80 { length++ }
+	}
+	return length
 }
 
 fn main() {

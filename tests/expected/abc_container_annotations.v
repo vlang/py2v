@@ -17,8 +17,8 @@ fn total(values []int) int {
 fn longest(words []string) int {
 	mut best := 0
 	for w in words {
-		if w.len > best {
-			best = w.len
+		if py2v_text_length1(w) > best {
+			best = py2v_text_length1(w)
 		}
 	}
 	return best
@@ -26,6 +26,14 @@ fn longest(words []string) int {
 
 fn lookup(table map[string]int, key string) int {
 	return table[key]
+}
+
+fn py2v_text_length1(text string) int {
+	mut length := 0
+	for byte in text {
+		if (byte & 0xc0) != 0x80 { length++ }
+	}
+	return length
 }
 
 fn main() {
