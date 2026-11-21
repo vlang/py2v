@@ -31,12 +31,10 @@ exception_union_init	needs-dependency	Requires a package context for the relativ
 exceptions	differs	line 1: CPython [caught], V [V panic: Exception: foo]
 fib_with_argparse	needs-dependency	Imports argparse_dataclass, which the suite does not install.
 format_dotted	does-not-compile	type `P_struct` has no field named `name`
-fstring_format_specs	differs	line 1: CPython [0.12 2 10000000000000000000000.00 -0.0], V [0.13 3 10000000000000000000000.00 -0.0]	windows
 functools_decorators	does-not-compile	unknown function: func
 generator	does-not-compile	expected 1 argument, but got 0
 generator_value_context	does-not-compile	unknown function: py2v_unsupported_generator_send
 generic_annotation_optional_argument	does-not-compile	undefined ident: `var`
-generics_long_names	differs	Linux line 3: CPython [1], V [140732161421512]. Windows line 3: CPython [1], V [38338032]. V prints an uninitialized memory value.	linux,windows
 generics_protocol	does-not-compile	no argument generic function must add concrete types, e.g. foo[int]()
 getattr_computed_name	does-not-compile	left operand for `||` is not a boolean
 getattr_setattr	does-not-compile	`c` is immutable, declare it with `mut` to make it mutable

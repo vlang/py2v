@@ -8299,7 +8299,18 @@ pub fn (mut t VTranspiler) visit_subscript(node Subscript) string {
 		}
 		return '${mapped}[${index}]'
 	}
-	receiver_type := t.infer_expr_type(node.value)
+	mut receiver_type := t.infer_expr_type(node.value)
+	// A slice of a proven native sequence retains the sequence type, even
+	// when inference does not annotate the intermediate Subscript expression.
+	if node.value is Subscript {
+		inner := node.value as Subscript
+		if inner.slice is Slice && receiver_type != 'string' && !receiver_type.starts_with('[]') {
+			original_type := t.infer_expr_type(inner.value)
+			if original_type == 'string' || original_type.starts_with('[]') {
+				receiver_type = original_type
+			}
+		}
+	}
 	if receiver_type == 'string' && node.slice !is Slice && node.slice !is Tuple {
 		return '${t.runtime_helper('string_index')}(${value}, ${t.visit_expr(node.slice)})'
 	}
