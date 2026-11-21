@@ -83,7 +83,6 @@ sqlite_row_comprehension	needs-sqlite	V cannot link thirdparty/sqlite.	windows
 sqlite_row_unpack	needs-sqlite	V cannot link thirdparty/sqlite.	windows
 sqlite_runtime	needs-sqlite	V cannot link thirdparty/sqlite.	windows
 sqlite_untyped_handles	needs-sqlite	V cannot link thirdparty/sqlite.	windows
-staticmethod_classmethod	does-not-compile	function name `MathHelper_add` cannot contain uppercase letters, use snake_case instead
 stdio	does-not-compile	undefined ident: `sys`
 subparser_nonargparse	does-not-compile	cannot use `CustomBuilder` as `Any` in argument 1 to `add_custom_py`
 subscript_slice_axis	does-not-compile	field `start` does not exist or have the same type in these sumtype `pyrt.Value` variants:

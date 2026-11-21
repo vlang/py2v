@@ -107,7 +107,7 @@ fn twice(words []string) int {
 		}
 	}
 	for w in words[..1] {
-		n += w.len
+		n += py2v_text_length1(w)
 	}
 	return n
 }
@@ -133,6 +133,14 @@ fn py2v_float_text1[T](value T) string {
 	} $else {
 		return value.str()
 	}
+}
+
+fn py2v_text_length1(text string) int {
+	mut length := 0
+	for byte in text {
+		if (byte & 0xc0) != 0x80 { length++ }
+	}
+	return length
 }
 
 fn main() {

@@ -17,7 +17,7 @@ fn parse_py(text string) !int {
 	}
 	if py2v_raised_1 := py2v_err_1 {
 		if e := pyrt.caught(py2v_raised_1, 'JSONDecodeError') {
-			println('bad json: ${e.str()[..12]}')
+			println('bad json: ${py2v_slice_step1(e.str().runes(), ?int(none), 12, 1).string()}')
 			return -1
 		} else {
 			return py2v_raised_1
@@ -98,6 +98,45 @@ fn main_func_py() ! {
 
 fn main_func() {
 	main_func_py() or { pyrt.fail(err) }
+}
+
+fn py2v_slice_step1[T](values []T, lower ?int, upper ?int, step int) []T {
+	if step == 0 {
+		panic('ValueError: slice step cannot be zero')
+	}
+	n := values.len
+	min_index := if step < 0 { -1 } else { 0 }
+	max_index := if step < 0 { n - 1 } else { n }
+	mut start := if step < 0 { max_index } else { min_index }
+	mut stop := if step < 0 { min_index } else { max_index }
+	if bound := lower {
+		offset := if bound < 0 { bound + n } else { bound }
+		start = if offset < min_index {
+			min_index
+		} else if offset > max_index {
+			max_index
+		} else {
+			offset
+		}
+	}
+	if bound := upper {
+		offset := if bound < 0 { bound + n } else { bound }
+		stop = if offset < min_index {
+			min_index
+		} else if offset > max_index {
+			max_index
+		} else {
+			offset
+		}
+	}
+	mut result := []T{}
+	for index := start; if step < 0 { index > stop } else { index < stop }; index += step {
+		result << values[index]
+		if (step < 0 && step <= stop - index) || (step > 0 && step >= stop - index) {
+			break
+		}
+	}
+	return result
 }
 
 fn main() {

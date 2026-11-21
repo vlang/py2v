@@ -1,0 +1,10 @@
+s = 'é😀e\u0301Z'
+print(s[1:3])
+print(s[::-1])
+print(s[-4:])
+print(s[::2])
+print(s[3:1:-1])
+print(s[40:])
+print(s[:-40])
+print(s[:])
+print(s[-20:20:3])

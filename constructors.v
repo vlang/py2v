@@ -260,13 +260,20 @@ fn (mut t VTranspiler) render_init_call(info InitConstructor, qualified_factory 
 	}
 	mut rendered := []string{}
 	for i, expr in bound {
-		mut value := t.typed_literal_arg(expr)
+		mut value := t.render_init_argument(expr, params[i])
 		if params[i].arg in info.init.mutable_vars {
 			value = 'mut ${value}'
 		}
 		rendered << value
 	}
 	return '${qualified_factory}(${rendered.join(', ')})'
+}
+
+fn (mut t VTranspiler) render_init_argument(expr Expr, param Arg) string {
+	if proven_word_parameter(param) {
+		return t.visit_integer_boundary(expr, .scalar_argument, 'u64')
+	}
+	return t.typed_literal_arg(expr)
 }
 
 // A function call's arguments need explicit sequencing: the C backend may
@@ -436,7 +443,7 @@ fn (mut t VTranspiler) render_sequenced_init_call(info InitConstructor, qualifie
 	for name in order {
 		expr := supplied[name] or { return t.init_constructor_error(info, 'missing_bound_argument_' + name) }
 		index := param_names.index(name)
-		value := t.typed_literal_arg(expr)
+		value := t.render_init_argument(expr, params[index])
 		if init_immutable_default(expr) || params[index].arg in info.init.mutable_vars {
 			evaluated[name] = value
 		} else {
@@ -447,7 +454,7 @@ fn (mut t VTranspiler) render_sequenced_init_call(info InitConstructor, qualifie
 	}
 	mut rendered := []string{}
 	for i, param in params {
-		mut value := evaluated[param.arg] or { t.typed_literal_arg(bound[i]) }
+		mut value := evaluated[param.arg] or { t.render_init_argument(bound[i], param) }
 		if param.arg in info.init.mutable_vars { value = 'mut ${value}' }
 		rendered << value
 	}

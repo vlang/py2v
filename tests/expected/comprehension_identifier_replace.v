@@ -40,7 +40,7 @@ fn main_func() {
 	x := py2v_new_box(4)
 	println([1, 2].map(x.it + it))
 	println([Reader{}].map(it.it()))
-	println([1, 2].filter(it >= 'r'.len).map(it))
+	println([1, 2].filter(it >= py2v_text_length1('r')).map(it))
 	println([1, 2].map(it))
 	println([1, 2].filter(it > 1).map(it))
 	println([1, 2].map(it))
@@ -53,10 +53,18 @@ fn main_func() {
 	println((fn () map[int]int {
 		mut result := map[int]int{}
 		for s in [2] {
-			result[s] = [1, 2].filter(it >= 'r'.len).map(it).len
+			result[s] = [1, 2].filter(it >= py2v_text_length1('r')).map(it).len
 		}
 		return result
 	}()))
+}
+
+fn py2v_text_length1(text string) int {
+	mut length := 0
+	for byte in text {
+		if (byte & 0xc0) != 0x80 { length++ }
+	}
+	return length
 }
 
 fn main() {

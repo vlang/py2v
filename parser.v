@@ -1,6 +1,7 @@
 module main
 
 import x.json2
+import strconv
 
 // Extract type annotation from v_annotation or inferred_annotation
 fn parse_type_annotation(m map[string]json2.Any) ?string {
@@ -1012,6 +1013,13 @@ fn parse_constant_value(raw json2.Any) ConstantValue {
 			if typ_str == 'Ellipsis' {
 				return EllipsisValue{}
 			}
+			if typ_str == 'int' {
+				digits := (m['decimal'] or { json2.Any('') }).str()
+				if signed := strconv.common_parse_int(digits, 10, 64, true, true) {
+					return signed
+				}
+				return strconv.parse_uint(digits, 10, 64) or { return NoneValue{} }
+			}
 			if typ_str == 'bytes' {
 				mut data := []u8{}
 				if val := m['value'] {
@@ -1192,6 +1200,7 @@ fn parse_compare(m map[string]json2.Any) Compare {
 		}
 	}
 	return Compare{
+		truth_test:   (m['truth_test'] or { json2.Any(false) }).bool()
 		left:         parse_expr(map_field(m, 'left')) or {
 			&Expr(Constant{
 				value: NoneValue{}

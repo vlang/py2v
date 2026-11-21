@@ -40,8 +40,16 @@ fn absent() bool {
 	return !pyrt.has_text(pyos.getenv('PY2V_UNSET_G')) && pyos.environ_get('PY2V_UNSET_H', 'x') == 'x'
 }
 
+fn py2v_text_length1(text string) int {
+	mut length := 0
+	for byte in text {
+		if (byte & 0xc0) != 0x80 { length++ }
+	}
+	return length
+}
+
 fn main() {
-	println(if pick().len > 0 { 'True' } else { 'False' })
+	println(if py2v_text_length1(pick()) > 0 { 'True' } else { 'False' })
 	println(if flag() { 'True' } else { 'False' })
 	println(named())
 	println(fallback())

@@ -34,11 +34,19 @@ fn main_func_py() ! {
 	println(hashlib.md5([u8(0x61), 0x62, 0x63]).hexdigest())
 	println(run_echo_py('hi')!)
 	println(base64.b64encode([u8(0x68), 0x65, 0x6c, 0x6c, 0x6f]).bytestr())
-	println((uuid.uuid4()!).str().len)
+	println(py2v_text_length1((uuid.uuid4()!).str()))
 }
 
 fn main_func() {
 	main_func_py() or { pyrt.fail(err) }
+}
+
+fn py2v_text_length1(text string) int {
+	mut length := 0
+	for byte in text {
+		if (byte & 0xc0) != 0x80 { length++ }
+	}
+	return length
 }
 
 fn main() {

@@ -281,7 +281,7 @@ const package_fixtures = ['pkg_imports', 'pkg_lib_main', 'pkg_multi', 'pkg_multi
 	'pkg_init_execution', 'pkg_private_names', 'pkg_call_defaults', 'pkg_type_only',
 	'pkg_qualified_construct', 'pkg_colliding_functions', 'pkg_annotated_constants',
 	'pkg_class_constant_alias', 'pkg_module_string_product', 'pkg_guard_class', 'pkg_class_owners',
-	'pkg_import_branch', 'pkg_runtime_binding']!
+	'pkg_import_branch', 'pkg_runtime_binding', 'pkg_map_items_globals']!
 
 mut py2v := resolve_py2v()
 
@@ -913,7 +913,7 @@ for pkg in package_fixtures {
 		}
 		if pkg in ['pkg_type_only', 'pkg_colliding_functions', 'pkg_annotated_constants',
 			'pkg_class_constant_alias', 'pkg_module_string_product', 'pkg_guard_class',
-			'pkg_class_owners', 'pkg_import_branch', 'pkg_runtime_binding'] {
+			'pkg_class_owners', 'pkg_import_branch', 'pkg_runtime_binding', 'pkg_map_items_globals'] {
 			fixtures := match pkg {
 				'pkg_type_only' {
 					['acyclic/consumer', 'cycle_b/consumer', 'model/holder', 'model/frozen']
@@ -984,7 +984,8 @@ for pkg in package_fixtures {
 			}
 		}
 		if pkg == 'pkg_call_defaults' {
-			for stem in ['use', 'keywords', 'float_defaults', 'local_defaults', 'keyword_only'] {
+			for stem in ['use', 'keywords', 'float_defaults', 'local_defaults', 'keyword_only',
+				'style_keywords'] {
 				actual := os.read_file(os.join_path(out_dir, 'py_pkg_call_defaults_consumer', stem + '.v')) or { '' }
 				expected := os.read_file(os.join_path(expected_dir, pkg, 'consumer', stem + '.v')) or { '' }
 				golden_name := 'call defaults: package fixture ' + stem
@@ -1014,6 +1015,23 @@ for pkg in package_fixtures {
 				println(excerpt_n(py_run.output, 20))
 				failed++
 				failures << fail_line('FAIL', name, '')
+			}
+			style_entry := os.join_path(out_dir, 'style_main.v')
+			driver := os.join_path(out_dir, 'style_driver.py')
+			os.write_file(style_entry, 'module main\n\nimport py_pkg_call_defaults_consumer\n\nfn main() {\n\tpy_pkg_call_defaults_consumer.run_style_keywords()\n}\n') or { panic(err) }
+			os.write_file(os.join_path(out_dir, 'source_path.txt'), cases_dir) or { panic(err) }
+			// The external mypyc decorator returns its input unchanged on CPython.
+			os.write_file(driver, 'import sys\nfrom pathlib import Path\nfrom types import ModuleType\nmetadata = ModuleType("mypy_extensions")\nmetadata.mypyc_attr = lambda **kwargs: lambda fn: fn\nsys.modules["mypy_extensions"] = metadata\nsys.path.insert(0, Path(__file__).with_name("source_path.txt").read_text(encoding="utf-8"))\nfrom pkg_call_defaults.consumer.style_keywords import run_style_keywords\nrun_style_keywords()\n') or { panic(err) }
+			style_result := compare_execution(python, driver, style_entry, '')
+			style_name := 'call defaults: package keyword map execution'
+			if style_result.exit_code == 0 {
+				report('PASS', style_name, '')
+				passed++
+			} else {
+				report('FAIL', style_name, '')
+				println(style_result.output)
+				failed++
+				failures << fail_line('FAIL', style_name, '')
 			}
 		}
 		if pkg == 'pkg_imports' {
@@ -1281,6 +1299,140 @@ for c in [['an elif chain of 120 branches', elif_py, 'x == 119'],
 	}
 }
 os.rmdir_all(frontend_root) or { panic(err) }
+
+// An unsupported native representation leaves its site visible to the checker.
+// CPython still runs these witnesses to establish the missing behavior.
+refusal_root := os.join_path(os.temp_dir(), 'py2v_refusals_${os.getpid()}')
+os.mkdir_all(refusal_root) or { panic(err) }
+refusal_v := os.join_path(refusal_root, 'main.v')
+for witness in [
+	['review_alias',
+		'9223372036854775808\n18446744073709551616\n-1\n18446744073709551616\n36893488147419103232',
+		'wide integer'],
+	['review_constant', '18446744073709551616', 'wide integer'],
+	['wide_literal', '18446744073709551617', 'wide integer'],
+	['review_annotations', 'xy\nxy\n4\nseq-type\nnone\nseq-type', 'annotated call'],
+	['wide_add', '18446744073709551616', 'wide integer'],
+	['wide_multiply', '36893488147419103232', 'wide integer'],
+	['wide_subtract', '-9223372036854775807', 'wide integer'],
+	['wide_negate', '-9223372036854775808', 'wide integer'],
+	['wide_mixed', '9223372036854775807', 'wide integer'],
+	['wide_shift', '18446744073709551616', 'wide integer'],
+	['wide_hidden_overflow', '9223372036854775808', 'wide integer'],
+	['wide_sum', '18446744073709551616', 'wide integer'],
+	['wide_float_compare', 'False', 'wide integer'],
+	['wide_index', 'IndexError', 'wide integer'],
+	['wide_range', '0', 'wide integer'],
+	['wide_key', 'zero high', 'wide integer'],
+	['wide_call', '9223372036854775808', 'wide integer'],
+	['wide_divmod', '(1317624576693539401, 1)', 'wide integer'],
+	['wide_any_argument', '9223372036854775808', 'wide integer'],
+	['wide_any_return', '9223372036854775808', 'wide integer'],
+	['wide_any_list_argument', '9223372036854775808', 'wide integer'],
+	['wide_any_callback', '9223372036854775808', 'wide integer'],
+	['wide_any_list_read', '9223372036854775808', 'wide integer'],
+	['wide_any_list_mutation', '9223372036854775808\n-1', 'wide integer'],
+	['wide_native_list_append_negative', '9223372036854775808\n-1', 'wide integer'],
+	['wide_big_comparison', 'True', 'wide integer'],
+	['wide_big_mask', '3', 'wide integer'],
+	['wide_compare_overflow', 'True', 'wide integer'],
+	['wide_alias_field', '0\n18446744073709551615', 'wide integer'],
+	['wide_bit_callable', '64\n64\n0\n0', 'wide integer'],
+	['wide_sink_abs', '9223372036854775808', 'wide integer'],
+	['wide_sink_bool', 'True', 'wide integer'],
+	['wide_sink_callback_result', '0o1000000000000000000000', 'wide integer'],
+	['wide_sink_dict', '1', 'wide integer'],
+	['wide_sink_field', '0o1000000000000000000000', 'wide integer'],
+	['wide_sink_field_write', '-1', 'wide integer'],
+	['wide_sink_float', '9.223372036854776e+18', 'wide integer'],
+	['wide_sink_format', '9223372036854775808.0', 'wide integer'],
+	['wide_sink_hash', '4', 'wide integer'],
+	['wide_sink_index', 'a', 'wide integer'],
+	['wide_sink_int', '9223372036854775808', 'wide integer'],
+	['wide_sink_list', '9223372036854775808', 'wide integer'],
+	['wide_sink_loop_target', '-1\n-1', 'wide integer'],
+	['wide_sink_max', '9223372036854775808', 'wide integer'],
+	['wide_sink_membership', 'False', 'wide integer'],
+	['wide_sink_method', '8000000000000000', 'wide integer'],
+	['wide_sink_method_result', '0o1000000000000000000000', 'wide integer'],
+	['wide_sink_min', '0', 'wide integer'],
+	['wide_sink_oct', '0o1000000000000000000000', 'wide integer'],
+	['wide_sink_pickle', '9223372036854775808', 'wide integer'],
+	['wide_sink_set', '1', 'wide integer'],
+	['wide_sink_slice', 'abc', 'wide integer'],
+	['wide_sink_sort', '[2, 1]', 'wide integer'],
+	['wide_sink_truth', 'taken', 'wide integer'],
+	['wide_sink_tuple', '9223372036854775808', 'wide integer'],
+	['wide_sink_unpack', '-1 1', 'wide integer'],
+	['unicode_lone_surrogate', '1', 'unicode surrogate'],
+	['unicode_pair_surrogates', '2', 'unicode surrogate'],
+] {
+	source := os.join_path(cases_dir, 'review_refusals', witness[0] + '.py')
+	oracle := os.exec([python, '-X', 'utf8', '-I', source])
+	translated := translate_source(py2v, source)
+	name := 'checker refusal: ' + witness[0]
+	symbol := 'py2v_unsupported_' + witness[2].replace(' ', '_')
+	checked := if translated.exit_code == 0 {
+		os.write_file(refusal_v, translated.output) or { panic(err) }
+		os.exec([@VEXE, '-path', '@vlib|${project_dir}|@vmodules', '-check', refusal_v])
+	} else {
+		translated
+	}
+	if oracle.exit_code == 0 && oracle.output.replace('\r', '').trim_right('\n') == witness[1]
+		&& translated.exit_code == 0 && translated.output.contains(symbol + '(')
+		&& checked.exit_code != 0 && checked.output.contains('error: unknown function: ${symbol}') {
+		report('PASS', name, '')
+		passed++
+	} else {
+		report('FAIL', name, '')
+		println(oracle.output)
+		println(excerpt_n(checked.output, 20))
+		failed++
+		failures << fail_line('FAIL', name, '')
+	}
+}
+refusal_pkg := os.join_path(refusal_root, 'pkg')
+refusal_out := os.join_path(refusal_root, 'out')
+os.mkdir_all(refusal_pkg) or { panic(err) }
+os.cp(os.join_path(cases_dir, 'review_refusals', 'wide_literal.py'),
+	os.join_path(refusal_pkg, '__init__.py')) or { panic(err) }
+refusal_package := os.exec([py2v, '--package', refusal_pkg, '-o', refusal_out, '--check'])
+refusal_package_code := os.read_file(os.join_path(refusal_out, 'py_pkg', '__init__.v')) or { '' }
+refusal_package_name := 'checker refusal: unsupported package-level statement'
+if refusal_package.exit_code == 1 && refusal_package_code.contains('pub fn preserved(')
+	&& refusal_package.output.contains('unknown function: py2v_unsupported_wide_integer') {
+	report('PASS', refusal_package_name, '')
+	passed++
+} else {
+	report('FAIL', refusal_package_name, '')
+	println(excerpt_n(refusal_package.output, 20))
+	failed++
+	failures << fail_line('FAIL', refusal_package_name, '')
+}
+os.rmdir_all(refusal_root) or { panic(err) }
+
+word_package := os.join_path(cases_dir, 'review_refusals', 'word_package')
+word_package_output := os.join_path(os.temp_dir(), 'py2v_word_package_${os.getpid()}')
+word_package_oracle := os.exec([python, '-B', '-E', '-s', os.join_path(word_package, '__init__.py')])
+word_package_check := os.exec([py2v, '--package', word_package, '-o', word_package_output, '--check'])
+word_package_v := os.read_file(os.join_path(word_package_output, 'py_word_package',
+	'__init__.v')) or { '' }
+word_package_refusal := 'checker refusal: imported unsigned values and results'
+if word_package_oracle.exit_code == 0
+	&& word_package_oracle.output.replace('\r', '').trim_right('\n') == '0o1000000000000000000000\n'.repeat(4).trim_right('\n')
+	&& word_package_check.exit_code == 1
+	&& word_package_v.count('py2v_unsupported_wide_integer(') == 4
+	&& word_package_check.output.contains('unknown function: py2v_unsupported_wide_integer') {
+	report('PASS', word_package_refusal, '')
+	passed++
+} else {
+	report('FAIL', word_package_refusal, '')
+	println(word_package_oracle.output)
+	println(excerpt_n(word_package_check.output, 20))
+	failed++
+	failures << fail_line('FAIL', word_package_refusal, '')
+}
+os.rmdir_all(word_package_output) or { panic(err) }
 
 // Parser regressions must survive V's formatter and syntax checker. Execute the
 // supported lowerings too: a parseable closure can still capture the wrong state.

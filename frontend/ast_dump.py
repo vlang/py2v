@@ -1779,14 +1779,36 @@ def _shorten_generic_names(tree: ast.Module) -> None:
             rename_in_strings(node.annotation)
 
 
-def _detect_class_methods(tree: ast.Module):
-    """Mark methods inside classes with is_class_method and class_name."""
+def _detect_class_methods(tree: ast.Module, table: Optional[symbols.SymbolTable]) -> None:
+    """Mark methods and resolve the stable receiver of a concrete type method."""
+    def bind_receiver(owner: ast.ClassDef, method: Union[ast.FunctionDef, ast.AsyncFunctionDef]) -> None:
+        if table is None or len(method.decorator_list) != 1:
+            return
+        decorator = method.decorator_list[0]
+        if not (isinstance(decorator, ast.Name) and decorator.id == "classmethod"
+                and getattr(decorator, "_binding", None) is None):
+            return
+        args = method.args.posonlyargs + method.args.args
+        receiver = getattr(args[0], "_binding", None) if args else None
+        owner_binding = getattr(owner, "_binding", None)
+        if receiver is None or owner_binding is None or table.bindings[owner_binding].rebound:
+            return
+        if table.bindings[receiver].rebound or table.bindings[receiver].captured:
+            return
+        for part in ast.walk(method):
+            qualifier = part.func if isinstance(part, ast.Call) else (
+                part.value if isinstance(part, ast.Attribute) else None)
+            if isinstance(qualifier, ast.Name) and getattr(qualifier, "_binding", None) == receiver:
+                qualifier.id = owner.name
+                qualifier._binding = owner_binding
+
     for node in ast.walk(tree):
         if isinstance(node, ast.ClassDef):
             for item in node.body:
                 if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
                     item._is_class_method = True
                     item._class_name = node.name
+                    bind_receiver(node, item)
 
 
 
@@ -2203,6 +2225,21 @@ def _node_to_dict(node: ast.AST, mutable_vars: Set[str],
     """
     if ctx is None:
         ctx = AnalysisContext.empty()
+    if (isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub)
+            and isinstance(node.operand, ast.Constant) and type(node.operand.value) is int
+            and node.operand.value >= 2**63):
+        # Python parses the sign separately, including for the signed minimum.
+        node = ast.copy_location(ast.Constant(value=-node.operand.value), node)
+    if (isinstance(node, ast.Constant) and isinstance(node.value, str)
+            and any(0xD800 <= ord(ch) <= 0xDFFF for ch in node.value)):
+        # The JSON parser combines a surrogate pair into one Unicode scalar;
+        # Python retains two code points. A lone surrogate is not valid UTF-8.
+        reason = ast.copy_location(ast.Constant(
+            value=f"line {node.lineno}: Python surrogate text cannot be represented as V UTF-8"), node)
+        func = ast.copy_location(ast.Name(id="unsupported_unicode_surrogate", ctx=ast.Load()), node)
+        call = ast.copy_location(ast.Call(func=func, args=[reason], keywords=[]), node)
+        call._api = "__py2v__.unsupported_unicode_surrogate"
+        node = call
     # Convenience aliases used throughout this function
     var_annotations = ctx.var_annotations
     result: Dict[str, Any] = {}
@@ -2218,8 +2255,16 @@ def _node_to_dict(node: ast.AST, mutable_vars: Set[str],
             if val is not None:
                 result[attr] = val
 
+    # Scalar aliases written as assignments share the existing type-alias representation.
+    if getattr(node, "_native_type_alias", ""):
+        target = node.target if isinstance(node, ast.AnnAssign) else node.targets[0]
+        result["node_type"] = "TypeAlias"
+        result["name"] = _node_to_dict(target, mutable_vars, redefined, ctx)
+        result["value"] = _node_to_dict(
+            _annotation_node(node._native_type_alias, node), mutable_vars, redefined, ctx)
+
     # Handle specific node types
-    if isinstance(node, ast.Module):
+    elif isinstance(node, ast.Module):
         result['list_identity_module_errors'] = [
             item._list_identity_error for item in ast.walk(node)
             if getattr(item, '_list_identity_error', '')
@@ -2605,6 +2650,8 @@ def _node_to_dict(node: ast.AST, mutable_vars: Set[str],
         result["left"] = _node_to_dict(node.left, mutable_vars, redefined, ctx)
         result["ops"] = [{"node_type": type(op).__name__} for op in node.ops]
         result["comparators"] = [_node_to_dict(c, mutable_vars, redefined, ctx) for c in node.comparators]
+        if getattr(node, "_truth_test", False):
+            result["truth_test"] = True
 
     elif isinstance(node, ast.Call):
         result["func"] = _node_to_dict(node.func, mutable_vars, redefined, ctx)
@@ -2640,7 +2687,7 @@ def _node_to_dict(node: ast.AST, mutable_vars: Set[str],
     elif isinstance(node, ast.Constant):
         result["value"] = _constant_value(node.value)
         result["kind"] = node.kind
-        if type(node.value) is int and not -(1 << 63) <= node.value < 1 << 63:
+        if type(node.value) is int and not -2**63 <= node.value < 2**64:
             result["value"] = str(node.value)
             result["kind"] = "py2v_large_int"
         # Provide v_annotation for primitive literal types to help downstream
@@ -2649,6 +2696,8 @@ def _node_to_dict(node: ast.AST, mutable_vars: Set[str],
             result["v_annotation"] = "bool"
         elif isinstance(node.value, int):
             result["v_annotation"] = "int"
+            if not -2**31 <= node.value < 2**31 and result["kind"] != "py2v_large_int":
+                result["value"] = {"node_type": "int", "decimal": str(node.value)}
         elif isinstance(node.value, float):
             # An explicit empty annotation also blocks inferred fallback below.
             result["v_annotation"] = ("" if getattr(node, "_integral_float_rebound", False)
@@ -2716,6 +2765,13 @@ def _node_to_dict(node: ast.AST, mutable_vars: Set[str],
         result["upper"] = _node_to_dict(node.upper, mutable_vars, redefined, ctx) if node.upper else None
         result["step"] = _node_to_dict(node.step, mutable_vars, redefined, ctx) if node.step else None
 
+    if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
+        fields = (ctx.field_types if node.value.id == "self" else
+                  ctx.class_field_types.get(var_annotations.get(node.value.id, ""), {}))
+        field_type = fields.get(node.attr, "")
+        if "u64" in field_type:
+            result["v_annotation"] = field_type
+
     # The backend reads `v_annotation` on an expression as its type. Where the passes above
     # did not set one, the inferred scalar type fills it in.
     if isinstance(node, ast.expr) and "v_annotation" not in result:
@@ -2725,6 +2781,8 @@ def _node_to_dict(node: ast.AST, mutable_vars: Set[str],
 
     if isinstance(node, ast.expr) and getattr(node, "_runtime_annotation", ""):
         result["v_annotation"] = node._runtime_annotation
+    if isinstance(node, ast.Name) and getattr(node, "_native_unsigned_constant", False):
+        result["v_annotation"] = "u64"
     if isinstance(node, (ast.Name, ast.Attribute)) and getattr(node, "_class_path", ""):
         result["class_path"] = node._class_path
     return result
@@ -3582,6 +3640,237 @@ def _mark_project_class_references(tree, table, project):
             node._isinstance_nominal = "true" if result else "false"
 
 
+def _drop_mypyc_metadata(tree: ast.Module, table: symbols.SymbolTable,
+                         project: Optional[ProjectFacts]) -> None:
+    """mypyc_attr is an identity decorator when running Python source."""
+    if project is not None and "mypy_extensions" in project.externals:
+        return
+    paths = _stable_import_paths(tree, table)
+    for fn in tree.body:
+        if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        fn.decorator_list = [decorator for decorator in fn.decorator_list if not (
+            isinstance(decorator, ast.Call)
+            and _qualified_import(decorator.func, paths) == "mypy_extensions.mypyc_attr"
+            and all(isinstance(arg, ast.Constant) for arg in decorator.args)
+            and all(kw.arg is not None and isinstance(kw.value, ast.Constant)
+                    for kw in decorator.keywords))]
+
+
+def _lower_python_version_components(tree: ast.Module, table: symbols.SymbolTable) -> None:
+    """Numeric version tests in native V use the Python frontend's version."""
+    paths = _stable_import_paths(tree, table)
+    version_path = "sys.version_info"
+    if not {"sys", version_path}.intersection(paths.values()):
+        return
+    if any(isinstance(node, ast.Attribute) and not isinstance(node.ctx, ast.Load)
+           and _qualified_import(node, paths) == version_path for node in ast.walk(tree)):
+        return
+    fields = {"major": 0, "minor": 1, "micro": 2}
+
+    class Lower(ast.NodeTransformer):
+        def visit_Attribute(self, node: ast.Attribute) -> ast.AST:
+            if (isinstance(node.ctx, ast.Load) and node.attr in fields
+                    and _qualified_import(node.value, paths) == version_path):
+                value = sys.version_info[fields[node.attr]]
+                return ast.copy_location(ast.Constant(value=value), node)
+            return self.generic_visit(node)
+
+        def visit_Subscript(self, node: ast.Subscript) -> ast.AST:
+            if (isinstance(node.ctx, ast.Load) and _qualified_import(node.value, paths) == version_path
+                    and isinstance(node.slice, (ast.Constant, ast.UnaryOp))):
+                try:
+                    index = ast.literal_eval(node.slice)
+                except (ValueError, TypeError):
+                    index = None
+                if type(index) is int and -5 <= index < 5 and index % 5 < 3:
+                    return ast.copy_location(ast.Constant(value=sys.version_info[index]), node)
+            return self.generic_visit(node)
+
+    Lower().visit(tree)
+
+
+def _lower_scalar_aliases(tree: ast.Module, table: symbols.SymbolTable) -> None:
+    """Choose the native representation of stable module aliases from their constants."""
+    annotations = infer.annotation_expressions(tree)
+    used = {getattr(node, "_binding", None) for node in annotations
+            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)}
+    paths = _stable_import_paths(tree, table)
+    constants: Dict[int, int] = {}
+    aliases: Dict[int, Tuple[str, ast.stmt]] = {}
+    declared: Dict[int, List[int]] = {}
+    binary = {
+        ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: operator.mul,
+        ast.FloorDiv: operator.floordiv, ast.Mod: operator.mod, ast.Pow: operator.pow,
+        ast.LShift: operator.lshift, ast.RShift: operator.rshift,
+        ast.BitAnd: operator.and_, ast.BitOr: operator.or_, ast.BitXor: operator.xor,
+    }
+    unary = {ast.UAdd: operator.pos, ast.USub: operator.neg, ast.Invert: operator.invert}
+
+    def integer(value: ast.expr) -> Optional[int]:
+        if isinstance(value, ast.Constant) and type(value.value) is int:
+            return value.value if value.value.bit_length() <= 256 else None
+        if isinstance(value, ast.Name):
+            return constants.get(getattr(value, "_binding", None))
+        if isinstance(value, ast.UnaryOp) and type(value.op) in unary:
+            operand = integer(value.operand)
+            return unary[type(value.op)](operand) if operand is not None else None
+        if isinstance(value, ast.BinOp) and type(value.op) in binary:
+            left, right = integer(value.left), integer(value.right)
+            if left is None or right is None:
+                return None
+            if isinstance(value.op, (ast.Pow, ast.LShift, ast.RShift)) and not 0 <= right <= 256:
+                return None
+            try:
+                result = binary[type(value.op)](left, right)
+            except ZeroDivisionError:
+                return None
+            return result if result.bit_length() <= 256 else None
+        return None
+
+    for statement in tree.body:
+        annotation = None
+        if isinstance(statement, ast.AnnAssign):
+            target, value, annotation = statement.target, statement.value, statement.annotation
+        elif isinstance(statement, ast.Assign) and len(statement.targets) == 1:
+            target, value = statement.targets[0], statement.value
+        else:
+            continue
+        if not isinstance(target, ast.Name) or value is None:
+            continue
+        binding = getattr(target, "_binding", None)
+        if binding is None or table.bindings[binding].rebound or table.bindings[binding].declared_global:
+            continue
+        marker = _qualified_import(annotation, paths) if annotation is not None else ""
+        if (isinstance(value, ast.Name) and getattr(value, "_binding", None) is None
+                and value.id in ("int", "bool")
+                and (marker in ("typing.TypeAlias", "typing_extensions.TypeAlias")
+                     or (annotation is None and binding in used))):
+            aliases[binding] = (value.id, statement)
+            continue
+        exact = integer(value)
+        if exact is None:
+            continue
+        constants[binding] = exact
+        # Fold exact, stable wide constant expressions in Python before choosing
+        # a machine type. V must never evaluate their intermediate arithmetic.
+        if not isinstance(value, ast.Constant) and not -(2**63) <= exact < 2**63:
+            statement.value = ast.copy_location(ast.Constant(value=exact), value)
+        if isinstance(annotation, ast.Name):
+            alias = getattr(annotation, "_binding", None)
+            if alias is not None:
+                declared.setdefault(alias, []).append(exact)
+
+    representations = {}
+    for binding, (native, statement) in aliases.items():
+        values = declared.get(binding, [])
+        if native == "int" and values and min(values) >= 0 and max(values) >= 2**63:
+            native = "u64"
+        representations[binding] = native
+        statement._native_type_alias = native
+    for node in annotations:
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
+            native = representations.get(getattr(node, "_binding", None))
+            if native:
+                node.id = native
+                del node._binding
+    wide_constants = {binding for binding, value in constants.items() if value >= 2**63}
+    if wide_constants:
+        for node in ast.walk(tree):
+            if (isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
+                    and getattr(node, "_binding", None) in wide_constants):
+                node._native_unsigned_constant = True
+
+    # A constant expression forming the right-hand mask must be evaluated
+    # exactly in Python, not narrowed during V's intermediate shifts/powers.
+    # Fold only the operand of `&` and only when its full value fits u64;
+    # general arithmetic still goes through the width/refusal checks.
+    # Recursively visiting *every* AST node exhausts Python's recursion
+    # limit on deeply nested programs even when no mask is present. Traverse
+    # iteratively and examine only the two operands of a bit-and node.
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.BinOp) or not isinstance(node.op, ast.BitAnd):
+            continue
+        for attr in ("left", "right"):
+            operand = getattr(node, attr)
+            if isinstance(operand, (ast.Constant, ast.Name)):
+                continue
+            exact = integer(operand)
+            if exact is not None and 0 <= exact < 2**64:
+                setattr(node, attr, ast.copy_location(ast.Constant(value=exact), operand))
+
+    # Do not let a constant-only local `1 << 63` acquire V's signed `int`
+    # representation. When stable and within u64, its exact value is known.
+    local_wide: Set[int] = set()
+    for fn in ast.walk(tree):
+        if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for stmt in fn.body:
+            if isinstance(stmt, ast.AnnAssign):
+                target, value = stmt.target, stmt.value
+            elif isinstance(stmt, ast.Assign) and len(stmt.targets) == 1:
+                target, value = stmt.targets[0], stmt.value
+            else:
+                continue
+            if not isinstance(target, ast.Name) or value is None:
+                continue
+            binding = getattr(target, "_binding", None)
+            if binding is None:
+                continue
+            info = table.bindings[binding]
+            if info.rebound or info.captured or info.declared_global or info.declared_nonlocal:
+                continue
+            exact = integer(value)
+            if exact is None or not 2**63 <= exact < 2**64:
+                continue
+            stmt.value = ast.copy_location(ast.Constant(value=exact), value)
+            local_wide.add(binding)
+    if local_wide:
+        for node in ast.walk(tree):
+            if (isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
+                    and getattr(node, "_binding", None) in local_wide):
+                node._native_unsigned_constant = True
+
+
+def _lower_unsigned_method_references(tree: ast.Module, table: symbols.SymbolTable) -> None:
+    """Use native bit functions for callable declarations with an unsigned parameter."""
+    paths = _stable_import_paths(tree, table)
+
+    def builtin(node: ast.AST, name: str) -> bool:
+        return (isinstance(node, ast.Name) and node.id == name
+                and getattr(node, "_binding", None) is None)
+
+    for stmt in tree.body:
+        if not (isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name)
+                and isinstance(stmt.annotation, ast.Subscript) and isinstance(stmt.value, ast.Call)):
+            continue
+        annotation, call = stmt.annotation, stmt.value
+        if _qualified_import(annotation.value, paths) not in ("typing.Callable", "collections.abc.Callable"):
+            continue
+        if not (isinstance(annotation.slice, ast.Tuple) and len(annotation.slice.elts) == 2):
+            continue
+        params, result = annotation.slice.elts
+        if not (isinstance(params, ast.List) and len(params.elts) == 1
+                and builtin(params.elts[0], "u64") and builtin(result, "int")):
+            continue
+        if not (builtin(call.func, "getattr") and not call.keywords and len(call.args) in (2, 3)
+                and builtin(call.args[0], "int") and isinstance(call.args[1], ast.Constant)
+                and call.args[1].value in ("bit_count", "bit_length")):
+            continue
+        if len(call.args) == 3:
+            fallback = call.args[2]
+            if not (isinstance(fallback, ast.Lambda) and not fallback.args.defaults
+                    and all(default is None for default in fallback.args.kw_defaults)):
+                continue
+        method = call.args[1].value
+        if not hasattr(int, method):
+            continue
+        reference = ast.copy_location(ast.Name(id=method, ctx=ast.Load()), call)
+        reference._api = "__py2v__.unsigned_" + method
+        reference._frozen_literal = True
+        stmt.value = reference
+
+
 def _mark_local_sequence_rebindings(tree: ast.Module, table: symbols.SymbolTable) -> None:
     """A sequence read locally and rebound to a tuple needs no caller-side mutation."""
     paths = _stable_import_paths(tree, table)
@@ -3697,36 +3986,76 @@ def _mark_scheduling_refusals(tree: ast.Module, table: symbols.SymbolTable, path
     Refuse().visit(tree)
 
 
-def _mark_nominal_enums(tree: ast.Module, table: symbols.SymbolTable) -> None:
-    """Preserve member types where a plain enum classmethod selects its own members."""
+def _mark_nominal_enums(tree: ast.Module, table: symbols.SymbolTable, named_only: bool = False) -> None:
+    """Retain native members for representable integer enums."""
+    candidates = [cls for cls in tree.body if isinstance(cls, ast.ClassDef) and len(cls.bases) == 1
+                  and not cls.keywords and not cls.decorator_list]
+    if not candidates:
+        return
     paths = _stable_import_paths(tree, table)
-    for enum in tree.body:
-        if (not isinstance(enum, ast.ClassDef) or len(enum.bases) != 1
-                or enum.keywords or enum.decorator_list
-                or _qualified_import(enum.bases[0], paths) != "enum.Enum"):
+    for enum in candidates:
+        if _qualified_import(enum.bases[0], paths) != "enum.Enum":
             continue
         members: Dict[str, int] = {}
+        automatic: List[ast.Assign] = []
         methods: List[ast.FunctionDef] = []
+        instance_methods: List[ast.FunctionDef] = []
         for statement in enum.body:
             if isinstance(statement, ast.Expr) and isinstance(statement.value, ast.Constant) \
                     and isinstance(statement.value.value, str):
                 continue
             if (isinstance(statement, ast.Assign) and len(statement.targets) == 1
                     and isinstance(target := statement.targets[0], ast.Name)
-                    and target.id.isascii() and target.id[0].isalpha() and target.id.isupper()
-                    and isinstance(statement.value, ast.Constant) and type(statement.value.value) is int
-                    and 0 <= statement.value.value <= 2147483647 and target.id not in members):
-                members[target.id] = statement.value.value
+                    and target.id.isascii() and target.id[0].isalpha()
+                    and target.id not in members):
+                value = statement.value
+                if isinstance(value, ast.Constant) and type(value.value) is int and 0 <= value.value < 2**31:
+                    members[target.id] = value.value
+                elif (isinstance(value, ast.Call) and _qualified_import(value.func, paths) == "enum.auto"
+                      and not value.args and not value.keywords):
+                    automatic.append(statement)
+                    members[target.id] = len(automatic)
+                else:
+                    break
             elif (isinstance(statement, ast.FunctionDef) and len(statement.decorator_list) == 1
                   and isinstance(decorator := statement.decorator_list[0], ast.Name)
                   and decorator.id == "classmethod" and getattr(decorator, "_binding", None) is None
                   and (parameters := statement.args.posonlyargs + statement.args.args)
                   and parameters[0].arg == "cls"):
                 methods.append(statement)
+            elif (isinstance(statement, ast.FunctionDef) and not statement.decorator_list
+                    and (parameters := statement.args.posonlyargs + statement.args.args)
+                    and parameters[0].arg == "self" and not _is_generator(statement)
+                    and not statement.name.startswith(("_", "py2v_enum_"))
+                    and statement.name not in ("name", "value", "str")):
+                instance_methods.append(statement)
             else:
                 break
         else:
-            if not methods or not members or len(set(members.values())) != len(members):
+            if not members or len({name.lower() for name in members}) != len(members):
+                continue
+            if set(members) & {"name", "value"}:
+                continue
+            uppercase = all(name.isupper() for name in members)
+            if automatic:
+                if named_only and uppercase:
+                    continue
+                if len(automatic) == len(members) and not methods and not instance_methods:
+                    for number, assignment in enumerate(automatic, 1):
+                        assignment.value = ast.copy_location(ast.Constant(value=number), assignment.value)
+                    if uppercase:
+                        enum.bases[0]._api = "__py2v__.nominal_enum"
+                    else:
+                        enum.bases[0]._api = "__py2v__.named_enum"
+                        enum._named_enum_members = list(members)
+                continue
+            if len(set(members.values())) != len(members):
+                continue
+            if instance_methods and not methods:
+                enum.bases[0]._api = "__py2v__.named_enum"
+                enum._named_enum_members = list(members)
+                continue
+            if named_only or not methods or instance_methods or not uppercase:
                 continue
             reads = []
             for method in methods:
@@ -4048,7 +4377,9 @@ def write_summaries(root: str, out_path: str) -> None:
         try:
             with open(path, "r", encoding="utf-8") as handle:
                 tree = ast.parse(handle.read(), filename=path)
-            parsed.append((name, is_package, tree, symbols.analyze(tree)))
+            table = symbols.analyze(tree)
+            _mark_nominal_enums(tree, table, named_only=True)
+            parsed.append((name, is_package, tree, table))
         except Exception:
             continue  # the per-file run reports what is wrong with this file
     summaries: Dict[str, Any] = {}
@@ -4058,8 +4389,13 @@ def write_summaries(root: str, out_path: str) -> None:
             try:
                 infer.run(tree, table, externals=summaries, module_name=name,
                           is_package=is_package)
-                upcoming[name] = infer.summarize(tree, table, module_name=name,
-                                                 is_package=is_package)
+                summary = infer.summarize(tree, table, module_name=name, is_package=is_package)
+                for cls in tree.body:
+                    if (members := getattr(cls, "_named_enum_members", None)) is not None:
+                        data = summary["classes"].get(cls.name)
+                        if data is not None:
+                            data["named_enum_members"] = members
+                upcoming[name] = summary
             except Exception:
                 continue
         settled = json.dumps(upcoming, sort_keys=True) == json.dumps(summaries, sort_keys=True)
@@ -4125,6 +4461,8 @@ _SIZED_KINDS = ("list", "dict", "set", "tuple", "tuple_of", "bytes")
 def _truth_kind(node: ast.expr, facts: infer.TypeFacts) -> str:
     """The kind of a tested value: the type the code shows, else the one its annotations
     declare (inference's assumed layer)."""
+    if getattr(node, "_api", "") == "__py2v__.enum_name":
+        return "str"
     type_id = getattr(node, "_assumed", None)
     if type_id is None:
         type_id = getattr(node, "_type", None)
@@ -4620,12 +4958,16 @@ def _state_truth_tests(tree: ast.Module, table: Optional[symbols.SymbolTable],
     falsy_classes = {cls.name for cls in ast.walk(tree) if isinstance(cls, ast.ClassDef)
                      and any(isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef))
                              and m.name in ("__bool__", "__len__") for m in cls.body)}
+    paths = _stable_import_paths(tree, table)
     local_hooks = {}
     for cls in ast.walk(tree):
         if not isinstance(cls, ast.ClassDef):
             continue
-        # Inheritance, metaclasses, and decorators may supply truth hooks.
-        if cls.decorator_list or cls.keywords or (cls.bases and not (
+        # Inheritance, metaclasses, and unknown decorators may supply truth hooks.
+        if any(_qualified_import(d.func if isinstance(d, ast.Call) else d, paths)
+               != "dataclasses.dataclass" for d in cls.decorator_list):
+            continue
+        if cls.keywords or (cls.bases and not (
                 len(cls.bases) == 1 and isinstance(cls.bases[0], ast.Name)
                 and cls.bases[0].id == "object")):
             continue
@@ -4681,6 +5023,7 @@ def _state_truth_tests(tree: ast.Module, table: Optional[symbols.SymbolTable],
                    "list": "list", "dict": "dict", "set": "set", "List": "list",
                    "Dict": "dict", "Set": "set"}
     optional_fields: Dict[Tuple[int, str], str] = {}
+    native_fields: Dict[Tuple[int, str], str] = {}
     for cls in ast.walk(tree):
         if not isinstance(cls, ast.ClassDef) or getattr(cls, "_binding", None) is None:
             continue
@@ -4688,6 +5031,9 @@ def _state_truth_tests(tree: ast.Module, table: Optional[symbols.SymbolTable],
             if not (isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name)):
                 continue
             text = _unparse_expr(stmt.annotation).replace("typing.", "")
+            key = (cls._binding, stmt.target.id)
+            if cls._binding in local_hooks and text in ("int", "u64", "float", "bool", "str"):
+                native_fields[key] = "int" if text == "u64" else text
             inner = ""
             if text.startswith("Optional[") and text.endswith("]"):
                 inner = text[9:-1]
@@ -4697,9 +5043,9 @@ def _state_truth_tests(tree: ast.Module, table: Optional[symbols.SymbolTable],
                 inner = text[7:]
             head = inner.split("[", 1)[0]
             if head in plain_names and "|" not in inner:
-                optional_fields[(cls._binding, stmt.target.id)] = plain_names[head]
+                optional_fields[key] = plain_names[head]
 
-    def declared_optional_field(node: ast.expr) -> str:
+    def declared_field(node: ast.expr, annotations: Dict[Tuple[int, str], str]) -> str:
         if not isinstance(node, ast.Attribute):
             return ""
         owner = getattr(node.value, "_assumed", None)
@@ -4707,7 +5053,10 @@ def _state_truth_tests(tree: ast.Module, table: Optional[symbols.SymbolTable],
             owner = getattr(node.value, "_type", None)
         if owner is None or facts.types[owner]["k"] != "instance":
             return ""
-        kind = optional_fields.get((facts.types[owner].get("class_binding"), node.attr), "")
+        return annotations.get((facts.types[owner].get("class_binding"), node.attr), "")
+
+    def declared_optional_field(node: ast.expr) -> str:
+        kind = declared_field(node, optional_fields)
         return kind if kind in ("str", "int", "float", "bool") or len_is_builtin else ""
 
     def optional_plain(node: ast.expr) -> str:
@@ -4773,10 +5122,12 @@ def _state_truth_tests(tree: ast.Module, table: Optional[symbols.SymbolTable],
         if runtime_available and native_always_true(node):
             return _runtime_call("instance_truth", [node], node)
         plain = optional_plain(node)
+        field_kind = declared_field(node, native_fields)
         represented = getattr(node, "_represented", None)
         if (represented is not None and facts.types[represented]["k"] == "dynamic"
                 and not runtime_list(node)
                 and not plain
+                and not field_kind
                 and not any(isinstance(n, ast.Name) and getattr(n, "_binding", None) in native_maps
                             for n in ast.walk(node))):
             return node
@@ -4816,7 +5167,7 @@ def _state_truth_tests(tree: ast.Module, table: Optional[symbols.SymbolTable],
         storage_kind = facts.types[represented]["k"] if represented is not None else ""
         kind = ("list" if runtime_list(node)
                 else storage_kind if storage_kind in ("str", "int", "float", "bool") + _SIZED_KINDS
-                else _truth_kind(node, facts))
+                else field_kind or _truth_kind(node, facts))
         if optional_instance(node):
             new: ast.expr = ast.Compare(left=node, ops=[ast.IsNot()],
                                         comparators=[ast.Constant(value=None)])
@@ -4825,6 +5176,7 @@ def _state_truth_tests(tree: ast.Module, table: Optional[symbols.SymbolTable],
                               comparators=[ast.Constant(value="")])
         elif kind == "int":
             new = ast.Compare(left=node, ops=[ast.NotEq()], comparators=[ast.Constant(value=0)])
+            new._truth_test = True
         elif kind == "float":
             new = ast.Compare(left=node, ops=[ast.NotEq()],
                               comparators=[ast.Constant(value=0.0)])
@@ -5681,12 +6033,164 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
         return
     any_lists = any_lists or set()
     external_imports = getattr(tree, "_external_imports", {})
+    analyzer = tree._infer_raw
+    named_enums = {cls._binding: cls._named_enum_members for cls in tree.body
+                   if getattr(cls, "_named_enum_members", None) and getattr(cls, "_binding", None) is not None}
+
+    def enum_type(node: ast.expr) -> Tuple[str, List[str]]:
+        type_id = getattr(node, "_assumed", None)
+        if type_id is None:
+            type_id = getattr(node, "_type", None)
+        if type_id is None:
+            return "", []
+        kind = facts.types[type_id]["k"]
+        if kind not in ("class", "instance"):
+            return "", []
+        entry = facts.types[type_id]
+        binding = entry.get("class_binding")
+        if binding is not None:
+            return kind, named_enums.get(binding, [])
+        module, _, name = entry.get("name", "").rpartition(".")
+        external = analyzer.externals.get(module, {}).get("classes", {}).get(name, {})
+        return kind, external.get("named_enum_members", [])
+
+    has_star_import = any(scope.has_star_import for scope in table.scopes)
+
+    def mark_integer_key_max(node: ast.Call) -> None:
+        # Keep the native list and use a non-capturing integer member selector.
+        if (has_star_import or not isinstance(node.func, ast.Name) or node.func.id != "max"
+                or getattr(node.func, "_binding", None) is not None or len(node.args) != 1
+                or len(node.keywords) != 1 or node.keywords[0].arg != "key"):
+            return
+        items = node.args[0]
+        key = node.keywords[0].value
+        items_kind = _truth_kind(items, facts)
+        if (not isinstance(items, ast.Name) or dynamic(items) or getattr(items, "_ref_vtype", "")
+                or items_kind not in ("list", "set") or not isinstance(key, ast.Lambda)):
+            return
+        args = key.args
+        member = key.body
+        if (len(args.args) != 1 or args.posonlyargs or args.kwonlyargs or args.defaults
+                or args.vararg or args.kwarg or not isinstance(member, ast.Attribute)
+                or not isinstance(member.value, ast.Name)
+                or getattr(member.value, "_binding", None) != getattr(args.args[0], "_binding", None)):
+            return
+        # Native enum values are distinct, so a set cannot introduce a tie that depends on order.
+        if (getattr(member, "_api", "") == "__py2v__.enum_value"
+                or (items_kind == "list" and _truth_kind(member, facts) == "int"
+                    and context.scalar_annotation(member) != "u64")):
+            node._api = "__py2v__.max_integer_key"
+
+    def optional_text(typ: Dict[str, Any]) -> bool:
+        return typ["k"] == "union" and {member["k"] for member in typ["members"]} == {"str", "none"}
+
+    def parameter_converter(typ: Optional[Dict[str, Any]]) -> str:
+        if typ is None:
+            return ""
+        if typ["k"] == "tuple_of" and typ["elem"]["k"] == "str":
+            return "string_sequence"
+        if (typ["k"] == "instance" and typ["name"] == "collections.abc.Sequence"
+                and [arg["k"] for arg in typ["args"]] == ["str"]):
+            return "string_sequence"
+        if optional_text(typ):
+            return "optional_string"
+        if typ["k"] == "str":
+            return "require_text"
+        return ""
+
+    optional_text_bindings = {
+        b["id"] for b in facts.bindings if b["declared"] is not None
+        and optional_text(infer.structural_type(facts.types, b["declared"]))
+    }
+
+    # A native string can stand in for a text sequence only if the callee
+    # observes its elements through str.join. Other use may observe its type
+    # or identity, even when the parameter is annotated as a sequence.
+    join_inputs = {
+        id(node.args[0]) for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "join" and len(node.args) == 1 and not node.keywords
+        and _truth_kind(node.func.value, facts) == "str"
+    }
+    seen_loads = {
+        getattr(node, "_binding", None) for node in ast.walk(tree)
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load) and id(node) in join_inputs
+    }
+    iteration_only = seen_loads - {
+        getattr(node, "_binding", None) for node in ast.walk(tree)
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load) and id(node) not in join_inputs
+    }
+
+    def narrowed_optional_text(arg: ast.expr) -> bool:
+        return (isinstance(arg, ast.Name) and getattr(arg, "_binding", None) in optional_text_bindings
+                and context.scalar_annotation(arg) == "string")
+
+    typed_parameters: Dict[int, List[Tuple[str, str]]] = {}
+    for function in facts.functions:
+        binding = function["binding"]
+        if (binding is None or table.bindings[binding].rebound
+                or table.scopes[table.bindings[binding].scope].kind != "module"):
+            continue
+        params = []
+        for p in function["params"]:
+            own = p["binding"]
+            if own is None:
+                continue
+            declared = infer.structural_type(facts.types, p["declared"]) if p["declared"] is not None else None
+            target = parameter_converter(declared)
+            if target == "string_sequence" and own in iteration_only and not table.bindings[own].rebound:
+                target = "joined_string_sequence"
+            params.append((table.bindings[own].name, target))
+        if any(convert for _, convert in params):
+            typed_parameters[binding] = params
+
+    def call_parameters(func: ast.expr) -> List[Tuple[str, str]]:
+        if not isinstance(func, ast.Name):
+            return []
+        binding = getattr(func, "_binding", None)
+        if binding in typed_parameters:
+            return typed_parameters[binding]
+        if binding not in analyzer.imports or not analyzer.externals:
+            return []
+        path = analyzer.qname(func)
+        if not path:
+            return []
+        entry = analyzer.external_entry(path)
+        if entry is None or entry["kind"] != "function":
+            return []
+        return [(p["name"], parameter_converter(p["declared"])) for p in entry["data"]["params"]]
+
+    def checked_argument(arg: ast.expr, converter: str) -> ast.expr:
+        if converter in ("string_sequence", "joined_string_sequence", "optional_string") and dynamic(arg):
+            parameter = converter.replace("_", " ")
+            return unsupported_argument(arg, f"boxed value for {parameter} may have a different Python type")
+        if converter in ("string_sequence", "joined_string_sequence") and _truth_kind(arg, facts) == "str":
+            if converter == "joined_string_sequence":
+                return native_call("text_characters", [arg], arg, "[]string")
+            return unsupported_argument(arg, "callee may observe str passed to its sequence parameter")
+        if converter == "require_text":
+            if narrowed_optional_text(arg):
+                return native_call("required_text", [arg], arg, "string")
+        return arg
+
+    def unsupported_argument(arg: ast.expr, reason: str) -> ast.Call:
+        detail = ast.copy_location(ast.Constant(value=f"line {arg.lineno}: {reason}"), arg)
+        return native_call("unsupported_annotated_call", [arg, detail], arg, "")
+
+    def native_call(name: str, args: List[ast.expr], origin: ast.expr, annotation: str) -> ast.Call:
+        func = ast.copy_location(ast.Name(id=name, ctx=ast.Load()), origin)
+        call = ast.copy_location(ast.Call(func=func, args=args, keywords=[]), origin)
+        call._api = "__py2v__." + name
+        call._runtime_annotation = annotation
+        return call
 
     inferred_bindings = {b["id"]: b.get("inferred") for b in facts.bindings}
 
     # An empty set needs its runtime identity, equality and hashability checks.
     empty_sets = set()
     set_bindings = set()
+    may_handle_index_error = any(isinstance(node, ast.Try) and node.handlers for node in ast.walk(tree))
+
     assignments = []
     for node in ast.walk(tree):
         target = (node.targets[0] if isinstance(node, ast.Assign) and len(node.targets) == 1
@@ -5699,7 +6203,8 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
     for node, target, binding_id in sorted(assignments, key=lambda item: (
             item[1].lineno, item[1].col_offset)):
         binding = table.bindings[binding_id]
-        if table.scopes[binding.scope].kind == "class":
+        scope = table.scopes[binding.scope]
+        if scope.kind == "class":
             continue
         call = node.value
         empty = (isinstance(call, ast.Call) and isinstance(call.func, ast.Name)
@@ -6018,6 +6523,16 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
             binding_id = getattr(node.target, "_binding", None)
             if binding_id is not None and len(table.bindings[binding_id].sites) == 1:
                 dynamic_bindings.add(binding_id)
+        if not (isinstance(node, (ast.For, ast.comprehension))
+                and isinstance(node.target, (ast.Tuple, ast.List)) and len(node.target.elts) == 2
+                and isinstance(node.iter, ast.Call) and isinstance(node.iter.func, ast.Attribute)
+                and node.iter.func.attr == "items" and not node.iter.args and not node.iter.keywords
+                and any_dict(node.iter.func.value)):
+            continue
+        value = node.target.elts[1]
+        binding_id = getattr(value, "_binding", None)
+        if isinstance(value, ast.Name) and binding_id is not None and len(table.bindings[binding_id].sites) == 1:
+            dynamic_bindings.add(binding_id)
 
     # A local is dynamic when each of its bindings is a plain assignment of a dynamic value.
     assigned: Dict[int, List[ast.expr]] = {}
@@ -6150,6 +6665,49 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
         return isinstance(node, ast.Constant) or _truth_kind(node, facts) in (
             "int", "float", "str", "bool", "none", "bytes")
 
+    def dynamic_attribute_target(node: ast.Assign) -> Optional[ast.Attribute]:
+        if len(node.targets) != 1:
+            return None
+        target = node.targets[0]
+        return target if isinstance(target, ast.Attribute) and dynamic(target.value) else None
+
+    # A local map only updated and then stored on a dynamic receiver can keep its
+    # identity in the runtime from allocation onward. The native map ABI is kept
+    # for every other use of the map.
+    map_declarations = {
+        binding: stmt for stmt, _, binding in assignments
+        if isinstance(stmt, ast.AnnAssign) and binding in any_dict_bindings
+        and len(table.bindings[binding].sites) == 1 and not table.bindings[binding].captured
+        and isinstance(stmt.value, ast.Dict) and not stmt.value.keys
+    }
+    if map_declarations:
+        loads: Dict[int, Set[int]] = {}
+        handled: Dict[int, Set[int]] = {}
+        stores: Set[int] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
+                binding = getattr(node, "_binding", None)
+                if binding in map_declarations:
+                    loads.setdefault(binding, set()).add(id(node))
+            elif (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                  and node.func.attr == "update" and isinstance(node.func.value, ast.Name)
+                  and not node.keywords and not any(isinstance(a, ast.Starred) for a in node.args)):
+                binding = getattr(node.func.value, "_binding", None)
+                if binding in map_declarations:
+                    handled.setdefault(binding, set()).add(id(node.func.value))
+            elif isinstance(node, ast.Assign) and isinstance(node.value, ast.Name):
+                binding = getattr(node.value, "_binding", None)
+                if binding in map_declarations and dynamic_attribute_target(node) is not None:
+                    handled.setdefault(binding, set()).add(id(node.value))
+                    stores.add(binding)
+        for binding in stores:
+            if loads[binding] == handled[binding]:
+                stmt = map_declarations[binding]
+                stmt.annotation = _annotation_node("Any", stmt.annotation)
+                stmt.value = _runtime_call("empty_dict", [], stmt)
+                any_dict_bindings.remove(binding)
+                dynamic_bindings.add(binding)
+
     called_attributes = {id(n.func) for n in ast.walk(tree)
                          if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)}
     unpack_nodes = {id(node) for node, _ in unpackings
@@ -6195,6 +6753,17 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
 
         def visit_Attribute(self, node: ast.Attribute) -> ast.AST:
             if isinstance(node.ctx, ast.Load):
+                kind, members = enum_type(node.value)
+                if members and kind == "class" and node.attr in members:
+                    self.generic_visit(node)
+                    node._api = "__py2v__.enum_constant"
+                    return node
+                if members and kind == "instance" and node.attr in ("name", "value"):
+                    self.generic_visit(node)
+                    node._api = "__py2v__.enum_" + node.attr
+                    node._runtime_annotation = "string" if node.attr == "name" else "int"
+                    return node
+            if isinstance(node.ctx, ast.Load):
                 path = _qualified_import(node, external_imports)
                 if path:
                     return self.external_value(path, node)
@@ -6208,7 +6777,16 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
             return node
 
         def visit_Subscript(self, node: ast.Subscript) -> ast.AST:
+            kind, members = enum_type(node.value)
             self.generic_visit(node)
+            if (isinstance(node.ctx, ast.Load) and members and kind == "class"
+                    and isinstance(node.value, (ast.Name, ast.Attribute))
+                    and isinstance(node.slice, ast.expr) and _truth_kind(node.slice, facts) == "str"):
+                call = ast.copy_location(ast.Call(func=node.value, args=[node.slice],
+                                                 keywords=[]), node)
+                call._api = "__py2v__.enum_lookup"
+                call._runtime_annotation = _unparse_expr(node.value)
+                return call
             if (isinstance(node.ctx, ast.Load) and isinstance(node.slice, ast.Tuple)
                     and any(isinstance(axis, ast.Slice) for axis in node.slice.elts)):
                 return node  # keep the backend's explicit multi-axis refusal
@@ -6221,16 +6799,42 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
                 bounds = [_runtime_call("box", [bound if bound is not None else nothing], node)
                           for bound in (node.slice.lower, node.slice.upper)]
                 return _runtime_call("slice_of", [node.value] + bounds, node)
+            if (may_handle_index_error and isinstance(node.ctx, ast.Load)
+                    and not isinstance(node.slice, ast.Slice)
+                    and _truth_kind(node.value, facts) == "str"
+                    and _truth_kind(node.slice, facts) in ("int", "bool")):
+                index = node.slice
+                if _truth_kind(index, facts) == "bool":
+                    index = ast.copy_location(ast.IfExp(test=index, body=ast.Constant(value=1),
+                                                        orelse=ast.Constant(value=0)), index)
+                return native_call("checked_text_index", [node.value, index], node, "string")
             return node
 
-        def visit_Assign(self, node: ast.Assign) -> ast.AST:
+        def visit_Assign(self, node: ast.Assign) -> Union[ast.AST, List[ast.stmt]]:
             # `v[key] = item` where v is a value of unknown type
             target = node.targets[0] if len(node.targets) == 1 else None
+            attribute = dynamic_attribute_target(node)
+            attribute_store = attribute is not None and fresh_boxable(node.value)
             stores = (isinstance(target, ast.Subscript) and not isinstance(target.slice, ast.Slice)
                       and not (isinstance(target.slice, ast.Tuple)
                                and any(isinstance(axis, ast.Slice) for axis in target.slice.elts))
                       and dynamic(target.value))
             self.generic_visit(node)
+            if attribute_store and attribute is not None:
+                index = len(reserved_names)
+                name = f"py2v_attr_value_{index}"
+                while name in reserved_names:
+                    index += 1
+                    name = f"py2v_attr_value_{index}"
+                reserved_names.add(name)
+                destination = ast.copy_location(ast.Name(id=name, ctx=ast.Store()), node)
+                source = ast.copy_location(ast.Name(id=name, ctx=ast.Load()), node)
+                value = node.value if dynamic(node.value) else _deep_box(node.value)
+                saved = ast.copy_location(ast.Assign(targets=[destination], value=value), node)
+                field = ast.copy_location(ast.Constant(value=attribute.attr), attribute)
+                call = _runtime_call("setattr", [attribute.value, field, source], node)
+                call._api = "builtins.setattr"
+                return [saved, ast.copy_location(ast.Expr(value=call), node)]
             if id(node) in unpack_nodes:
                 node.value = unpack(node.value, target)
             if (target is not None and isinstance(target, ast.Name)
@@ -6334,6 +6938,13 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
             if external:
                 # Callee lookup fails before Python evaluates its arguments.
                 return self.external_value(external, node)
+            if (isinstance(node.func, ast.Name) and node.func.id == "map"
+                    and getattr(node.func, "_binding", None) is None
+                    and len(node.args) == 2 and not node.keywords
+                    and isinstance(node.args[0], ast.Name) and node.args[0].id == "repr"
+                    and getattr(node.args[0], "_binding", None) is None
+                    and not has_star_import):
+                node.args[0]._api = "builtins.repr"
             if id(node) in empty_sets:
                 arguments = ast.copy_location(ast.List(elts=[], ctx=ast.Load()), node)
                 call = _runtime_call("new_set", [arguments], node)
@@ -6341,6 +6952,12 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
                 return _runtime_call("box", [call], node)
             is_method = dynamic_method_call(node)
             is_dict_get = any_dict_get(node)
+            is_native_list_index = (
+                isinstance(node.func, ast.Attribute) and node.func.attr == "index"
+                and len(node.args) == 1 and not node.keywords
+                and not isinstance(node.args[0], ast.Starred)
+                and not getattr(node.func.value, "_ref_vtype", "")
+                and not dynamic(node.func.value) and _truth_kind(node.func.value, facts) == "list")
             is_value_join = (isinstance(node.func, ast.Attribute) and node.func.attr == "join"
                              and len(node.args) == 1 and not node.keywords
                              and not isinstance(node.args[0], ast.Starred)
@@ -6351,6 +6968,9 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
             is_callable = (not isinstance(node.func, ast.Attribute) and dynamic(node.func)
                            and not node.keywords and not any(isinstance(a, ast.Starred) for a in node.args))
             self.generic_visit(node)
+            mark_integer_key_max(node)
+            if is_native_list_index and isinstance(node.func, ast.Attribute):
+                return native_call("native_list_index", [node.func.value, node.args[0]], node, "int")
             # Method lowering can change a native optional-string result to Value.
             if (isinstance(node.func, ast.Attribute)
                     and isinstance(node.func.value, ast.Name) and node.func.value.id == "pyrt"
@@ -6457,8 +7077,11 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
                 node.args = [_runtime_call("box", [node.args[0]], node.args[0])]
             if (isinstance(node.func, ast.Name) and node.func.id == "len"
                     and getattr(node.func, "_binding", None) is None
-                    and len(node.args) == 1 and not node.keywords and dynamic(node.args[0])):
-                return _runtime_call("length", [node.args[0]], node)
+                    and len(node.args) == 1 and not node.keywords):
+                if dynamic(node.args[0]):
+                    return _runtime_call("length", [node.args[0]], node)
+                if _truth_kind(node.args[0], facts) == "str":
+                    return native_call("text_length", [node.args[0]], node, "int")
             if (isinstance(node.func, ast.Name) and node.func.id == "str"
                     and getattr(node.func, "_binding", None) is None
                     and len(node.args) == 1 and not node.keywords and dynamic(node.args[0])):
@@ -6468,6 +7091,13 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
                     and getattr(node.func, "_binding", None) is None
                     and len(node.args) == 1 and not node.keywords and dynamic(node.args[0])):
                 return _runtime_call("truth", [node.args[0]], node)
+            if not any(isinstance(arg, ast.Starred) for arg in node.args):
+                params = call_parameters(node.func)
+                for i, (_, converter) in enumerate(params[:len(node.args)]):
+                    node.args[i] = checked_argument(node.args[i], converter)
+                by_name = dict(params)
+                for kw in node.keywords:
+                    kw.value = checked_argument(kw.value, by_name.get(kw.arg, ""))
             return node
 
         def visit_For(self, node: ast.For) -> ast.AST:
@@ -6780,6 +7410,9 @@ def _plan_error_propagation(tree: ast.Module, table: Optional[symbols.SymbolTabl
             # a bare `raise` is planned with the handler it stands in
             return call.exc is not None and raised_class(call) != ""
         api_name = getattr(call, "_api", "")
+        if api_name in ("__py2v__.enum_lookup", "__py2v__.max_integer_key",
+                         "__py2v__.checked_text_index", "__py2v__.native_list_index"):
+            return True
         entry = api.get(api_name) or api.get("__pyrt__." + api_name)
         if entry and entry.get("raises"):
             return True
@@ -8030,6 +8663,33 @@ def _empty_field_annotations(tree: ast.Module, facts: infer.TypeFacts) -> Dict[i
     by_class = {c["binding"]: c for c in facts.classes}
     found: Dict[int, str] = {}
     first_set = set()
+    module_types = {
+        stmt.target._binding: _annotation_to_str(stmt.annotation).replace("typing.", "")
+        for stmt in tree.body
+        if isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name)
+        and hasattr(stmt.target, "_binding")
+    }
+
+    def unsigned_value(value: ast.expr, callable_bindings: Set[int]) -> bool:
+        if isinstance(value, ast.Name):
+            return module_types.get(getattr(value, "_binding", None)) == "u64"
+        if isinstance(value, ast.Constant):
+            return type(value.value) is int and 2**63 <= value.value < 2**64
+        if isinstance(value, ast.Subscript) and isinstance(value.value, ast.Name):
+            container = module_types.get(getattr(value.value, "_binding", None))
+            return container in ("list[u64]", "List[u64]") and not isinstance(value.slice, (ast.Slice, ast.Tuple))
+        if isinstance(value, ast.BinOp) and isinstance(value.op, (ast.BitAnd, ast.BitOr, ast.BitXor)):
+            return unsigned_value(value.left, callable_bindings) and unsigned_value(
+                value.right, callable_bindings)
+        return (isinstance(value, ast.Call) and isinstance(value.func, ast.Name)
+                and getattr(value.func, "_binding", None) in callable_bindings)
+
+    def unsigned_callable(arg: ast.arg) -> bool:
+        annotation = arg.annotation
+        return (isinstance(annotation, ast.Subscript)
+                and _annotation_to_str(annotation.value).split(".")[-1] == "Callable"
+                and isinstance(annotation.slice, ast.Tuple) and len(annotation.slice.elts) == 2
+                and _annotation_to_str(annotation.slice.elts[1]) == "u64")
 
     def statements(node: ast.AST):
         for child in ast.iter_child_nodes(node):
@@ -8046,12 +8706,16 @@ def _empty_field_annotations(tree: ast.Module, facts: infer.TypeFacts) -> Dict[i
             continue
         declared = fact.get("fields_declared", {})
         known = fact.get("fields_assumed", fact["fields"])
+        writes: Dict[str, List[Tuple[ast.Assign, bool]]] = {}
         for method in cls.body:
             if not isinstance(method, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
             if method.decorator_list or not method.args.args:
                 continue
             receiver = method.args.args[0].arg
+            receiver_binding = getattr(method.args.args[0], "_binding", None)
+            callable_bindings = {arg._binding for arg in _all_args(method.args)
+                                 if hasattr(arg, "_binding") and unsigned_callable(arg)}
             for stmt in statements(method):
                 if not (isinstance(stmt, ast.Assign) and len(stmt.targets) == 1):
                     continue
@@ -8059,14 +8723,24 @@ def _empty_field_annotations(tree: ast.Module, facts: infer.TypeFacts) -> Dict[i
                 if not (isinstance(target, ast.Attribute) and isinstance(target.value, ast.Name)
                         and target.value.id == receiver):
                     continue
-                if target.attr in declared or target.attr not in known:
+                if target.attr in declared:
                     continue
+                wide = unsigned_value(stmt.value, callable_bindings)
+                if receiver_binding is not None and getattr(target.value, "_binding", None) == receiver_binding:
+                    writes.setdefault(target.attr, []).append((stmt, wide))
                 # Any other value: only where the field is first set, in `__init__`.
                 if not _is_empty_container(stmt.value):
                     if method.name != "__init__" or (id(cls), target.attr) in first_set:
                         continue
                     first_set.add((id(cls), target.attr))
-                text = _annotation_for_type(facts.types, known[target.attr])
+                value = stmt.value
+                if isinstance(value, ast.List) and value.elts and all(
+                        unsigned_value(element, callable_bindings) for element in value.elts):
+                    text = "list[u64]"
+                elif target.attr in known:
+                    text = _annotation_for_type(facts.types, known[target.attr])
+                else:
+                    continue
                 if text is None and isinstance(stmt.value, ast.List) and not stmt.value.elts:
                     # Elements not of one known type: runtime values. The uses of the field
                     # are marked for `_lower_dynamic_values`.
@@ -8077,6 +8751,9 @@ def _empty_field_annotations(tree: ast.Module, facts: infer.TypeFacts) -> Dict[i
                             use._any_list = True
                 if text is not None:
                     found[id(stmt)] = text
+        for sites in writes.values():
+            if all(wide for _, wide in sites):
+                found[id(sites[0][0])] = "u64"
     return found
 
 
@@ -8605,6 +9282,9 @@ def _definitely_assigned_loads(fn: Union[ast.FunctionDef, ast.AsyncFunctionDef])
         if isinstance(stmt, (ast.Return, ast.Raise)):
             expression(stmt, current)
             return _AssignmentFlow(None)
+        if isinstance(stmt, ast.Assert) and isinstance(stmt.test, ast.Constant) and stmt.test.value is False:
+            expression(stmt, current)
+            return _AssignmentFlow(None)
         if isinstance(stmt, ast.Break):
             return _AssignmentFlow(None, [current])
         if isinstance(stmt, ast.Continue):
@@ -8649,6 +9329,40 @@ def _declare_block_locals(tree: ast.Module, table: Optional[symbols.SymbolTable]
         return set()
     lifted_lists: Set[int] = set()
     known = {b["id"]: b for b in facts.bindings}
+    analyzer = tree._infer_raw
+
+    def boxed_text_map(typ: Optional[Dict[str, Any]]) -> bool:
+        return (typ is not None and typ["k"] == "dict" and typ["key"]["k"] == "str"
+                and typ["value"]["k"] == "dynamic")
+
+    map_returns = {
+        fn["binding"] for fn in facts.functions
+        if fn["binding"] is not None and fn["ret_declared"] is not None
+        and boxed_text_map(infer.structural_type(facts.types, fn["ret_declared"]))
+    }
+
+    def native_map_call(value: ast.expr) -> bool:
+        if not isinstance(value, ast.Call) or not isinstance(value.func, ast.Name):
+            return False
+        binding = getattr(value.func, "_binding", None)
+        if binding is None or table.bindings[binding].rebound:
+            return False
+        if binding in map_returns:
+            return True
+        path = analyzer.qname(value.func) if binding in analyzer.imports else ""
+        entry = analyzer.external_entry(path) if path else None
+        return (entry is not None and entry["kind"] == "function"
+                and boxed_text_map(entry["data"]["ret_declared"]))
+
+    unsigned_fields = {}
+    for cls in ast.walk(tree):
+        if not isinstance(cls, ast.ClassDef):
+            continue
+        fields = {name for name, text in _extract_class_declarations(cls).items() if text == "u64"}
+        if fields:
+            for method in cls.body:
+                if isinstance(method, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    unsigned_fields[id(method)] = fields
 
     def value_comprehension(value: ast.expr) -> bool:
         if not isinstance(value, ast.ListComp):
@@ -8662,6 +9376,14 @@ def _declare_block_locals(tree: ast.Module, table: Optional[symbols.SymbolTable]
     for fn in ast.walk(tree):
         if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
+        fields = unsigned_fields.get(id(fn), set())
+        positional = fn.args.posonlyargs + fn.args.args
+        receiver = getattr(positional[0], "_binding", None) if positional else None
+
+        def reads_unsigned_field(value: Optional[ast.expr]) -> bool:
+            return (isinstance(value, ast.Attribute) and isinstance(value.value, ast.Name)
+                    and getattr(value.value, "_binding", None) == receiver and value.attr in fields)
+
         # each name occurrence of the function's own code, with the blocks around it
         occurrences: Dict[int, List[Tuple[Tuple[int, ...], ast.Name, Optional[ast.stmt]]]] = {}
         eager_occurrences: Dict[int, List[Tuple[Tuple[int, ...], ast.Name, Optional[ast.stmt]]]] = {}
@@ -8736,6 +9458,31 @@ def _declare_block_locals(tree: ast.Module, table: Optional[symbols.SymbolTable]
             type_id = fact.get("assumed", fact.get("inferred"))
             text = _annotation_for_type(facts.types, type_id) if type_id is not None else None
             value: Optional[ast.expr] = None
+            special_type, default = "", None
+            if dynamic_bindings is None and receiver is not None and fields:
+                writes = [site for _, node, site in found if isinstance(node.ctx, ast.Store)]
+                if all(isinstance(site, ast.Assign) and reads_unsigned_field(site.value)
+                       for site in writes):
+                    special_type, default = "u64", 0
+            if not special_type and text is None and type_id is not None and dynamic_bindings is None:
+                entry = facts.types[type_id]
+                if entry["k"] == "union" and len(entry["members"]) == 2:
+                    kinds = {facts.types[member]["k"] for member in entry["members"]}
+                    scalar = kinds - {"none"}
+                    if "none" in kinds and scalar and scalar <= {"int", "float", "bool", "str"}:
+                        special_type = f"Optional[{scalar.pop()}]"
+                elif entry["k"] == "dict" and native_map_call(stmt.value):
+                    special_type = "dict[str, Any]"
+            if special_type:
+                if proven_loads is None:
+                    proven_loads = _definitely_assigned_loads(fn)
+                loads = [node for _, node, site in found + eager_occurrences.get(binding_id, [])
+                         if isinstance(node.ctx, ast.Load)
+                         or isinstance(site, ast.AugAssign) and site.target is node]
+                if loads and all(id(node) in proven_loads for node in loads):
+                    text = special_type
+                    if not special_type.startswith("dict["):
+                        value = ast.copy_location(ast.Constant(value=default), fn)
             runtime_class = ""
             runtime_list = False
             if text is None and isinstance(stmt.value, ast.ListComp) and not binding.captured:
@@ -9076,9 +9823,13 @@ def process_file(file_path: str, project: Optional[ProjectFacts] = None) -> str:
     if _encode_local_identifiers(tree, table):
         table = _resolve_bindings(tree)
     if table is not None:
+        _lower_scalar_aliases(tree, table)
+        _lower_unsigned_method_references(tree, table)
         _mark_scheduling_refusals(tree, table, file_path)
         _mark_nominal_enums(tree, table)
         _mark_local_sequence_rebindings(tree, table)
+        _drop_mypyc_metadata(tree, table, project)
+        _lower_python_version_components(tree, table)
     _mark_dynamic_isinstance_types(tree, table)
     _retain_type_imports(tree, table, project)
     _mark_runtime_api(tree, table)
@@ -9087,6 +9838,7 @@ def process_file(file_path: str, project: Optional[ProjectFacts] = None) -> str:
     _erase_typing_casts(tree, table)
     _lower_literal_text(tree, table, closed_file=project is None)
     _expand_bool_calls(tree)
+    _detect_class_methods(tree, table)
     facts = _infer_types(tree, table, project)
     if _lower_colliding_accessors(tree, table, facts):
         table = _resolve_bindings(tree)
@@ -9177,8 +9929,6 @@ def process_file(file_path: str, project: Optional[ProjectFacts] = None) -> str:
             if isinstance(child, (ast.Yield, ast.YieldFrom)):
                 child._used_as_value = not isinstance(parent, ast.Expr)
 
-    # Detect class methods
-    _detect_class_methods(tree)
     _mark_project_class_references(tree, table, project)
 
     # Detect nesting levels

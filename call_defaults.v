@@ -38,10 +38,13 @@ fn register_defaulted_functions(parsed map[string]Module, mut registry ModuleReg
 			sig := stmt as FunctionDef
 			if names[sig.name] != 1 || names['*'] > 0 || sig.decorator_list.len > 0
 				|| sig.is_generator || sig.is_class_method || sig.name in call_dispatch_names
-				|| sig.args.vararg != none || sig.args.kwarg != none
+				|| sig.args.vararg != none
 				|| sig.args.posonlyargs.len > 0 || sig.args.kw_defaults.len != sig.args.kwonlyargs.len
 				|| (sig.args.defaults.len == 0 && !sig.args.kw_defaults.any(it != none)) {
 				continue
+			}
+			if kwarg := sig.args.kwarg {
+				if kwarg.annotation == none || !parameter_is_dynamic(kwarg) { continue }
 			}
 			if sig.args.args.any(it.arg in ['self', 'cls']) { continue }
 			mut eligible := true
@@ -142,6 +145,25 @@ fn imported_default_value(expr Expr) Expr {
 	return expr
 }
 
+// imported_keyword_value boxes scalars without copying a native mutable container.
+fn imported_keyword_value(expr Expr) ?Expr {
+	runtime := Expr(Name{ id: 'pyrt' })
+	if expr is Constant {
+		if expr.value is NoneValue {
+			return Attribute{ value: &runtime, attr: 'none_' }
+		}
+		if expr.value !is string && expr.value !is bool && expr.value !is int
+			&& expr.value !is i64 && expr.value !is f64 {
+			return none
+		}
+	} else if get_expr_annotation(expr) !in ['str', 'string', 'bool', 'int', 'i64', 'float', 'f64',
+		'Any', 'pyrt.Value'] {
+		return none
+	}
+	box := Expr(Attribute{ value: &runtime, attr: 'box' })
+	return Call{ func: &box, args: [imported_default_value(expr)] }
+}
+
 fn (mut t VTranspiler) complete_imported_call(node Call) ?Call {
 	if !t.emit_pub || node.func !is Name || node.args.any(it is Starred) {
 		return none
@@ -165,9 +187,12 @@ fn (mut t VTranspiler) complete_imported_call(node Call) ?Call {
 	mut params := sig.args.args.clone()
 	params << sig.args.kwonlyargs
 	first_default := sig.args.args.len - sig.args.defaults.len
+	has_keyword_map := sig.args.kwarg != none
 	// Fully supplied calls retain the existing emission, including its keyword guards.
-	if node.args.len + node.keywords.len >= params.len { return none }
+	if !has_keyword_map && node.args.len + node.keywords.len >= params.len { return none }
 	mut keyword_values := map[int]Expr{}
+	mut extra_names := map[string]bool{}
+	mut extras := Dict{ v_annotation: 'dict[str,Any]' }
 	mut previous := node.args.len - 1
 	for keyword in node.keywords {
 		keyword_name := keyword.arg or { return none }
@@ -178,8 +203,16 @@ fn (mut t VTranspiler) complete_imported_call(node Call) ?Call {
 				break
 			}
 		}
+		if position < 0 && has_keyword_map {
+			if keyword_name in extra_names { return none }
+			value := imported_keyword_value(keyword.value) or { return none }
+			extra_names[keyword_name] = true
+			extras.keys << ?Expr(Constant{ value: keyword_name })
+			extras.values << value
+			continue
+		}
 		// Inserting literal defaults may not reorder or duplicate supplied expressions.
-		if position <= previous { return none }
+		if position <= previous || extras.keys.len > 0 { return none }
 		previous = position
 		keyword_values[position] = keyword.value
 	}
@@ -209,6 +242,10 @@ fn (mut t VTranspiler) complete_imported_call(node Call) ?Call {
 		} else {
 			completed << value
 		}
+	}
+	if has_keyword_map {
+		completed << extras
+		needs_pyrt = needs_pyrt || extras.keys.len > 0
 	}
 	if needs_pyrt { t.add_using('pyrt') }
 	return Call{ ...node, args: completed, keywords: []Keyword{} }

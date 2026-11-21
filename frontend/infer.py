@@ -850,6 +850,8 @@ class Analyzer:
                 return p.never
             if short in ("bool", "int", "float", "str", "bytes"):
                 return getattr(p, short)
+            if short == "u64":
+                return p.int
             if short in ("list", "List", "set", "Set", "dict", "Dict", "tuple", "Tuple"):
                 u = p.unknown("unparameterized annotation: " + short)
                 k = short.lower()

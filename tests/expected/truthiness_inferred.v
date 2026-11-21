@@ -27,13 +27,21 @@ fn tally(words []string) map[string]int {
 	mut seen := map[string]int{}
 	for word in words {
 		if word != '' {
-			seen[word] = word.len
+			seen[word] = py2v_text_length1(word)
 		}
 	}
 	if !(seen.len > 0) {
 		seen['empty'] = 0
 	}
 	return seen
+}
+
+fn py2v_text_length1(text string) int {
+	mut length := 0
+	for byte in text {
+		if (byte & 0xc0) != 0x80 { length++ }
+	}
+	return length
 }
 
 fn main() {
