@@ -34,10 +34,10 @@ fn main_func_py() ! {
 	println(pyrt.str(pyrt.item_at(pyrt.item_at(s['properties'], pyrt.box('limit')), pyrt.box('default'))))
 }
 
-fn main_func() {
-	main_func_py() or { pyrt.fail(err) }
+fn py2v_entry1() ! {
+	main_func_py()!
 }
 
 fn main() {
-	main_func()
+	py2v_entry1() or { pyrt.fail(err) }
 }

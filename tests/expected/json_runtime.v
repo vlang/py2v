@@ -8,10 +8,10 @@ fn load_py(text string) !string {
 	return json.dumps(pyrt.box(data))!
 }
 
-fn load(text string) string {
-	return load_py(text) or { pyrt.fail(err) }
+fn py2v_entry1() ! {
+	println(load_py('[1, 2.5, \"a\", null, true]')!)
 }
 
 fn main() {
-	println(load('[1, 2.5, \"a\", null, true]'))
+	py2v_entry1() or { pyrt.fail(err) }
 }

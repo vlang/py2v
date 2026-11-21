@@ -12,10 +12,6 @@ fn setup_py(path string) !&sqlite3.Connection {
 	return conn
 }
 
-fn setup(path string) &sqlite3.Connection {
-	return setup_py(path) or { pyrt.fail(err) }
-}
-
 fn titles_py(conn &sqlite3.Connection, least int) ![]string {
 	mut found := []string{}
 	rows := conn.execute('SELECT title, stars FROM notes WHERE stars >= ? ORDER BY id', pyrt.box(least))!.fetchall()
@@ -25,10 +21,6 @@ fn titles_py(conn &sqlite3.Connection, least int) ![]string {
 	return found
 }
 
-fn titles(conn &sqlite3.Connection, least int) []string {
-	return titles_py(conn, least) or { pyrt.fail(err) }
-}
-
 fn count_py(conn &sqlite3.Connection) !int {
 	cur := conn.cursor()
 	cur.execute('SELECT COUNT(*) FROM notes')!
@@ -36,14 +28,14 @@ fn count_py(conn &sqlite3.Connection) !int {
 	return conn.execute('SELECT id FROM notes')!.fetchall().len
 }
 
-fn count(conn &sqlite3.Connection) int {
-	return count_py(conn) or { pyrt.fail(err) }
+fn py2v_entry1() ! {
+	db := setup_py(':memory:')!
+	println(titles_py(db, 4)!)
+	println(titles_py(db, 1)!)
+	println(count_py(db)!)
+	db.close()!
 }
 
 fn main() {
-	db := setup(':memory:')
-	println(titles(db, 4))
-	println(titles(db, 1))
-	println(count(db))
-	db.close() or { pyrt.fail(err) }
+	py2v_entry1() or { pyrt.fail(err) }
 }

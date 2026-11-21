@@ -18,10 +18,6 @@ fn placeholders_py(count int) !string {
 	return pyrt.to_str(pyrt.join(pyrt.box(pyrt.box(',')), pyrt.box('?'.repeat(count)))!)
 }
 
-fn placeholders(count int) string {
-	return placeholders_py(count) or { pyrt.fail(err) }
-}
-
 fn words() []Any {
 	return ['a', 'β']
 }
@@ -30,18 +26,18 @@ fn invalid_words() []Any {
 	return [pyrt.box('a'), pyrt.box(3)]
 }
 
-fn main() {
-	println(pyrt.to_str((pyrt.join(pyrt.box(pyrt.box('|')), pyrt.box('aβ')) or { pyrt.fail(err) })))
-	println(pyrt.to_str((pyrt.join(pyrt.box(pyrt.box('|')), pyrt.box('á😀')) or { pyrt.fail(err) })))
-	println(pyrt.to_str((pyrt.join(pyrt.box(pyrt.box('|')), pyrt.box('')) or { pyrt.fail(err) })))
-	println(pyrt.to_str((pyrt.join(pyrt.box(pyrt.box('')), pyrt.box('aβ')) or { pyrt.fail(err) })))
-	println(pyrt.to_str((pyrt.join(pyrt.box(pyrt.box('|')), pyrt.box('z')) or { pyrt.fail(err) })))
-	println(placeholders(3))
-	println(placeholders(0))
-	println(placeholders(-2))
-	println(pyrt.to_str((pyrt.join(pyrt.box(pyrt.box(separator())), pyrt.box(payload())) or { pyrt.fail(err) })))
+fn py2v_entry1() ! {
+	println(pyrt.to_str(pyrt.join(pyrt.box(pyrt.box('|')), pyrt.box('aβ'))!))
+	println(pyrt.to_str(pyrt.join(pyrt.box(pyrt.box('|')), pyrt.box('á😀'))!))
+	println(pyrt.to_str(pyrt.join(pyrt.box(pyrt.box('|')), pyrt.box(''))!))
+	println(pyrt.to_str(pyrt.join(pyrt.box(pyrt.box('')), pyrt.box('aβ'))!))
+	println(pyrt.to_str(pyrt.join(pyrt.box(pyrt.box('|')), pyrt.box('z'))!))
+	println(placeholders_py(3)!)
+	println(placeholders_py(0)!)
+	println(placeholders_py(-2)!)
+	println(pyrt.to_str(pyrt.join(pyrt.box(pyrt.box(separator())), pyrt.box(payload()))!))
 	println(['a', 'β'].join('|'))
-	println(pyrt.to_str((pyrt.join(pyrt.box(pyrt.box('|')), pyrt.box(words())) or { pyrt.fail(err) })))
+	println(pyrt.to_str(pyrt.join(pyrt.box(pyrt.box('|')), pyrt.box(words()))!))
 	mut py2v_err_1 := ?IError(none)
 	py2v_try_1: for {
 		println(pyrt.to_str(pyrt.join(pyrt.box(pyrt.box('|')), pyrt.box(invalid_words())) or {
@@ -57,4 +53,8 @@ fn main() {
 			pyrt.fail(py2v_raised_1)
 		}
 	}
+}
+
+fn main() {
+	py2v_entry1() or { pyrt.fail(err) }
 }

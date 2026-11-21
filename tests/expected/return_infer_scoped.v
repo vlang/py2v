@@ -23,11 +23,11 @@ fn from_try_py(flag bool) !int {
 	return result
 }
 
-fn from_try(flag bool) int {
-	return from_try_py(flag) or { pyrt.fail(err) }
+fn py2v_entry1() ! {
+	println(from_try_py(true)!)
+	println(from_try_py(false)!)
 }
 
 fn main() {
-	println(from_try(true))
-	println(from_try(false))
+	py2v_entry1() or { pyrt.fail(err) }
 }

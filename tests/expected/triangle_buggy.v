@@ -73,15 +73,15 @@ fn classify_triangle_py(a int, b int, c int) !TriangleType {
 	}
 }
 
-fn classify_triangle(a int, b int, c int) TriangleType {
-	return classify_triangle_py(a, b, c) or { pyrt.fail(err) }
+fn py2v_entry1() ! {
+	a := pyrt.untranslated_import('py2many.smt.default_value')!
+	b := pyrt.untranslated_import('py2many.smt.default_value')!
+	c := pyrt.untranslated_import('py2many.smt.default_value')!
+	assert !(classify_triangle_correct(a, b, c) == classify_triangle_py(a, b, c)!)
+	pyrt.untranslated_import('py2many.smt.check_sat')!
+	pyrt.untranslated_import('py2many.smt.get_model')!
 }
 
 fn main() {
-	a := (pyrt.untranslated_import('py2many.smt.default_value') or { pyrt.fail(err) })
-	b := (pyrt.untranslated_import('py2many.smt.default_value') or { pyrt.fail(err) })
-	c := (pyrt.untranslated_import('py2many.smt.default_value') or { pyrt.fail(err) })
-	assert !(classify_triangle_correct(a, b, c) == classify_triangle(a, b, c))
-	(pyrt.untranslated_import('py2many.smt.check_sat') or { pyrt.fail(err) })
-	(pyrt.untranslated_import('py2many.smt.get_model') or { pyrt.fail(err) })
+	py2v_entry1() or { pyrt.fail(err) }
 }

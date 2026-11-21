@@ -21,10 +21,6 @@ fn build_py() !&argparse.ArgumentParser {
 	return parser
 }
 
-fn build() &argparse.ArgumentParser {
-	return build_py() or { pyrt.fail(err) }
-}
-
 fn main_func_py() ! {
 	parser := build_py()!
 	args := parser.parse_args(['world', '--count', '3', '--verbose', '--tag', 'a', '--tag', 'b'])!
@@ -50,10 +46,6 @@ fn main_func_py() ! {
 	}).str() + ' ' + (other.get_str('mode')!).str() + ' ' + (other.get_strings('tag')!).str())
 }
 
-fn main_func() {
-	main_func_py() or { pyrt.fail(err) }
-}
-
 fn py2v_range_next1(current int, stop int, step int) int {
 	if step > 0 {
 		if u64(step) >= u64(stop) - u64(current) {
@@ -65,6 +57,10 @@ fn py2v_range_next1(current int, stop int, step int) int {
 	return current + step
 }
 
+fn py2v_entry1() ! {
+	main_func_py()!
+}
+
 fn main() {
-	main_func()
+	py2v_entry1() or { pyrt.fail(err) }
 }

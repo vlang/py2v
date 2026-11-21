@@ -25,10 +25,6 @@ fn missing_handler_py(conn &sqlite3.Connection) ! {
 	println(values.len)
 }
 
-fn missing_handler(conn &sqlite3.Connection) {
-	missing_handler_py(conn) or { pyrt.fail(err) }
-}
-
 fn conditional_handler_py(conn &sqlite3.Connection, flag bool) ! {
 	mut py2v_err_2 := ?IError(none)
 	py2v_try_2: for {
@@ -53,10 +49,6 @@ fn conditional_handler_py(conn &sqlite3.Connection, flag bool) ! {
 	println(values.len)
 }
 
-fn conditional_handler(conn &sqlite3.Connection, flag bool) {
-	conditional_handler_py(conn, flag) or { pyrt.fail(err) }
-}
-
 fn handler_read_py(conn &sqlite3.Connection) ! {
 	mut py2v_err_3 := ?IError(none)
 	py2v_try_3: for {
@@ -78,8 +70,4 @@ fn handler_read_py(conn &sqlite3.Connection) ! {
 		}
 	}
 	println(values.len)
-}
-
-fn handler_read(conn &sqlite3.Connection) {
-	handler_read_py(conn) or { pyrt.fail(err) }
 }

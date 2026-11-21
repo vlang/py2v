@@ -22,10 +22,6 @@ fn caught_type_py(value Any) ! {
 	}
 }
 
-fn caught_type(value Any) {
-	caught_type_py(value) or { pyrt.fail(err) }
-}
-
 fn caught_attr_py(value Any) ! {
 	mut py2v_err_2 := ?IError(none)
 	py2v_try_2: for {
@@ -44,24 +40,12 @@ fn caught_attr_py(value Any) ! {
 	}
 }
 
-fn caught_attr(value Any) {
-	caught_attr_py(value) or { pyrt.fail(err) }
-}
-
 fn relay_py(value Any) ! {
 	pyrt.call_method(pyrt.box(value), 'append', [pyrt.box(2)])!
 }
 
-fn relay(value Any) {
-	relay_py(value) or { pyrt.fail(err) }
-}
-
 fn propagate_py(value Any) ! {
 	relay_py(value)!
-}
-
-fn propagate(value Any) {
-	propagate_py(value) or { pyrt.fail(err) }
 }
 
 fn receiver() Any {
@@ -79,18 +63,14 @@ fn success_py(value Any) ! {
 	println(pyrt.str(value))
 }
 
-fn success(value Any) {
-	success_py(value) or { pyrt.fail(err) }
-}
-
 fn side(label string) string {
 	println(label)
 	return label
 }
 
-fn main() {
-	caught_type('')
-	caught_attr(1)
+fn py2v_entry1() ! {
+	caught_type_py('')!
+	caught_attr_py(1)!
 	mut py2v_err_3 := ?IError(none)
 	py2v_try_3: for {
 		propagate_py(1) or {
@@ -107,10 +87,14 @@ fn main() {
 		}
 	}
 	value := receiver()
-	(pyrt.call_method(pyrt.box(value), 'append', [pyrt.box(argument())]) or { pyrt.fail(err) })
-	success(pyrt.empty_list())
-	println((side('first')).str() + ' ' + (pyrt.str((pyrt.call_method(pyrt.box(receiver()), 'append', [pyrt.box(1)]) or { pyrt.fail(err) }))).str())
+	pyrt.call_method(pyrt.box(value), 'append', [pyrt.box(argument())])!
+	success_py(pyrt.empty_list())!
+	println((side('first')).str() + ' ' + (pyrt.str(pyrt.call_method(pyrt.box(receiver()), 'append', [pyrt.box(1)])!)).str())
 	effects := [pyrt.box(side('third')),
-		(pyrt.call_method(pyrt.box(receiver()), 'append', [pyrt.box(2)]) or { pyrt.fail(err) })]
+		pyrt.call_method(pyrt.box(receiver()), 'append', [pyrt.box(2)])!]
 	println(effects.len)
+}
+
+fn main() {
+	py2v_entry1() or { pyrt.fail(err) }
 }

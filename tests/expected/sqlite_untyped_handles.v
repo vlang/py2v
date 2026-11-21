@@ -9,26 +9,14 @@ fn count_rows_py(conn &sqlite3.Connection, table string) !Any {
 	return (conn.execute('SELECT COUNT(*) FROM ' + table)!.fetchone() or { panic("TypeError: 'NoneType' object is not subscriptable") }).get_item(0)!
 }
 
-fn count_rows(conn &sqlite3.Connection, table string) Any {
-	return count_rows_py(conn, table) or { pyrt.fail(err) }
-}
-
 fn add_py(conn &sqlite3.Connection, title string) ! {
 	conn.execute('INSERT INTO notes (title) VALUES (?)', pyrt.box(title))!
 	conn.commit()!
 }
 
-fn add(conn &sqlite3.Connection, title string) {
-	add_py(conn, title) or { pyrt.fail(err) }
-}
-
 fn titles_py(cur &sqlite3.Cursor) ![]Any {
 	cur.execute('SELECT title FROM notes ORDER BY id')!
 	return cur.fetchall().map(it.get_item(0)!)
-}
-
-fn titles(cur &sqlite3.Cursor) []Any {
-	return titles_py(cur) or { pyrt.fail(err) }
 }
 
 fn main_func_py() ! {
@@ -41,10 +29,10 @@ fn main_func_py() ! {
 	conn.close()!
 }
 
-fn main_func() {
-	main_func_py() or { pyrt.fail(err) }
+fn py2v_entry1() ! {
+	main_func_py()!
 }
 
 fn main() {
-	main_func()
+	py2v_entry1() or { pyrt.fail(err) }
 }

@@ -38,10 +38,10 @@ fn show_py(conn &sqlite3.Connection) ! {
 	println(label)
 }
 
-fn show(conn &sqlite3.Connection) {
-	show_py(conn) or { pyrt.fail(err) }
+fn py2v_entry1() ! {
+	show_py(sqlite3.connect(':memory:')!)!
 }
 
 fn main() {
-	show((sqlite3.connect(':memory:') or { pyrt.fail(err) }))
+	py2v_entry1() or { pyrt.fail(err) }
 }

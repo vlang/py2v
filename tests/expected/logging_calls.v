@@ -15,10 +15,10 @@ fn process_py() ! {
 	logging.exception('caught error')
 }
 
-fn process() {
-	process_py() or { pyrt.fail(err) }
+fn py2v_entry1() ! {
+	process_py()!
 }
 
 fn main() {
-	process()
+	py2v_entry1() or { pyrt.fail(err) }
 }

@@ -22,10 +22,6 @@ fn describe_py(record Any, mut words []string) !int {
 	return words.len
 }
 
-fn describe(record Any, mut words []string) int {
-	return describe_py(record, mut words) or { pyrt.fail(err) }
-}
-
 fn first_word(text string) Any {
 	parts := text.trim_space().split(' ')
 	return parts[0]
@@ -35,14 +31,18 @@ fn count_of(items []int, wanted int) Any {
 	return items.count(it == wanted) + 1
 }
 
-fn main() {
-	println(describe(pyrt.box(map[string]Any{
+fn py2v_entry1() ! {
+	println(describe_py(pyrt.box(map[string]Any{
 		'name': pyrt.box('ada')
 		'tags': pyrt.box([pyrt.box('x'), pyrt.box('y')])
-	}), mut ['a']))
-	println(describe(pyrt.box(map[string]Any{
+	}), mut ['a'])!)
+	println(describe_py(pyrt.box(map[string]Any{
 		'tags': pyrt.empty_list()
-	}), mut ['a', 'b']))
+	}), mut ['a', 'b'])!)
 	println(pyrt.str(first_word('  hello there ')))
 	println(pyrt.str(count_of([1, 2, 1], 1)))
+}
+
+fn main() {
+	py2v_entry1() or { pyrt.fail(err) }
 }

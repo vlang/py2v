@@ -8,10 +8,6 @@ fn touch_py(values Any) ! {
 	pyrt.call_method(pyrt.box(values), 'append', [pyrt.box(3)])!
 }
 
-fn touch(values Any) {
-	touch_py(values) or { pyrt.fail(err) }
-}
-
 fn main_func_py() ! {
 	a := pyrt.list_ref[int]([1])
 	mut b := a
@@ -36,10 +32,10 @@ fn main_func_py() ! {
 	println(words.items.join(' '))
 }
 
-fn main_func() {
-	main_func_py() or { pyrt.fail(err) }
+fn py2v_entry1() ! {
+	main_func_py()!
 }
 
 fn main() {
-	main_func()
+	py2v_entry1() or { pyrt.fail(err) }
 }

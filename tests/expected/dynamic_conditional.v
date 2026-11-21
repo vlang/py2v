@@ -17,11 +17,11 @@ fn show_py(value Any, enabled bool) ! {
 	println(pyrt.str(pyrt.call_method(pyrt.box(scalar), 'upper', [])!))
 }
 
-fn show(value Any, enabled bool) {
-	show_py(value, enabled) or { pyrt.fail(err) }
+fn py2v_entry1() ! {
+	show_py(pyrt.box([pyrt.box('present')]), true)!
+	show_py(pyrt.box([pyrt.box('present')]), false)!
 }
 
 fn main() {
-	show(pyrt.box([pyrt.box('present')]), true)
-	show(pyrt.box([pyrt.box('present')]), false)
+	py2v_entry1() or { pyrt.fail(err) }
 }

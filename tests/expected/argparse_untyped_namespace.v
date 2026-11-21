@@ -16,18 +16,10 @@ fn cmd_list_py(args argparse.Namespace) !int {
 	return 0
 }
 
-fn cmd_list(args argparse.Namespace) int {
-	return cmd_list_py(args) or { pyrt.fail(err) }
-}
-
 fn cmd_add_py(args argparse.Namespace) !int {
 	total := int(args.get_int('limit')!) + 1
 	println(('add').str() + ' ' + (args.get_str('item')!).str() + ' ' + total.str())
 	return 0
-}
-
-fn cmd_add(args argparse.Namespace) int {
-	return cmd_add_py(args) or { pyrt.fail(err) }
 }
 
 fn main_func_py(argv []string) !int {
@@ -43,11 +35,11 @@ fn main_func_py(argv []string) !int {
 	return cmd_add_py(args)!
 }
 
-fn main_func(argv []string) int {
-	return main_func_py(argv) or { pyrt.fail(err) }
+fn py2v_entry1() ! {
+	main_func_py(['thing', '--limit', '2'])!
+	main_func_py(['thing', '--verbose', '--name', 'n'])!
 }
 
 fn main() {
-	main_func(['thing', '--limit', '2'])
-	main_func(['thing', '--verbose', '--name', 'n'])
+	py2v_entry1() or { pyrt.fail(err) }
 }

@@ -16,15 +16,15 @@ fn plain_py(text string) !string {
 	return if pyrt.truth(data) { 'ok' } else { 'empty' }
 }
 
-fn plain(text string) string {
-	return plain_py(text) or { pyrt.fail(err) }
-}
-
-fn main() {
+fn py2v_entry1() ! {
 	first := load('[1]')
 	println((if first == none { 'True' } else { 'False' }).str() + ' ' + (if load('[]') == none {
 		'True'
 	} else {
 		'False'
-	}).str() + ' ' + (plain('[]')).str())
+	}).str() + ' ' + (plain_py('[]')!).str())
+}
+
+fn main() {
+	py2v_entry1() or { pyrt.fail(err) }
 }

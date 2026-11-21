@@ -28,10 +28,6 @@ fn rotate_py(x int, py2v_k_in2 int) !int {
 	return x << k & 65535
 }
 
-fn rotate(x int, py2v_k_in2 int) int {
-	return rotate_py(x, py2v_k_in2) or { pyrt.fail(err) }
-}
-
 fn as_text_py(py2v_num_in3 int) !string {
 	mut num := py2v_num_in3
 	if false {
@@ -44,10 +40,6 @@ fn as_text_py(py2v_num_in3 int) !string {
 		num = -num
 	}
 	return num.str()
-}
-
-fn as_text(py2v_num_in3 int) string {
-	return as_text_py(py2v_num_in3) or { pyrt.fail(err) }
 }
 
 fn all_ints(arr []int) bool {
@@ -66,10 +58,6 @@ fn count_ints_py(inputs []int) !int {
 		total += 1
 	}
 	return total
-}
-
-fn count_ints(inputs []int) int {
-	return count_ints_py(inputs) or { pyrt.fail(err) }
 }
 
 fn joined(separator string, separated []string) string {
@@ -93,10 +81,6 @@ fn scaled_py(py2v_theta_in4 f64, accuracy int) !f64 {
 	}
 	theta = theta * 2
 	return theta + accuracy
-}
-
-fn scaled(py2v_theta_in4 f64, accuracy int) f64 {
-	return scaled_py(py2v_theta_in4, accuracy) or { pyrt.fail(err) }
 }
 
 fn twice(words []string) int {
@@ -143,13 +127,17 @@ fn py2v_text_length1(text string) int {
 	return length
 }
 
-fn main() {
+fn py2v_entry1() ! {
 	println(highest_bit(25))
-	println(rotate(3, 2))
-	println(as_text(-7))
+	println(rotate_py(3, 2)!)
+	println(as_text_py(-7)!)
 	println(if all_ints([1, 2, 3]) { 'True' } else { 'False' })
-	println(count_ints([1, 0, 1]))
+	println(count_ints_py([1, 0, 1])!)
 	println(joined('-', ['a', 'b']))
-	println(py2v_float_text1(scaled(1.5, 2)))
+	println(py2v_float_text1(scaled_py(1.5, 2)!))
 	println(twice(['ab', 'c']))
+}
+
+fn main() {
+	py2v_entry1() or { pyrt.fail(err) }
 }

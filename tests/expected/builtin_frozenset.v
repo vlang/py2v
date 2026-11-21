@@ -99,10 +99,10 @@ fn show_py() ! {
 	}
 }
 
-fn show() {
-	show_py() or { pyrt.fail(err) }
+fn py2v_entry1() ! {
+	show_py()!
 }
 
 fn main() {
-	show()
+	py2v_entry1() or { pyrt.fail(err) }
 }

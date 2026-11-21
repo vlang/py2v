@@ -8,10 +8,10 @@ fn fail_py(value Any) ! {
 	pyrt.call_method(pyrt.box(value), 'append', [pyrt.box(2)])!
 }
 
-fn fail(value Any) {
-	fail_py(value) or { pyrt.fail(err) }
+fn py2v_entry1() ! {
+	fail_py(1)!
 }
 
 fn main() {
-	fail(1)
+	py2v_entry1() or { pyrt.fail(err) }
 }

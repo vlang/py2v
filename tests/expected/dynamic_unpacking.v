@@ -12,10 +12,6 @@ fn pair_py(value Any) ! {
 	println(pyrt.str(pyrt.item_at(second, pyrt.box('n'))))
 }
 
-fn pair(value Any) {
-	pair_py(value) or { pyrt.fail(err) }
-}
-
 fn list_pair_py(value Any) ! {
 	py2v_unpack2 := pyrt.unpack(pyrt.box(value), 2)!
 	first := py2v_unpack2[0]
@@ -24,19 +20,11 @@ fn list_pair_py(value Any) ! {
 	println(pyrt.str(second))
 }
 
-fn list_pair(value Any) {
-	list_pair_py(value) or { pyrt.fail(err) }
-}
-
 fn discarded_py(value Any) ! {
 	py2v_unpack3 := pyrt.unpack(pyrt.box(value), 2)!
 	_ = py2v_unpack3[0]
 	mut second := py2v_unpack3[1]
 	println(pyrt.str(second))
-}
-
-fn discarded(value Any) {
-	discarded_py(value) or { pyrt.fail(err) }
 }
 
 fn pairs_py(values Any) ! {
@@ -51,10 +39,6 @@ fn pairs_py(values Any) ! {
 	if has_break != true {
 		println('done')
 	}
-}
-
-fn pairs(values Any) {
-	pairs_py(values) or { pyrt.fail(err) }
 }
 
 fn arity_py(value Any) ! {
@@ -79,25 +63,25 @@ fn arity_py(value Any) ! {
 	}
 }
 
-fn arity(value Any) {
-	arity_py(value) or { pyrt.fail(err) }
-}
-
-fn main() {
-	pair(pyrt.box([pyrt.box('ada'), pyrt.box(map[string]Any{
+fn py2v_entry1() ! {
+	pair_py(pyrt.box([pyrt.box('ada'), pyrt.box(map[string]Any{
 		'n': pyrt.box(3)
-	})]))
-	list_pair(pyrt.box([pyrt.box('bea'), pyrt.box(4)]))
-	discarded(pyrt.box([pyrt.box(9), pyrt.box(8)]))
-	pairs(pyrt.box([
+	})]))!
+	list_pair_py(pyrt.box([pyrt.box('bea'), pyrt.box(4)]))!
+	discarded_py(pyrt.box([pyrt.box(9), pyrt.box(8)]))!
+	pairs_py(pyrt.box([
 		pyrt.box([pyrt.box('cat'), pyrt.box(map[string]Any{
 			'n': pyrt.box(5)
 		})]),
 		pyrt.box([pyrt.box('dog'), pyrt.box(map[string]Any{
 			'n': pyrt.box(6)
 		})]),
-	]))
-	arity(pyrt.box([pyrt.box(1)]))
-	arity(pyrt.box([pyrt.box(1), pyrt.box(2), pyrt.box(3)]))
-	arity(pyrt.box([pyrt.box(1), pyrt.box(2)]))
+	]))!
+	arity_py(pyrt.box([pyrt.box(1)]))!
+	arity_py(pyrt.box([pyrt.box(1), pyrt.box(2), pyrt.box(3)]))!
+	arity_py(pyrt.box([pyrt.box(1), pyrt.box(2)]))!
+}
+
+fn main() {
+	py2v_entry1() or { pyrt.fail(err) }
 }

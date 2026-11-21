@@ -19,10 +19,6 @@ fn check_py(n int) !int {
 	return n * 2
 }
 
-fn check(n int) int {
-	return check_py(n) or { pyrt.fail(err) }
-}
-
 fn read_py(key string) !string {
 	if key == '' {
 		return IError(pyrt.exception_of('MissingKey', ['ConfigError', 'Exception'], [pyrt.box('empty key')]))
@@ -31,10 +27,6 @@ fn read_py(key string) !string {
 		return IError(pyrt.exception_of('ConfigError', ['Exception'], [pyrt.box('bad key')]))
 	}
 	return key.to_upper()
-}
-
-fn read(key string) string {
-	return read_py(key) or { pyrt.fail(err) }
 }
 
 fn safe_py(n int) !int {
@@ -55,10 +47,6 @@ fn safe_py(n int) !int {
 	} else {
 		pyrt.unreachable()
 	}
-}
-
-fn safe(n int) int {
-	return safe_py(n) or { pyrt.fail(err) }
 }
 
 fn describe_py(key string) !string {
@@ -87,10 +75,6 @@ fn describe_py(key string) !string {
 	return 'ok ' + value
 }
 
-fn describe(key string) string {
-	return describe_py(key) or { pyrt.fail(err) }
-}
-
 fn relay_py(n int) !int {
 	mut py2v_err_3 := ?IError(none)
 	py2v_try_3: for {
@@ -109,10 +93,6 @@ fn relay_py(n int) !int {
 	} else {
 		pyrt.unreachable()
 	}
-}
-
-fn relay(n int) int {
-	return relay_py(n) or { pyrt.fail(err) }
 }
 
 fn outer(n int) string {
@@ -140,10 +120,10 @@ fn main_func_py() ! {
 	println('${outer(4)} | ${outer(13)} | ${outer(-5)}')
 }
 
-fn main_func() {
-	main_func_py() or { pyrt.fail(err) }
+fn py2v_entry1() ! {
+	main_func_py()!
 }
 
 fn main() {
-	main_func()
+	py2v_entry1() or { pyrt.fail(err) }
 }

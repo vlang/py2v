@@ -23,16 +23,8 @@ fn name_py(value Any) !string {
 	return pyrt.to_str(pyrt.call_method(pyrt.box(pyrt.getattr(pyrt.box(value), 'label')!), 'upper', [])!)
 }
 
-fn name(value Any) string {
-	return name_py(value) or { pyrt.fail(err) }
-}
-
 fn first_py(value Any) !string {
 	return pyrt.to_str(pyrt.item_at(pyrt.getattr(pyrt.box(value), 'words')!, pyrt.box(0)))
-}
-
-fn first(value Any) string {
-	return first_py(value) or { pyrt.fail(err) }
 }
 
 fn words_py(value Any) ! {
@@ -41,20 +33,12 @@ fn words_py(value Any) ! {
 	}
 }
 
-fn words(value Any) {
-	words_py(value) or { pyrt.fail(err) }
-}
-
 fn enabled_py(value Any) ! {
 	if pyrt.truth(pyrt.getattr(pyrt.box(value), 'enabled')!) {
 		println('enabled')
 	} else {
 		println('disabled')
 	}
-}
-
-fn enabled(value Any) {
-	enabled_py(value) or { pyrt.fail(err) }
 }
 
 fn argument() string {
@@ -83,10 +67,6 @@ fn missing_method_py(value Any) ! {
 	}
 }
 
-fn missing_method(value Any) {
-	missing_method_py(value) or { pyrt.fail(err) }
-}
-
 fn non_callable_py(value Any) ! {
 	mut py2v_err_2 := ?IError(none)
 	py2v_try_2: for {
@@ -108,10 +88,6 @@ fn non_callable_py(value Any) ! {
 	}
 }
 
-fn non_callable(value Any) {
-	non_callable_py(value) or { pyrt.fail(err) }
-}
-
 fn call_value_py(value Any) ! {
 	mut py2v_err_3 := ?IError(none)
 	py2v_try_3: for {
@@ -130,23 +106,23 @@ fn call_value_py(value Any) ! {
 	}
 }
 
-fn call_value(value Any) {
-	call_value_py(value) or { pyrt.fail(err) }
+fn py2v_entry1() ! {
+	parser := argparse.new_parser()
+	parser.add_argument(['--label'], default_value: pyrt.box('ada'))!
+	parser.add_argument(['--words'], nargs: '*', default_value: pyrt.box(['cat', 'dog']))!
+	parser.add_argument(['--enabled'], action: 'store_true')!
+	args := parser.parse_args([])!
+	println(name_py(pyrt.box(args))!)
+	println(first_py(pyrt.box(args))!)
+	words_py(pyrt.box(args))!
+	enabled_py(pyrt.box(args))!
+	missing_method_py(pyrt.box(args))!
+	non_callable_py(pyrt.box(args))!
+	call_value_py('text')!
+	println(typed_label(Label{}))
+	println(if Label{} == Label{} { 'True' } else { 'False' })
 }
 
 fn main() {
-	parser := argparse.new_parser()
-	parser.add_argument(['--label'], default_value: pyrt.box('ada')) or { pyrt.fail(err) }
-	parser.add_argument(['--words'], nargs: '*', default_value: pyrt.box(['cat', 'dog'])) or { pyrt.fail(err) }
-	parser.add_argument(['--enabled'], action: 'store_true') or { pyrt.fail(err) }
-	args := parser.parse_args([]) or { pyrt.fail(err) }
-	println(name(pyrt.box(args)))
-	println(first(pyrt.box(args)))
-	words(pyrt.box(args))
-	enabled(pyrt.box(args))
-	missing_method(pyrt.box(args))
-	non_callable(pyrt.box(args))
-	call_value('text')
-	println(typed_label(Label{}))
-	println(if Label{} == Label{} { 'True' } else { 'False' })
+	py2v_entry1() or { pyrt.fail(err) }
 }

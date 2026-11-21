@@ -91,7 +91,10 @@ mut:
 	registry       ModuleRegistry
 	current_dotted string
 	// fn_returns_result: the function being emitted returns a V result (`!T`).
-	fn_returns_result bool
+	fn_returns_result    bool
+	in_entry             bool
+	entry_returns_result bool
+	result_wrappers      map[string]string
 	// current_stem is this file's stem, used to disambiguate a Python `main`
 	// when several files of one V module define one.
 	current_stem string
@@ -373,6 +376,8 @@ pub fn (mut t VTranspiler) visit_module(node Module) string {
 	t.source_words = node.source_words
 	t.helpers_used = []
 	t.unsupported_sites.clear()
+	t.entry_returns_result = false
+	t.result_wrappers = map[string]string{}
 	for name in node.source_words {
 		t.tmp_gen.taken[name] = true
 	}
@@ -499,11 +504,13 @@ pub fn (mut t VTranspiler) visit_module(node Module) string {
 				}
 			}
 		}
+		t.in_entry = !t.emit_pub && stmt !is FunctionDef && stmt !is AsyncFunctionDef && stmt !is ClassDef
 		s := if t.emit_pub && stmt is Assign && stmt.value is ListComp {
 			t.visit_assignment(stmt, true)
 		} else {
 			t.visit_stmt(stmt)
 		}
+		t.in_entry = false
 		if s.len == 0 {
 			continue
 		}
@@ -558,6 +565,15 @@ pub fn (mut t VTranspiler) visit_module(node Module) string {
 	}
 
 	func_decls << nested_fndefs
+	// A wrapper is still necessary when the generated file uses the original
+	// function value, or calls it through a path the lexical planner cannot see.
+	// Package wrappers are emitted with their declarations for sibling files.
+	references := [type_decls, struct_decls, func_decls, main_fn_body, [main_fn_override]]
+	for name, wrapper in t.result_wrappers {
+		if references.any(it.any(mentions_result_wrapper(it, name))) {
+			func_decls << wrapper
+		}
+	}
 	code_sections := [type_decls, struct_decls, func_decls, main_fn_body, [main_fn_override]]
 
 	// Any type alias must be first among type_decls. A package is merged into
@@ -670,6 +686,13 @@ pub fn (mut t VTranspiler) visit_module(node Module) string {
 			}
 			main_str = 'fn main() {\n${indented.join('\n')}\n}'
 		}
+	}
+
+	if t.entry_returns_result && main_str.contains('fn main() {') {
+		entry := t.runtime_helper_name('entry')
+		t.add_using('pyrt')
+		main_str = main_str.replace_once('fn main() {', 'fn ${entry}() ! {') +
+			'\n\nfn main() {\n\t${entry}() or { pyrt.fail(err) }\n}'
 	}
 
 	// Assemble output sections in order
@@ -1704,6 +1727,7 @@ fn (mut t VTranspiler) visit_closure_from_funcdef(node FunctionDef, nl_names []s
 	saved_return_count := t.current_return_count
 	saved_return_type := t.current_return_type
 	saved_result := t.fn_returns_result
+	saved_entry := t.in_entry
 	saved_init_aliases := t.init_import_aliases.clone()
 	saved_init_captures := t.init_capture_locals.clone()
 	defer {
@@ -1725,6 +1749,7 @@ fn (mut t VTranspiler) visit_closure_from_funcdef(node FunctionDef, nl_names []s
 		t.current_return_count = saved_return_count
 		t.current_return_type = saved_return_type
 		t.fn_returns_result = saved_result
+		t.in_entry = saved_entry
 		t.init_import_aliases = saved_init_aliases
 		t.init_capture_locals = saved_init_captures
 		t.init_capture_locals[node.name] = true
@@ -1796,6 +1821,7 @@ fn (mut t VTranspiler) visit_closure_from_funcdef(node FunctionDef, nl_names []s
 	t.condition_walrus_order = []string{}
 	t.current_return_count = 0
 	t.fn_returns_result = false
+	t.in_entry = false
 	t.init_capture_locals = init_function_capture_names(node)
 	for py_name in capture_names { t.init_capture_locals[py_name] = true }
 
@@ -1999,9 +2025,12 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 	saved_current_class := t.current_class_name
 	saved_classmethod := t.current_classmethod
 	saved_returns_result := t.fn_returns_result
+	saved_entry := t.in_entry
 	t.fn_returns_result = node.raises && !node.is_class_method
+	t.in_entry = !t.emit_pub && !node.is_class_method && !node.is_nested && node.name == 'main'
 	defer {
 		t.fn_returns_result = saved_returns_result
+		t.in_entry = saved_entry
 	}
 	t.current_classmethod = node.is_class_method && node.decorator_kind == 'classmethod'
 	saved_init_aliases := t.init_import_aliases.clone()
@@ -2456,8 +2485,7 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 
 	mut func_code := '${dunder_comment}${signature.join(' ')} {\n${body}\n}'
 	if node.raises && !node.is_class_method {
-		// The fallible body under `<name>_py`, and the old name as the wrapper that ends
-		// the program on an error, for every caller that does not propagate.
+		// Keep the original signature for indirect and external callers.
 		params := '${emit_name}${generic_list}(${args_strs.join(', ')})'
 		at := signature.index(params)
 		if at >= 0 {
@@ -2474,9 +2502,13 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 			}
 			call := '${emit_name}_py(${forwarded.join(', ')}) or { pyrt.fail(err) }'
 			wrapper_body := if ret == '' { call } else { 'return ${call}' }
-			t.add_using('pyrt')
-			func_code = '${dunder_comment}${head} ${emit_name}_py${generic_list}(${args_strs.join(', ')}) !${ret} {\n${body}\n}\n\n' +
-				'${head} ${params} ${ret} {\n\t${wrapper_body}\n}'
+			wrapper := '${head} ${params} ${ret} {\n\t${wrapper_body}\n}'
+			func_code = '${dunder_comment}${head} ${emit_name}_py${generic_list}(${args_strs.join(', ')}) !${ret} {\n${body}\n}'
+			if t.emit_pub {
+				func_code += '\n\n' + wrapper
+			} else {
+				t.result_wrappers[emit_name] = wrapper
+			}
 		}
 	}
 
@@ -4089,6 +4121,36 @@ fn mentions_word(code string, word string) bool {
 		from = end
 	}
 	return false
+}
+
+// mentions_result_wrapper ignores literal text before the first interpolation.
+// An interpolation can still contain a call or a function value.
+fn mentions_result_wrapper(code string, name string) bool {
+	mut start := 0
+	mut i := 0
+	for i < code.len {
+		quote := code[i]
+		if quote != `'` && quote != `"` && quote != `\`` {
+			i++
+			continue
+		}
+		end := skip_v_string(code, i)
+		literal := code[i..end]
+		if literal.len >= 2 && literal[literal.len - 1] == quote
+			&& !literal.contains_any('\\\n') {
+			if mentions_word(code[start..i], name) {
+				return true
+			}
+			if offset := literal.index('$') {
+				if mentions_word(literal[offset..], name) {
+					return true
+				}
+			}
+			start = end
+		}
+		i = end
+	}
+	return mentions_word(code[start..], name)
 }
 
 // generic_letters lists the single uppercase letters that stand as whole words in a V
@@ -7906,6 +7968,9 @@ pub fn (mut t VTranspiler) visit_call(original Call) string {
 			propagate: false
 		}))
 		passed := propagated_call(code)
+		if t.in_entry && passed != code {
+			t.entry_returns_result = true
+		}
 		return if optional { passed + '.opt()' } else { passed }
 	}
 	if original.api == '__py2v__.native_list_index' && original.args.len == 2 {

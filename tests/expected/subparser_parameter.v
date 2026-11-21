@@ -9,19 +9,11 @@ fn add_run_py(subparsers &argparse.Subparsers) ! {
 	run.add_argument(['name'])!
 }
 
-fn add_run(subparsers &argparse.Subparsers) {
-	add_run_py(subparsers) or { pyrt.fail(err) }
-}
-
 fn add_nested_py(subparsers &argparse.Subparsers) ! {
 	parent := subparsers.add_parser('group', help: 'Grouped tasks')!
 	children := parent.add_subparsers(dest: 'child', required: true)!
 	leaf := children.add_parser('leaf')!
 	leaf.add_argument(['--count'], value_type: .int_type, default_value: pyrt.box(2))!
-}
-
-fn add_nested(subparsers &argparse.Subparsers) {
-	add_nested_py(subparsers) or { pyrt.fail(err) }
 }
 
 fn main_func_py() ! {
@@ -37,10 +29,10 @@ fn main_func_py() ! {
 	println(int(defaults.get_int('count')!))
 }
 
-fn main_func() {
-	main_func_py() or { pyrt.fail(err) }
+fn py2v_entry1() ! {
+	main_func_py()!
 }
 
 fn main() {
-	main_func()
+	py2v_entry1() or { pyrt.fail(err) }
 }

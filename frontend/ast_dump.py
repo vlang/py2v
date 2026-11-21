@@ -7247,7 +7247,8 @@ def _v_spelling(name: str) -> str:
     return name.strip("_").lower()
 
 
-def _plan_error_propagation(tree: ast.Module, table: Optional[symbols.SymbolTable]) -> None:
+def _plan_error_propagation(tree: ast.Module, table: Optional[symbols.SymbolTable],
+                            standalone: bool) -> None:
     """Decide which functions return a V result, which calls pass their error on, and
     which `try` statements run their handlers.
 
@@ -7257,8 +7258,9 @@ def _plan_error_propagation(tree: ast.Module, table: Optional[symbols.SymbolTabl
 
     - Outside every `try`, in a module-level function (not a method, generator, decorated
       function, or `main`): the function becomes fallible. The backend emits its body as
-      `<name>_py` returning a result, each such call with `!`, and keeps the old name as a
-      wrapper that ends the program on an error, for callers this pass does not see.
+      `<name>_py` returning a result and each such call with `!`. A standalone entry
+      point uses the same propagation up to its outermost error handler. The backend
+      keeps a compatibility wrapper when some use still needs the original signature.
     - Inside the body of a `try` that has handlers and no `finally`: the call is guarded.
       The backend puts the body in a one-shot loop, leaves it at the first failing call,
       and then runs the handler whose classes match (`pyrt.caught`), else the `else`
@@ -7503,6 +7505,30 @@ def _plan_error_propagation(tree: ast.Module, table: Optional[symbols.SymbolTabl
                     call._bases = exception_bases(raised_class(call))
                 else:
                     call._propagate = True
+
+    if standalone:
+        explicit_main = next((s for s in tree.body if isinstance(s, ast.FunctionDef)
+                              and s.name == "main"), None)
+        constants = set(getattr(tree, "_module_consts", []))
+        entry_stmts = []
+        for stmt in tree.body:
+            if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1:
+                target = stmt.targets[0]
+            elif isinstance(stmt, ast.AnnAssign):
+                target = stmt.target
+            else:
+                target = None
+            if not isinstance(target, ast.Name) or target.id not in constants:
+                entry_stmts.append(stmt)
+        entry = calls_in(entry_stmts, False)
+        if explicit_main is not None:
+            entry.extend(calls_in(explicit_main.body, False))
+        passing = [c for c in entry if isinstance(c, ast.Call)
+                   and can_fail(c) and not getattr(c, "_guard", 0)]
+        if any(isinstance(c.func, ast.Name) and getattr(c.func, "_binding", None) in fallible
+               for c in passing):
+            for call in passing:
+                call._propagate = True
 
 
 @functools.lru_cache(maxsize=None)
@@ -9920,7 +9946,7 @@ def process_file(file_path: str, project: Optional[ProjectFacts] = None) -> str:
             for node in ast.walk(tree):
                 if isinstance(node, ast.Name) and getattr(node, "_binding", None) in renamed:
                     node.id = renamed[node._binding]
-            _plan_error_propagation(tree, table)
+            _plan_error_propagation(tree, table, standalone=project is None)
             _drop_type_checking_blocks(tree, table)
             list_refs.lower(tree, references, _runtime_call)
             break

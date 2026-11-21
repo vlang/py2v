@@ -12,18 +12,16 @@ fn open_db_py(path string) !&sqlite3.Connection {
 	return sqlite3.connect(path)!
 }
 
-fn open_db(path string) &sqlite3.Connection {
-	return open_db_py(path) or { pyrt.fail(err) }
-}
-
 fn label(when datetime.Datetime) string {
 	return when.isoformat()
 }
 
-fn main() {
-	println(label(shift((datetime.new_datetime(2024, 5, 6) or { pyrt.fail(err) }), (datetime.timedelta(
-		days: 1
-	) or { pyrt.fail(err) }))))
-	conn := open_db(':memory:')
+fn py2v_entry1() ! {
+	println(label(shift(datetime.new_datetime(2024, 5, 6)!, datetime.timedelta(days: 1)!)))
+	conn := open_db_py(':memory:')!
 	println('opened')
+}
+
+fn main() {
+	py2v_entry1() or { pyrt.fail(err) }
 }

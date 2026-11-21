@@ -18,13 +18,13 @@ fn describe_py(record Any, label string) !string {
 	return json.dumps(pyrt.box(summary))! + ' ' + json.dumps(pyrt.box(row))!
 }
 
-fn describe(record Any, label string) string {
-	return describe_py(record, label) or { pyrt.fail(err) }
+fn py2v_entry1() ! {
+	println(describe_py(pyrt.box(map[string]Any{
+		'name':  pyrt.box('ada')
+		'count': pyrt.box(3)
+	}), 'x')!)
 }
 
 fn main() {
-	println(describe(pyrt.box(map[string]Any{
-		'name':  pyrt.box('ada')
-		'count': pyrt.box(3)
-	}), 'x'))
+	py2v_entry1() or { pyrt.fail(err) }
 }
