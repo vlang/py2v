@@ -1096,8 +1096,10 @@ fn (mut t VTranspiler) emit_delete_target(target Expr) []string {
 		Subscript {
 			sub := target as Subscript
 			if sub.slice is Slice {
+				// Unsupported deletion is emitted only as a comment. Visiting
+				// the sliced target would register an otherwise unused helper.
 				return [
-					'// del ${t.visit_expr(target)}  // unsupported: slice deletion',
+					'// del ${t.visit_expr(sub.value)}[...]  // unsupported: slice deletion',
 				]
 			}
 			base := t.visit_expr(sub.value)
