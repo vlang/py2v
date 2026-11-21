@@ -17,7 +17,7 @@ fn evens_doubled(nums []int) []int {
 	mut py2v_comp2 := []int{}
 	for x in nums {
 		d := x * 2
-		if math.modulo_floored(d, 4) == 0 {
+		if math.modulo_floored[int](d, 4) == 0 {
 			py2v_comp2 << d
 		}
 	}

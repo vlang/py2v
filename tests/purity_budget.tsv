@@ -74,6 +74,7 @@ env_optional.v	6
 equations.v	9
 exception_lowering.v	1
 exceptions.v	4
+fallible_keyword_order.v	3
 external_dynamic.v	5
 frozenset_annotations.v	11
 functools_decorators.v	1
@@ -83,6 +84,7 @@ getattr_computed_name.v	1
 hello-wuffs.v	2
 independent_dunder_chain.v	1
 infer_ops.v	1
+int_base.v	8
 isinstance_checked_first.v	11
 isinstance_types.v	1
 itertools_basic.v	1
@@ -133,7 +135,9 @@ match_basic.v	1
 max_by_integer_key.v	6
 mcp_types_runtime.v	7
 mixed_display_dynamic.v	14
+modular_pow.v	7
 modulo_dynamic_target.v	13
+modulo_text.v	2
 named_enum_lookup.v	6
 native_list_index.v	7
 native_map_types.v	12

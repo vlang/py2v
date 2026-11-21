@@ -805,6 +805,14 @@ fn runtime_helper_declaration(kind string, name string) string {
 	return fill.repeat(left) + value + fill.repeat(padding - left)
 }"
 		}
+		'split_whitespace' {
+			'fn ${name}(value string) []string {\n' + r"
+	return value.split_any(' \t\n\r\u000b\u000c\u001c\u001d\u001e\u001f\u0085\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000').filter(it != '')
+}"
+		}
+		'text_is_none' {
+			'fn ${name}(value string) bool {\n\t_ = value\n\treturn false\n}'
+		}
 		'slice_step' {
 			'fn ${name}[T](values []T, lower ?int, upper ?int, step int) []T {\n' + r"
 	if step == 0 {
@@ -843,6 +851,173 @@ fn runtime_helper_declaration(kind string, name string) string {
 		return stop
 	}
 	return current + step
+}"
+		}
+		'range_array' {
+			'fn ${name}[A, B, C](begin A, end B, stride C) []int {\n' + r"
+	$if (A is $int || A is bool) && (B is $int || B is bool) && (C is $int || C is bool) {
+		start := int(begin)
+		stop := int(end)
+		step := int(stride)
+		if step == 0 {
+			panic('ValueError: range() arg 3 must not be zero')
+		}
+		mut values := []int{}
+		for current := start; if step > 0 { current < stop } else { current > stop }; current += step {
+			values << current
+			if step > 0 {
+				if u64(step) >= u64(stop) - u64(current) { break }
+			} else if u64(0) - u64(step) >= u64(current) - u64(stop) {
+				break
+			}
+		}
+		return values
+	} $else {
+		$compile_error('py2v_unsupported_range_bound: range needs integer bounds')
+	}
+}"
+		}
+		'modular_pow' {
+			'fn ${name}(base int, exponent int, modulus int) !int {\n' + r"
+	if modulus == 0 {
+		return error('pow() 3rd argument cannot be 0')
+	}
+	if modulus == 1 || modulus == -1 {
+		return 0
+	}
+	m := py2v_big.integer_from_i64(i64(modulus)).abs()
+	mut x := py2v_big.integer_from_i64(i64(base))
+	if exponent < 0 {
+		x = x.mod_inverse(m) or { return error('base is not invertible for the given modulus') }
+	}
+	degree := if exponent < 0 { u64(-(exponent + 1)) + 1 } else { u64(exponent) }
+	result := x.mod_pow(degree, m)
+	if modulus < 0 && result != py2v_big.integer_from_u64(0) {
+		return int((result - m).str().i64())
+	}
+	return int(result.str().i64())
+}"
+		}
+		'int_base' {
+			'fn ${name}(value string, requested_base int) !int {\n' + r"
+	if requested_base != 0 && (requested_base < 2 || requested_base > 36) {
+		return error('int() base must be >= 2 and <= 36, or 0')
+	}
+	mut normalized := []u8{cap: value.len}
+	for ch in value.runes() {
+		if ch < 128 {
+			normalized << u8(ch)
+		} else if ch in [0x85, 0xa0, 0x1680, 0x2028, 0x2029, 0x202f, 0x205f, 0x3000] || (ch >= 0x2000 && ch <= 0x200a) {
+			normalized << ` `
+		} else {
+			// Unicode decimal digit groups start at zero and contain ten runes.
+			mut digit := u8(`?`)
+			for zero in [0x660, 0x6f0, 0x7c0, 0x966, 0x9e6, 0xa66, 0xae6, 0xb66, 0xbe6, 0xc66,
+				0xce6, 0xd66, 0xde6, 0xe50, 0xed0, 0xf20, 0x1040, 0x1090, 0x17e0, 0x1810, 0x1946,
+				0x19d0, 0x1a80, 0x1a90, 0x1b50, 0x1bb0, 0x1c40, 0x1c50, 0xa620, 0xa8d0, 0xa900,
+				0xa9d0, 0xa9f0, 0xaa50, 0xabf0, 0xff10, 0x104a0, 0x10d30, 0x10d40, 0x11066,
+				0x110f0, 0x11136, 0x111d0, 0x112f0, 0x11450, 0x114d0, 0x11650, 0x116c0, 0x116d0,
+				0x116da, 0x11730, 0x118e0, 0x11950, 0x11bf0, 0x11c50, 0x11d50, 0x11da0, 0x11de0,
+				0x11f50, 0x16130, 0x16a60, 0x16ac0, 0x16b50, 0x16d70, 0x1ccf0, 0x1d7ce, 0x1d7d8,
+				0x1d7e2, 0x1d7ec, 0x1d7f6, 0x1e140, 0x1e2f0, 0x1e4f0, 0x1e5f1, 0x1e950, 0x1fbf0]! {
+				if int(ch) >= zero && int(ch) <= zero + 9 {
+					digit = u8(int(ch) - zero) + `0`
+					break
+				}
+			}
+			normalized << digit
+		}
+	}
+	text := normalized.bytestr().trim_space()
+	if text == '' {
+		return error('invalid literal for int()')
+	}
+	negative := text[0] == `-`
+	mut start := if negative || text[0] == `+` { 1 } else { 0 }
+	mut base := if requested_base == 0 { 10 } else { requested_base }
+	mut zero_only := requested_base == 0 && start < text.len && text[start] == `0`
+	if start + 1 < text.len && text[start] == `0` {
+		prefix_base := match text[start + 1] | 32 {
+			`b` { 2 }
+			`o` { 8 }
+			`x` { 16 }
+			else { 0 }
+		}
+		if prefix_base != 0 && (requested_base == 0 || requested_base == prefix_base) {
+			base = prefix_base
+			zero_only = false
+			start += 2
+			if start < text.len && text[start] == `_` {
+				start++
+			}
+		}
+	}
+	magnitude, status := strconv.common_parse_uint2(text[start..], base, 64)
+	limit := (u64(1) << (sizeof(int) * 8 - 1)) - u64(!negative)
+	if status == -3 || (status == 0 && magnitude > limit) {
+		panic('py2v_unsupported_int_range: based integer is outside native int')
+	}
+	if status != 0 || (zero_only && magnitude != 0) {
+		return error('invalid literal for int()')
+	}
+	if magnitude == 0 {
+		return 0
+	}
+	return if negative { -int(magnitude - 1) - 1 } else { int(magnitude) }
+}"
+		}
+		'format_radix' {
+			'fn ${name}[T](value T, fill string, align string, sign string, zero bool, width int, group string, _ int, typ string) string {\n' + r"
+	kind := typ[typ.len - 1]
+	base := match kind {
+		`b` { 2 }
+		`o` { 8 }
+		else { 16 }
+	}
+	mut negative := false
+	mut magnitude := u64(0)
+	$if T is u64 {
+		magnitude = value
+	} $else {
+		x := i64(value)
+		negative = x < 0
+		magnitude = if negative { u64(-(x + 1)) + 1 } else { u64(x) }
+	}
+	mut prefix := if negative { '-' } else if sign == '-' { '' } else { sign }
+	if typ.len == 2 {
+		prefix += '0' + kind.ascii_str()
+	}
+	mut digits := strconv.format_uint(magnitude, base)
+	if kind == `X` {
+		digits = digits.to_upper()
+	}
+	a := if align != '' { align } else if zero { '=' } else { '>' }
+	f := if fill != '' { fill } else if zero { '0' } else { ' ' }
+	if group == '_' {
+		if a == '=' && f == '0' {
+			mut length := digits.len
+			for prefix.len + length + (length - 1) / 4 < width { length++ }
+			digits = '0'.repeat(length - digits.len) + digits
+		}
+		mut parts := []string{}
+		mut begin := (digits.len - 1) % 4 + 1
+		parts << digits[..begin]
+		for begin < digits.len {
+			parts << digits[begin..begin + 4]
+			begin += 4
+		}
+		digits = parts.join('_')
+	}
+	pad := width - prefix.len - digits.len
+	if pad <= 0 {
+		return prefix + digits
+	}
+	return match a {
+		'<' { prefix + digits + f.repeat(pad) }
+		'^' { f.repeat(pad / 2) + prefix + digits + f.repeat(pad - pad / 2) }
+		'=' { prefix + f.repeat(pad) + digits }
+		else { f.repeat(pad) + prefix + digits }
+	}
 }"
 		}
 		'bytes_text' {
@@ -3318,7 +3493,9 @@ fn (mut t VTranspiler) modulo_expression(left Expr, right Expr, a string, b stri
 		t.add_using('math')
 		lhs := if la == 'bool' { 'int(${a})' } else { a }
 		rhs := if ra == 'bool' { 'int(${b})' } else { b }
-		return 'math.modulo_floored(${lhs}, ${rhs})'
+		// Pin the operand type so V's result context cannot infer a different one.
+		instance := if la in ['int', 'bool'] && ra in ['int', 'bool'] { '[int]' } else { '' }
+		return 'math.modulo_floored${instance}(${lhs}, ${rhs})'
 	}
 	if la == '' || ra == '' || generic_letters(la).len > 0 || generic_letters(ra).len > 0 {
 		t.add_using('math')
@@ -4224,8 +4401,24 @@ pub fn (mut t VTranspiler) visit_for(node For) string {
 				if call.func is Name {
 					fname := (call.func as Name).id
 					if fname == 'enumerate' && target_names.len == 2 && call.args.len > 0 {
-						iter0 := t.visit_for_iter(call.args[0], saved_renames)
-						buf << 'for ${target_names[0]}, ${target_names[1]} in ${iter0} {'
+						mut iter0 := t.visit_for_iter(call.args[0], saved_renames)
+						mut index := target_names[0]
+						mut offset := ''
+						if start := enumerate_start(call) {
+							if t.has_u64_bits(start) {
+								return t.refuse_wide('enumerate start may narrow an unsigned value')
+							}
+							items := t.new_tmp('enumerated')
+							buf << '${items} := ${iter0}'
+							iter0 = items
+							offset = t.new_tmp('enum_start')
+							buf << '${offset} := ${t.visit_for_iter(start, saved_renames)}'
+							index = t.new_tmp('enum_index')
+						}
+						buf << 'for ${index}, ${target_names[1]} in ${iter0} {'
+						if offset != '' {
+							buf << '\t${target_names[0]} := ${index} + ${offset}'
+						}
 						body, flag := t.visit_for_body(node, 1, has_else, writebacks)
 						buf << body
 						buf << '}'
@@ -4349,6 +4542,19 @@ fn (mut t VTranspiler) visit_for_iter(expr Expr, before map[string]string) strin
 	t.renamed_idents = before
 	defer { t.renamed_idents = inside }
 	return t.visit_expr(expr)
+}
+
+fn enumerate_start(call Call) ?Expr {
+	if call.args.len == 2 && call.keywords.len == 0 {
+		return call.args[1]
+	}
+	if call.args.len == 1 && call.keywords.len == 1 {
+		keyword := call.keywords[0]
+		if (keyword.arg or { '' }) == 'start' {
+			return keyword.value
+		}
+	}
+	return none
 }
 
 // loop_rebinds detects rebinding of a for-loop value inside its body.
@@ -7139,6 +7345,19 @@ pub fn (mut t VTranspiler) visit_compare(node Compare) string {
 
 	op := op_to_symbol(get_cmp_op_type(node.ops[0]))
 	mut right := t.visit_expr_at(node.comparators[0], sink, '')
+	if op in ['==', '!='] {
+		text := if right == 'none' && t.is_plain_text_parameter(node.left) {
+			left
+		} else if left == 'none' && t.is_plain_text_parameter(node.comparators[0]) {
+			right
+		} else {
+			''
+		}
+		if text != '' {
+			negation := if op == '!=' { '!' } else { '' }
+			return '${negation}${t.runtime_helper('text_is_none')}(${text})'
+		}
+	}
 	if op in ['==', '!=', '<', '<=', '>', '>='] {
 		cmp := node.comparators[0]
 		left_wide := t.has_u64_bits(node.left)
@@ -7184,6 +7403,11 @@ pub fn (mut t VTranspiler) visit_compare(node Compare) string {
 		t.note_any_operator(*node.left, node.comparators[0], left, right)
 	}
 	return '${cmp_operand(left)} ${op} ${cmp_operand(right)}'
+}
+
+fn (t &VTranspiler) is_plain_text_parameter(expr Expr) bool {
+	return expr is Name && expr.id in t.param_idents && !t.param_idents[expr.id]
+		&& t.var_types[expr.id] == 'string'
 }
 
 // visit_compare_chain emits `a < b <= c` as `a < b && b <= c`: one comparison for each
@@ -7322,6 +7546,16 @@ fn count_call_bindings[T](node T, mut names map[string]int, mut calls []BindingC
 		$for variant in T.variants {
 			if node is variant { count_call_bindings(node, mut names, mut calls, in_function) }
 		}
+	} $else $if T is Raise {
+		if exc := node.exc {
+			if exc is Call && exc.func is Name && node.mode in ['result', 'guard'] {
+				// The raise emitter constructs an error directly, but still visits its arguments.
+				count_call_bindings[[]Expr](exc.args, mut names, mut calls, in_function)
+			} else {
+				count_call_bindings[&Expr](exc, mut names, mut calls, in_function)
+			}
+		}
+		count_call_bindings[?&Expr](node.cause, mut names, mut calls, in_function)
 	} $else $if T is $struct {
 		$for field in T.fields {
 			mut body := in_function
@@ -7561,6 +7795,31 @@ pub fn (mut t VTranspiler) visit_call(original Call) string {
 		code := t.emit_string_index(value, original.args[1], original.guard > 0 || original.propagate)
 		if original.guard > 0 { return guarded_call(code, original.guard) }
 		return if original.propagate { propagated_call(code) } else { code }
+	}
+	if original.api == '__py2v__.format_radix' && original.args.len == 2
+		&& original.args[1] is Constant {
+		specifier := original.args[1] as Constant
+		return t.visit_radix_format(original.args[0], specifier.value as string)
+	}
+	if original.api == '__py2v__.modular_pow' && original.args.len == 3 {
+		if !original.args.all(t.infer_expr_type(it) in ['int', 'i64', 'bool']) {
+			return t.unsupported_site('modular_pow', 'three-argument pow needs native signed integers', '')
+		}
+		t.add_using('math.big as py2v_big')
+		helper := t.runtime_helper('modular_pow')
+		args := original.args.map('int(${t.visit_expr(it)})')
+		return t.checked_builtin_value_error('${helper}(${args.join(', ')})', original)
+	}
+	if original.api == '__py2v__.int_base' && original.args.len == 2 {
+		if t.infer_expr_type(original.args[0]) != 'string'
+			|| t.infer_expr_type(original.args[1]) !in ['int', 'i64', 'bool'] {
+			return t.unsupported_site('int_base', 'int with a base needs a string and a native signed integer', '')
+		}
+		t.add_using('strconv')
+		helper := t.runtime_helper('int_base')
+		value := t.visit_expr(original.args[0])
+		base := t.visit_expr(original.args[1])
+		return t.checked_builtin_value_error('${helper}(${value}, int(${base}))', original)
 	}
 	if original.guard > 0 {
 		// a call that can fail, in the body of a `try` whose handlers take the error
@@ -7927,6 +8186,9 @@ pub fn (mut t VTranspiler) visit_call(original Call) string {
 			'split' {
 				if vargs.len > 0 {
 					return '${obj}.split(${vargs[0]})'
+				}
+				if node.keywords.len == 0 && t.infer_expr_type(attr_node.value) == 'string' {
+					return '${t.runtime_helper('split_whitespace')}(${obj})'
 				}
 				return '${obj}.split(" ")'
 			}
@@ -8752,6 +9014,19 @@ pub fn (mut t VTranspiler) visit_call(original Call) string {
 	return '${call_name}()'
 }
 
+fn (mut t VTranspiler) checked_builtin_value_error(code string, call Call) string {
+	if call.guard > 0 {
+		t.add_using('pyrt')
+		n := call.guard
+		return "(${code} or {\n\tpy2v_err_${n} = pyrt.raise('ValueError', err.msg())\n\tbreak py2v_try_${n}\n})"
+	}
+	if call.propagate {
+		t.add_using('pyrt')
+		return "(${code} or { return pyrt.raise('ValueError', err.msg()) })"
+	}
+	return "(${code} or { panic('ValueError: ' + err.msg()) })"
+}
+
 fn (mut t VTranspiler) build_inline_class_init(class_name string, field_vals map[string]string) string {
 	emitted_name := emitted_class_name(class_name)
 	mut parts := []string{}
@@ -9160,6 +9435,12 @@ pub fn (mut t VTranspiler) visit_subscript(node Subscript) string {
 		return '${mapped}[${index}]'
 	}
 	mut receiver_type := t.infer_expr_type(node.value)
+	if receiver_type == '' && node.slice is Slice && node.value is Call {
+		annotation := get_expr_annotation(node.value)
+		if annotation.starts_with('[]') {
+			receiver_type = annotation
+		}
+	}
 	// A slice of a proven native sequence retains the sequence type, even
 	// when inference does not annotate the intermediate Subscript expression.
 	if node.value is Subscript {
@@ -9816,43 +10097,10 @@ fn (mut t VTranspiler) visit_generator_exp_impl(elt Expr, generators []Comprehen
 		}
 	}
 
-	if iter is Call {
-		call := iter as Call
-		if call.func is Name {
-			fname := (call.func as Name).id
-			if fname == 'range' {
-				if t.has_wide_args(call.args) {
-					return t.refuse_wide('range may narrow an unsigned bound')
-				}
-				// Handle range() specially - convert to array
-				if call.args.len == 1 {
-					end := t.visit_expr(call.args[0])
-					result = '[]int{len: ${end}, init: index}'
-				} else if call.args.len == 2 {
-					start := t.visit_expr(call.args[0])
-					end := t.visit_expr(call.args[1])
-					result = '[]int{len: ${paren_left(end, 4)} - ${paren_right(start, 4)}, init: index + ${paren_right(start, 4)}}'
-				} else if call.args.len == 3 {
-					start := t.visit_expr(call.args[0])
-					end := t.visit_expr(call.args[1])
-					step := t.visit_expr(call.args[2])
-					_ = step
-					result = '[]int{len: ${end} - ${start}, init: index + ${start}}'
-				} else {
-					result = t.visit_expr(iter)
-				}
-			} else {
-				result = t.visit_expr(iter)
-			}
-		} else {
-			result = t.visit_expr(iter)
-		}
-	} else {
-		result = t.visit_expr(iter)
-		if t.is_map_expr(iter) {
-			// iterating a dict visits its keys
-			result = '${as_receiver(result)}.keys()'
-		}
+	result = t.visit_expr(iter)
+	if iter !is Call && t.is_map_expr(iter) {
+		// iterating a dict visits its keys
+		result = '${as_receiver(result)}.keys()'
 	}
 
 	// Apply filters - need to use 'it' for the element reference
@@ -10101,7 +10349,7 @@ fn (mut t VTranspiler) fmtval_segment(node FormattedValue) string {
 // mini-language, [[fill]align][sign][0][width][grouping][.precision][type], and
 // returns the arguments py2v_format takes after the value. It returns none for a
 // form py2v_format does not cover, which keeps the plain `${expr}` emission.
-fn fstring_spec_args(node FormattedValue) ?string {
+fn fstring_constant_spec(node FormattedValue) ?string {
 	if node.conversion != -1 {
 		return none
 	}
@@ -10116,6 +10364,10 @@ fn fstring_spec_args(node FormattedValue) ?string {
 			}
 		}
 	}
+	return spec
+}
+
+fn fstring_spec_args(spec string, radix bool) ?string {
 	r := spec.runes()
 	if r.len == 0 {
 		return none
@@ -10139,6 +10391,8 @@ fn fstring_spec_args(node FormattedValue) ?string {
 		sign = r[i].str()
 		i++
 	}
+	alternate := radix && i < r.len && r[i] == `#`
+	if alternate { i++ }
 	zero := i < r.len && r[i] == `0`
 	if zero {
 		i++
@@ -10162,15 +10416,35 @@ fn fstring_spec_args(node FormattedValue) ?string {
 			i++
 		}
 	}
-	typ := if i < r.len { r[i].str() } else { '' }
-	if i + typ.runes().len != r.len || typ !in ['', 'd', 's', 'e', 'E', 'f', 'F', 'g', 'G', '%'] {
+	kind := if i < r.len { r[i].str() } else { '' }
+	if i + kind.runes().len != r.len {
 		return none
 	}
-	// Python puts grouping separators into zero padding; that is not covered.
-	if group != '' && (zero || align == '=') {
+	if radix {
+		if kind !in ['b', 'o', 'x', 'X'] || group == ',' || prec >= 0 {
+			return none
+		}
+	} else if kind !in ['', 'd', 's', 'e', 'E', 'f', 'F', 'g', 'G', '%']
+		|| (group != '' && (zero || align == '=')) {
 		return none
 	}
+	typ := if alternate { '#${kind}' } else { kind }
 	return "'${fill}', '${align}', '${sign}', ${zero}, ${width}, '${group}', ${prec}, '${typ}'"
+}
+
+fn (mut t VTranspiler) visit_radix_format(value Expr, spec string) string {
+	args := fstring_spec_args(spec, true) or {
+		return t.unsupported_site('radix_format', 'unsupported integer format specifier', '')
+	}
+	typ := t.infer_expr_type(value)
+	if !is_v_int_type(typ) && typ != 'bool' {
+		return t.unsupported_site('radix_format', 'radix formatting requires a native integer', '')
+	}
+	t.add_using('strconv')
+	helper := t.runtime_helper('format_radix')
+	code := t.visit_expr_at(value, .decimal_text, '')
+	number := if typ == 'bool' { 'int(${code})' } else { code }
+	return '${helper}(${number}, ${args})'
 }
 
 // py2v_format_helper is emitted once per V module whose f-strings call py2v_format.
@@ -10357,8 +10631,16 @@ pub fn (mut t VTranspiler) visit_joined_str(node JoinedStr) string {
 				}
 			}
 			FormattedValue {
-				if t.comp_depth == 0 {
-					if args := fstring_spec_args(val) {
+				if spec := fstring_constant_spec(val) {
+					if spec.len > 0 && spec[spec.len - 1] in [`b`, `o`, `x`, `X`] {
+						inner += '\${${t.visit_radix_format(val.value, spec)}}'
+						continue
+					}
+					if t.comp_depth != 0 {
+						inner += t.fmtval_segment(val)
+						continue
+					}
+					if args := fstring_spec_args(spec, false) {
 						t.uses_py2v_format = true
 						t.add_using('math')
 						t.add_using('math.big as py2v_big')

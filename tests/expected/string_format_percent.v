@@ -17,8 +17,8 @@ fn main_func() {
 	println('default float: ${pi:.6f}')
 	println('truncated: ${pi:.0f}')
 	println('left-pad: ${age:-5}')
-	println(math.modulo_floored(10, 3))
-	println(math.modulo_floored(17, 5))
+	println(math.modulo_floored[int](10, 3))
+	println(math.modulo_floored[int](17, 5))
 }
 
 fn main() {

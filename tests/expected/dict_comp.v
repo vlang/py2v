@@ -14,7 +14,7 @@ fn show() {
 	evens := (fn () map[int]i64 {
 		mut result := map[int]i64{}
 		for x in []int{len: 10, init: index} {
-			if math.modulo_floored(x, 2) == 0 {
+			if math.modulo_floored[int](x, 2) == 0 {
 				result[x] = x * 2
 			}
 		}

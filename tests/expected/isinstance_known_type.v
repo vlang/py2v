@@ -8,7 +8,7 @@ fn trailing_zeros(a int) int {
 	}
 	mut count := 0
 	mut rest := a
-	for rest > 0 && math.modulo_floored(rest, 2) == 0 {
+	for rest > 0 && math.modulo_floored[int](rest, 2) == 0 {
 		rest = math.divide_floored(rest, 2).quot
 		count += 1
 	}

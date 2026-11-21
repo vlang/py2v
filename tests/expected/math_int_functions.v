@@ -24,8 +24,8 @@ fn is_prime(number int) bool {
 	if number < 2 {
 		return false
 	}
-	for i in []int{len: int(math.sqrti(number)) + 1 - 2, init: index + 2} {
-		if math.modulo_floored(number, i) == 0 {
+	for i in py2v_range_array1(2, int(math.sqrti(number)) + 1, 1) {
+		if math.modulo_floored[int](number, i) == 0 {
 			return false
 		}
 	}
@@ -45,6 +45,29 @@ fn py2v_range_next1(current int, stop int, step int) int {
 		return stop
 	}
 	return current + step
+}
+
+fn py2v_range_array1[A, B, C](begin A, end B, stride C) []int {
+	$if (A is $int || A is bool) && (B is $int || B is bool) && (C is $int || C is bool) {
+		start := int(begin)
+		stop := int(end)
+		step := int(stride)
+		if step == 0 {
+			panic('ValueError: range() arg 3 must not be zero')
+		}
+		mut values := []int{}
+		for current := start; if step > 0 { current < stop } else { current > stop }; current += step {
+			values << current
+			if step > 0 {
+				if u64(step) >= u64(stop) - u64(current) { break }
+			} else if u64(0) - u64(step) >= u64(current) - u64(stop) {
+				break
+			}
+		}
+		return values
+	} $else {
+		$compile_error('py2v_unsupported_range_bound: range needs integer bounds')
+	}
 }
 
 fn main() {

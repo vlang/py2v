@@ -3,7 +3,7 @@ module main
 import math
 
 fn is_even(n int) bool {
-	return math.modulo_floored(n, 2) == 0
+	return math.modulo_floored[int](n, 2) == 0
 }
 
 fn describe(n int) string {

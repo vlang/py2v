@@ -36,12 +36,12 @@ fn main_func() {
 	} else {
 		py2v_index2
 	}]
-	(*py2v_container1)[if py2v_index2 < 0 { py2v_container1.len + py2v_index2 } else { py2v_index2 }] = math.modulo_floored(py2v_old3, divisor())
+	(*py2v_container1)[if py2v_index2 < 0 { py2v_container1.len + py2v_index2 } else { py2v_index2 }] = math.modulo_floored[int](py2v_old3, divisor())
 	println(values)
 	mut obj := py2v_new_counter(-7)
 	mut py2v_receiver4 := &obj
 	py2v_old5 := py2v_receiver4.value
-	py2v_receiver4.value = math.modulo_floored(py2v_old5, divisor())
+	py2v_receiver4.value = math.modulo_floored[int](py2v_old5, divisor())
 	println(obj.value)
 }
 
