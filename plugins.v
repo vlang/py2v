@@ -14,7 +14,6 @@ fn visit_range(mut t VTranspiler, node Call, args []string) (string, bool) {
 		if _ := literal_word(node.args[0]) {
 			return '[]int{len: ${args[0]}, init: index}', true
 		}
-		return '${t.runtime_helper('range_array')}(0, ${args[0]}, 1)', true
 	}
 	if args.len == 2 {
 		if start := literal_word(node.args[0]) {
@@ -24,9 +23,17 @@ fn visit_range(mut t VTranspiler, node Call, args []string) (string, bool) {
 				}
 			}
 		}
-		return '${t.runtime_helper('range_array')}(${args[0]}, ${args[1]}, 1)', true
 	}
-	return '${t.runtime_helper('range_array')}(${args.join(', ')})', true
+	convert := t.runtime_helper('range_bound')
+	mut bounds := []string{cap: 3}
+	if args.len == 1 {
+		bounds << '0'
+	}
+	bounds << args.map('${convert}(${it})')
+	if args.len < 3 {
+		bounds << '1'
+	}
+	return '${t.runtime_helper('range_array')}(${bounds.join(', ')})', true
 }
 
 // Handle print() call

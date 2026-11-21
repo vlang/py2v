@@ -853,28 +853,39 @@ fn runtime_helper_declaration(kind string, name string) string {
 	return current + step
 }"
 		}
-		'range_array' {
-			'fn ${name}[A, B, C](begin A, end B, stride C) []int {\n' + r"
-	$if (A is $int || A is bool) && (B is $int || B is bool) && (C is $int || C is bool) {
-		start := int(begin)
-		stop := int(end)
-		step := int(stride)
-		if step == 0 {
-			panic('ValueError: range() arg 3 must not be zero')
-		}
-		mut values := []int{}
-		for current := start; if step > 0 { current < stop } else { current > stop }; current += step {
-			values << current
-			if step > 0 {
-				if u64(step) >= u64(stop) - u64(current) { break }
-			} else if u64(0) - u64(step) >= u64(current) - u64(stop) {
-				break
+		'range_bound' {
+			'@[inline]\nfn ${name}[T](value T) int {\n' + r"
+	$if T is $int || T is bool {
+		return int(value)
+	} $else $if T is $sumtype {
+		$for variant in T.variants {
+			$if variant is $int || variant is bool {
+				if value is variant {
+					return int(value)
+				}
 			}
 		}
-		return values
+		panic('TypeError: range needs integer bounds')
 	} $else {
 		$compile_error('py2v_unsupported_range_bound: range needs integer bounds')
 	}
+}"
+		}
+		'range_array' {
+			'fn ${name}(start int, stop int, step int) []int {\n' + r"
+	if step == 0 {
+		panic('ValueError: range() arg 3 must not be zero')
+	}
+	mut values := []int{}
+	for current := start; if step > 0 { current < stop } else { current > stop }; current += step {
+		values << current
+		if step > 0 {
+			if u64(step) >= u64(stop) - u64(current) { break }
+		} else if u64(0) - u64(step) >= u64(current) - u64(stop) {
+			break
+		}
+	}
+	return values
 }"
 		}
 		'modular_pow' {

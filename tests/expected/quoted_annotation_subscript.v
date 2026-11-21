@@ -5,7 +5,7 @@ import pyrt
 type Any = pyrt.Value
 
 fn names(count int) []string {
-	return py2v_range_array1(0, count, 1).map('n' + it.str())
+	return py2v_range_array1(0, py2v_range_bound1(count), 1).map('n' + it.str())
 }
 
 fn lookup(key string) ?map[string]int {
@@ -29,27 +29,38 @@ fn pair(key string) []Any {
 	return [key, py2v_text_length1(key)]
 }
 
-fn py2v_range_array1[A, B, C](begin A, end B, stride C) []int {
-	$if (A is $int || A is bool) && (B is $int || B is bool) && (C is $int || C is bool) {
-		start := int(begin)
-		stop := int(end)
-		step := int(stride)
-		if step == 0 {
-			panic('ValueError: range() arg 3 must not be zero')
-		}
-		mut values := []int{}
-		for current := start; if step > 0 { current < stop } else { current > stop }; current += step {
-			values << current
-			if step > 0 {
-				if u64(step) >= u64(stop) - u64(current) { break }
-			} else if u64(0) - u64(step) >= u64(current) - u64(stop) {
-				break
+@[inline]
+fn py2v_range_bound1[T](value T) int {
+	$if T is $int || T is bool {
+		return int(value)
+	} $else $if T is $sumtype {
+		$for variant in T.variants {
+			$if variant is $int || variant is bool {
+				if value is variant {
+					return int(value)
+				}
 			}
 		}
-		return values
+		panic('TypeError: range needs integer bounds')
 	} $else {
 		$compile_error('py2v_unsupported_range_bound: range needs integer bounds')
 	}
+}
+
+fn py2v_range_array1(start int, stop int, step int) []int {
+	if step == 0 {
+		panic('ValueError: range() arg 3 must not be zero')
+	}
+	mut values := []int{}
+	for current := start; if step > 0 { current < stop } else { current > stop }; current += step {
+		values << current
+		if step > 0 {
+			if u64(step) >= u64(stop) - u64(current) { break }
+		} else if u64(0) - u64(step) >= u64(current) - u64(stop) {
+			break
+		}
+	}
+	return values
 }
 
 fn py2v_text_length1(text string) int {
