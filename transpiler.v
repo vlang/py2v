@@ -2581,7 +2581,15 @@ pub fn (mut t VTranspiler) visit_class_def(node ClassDef) string {
 				t.wide_members['field:${emitted_name}.${decl}'] = true
 			}
 			if default_expr := node.class_defaults[decl] {
-				default_str := if typ == 'u64' {
+				// Struct field defaults are evaluated outside the Python module's
+				// executable initialization. A module-local wide constant, a
+				// computed mask, or a call is not visible there merely because
+				// the field has type u64. Refuse rather than emitting an
+				// unbound V identifier or bypassing the wide-use check.
+				default_str := if typ == 'u64' && default_expr !is Constant
+					&& (t.has_u64_bits(default_expr) || t.has_wide_destination(default_expr)) {
+					t.refuse_wide('u64 class field default needs a compile-time constant')
+				} else if typ == 'u64' {
 					t.visit_integer_boundary(default_expr, .scalar_storage, typ)
 				} else {
 					t.visit_expr(default_expr)
@@ -6503,6 +6511,15 @@ pub fn (mut t VTranspiler) visit_binop(node BinOp) string {
 			c := node.left as Constant
 			if c.value is string {
 				fmt_str := c.value as string
+				// `str(u64)` is exact, but generic %-format folding can drop
+				// a string format's precision/width. A wide source cannot
+				// authorize that lossy secondary emission.
+				if node.right is Call && node.right.func is Name
+					&& node.right.func.id == 'str' && node.right.args.len == 1
+					&& (t.has_u64_bits(node.right.args[0]) || t.has_large_integer(node.right.args[0]))
+					&& fmt_str !in ['%s', '%r'] {
+					return t.refuse_wide('percent formatting of wide decimal text needs exact string width and precision')
+				}
 				mut values := []string{}
 				mut value_types := []string{}
 				if node.right is Tuple {
