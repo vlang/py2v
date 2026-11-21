@@ -738,7 +738,7 @@ pub fn (mut t VTranspiler) visit_module(node Module) string {
 		key := '${t.module_name}.${kind}'
 		if !t.registry.helper_declared[key] {
 			t.registry.helper_declared[key] = true
-			func_decls << runtime_helper_declaration(kind, t.runtime_helper_name(kind))
+			func_decls << t.runtime_helper_declaration(kind)
 		}
 	}
 	if func_decls.len > 0 {
@@ -766,7 +766,8 @@ fn (mut t VTranspiler) runtime_helper(kind string) string {
 }
 
 // runtime_helper_declaration returns the V source of the run-time helper `kind`.
-fn runtime_helper_declaration(kind string, name string) string {
+fn (mut t VTranspiler) runtime_helper_declaration(kind string) string {
+	name := t.runtime_helper_name(kind)
 	return match kind {
 		'bool_text' {
 			"fn ${name}(value bool) string {\n\treturn if value { 'True' } else { 'False' }\n}"
@@ -886,6 +887,25 @@ fn runtime_helper_declaration(kind string, name string) string {
 		}
 	}
 	return values
+}"
+		}
+		'range_unpack' {
+			convert := t.runtime_helper_name('range_bound')
+			build := t.runtime_helper_name('range_array')
+			'fn ${name}[T](values T) []int {\n' + r"
+	$if T is $array || T is $array_fixed {
+		if values.len !in [1, 2, 3] {
+			panic('TypeError: range expected 1 to 3 arguments')
+		}
+		mut args := [3]int{}
+" + '		for i, value in values { args[i] = ${convert}(value) }\n' +
+				'		return match values.len {\n' +
+				'			1 { ${build}(0, args[0], 1) }\n' +
+				'			2 { ${build}(args[0], args[1], 1) }\n' +
+				'			else { ${build}(args[0], args[1], args[2]) }\n\t\t}\n' + r"
+	} $else {
+		$compile_error('py2v_unsupported_range_unpack: range needs a native array')
+	}
 }"
 		}
 		'modular_pow' {

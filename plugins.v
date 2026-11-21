@@ -10,6 +10,18 @@ fn visit_range(mut t VTranspiler, node Call, args []string) (string, bool) {
 	if args.len !in [1, 2, 3] || args.len != node.args.len || node.keywords.len > 0 {
 		return '', false
 	}
+	if node.args.any(it is Starred) {
+		if args.len == 1 && node.args[0] is Starred {
+			operand := (node.args[0] as Starred).value
+			if !t.infer_expr_type(operand).starts_with('(') {
+				t.runtime_helper('range_bound')
+				t.runtime_helper('range_array')
+				unpack := t.runtime_helper('range_unpack')
+				return '${unpack}(${args[0].trim_string_left('...')})', true
+			}
+		}
+		return t.unsupported_site('range_unpack', 'range needs one unpacked native array', ''), true
+	}
 	if args.len == 1 {
 		if _ := literal_word(node.args[0]) {
 			return '[]int{len: ${args[0]}, init: index}', true
