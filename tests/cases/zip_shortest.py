@@ -14,5 +14,5 @@ for a, b in zip(first(), second()):
 for text, number in zip(second(), first()):
     print(f"{text}:{number}")
 
-for character, number in zip("é🙂", [1, 2, 3]):
+for character, number in zip("é🙂", [1, 2, 3], strict=False):
     print(f"{character}:{number}")

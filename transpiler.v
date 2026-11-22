@@ -5736,8 +5736,12 @@ pub fn (mut t VTranspiler) visit_for(node For) string {
 						t.emit_for_else(mut buf, node.orelse, flag, saved_renames)
 						return buf.join('\n')
 					}
-					if fname == 'zip' && target_names.len == 2 && call.args.len == 2
-						&& call.keywords.len == 0 {
+					if fname == 'zip' && target_names.len == 2 && call.args.len == 2 {
+						if call.keywords.len > 0 && !zip_disables_strict(call.keywords) {
+							refusal := t.unsupported_site('zip_strict',
+								'zip strict mismatch needs Python exception behavior', '')
+							buf << '_ = ${refusal}'
+						}
 						first := t.new_tmp('zip_first')
 						second := t.new_tmp('zip_second')
 						length := t.new_tmp('zip_len')
@@ -5889,6 +5893,15 @@ fn (mut t VTranspiler) visit_for_iter(expr Expr, before map[string]string) strin
 	t.renamed_idents = before
 	defer { t.renamed_idents = inside }
 	return t.visit_expr(expr)
+}
+
+// zip_disables_strict recognizes the explicit default for a two-input zip.
+fn zip_disables_strict(keywords []Keyword) bool {
+	if keywords.len != 1 || (keywords[0].arg or { '' }) != 'strict' {
+		return false
+	}
+	value := keywords[0].value
+	return value is Constant && value.value is bool && !(value.value as bool)
 }
 
 fn enumerate_start(call Call) ?Expr {
@@ -12131,12 +12144,11 @@ fn (mut t VTranspiler) visit_generator_exp_impl(elt Expr, generators []Comprehen
 	if generators.len == 1 && gen.ifs.len > 0 && elt !is Constant
 		&& !(elt is Name && gen.target is Name && elt.id == gen.target.id)
 		&& !comprehension_uses_runtime(elt) && !gen.ifs.any(comprehension_uses_runtime(it))
-		&& (comprehension_may_observe_order(elt)
-			|| gen.ifs.any(comprehension_may_observe_order(it))) {
+		&& (t.comprehension_calls_local_function(elt)
+			|| gen.ifs.any(t.comprehension_calls_local_function(it))) {
 		if code := t.visit_ordered_comprehension(elt, gen) {
 			return code
 		}
-		return t.unsupported_site('comprehension_order', 'filtered comprehension needs interleaved evaluation', '')
 	}
 
 	// Check if the iter is a range() call - need special handling
@@ -12203,13 +12215,12 @@ fn (mut t VTranspiler) visit_generator_exp_impl(elt Expr, generators []Comprehen
 	return result
 }
 
-// Calls, indexing and division can observe, mutate or fail before the next predicate.
-fn comprehension_may_observe_order(expr Expr) bool {
-	if expr is Call || expr is Subscript || expr is Attribute
-		|| (expr is BinOp && (expr.op is Div || expr.op is FloorDiv || expr.op is Mod)) {
+// A local Python function can observe effects between the predicate and projection.
+fn (t &VTranspiler) comprehension_calls_local_function(expr Expr) bool {
+	if expr is Call && expr.func is Name && expr.func.id in t.module_functions {
 		return true
 	}
-	return condition_walrus_children(expr).any(comprehension_may_observe_order(it))
+	return condition_walrus_children(expr).any(t.comprehension_calls_local_function(it))
 }
 
 // comprehension_uses_runtime keeps adapted values on the existing runtime path.
@@ -12238,7 +12249,7 @@ fn (mut t VTranspiler) visit_ordered_comprehension(elt Expr, gen Comprehension) 
 		&& 'range' !in t.module_functions && !t.is_bound_in_scope('range') {
 		typ = '[]int'
 	}
-	if !typ.starts_with('[]') {
+	if typ !in ['[]int', '[]i64', '[]f64', '[]string', '[]bool', '[]u8'] {
 		return none
 	}
 	source_expr := t.visit_expr(gen.iter)
