@@ -1,7 +1,7 @@
 module pyrt
 
 // Python integers are unbounded. This runtime's integer Values are signed i64;
-// operations that would leave that range raise OverflowError BEFORE arithmetic.
+// Operations that exceed that representation stop before computing a result.
 const int_max = i64(9223372036854775807)
 const int_min = i64(-9223372036854775807) - 1
 const int_float_upper = 9223372036854775808.0
@@ -34,20 +34,23 @@ fn numeric_float(v Value) f64 {
 	}
 }
 
-fn integer_overflow() IError {
-	return raise('OverflowError', 'integer result exceeds signed 64-bit range')
+@[noreturn]
+fn integer_overflow(operation string, site string) {
+	flush_stdout()
+	eprintln('py2v_integer_overflow: ${site}: ${operation} exceeds the V int range')
+	exit(1)
 }
 
 fn checked_add(a i64, b i64) !i64 {
 	if (b > 0 && a > int_max - b) || (b < 0 && a < int_min - b) {
-		return integer_overflow()
+		integer_overflow('addition', @FILE_LINE)
 	}
 	return a + b
 }
 
 fn checked_subtract(a i64, b i64) !i64 {
 	if (b > 0 && a < int_min + b) || (b < 0 && a > int_max + b) {
-		return integer_overflow()
+		integer_overflow('subtraction', @FILE_LINE)
 	}
 	return a - b
 }
@@ -56,11 +59,11 @@ fn checked_multiply(a i64, b i64) !i64 {
 	if a == 0 || b == 0 { return i64(0) }
 	if a > 0 {
 		if (b > 0 && a > int_max / b) || (b < 0 && b < int_min / a) {
-			return integer_overflow()
+			integer_overflow('multiplication', @FILE_LINE)
 		}
 	} else {
 		if (b > 0 && a < int_min / b) || (b < 0 && a < int_max / b) {
-			return integer_overflow()
+			integer_overflow('multiplication', @FILE_LINE)
 		}
 	}
 	return a * b
@@ -288,7 +291,7 @@ pub fn floordiv(a Value, b Value) !Value {
 		left := integral_value(a)
 		right := integral_value(b)
 		if right == 0 { return raise('ZeroDivisionError', 'integer division or modulo by zero') }
-		if left == int_min && right == -1 { return integer_overflow() }
+		if left == int_min && right == -1 { integer_overflow('floor division', @FILE_LINE) }
 		mut quotient := left / right
 		remainder := left % right
 		if remainder != 0 && (remainder < 0) != (right < 0) { quotient = quotient - 1 }
@@ -388,7 +391,7 @@ pub fn pow(a Value, b Value) !Value {
 pub fn neg(v Value) !Value {
 	if is_integral(v) {
 		n := integral_value(v)
-		if n == int_min { return integer_overflow() }
+		if n == int_min { integer_overflow('negation', @FILE_LINE) }
 		return Value(-n)
 	}
 	if v is f64 { return Value(-v) }

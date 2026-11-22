@@ -970,24 +970,7 @@ fn test_ops_bounded_integer_contract() {
 }
 
 fn check_ops_bounded_integer_contract() ! {
-	overflow_247 := ops_test_error(fn () !Value { return add(Value(int_max), Value(i64(1)))! })
-	// runtime: i64 limit; CPython instead returns an unbounded integer.
-	assert overflow_247 == 'OverflowError|integer result exceeds signed 64-bit range'
-	overflow_248 := ops_test_error(fn () !Value { return sub(Value(int_min), Value(i64(1)))! })
-	// runtime: i64 limit; CPython instead returns an unbounded integer.
-	assert overflow_248 == 'OverflowError|integer result exceeds signed 64-bit range'
-	overflow_249 := ops_test_error(fn () !Value { return mul(Value(int_min), Value(i64(-1)))! })
-	// runtime: i64 limit; CPython instead returns an unbounded integer.
-	assert overflow_249 == 'OverflowError|integer result exceeds signed 64-bit range'
-	overflow_250 := ops_test_error(fn () !Value { return neg(Value(int_min))! })
-	// runtime: i64 limit; CPython instead returns an unbounded integer.
-	assert overflow_250 == 'OverflowError|integer result exceeds signed 64-bit range'
-	overflow_251 := ops_test_error(fn () !Value { return floordiv(Value(int_min), Value(i64(-1)))! })
-	// runtime: i64 limit; CPython instead returns an unbounded integer.
-	assert overflow_251 == 'OverflowError|integer result exceeds signed 64-bit range'
-	overflow_252 := ops_test_error(fn () !Value { return pow(Value(i64(2)), Value(i64(63)))! })
-	// runtime: i64 limit; CPython instead returns an unbounded integer.
-	assert overflow_252 == 'OverflowError|integer result exceeds signed 64-bit range'
+	// Fatal representation failures run in a separate process in integer_differential.vsh.
 	got_254 := mul(Value(int_min), Value(i64(1)))!
 	// python: repr(-(2**63)) == '-9223372036854775808'
 	assert repr(got_254) == '-9223372036854775808'

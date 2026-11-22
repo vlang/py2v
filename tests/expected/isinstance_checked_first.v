@@ -84,8 +84,8 @@ fn highest_bit(py2v_number_in1 int) int {
 	}
 	mut position := 0
 	for number != 0 {
-		position += 1
-		number >>= 1
+		position = py2v_integer_add1(position, 1, 'isinstance_checked_first.py:6', 'addition')
+		number = number >> 1
 	}
 	return position
 }
@@ -99,7 +99,7 @@ fn rotate_py(x int, py2v_k_in2 int) !int {
 		return IError(Py2vErrorValueError{ data: Py2vErrorData{ args: Py2vErrorArgs{ values: [Py2vErrorArg('k must be non-negative')] } } })
 	}
 	k &= 31
-	return x << k & 65535
+	return py2v_integer_left_shift1(x, k, 'isinstance_checked_first.py:17') & 65535
 }
 
 fn as_text_py(py2v_num_in3 int) !string {
@@ -111,7 +111,7 @@ fn as_text_py(py2v_num_in3 int) !string {
 		return IError(Py2vErrorTypeError{ data: Py2vErrorData{ args: Py2vErrorArgs{ values: [Py2vErrorArg('not a number')] } } })
 	}
 	if num < 0 {
-		num = -num
+		num = py2v_integer_neg1(num, 'isinstance_checked_first.py:26')
 	}
 	return num.str()
 }
@@ -129,7 +129,7 @@ fn count_ints_py(inputs []int) !int {
 		if !true {
 			// pass
 		}
-		total += 1
+		total = py2v_integer_add1(total, 1, 'isinstance_checked_first.py:41', 'addition')
 	}
 	return total
 }
@@ -165,9 +165,45 @@ fn twice(words []string) int {
 		}
 	}
 	for w in words[..1] {
-		n += py2v_text_length1(w)
+		py2v_old5 := n
+		py2v_aug_result6 := py2v_integer_add1(py2v_old5, py2v_text_length1(w), 'isinstance_checked_first.py:78', 'addition')
+		n = py2v_aug_result6
 	}
 	return n
+}
+
+@[noreturn]
+fn py2v_integer_overflow1(site string, operation string) {
+	flush_stdout()
+	eprintln('py2v_integer_overflow: ${site}: ${operation} exceeds the V int range')
+	exit(1)
+}
+
+@[inline]
+fn py2v_integer_add1(a int, b int, site string, operation string) int {
+	max := int(9223372036854775807)
+	min := -max - 1
+	if (b > 0 && a > max - b) || (b < 0 && a < min - b) { py2v_integer_overflow1(site, operation) }
+	return a + b
+}
+
+@[inline]
+fn py2v_integer_left_shift1(a int, b int, site string) int {
+	if b < 0 { panic('ValueError: negative shift count') }
+	if a == 0 { return 0 }
+	max := int(9223372036854775807)
+	min := -max - 1
+	if b == 63 && a == -1 { return min }
+	if b >= 63 || a > (max >> b) || a < (min >> b) {
+		py2v_integer_overflow1(site, 'left shift')
+	}
+	return a * (int(1) << b)
+}
+
+@[inline]
+fn py2v_integer_neg1(value int, site string) int {
+	if value == -9223372036854775807 - 1 { py2v_integer_overflow1(site, 'negation') }
+	return -value
 }
 
 fn py2v_float_text1[T](value T) string {

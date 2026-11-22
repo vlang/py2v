@@ -23,7 +23,9 @@ fn indexing() int {
 		i > py2v_range_stop2
 	}; i = py2v_range_next1(i, py2v_range_stop2, py2v_range_step3) {
 		a << i
-		sum += a[i]
+		py2v_old4 := sum
+		py2v_aug_result5 := py2v_integer_add1(py2v_old4, a[i], 'coverage.py:16', 'addition')
+		sum = py2v_aug_result5
 	}
 	return sum
 }
@@ -43,30 +45,30 @@ fn show() {
 	assert b9 == b10
 	a2 := 2.1
 	println(py2v_float_text1(a2))
-	py2v_range_start4 := int(0)
-	py2v_range_stop5 := int(10)
-	py2v_range_step6 := int(1)
-	if py2v_range_step6 == 0 { panic('ValueError: range() arg 3 must not be zero') }
-	for i := py2v_range_start4; if py2v_range_step6 > 0 {
-		i < py2v_range_stop5
+	py2v_range_start6 := int(0)
+	py2v_range_stop7 := int(10)
+	py2v_range_step8 := int(1)
+	if py2v_range_step8 == 0 { panic('ValueError: range() arg 3 must not be zero') }
+	for i := py2v_range_start6; if py2v_range_step8 > 0 {
+		i < py2v_range_stop7
 	} else {
-		i > py2v_range_stop5
-	}; i = py2v_range_next1(i, py2v_range_stop5, py2v_range_step6) {
+		i > py2v_range_stop7
+	}; i = py2v_range_next1(i, py2v_range_stop7, py2v_range_step8) {
 		println(i)
 	}
-	py2v_range_start7 := int(0)
-	py2v_range_stop8 := int(10)
-	py2v_range_step9 := int(2)
-	if py2v_range_step9 == 0 { panic('ValueError: range() arg 3 must not be zero') }
-	for i := py2v_range_start7; if py2v_range_step9 > 0 {
-		i < py2v_range_stop8
+	py2v_range_start9 := int(0)
+	py2v_range_stop10 := int(10)
+	py2v_range_step11 := int(2)
+	if py2v_range_step11 == 0 { panic('ValueError: range() arg 3 must not be zero') }
+	for i := py2v_range_start9; if py2v_range_step11 > 0 {
+		i < py2v_range_stop10
 	} else {
-		i > py2v_range_stop8
-	}; i = py2v_range_next1(i, py2v_range_stop8, py2v_range_step9) {
+		i > py2v_range_stop10
+	}; i = py2v_range_next1(i, py2v_range_stop10, py2v_range_step11) {
 		println(i)
 	}
-	a3 := -a1
-	a4 := a3 + a1
+	a3 := py2v_integer_neg1(a1, 'coverage.py:45')
+	a4 := py2v_integer_add1(a3, a1, 'coverage.py:47', 'addition')
 	println(a4)
 	t1 := if a1 > 5 { 10 } else { 5 }
 	assert t1 == 10
@@ -97,7 +99,7 @@ fn show() {
 	}
 	println(if true { 'True' } else { 'False' })
 	if true {
-		a1 += 1
+		a1 = py2v_integer_add1(a1, 1, 'coverage.py:77', 'addition')
 	}
 	assert a1 == 11
 	if true {
@@ -124,6 +126,21 @@ fn py2v_range_next1(current int, stop int, step int) int {
 	return current + step
 }
 
+@[noreturn]
+fn py2v_integer_overflow1(site string, operation string) {
+	flush_stdout()
+	eprintln('py2v_integer_overflow: ${site}: ${operation} exceeds the V int range')
+	exit(1)
+}
+
+@[inline]
+fn py2v_integer_add1(a int, b int, site string, operation string) int {
+	max := int(9223372036854775807)
+	min := -max - 1
+	if (b > 0 && a > max - b) || (b < 0 && a < min - b) { py2v_integer_overflow1(site, operation) }
+	return a + b
+}
+
 fn py2v_float_text1[T](value T) string {
 	$if T is $float {
 		scientific := strconv.f64_to_str(f64(value), 16)
@@ -145,6 +162,12 @@ fn py2v_float_text1[T](value T) string {
 	} $else {
 		return value.str()
 	}
+}
+
+@[inline]
+fn py2v_integer_neg1(value int, site string) int {
+	if value == -9223372036854775807 - 1 { py2v_integer_overflow1(site, 'negation') }
+	return -value
 }
 
 fn main() {

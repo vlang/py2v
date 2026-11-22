@@ -1,7 +1,5 @@
 module main
 
-import math
-
 pub struct Number {
 pub mut:
 	value int
@@ -36,31 +34,31 @@ fn (self Number) py_ge(other Number) bool {
 }
 
 fn (self Number) / (other Number) Number {
-	return py2v_new_number(self.value + other.value)
+	return py2v_new_number(py2v_integer_add1(self.value, other.value, 'independent_dunders.py:26', 'addition'))
 }
 
 fn (self Number) py_floor_div(other Number) int {
-	return math.divide_floored(self.value, other.value).quot
+	return py2v_integer_floor_div1(self.value, other.value, 'independent_dunders.py:29')
 }
 
 fn (self Number) + (other Number) Number {
-	return py2v_new_number(self.value + other.value)
+	return py2v_new_number(py2v_integer_add1(self.value, other.value, 'independent_dunders.py:32', 'addition'))
 }
 
 fn (self Number) py_pos() int {
-	return self.value + 10
+	return py2v_integer_add1(self.value, 10, 'independent_dunders.py:35', 'addition')
 }
 
 fn (self Number) - (other Number) Number {
-	return py2v_new_number(self.value - other.value)
+	return py2v_new_number(py2v_integer_sub1(self.value, other.value, 'independent_dunders.py:38', 'subtraction'))
 }
 
 fn (self Number) py_neg() int {
-	return 10 - self.value
+	return py2v_integer_sub1(10, self.value, 'independent_dunders.py:41', 'subtraction')
 }
 
 fn (self Number) py_invert() int {
-	return self.value + 20
+	return py2v_integer_add1(self.value, 20, 'independent_dunders.py:44', 'addition')
 }
 
 pub fn py2v_new_number(value int) Number {
@@ -79,6 +77,38 @@ fn check(a Number, b Number) {
 	println(a.py_pos())
 	println(a.py_invert())
 	println(if a.py_ne(b) { 'True' } else { 'False' })
+}
+
+@[noreturn]
+fn py2v_integer_overflow1(site string, operation string) {
+	flush_stdout()
+	eprintln('py2v_integer_overflow: ${site}: ${operation} exceeds the V int range')
+	exit(1)
+}
+
+@[inline]
+fn py2v_integer_add1(a int, b int, site string, operation string) int {
+	max := int(9223372036854775807)
+	min := -max - 1
+	if (b > 0 && a > max - b) || (b < 0 && a < min - b) { py2v_integer_overflow1(site, operation) }
+	return a + b
+}
+
+@[inline]
+fn py2v_integer_floor_div1(a int, b int, site string) int {
+	if b == 0 { panic('ZeroDivisionError: integer division or modulo by zero') }
+	if b == -1 && a == -9223372036854775807 - 1 { py2v_integer_overflow1(site, 'floor division') }
+	r := a % b
+	adjust := r != 0 && (r < 0) != (b < 0)
+	return a / b - int(adjust)
+}
+
+@[inline]
+fn py2v_integer_sub1(a int, b int, site string, operation string) int {
+	max := int(9223372036854775807)
+	min := -max - 1
+	if (b > 0 && a < min + b) || (b < 0 && a > max + b) { py2v_integer_overflow1(site, operation) }
+	return a - b
 }
 
 fn main() {

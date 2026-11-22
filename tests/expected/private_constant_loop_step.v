@@ -15,7 +15,7 @@ fn walk(n int) int {
 	} else {
 		start > py2v_range_stop2
 	}; start = py2v_range_next1(start, py2v_range_stop2, py2v_range_step3) {
-		total += start
+		total = py2v_integer_add1(total, start, 'private_constant_loop_step.py:8', 'addition')
 	}
 	py2v_range_start4 := int(0)
 	py2v_range_stop5 := int(n)
@@ -26,7 +26,7 @@ fn walk(n int) int {
 	} else {
 		start > py2v_range_stop5
 	}; start = py2v_range_next1(start, py2v_range_stop5, py2v_range_step6) {
-		total += start
+		total = py2v_integer_add1(total, start, 'private_constant_loop_step.py:10', 'addition')
 	}
 	return total
 }
@@ -40,6 +40,21 @@ fn py2v_range_next1(current int, stop int, step int) int {
 		return stop
 	}
 	return current + step
+}
+
+@[noreturn]
+fn py2v_integer_overflow1(site string, operation string) {
+	flush_stdout()
+	eprintln('py2v_integer_overflow: ${site}: ${operation} exceeds the V int range')
+	exit(1)
+}
+
+@[inline]
+fn py2v_integer_add1(a int, b int, site string, operation string) int {
+	max := int(9223372036854775807)
+	min := -max - 1
+	if (b > 0 && a > max - b) || (b < 0 && a < min - b) { py2v_integer_overflow1(site, operation) }
+	return a + b
 }
 
 fn main() {

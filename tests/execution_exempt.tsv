@@ -42,7 +42,6 @@ inheritance	differs	Line 1: CPython starts a TypeError traceback (Dog() takes no
 int_enum	does-not-compile	unknown function: auto
 isinstance_types	does-not-compile	`pyrt.Value` has no variant `Dog`
 itertools_basic	does-not-compile	unknown function: py2v_unsupported_list_identity_module1
-list_box_range_refusal	differs	line 1: CPython [[1, 1099511627776]], V [OverflowError: py2v: runtime integer does not fit shared native int list]
 list_call_refusal	differs	line 1: CPython [[1, 2]], V [V panic: py2v_unsupported_list_identity: list aliases cannot be preserved]
 list_comprehension_refusal	differs	line 1: CPython [[1, 2, 3]], V [V panic: py2v_unsupported_list_identity: list aliases cannot be preserved]
 list_enumerate_refusal	differs	line 1: CPython [[1, 2, 3] [1, 2, 3]], V [V panic: py2v_unsupported_list_identity: list aliases cannot be preserved]

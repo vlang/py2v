@@ -4,33 +4,9 @@ import pyrt
 
 type Any = pyrt.Value
 
-fn (a Any) + (b Any) Any {
-	return pyrt.add(a, b) or { panic(err) }
-}
-
-fn (a Any) - (b Any) Any {
-	return pyrt.sub(a, b) or { panic(err) }
-}
-
-fn (a Any) * (b Any) Any {
-	return pyrt.mul(a, b) or { panic(err) }
-}
-
-fn (a Any) / (b Any) Any {
-	return pyrt.truediv(a, b) or { panic(err) }
-}
-
-fn (a Any) % (b Any) Any {
-	return pyrt.mod(a, b) or { panic(err) }
-}
-
-fn (a Any) < (b Any) bool {
-	return pyrt.lt(a, b) or { panic(err) }
-}
-
 fn forward() int {
 	read := py2v_unsupported_closure_forward_capture(fn (value int) int {
-		return value + 1
+		return py2v_integer_add1(value, 1, 'unsupported_closure_capture.py:3', 'addition')
 	})
 	value := 4
 	return read()
@@ -48,7 +24,7 @@ fn loop() int {
 		value > py2v_range_stop2
 	}; value = py2v_range_next1(value, py2v_range_stop2, py2v_range_step3) {
 		read := py2v_unsupported_closure_loop_capture(fn (value int) int {
-			return value + 2
+			return py2v_integer_add1(value, 2, 'unsupported_closure_capture.py:12', 'addition')
 		})
 		result = read()
 	}
@@ -56,9 +32,9 @@ fn loop() int {
 }
 
 fn default(n int) int {
-	py2v_default4 := n + 1
+	py2v_default4 := py2v_integer_add1(n, 1, 'unsupported_closure_capture.py:18', 'addition')
 	read := fn (x int) int {
-		return x + 3
+		return py2v_integer_add1(x, 3, 'unsupported_closure_capture.py:19', 'addition')
 	}
 	return read(py2v_default4)
 }
@@ -74,6 +50,21 @@ fn rebound_function() int {
 		return 2
 	}
 	return read()
+}
+
+@[noreturn]
+fn py2v_integer_overflow1(site string, operation string) {
+	flush_stdout()
+	eprintln('py2v_integer_overflow: ${site}: ${operation} exceeds the V int range')
+	exit(1)
+}
+
+@[inline]
+fn py2v_integer_add1(a int, b int, site string, operation string) int {
+	max := int(9223372036854775807)
+	min := -max - 1
+	if (b > 0 && a > max - b) || (b < 0 && a < min - b) { py2v_integer_overflow1(site, operation) }
+	return a + b
 }
 
 fn py2v_range_next1(current int, stop int, step int) int {

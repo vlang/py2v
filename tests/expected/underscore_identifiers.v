@@ -11,7 +11,10 @@ fn (mut self Registry) init() {
 }
 
 fn (mut self Registry) bump(by_ int) int {
-	self.count_ += by_
+	mut py2v_receiver1 := &self
+	py2v_old2 := py2v_receiver1.count_
+	py2v_aug_result3 := py2v_integer_add1(py2v_old2, by_, 'underscore_identifiers.py:17', 'addition')
+	py2v_receiver1.count_ = py2v_aug_result3
 	return self.count_
 }
 
@@ -32,7 +35,22 @@ fn (mut self Child) bump(by_ int) int {
 fn locals_demo() int {
 	first_ := 1
 	second_ := 2
-	total_ := first_ + second_
+	total_ := py2v_integer_add1(first_, second_, 'underscore_identifiers.py:29', 'addition')
 	throwaway_, kept_ := 3, 4
-	return total_ + kept_
+	return py2v_integer_add1(total_, kept_, 'underscore_identifiers.py:31', 'addition')
+}
+
+@[noreturn]
+fn py2v_integer_overflow1(site string, operation string) {
+	flush_stdout()
+	eprintln('py2v_integer_overflow: ${site}: ${operation} exceeds the V int range')
+	exit(1)
+}
+
+@[inline]
+fn py2v_integer_add1(a int, b int, site string, operation string) int {
+	max := int(9223372036854775807)
+	min := -max - 1
+	if (b > 0 && a > max - b) || (b < 0 && a < min - b) { py2v_integer_overflow1(site, operation) }
+	return a + b
 }

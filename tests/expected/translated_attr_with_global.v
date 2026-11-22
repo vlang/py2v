@@ -1,4 +1,4 @@
-@[translated]
+@[has_globals]
 module main
 
 fn set_x() {

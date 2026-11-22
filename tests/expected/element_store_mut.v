@@ -31,7 +31,16 @@ fn (mut self Box) put() {
 }
 
 fn (mut self Box) bump() {
-	self.items.items[1] += 5
+	mut py2v_list3 := unsafe { self.items }
+	mut py2v_container1 := &py2v_list3.items
+	py2v_index2 := 1
+	py2v_old4 := (*py2v_container1)[if py2v_index2 < 0 {
+		py2v_container1.len + py2v_index2
+	} else {
+		py2v_index2
+	}]
+	py2v_aug_result5 := py2v_integer_add1(py2v_old4, 5, 'element_store_mut.py:14', 'addition')
+	(*py2v_container1)[if py2v_index2 < 0 { py2v_container1.len + py2v_index2 } else { py2v_index2 }] = py2v_aug_result5
 }
 
 pub fn py2v_new_box(items &pyrt.ListRef[int]) Box {
@@ -42,16 +51,28 @@ pub fn py2v_new_box(items &pyrt.ListRef[int]) Box {
 
 fn main_func() {
 	mut a := [int(1), 2]
-	a[0] += 1
+	mut py2v_container6 := &a
+	py2v_index7 := 0
+	py2v_old8 := (*py2v_container6)[if py2v_index7 < 0 {
+		py2v_container6.len + py2v_index7
+	} else {
+		py2v_index7
+	}]
+	py2v_aug_result9 := py2v_integer_add1(py2v_old8, 1, 'element_store_mut.py:19', 'addition')
+	(*py2v_container6)[if py2v_index7 < 0 { py2v_container6.len + py2v_index7 } else { py2v_index7 }] = py2v_aug_result9
 	println(a)
 	mut counts := map[string]int{
 		'x': 1
 	}
-	counts['x'] += 1
+	mut py2v_container10 := &counts
+	py2v_index11 := 'x'
+	py2v_old12 := (*py2v_container10)[py2v_index11]
+	py2v_aug_result13 := py2v_integer_add1(py2v_old12, 1, 'element_store_mut.py:23', 'addition')
+	(*py2v_container10)[py2v_index11] = py2v_aug_result13
 	println(counts['x'])
 	mut grid := [[1, 2], [3, 4]]
 	grid[0][1] = 5
-	grid[1][0] *= 3
+	grid[1][0] = py2v_integer_mul1(grid[1][0], 3, 'element_store_mut.py:28', 'multiplication')
 	println(grid)
 	mut b := py2v_new_box(pyrt.list_ref[int]([1, 2]))
 	b.put()
@@ -65,6 +86,31 @@ fn main_func() {
 	}
 	lists['a'][1] = 9
 	println(lists['a'])
+}
+
+@[noreturn]
+fn py2v_integer_overflow1(site string, operation string) {
+	flush_stdout()
+	eprintln('py2v_integer_overflow: ${site}: ${operation} exceeds the V int range')
+	exit(1)
+}
+
+@[inline]
+fn py2v_integer_add1(a int, b int, site string, operation string) int {
+	max := int(9223372036854775807)
+	min := -max - 1
+	if (b > 0 && a > max - b) || (b < 0 && a < min - b) { py2v_integer_overflow1(site, operation) }
+	return a + b
+}
+
+@[inline]
+fn py2v_integer_mul1(a int, b int, site string, operation string) int {
+	max := int(9223372036854775807)
+	min := -max - 1
+	if (a > 0 && ((b > 0 && a > max / b) || b < min / a)) || (a < 0 && ((b > 0 && a < min / b) || (b < 0 && a < max / b))) {
+		py2v_integer_overflow1(site, operation)
+	}
+	return a * b
 }
 
 fn main() {

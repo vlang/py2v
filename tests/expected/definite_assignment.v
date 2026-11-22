@@ -10,7 +10,7 @@ fn branches(enabled bool) []int {
 	} else {
 		values = [3]
 	}
-	return values.map(it + 1)
+	return values.map(py2v_integer_add1(it, 1, 'definite_assignment.py:6', 'addition'))
 }
 
 fn handlers() []int {
@@ -18,7 +18,7 @@ fn handlers() []int {
 	values = [4]
 	// except handlers are not translated: see the TODO(py2v) note above
 	//   except ValueError: 1 statement(s) need an `or { ... }` equivalent
-	return values.map(it + 1)
+	return values.map(py2v_integer_add1(it, 1, 'definite_assignment.py:14', 'addition'))
 }
 
 fn certain_loop() []int {
@@ -26,7 +26,7 @@ fn certain_loop() []int {
 	for count in [6] {
 		values = [count]
 	}
-	return values.map(it + 1)
+	return values.map(py2v_integer_add1(it, 1, 'definite_assignment.py:20', 'addition'))
 }
 
 fn terminating(enabled bool) []int {
@@ -36,7 +36,7 @@ fn terminating(enabled bool) []int {
 	} else {
 		values = [9]
 	}
-	return values.map(it + 1)
+	return values.map(py2v_integer_add1(it, 1, 'definite_assignment.py:28', 'addition'))
 }
 
 fn while_break() []int {
@@ -45,7 +45,22 @@ fn while_break() []int {
 		values = [10]
 		break
 	}
-	return values.map(it + 1)
+	return values.map(py2v_integer_add1(it, 1, 'definite_assignment.py:35', 'addition'))
+}
+
+@[noreturn]
+fn py2v_integer_overflow1(site string, operation string) {
+	flush_stdout()
+	eprintln('py2v_integer_overflow: ${site}: ${operation} exceeds the V int range')
+	exit(1)
+}
+
+@[inline]
+fn py2v_integer_add1(a int, b int, site string, operation string) int {
+	max := int(9223372036854775807)
+	min := -max - 1
+	if (b > 0 && a > max - b) || (b < 0 && a < min - b) { py2v_integer_overflow1(site, operation) }
+	return a + b
 }
 
 fn main() {

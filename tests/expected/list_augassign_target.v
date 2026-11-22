@@ -17,15 +17,16 @@ fn index() int {
 fn main_func() {
 	a := pyrt.list_ref[int]([1])
 	mut rows := pyrt.list_ref[&pyrt.ListRef[int]]([a])
-	mut py2v_container2 := &(rows.items)
+	mut py2v_list4 := unsafe { rows }
+	mut py2v_container2 := &py2v_list4.items
 	py2v_index3 := index()
-	mut py2v_old4 := (*py2v_container2)[if py2v_index3 < 0 {
+	mut py2v_old5 := (*py2v_container2)[if py2v_index3 < 0 {
 		py2v_container2.len + py2v_index3
 	} else {
 		py2v_index3
 	}]
-	py2v_old4.items << replace(rows)
-	(*py2v_container2)[if py2v_index3 < 0 { py2v_container2.len + py2v_index3 } else { py2v_index3 }] = py2v_old4
+	py2v_old5.items << replace(rows)
+	(*py2v_container2)[if py2v_index3 < 0 { py2v_container2.len + py2v_index3 } else { py2v_index3 }] = py2v_old5
 	println('${a.items.str()} ${rows.items[0].items.str()}')
 }
 

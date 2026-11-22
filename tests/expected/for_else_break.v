@@ -61,7 +61,7 @@ fn main_func() {
 	mut n := 5
 	mut py2v_broke11 := false
 	for n > 0 {
-		n -= 1
+		n = py2v_integer_sub1(n, 1, 'for_else_break.py:28', 'subtraction')
 		if n == 2 {
 			println('stopped at ${n}')
 			py2v_broke11 = true
@@ -73,7 +73,7 @@ fn main_func() {
 	}
 	mut k := 0
 	for k < 3 {
-		k += 1
+		k = py2v_integer_add1(k, 1, 'for_else_break.py:37', 'addition')
 	}
 	println('counted ${k}')
 }
@@ -87,6 +87,29 @@ fn py2v_range_next1(current int, stop int, step int) int {
 		return stop
 	}
 	return current + step
+}
+
+@[noreturn]
+fn py2v_integer_overflow1(site string, operation string) {
+	flush_stdout()
+	eprintln('py2v_integer_overflow: ${site}: ${operation} exceeds the V int range')
+	exit(1)
+}
+
+@[inline]
+fn py2v_integer_sub1(a int, b int, site string, operation string) int {
+	max := int(9223372036854775807)
+	min := -max - 1
+	if (b > 0 && a < min + b) || (b < 0 && a > max + b) { py2v_integer_overflow1(site, operation) }
+	return a - b
+}
+
+@[inline]
+fn py2v_integer_add1(a int, b int, site string, operation string) int {
+	max := int(9223372036854775807)
+	min := -max - 1
+	if (b > 0 && a > max - b) || (b < 0 && a < min - b) { py2v_integer_overflow1(site, operation) }
+	return a + b
 }
 
 fn main() {

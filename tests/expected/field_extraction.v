@@ -13,7 +13,10 @@ fn (mut self Slots) init(name_ string) {
 }
 
 fn (mut self Slots) bump(name_ string) string {
-	self.size += 1
+	mut py2v_receiver1 := &self
+	py2v_old2 := py2v_receiver1.size
+	py2v_aug_result3 := py2v_integer_add1(py2v_old2, 1, 'field_extraction.py:12', 'addition')
+	py2v_receiver1.size = py2v_aug_result3
 	return self.name_
 }
 
@@ -68,7 +71,10 @@ fn (mut self LateAssignment) init() {
 }
 
 fn (mut self LateAssignment) add(by int) int {
-	self.count += by
+	mut py2v_receiver4 := &self
+	py2v_old5 := py2v_receiver4.count
+	py2v_aug_result6 := py2v_integer_add1(py2v_old5, by, 'field_extraction.py:42', 'addition')
+	py2v_receiver4.count = py2v_aug_result6
 	return self.count
 }
 
@@ -82,7 +88,22 @@ fn use() int {
 	s := py2v_new_slots('a')
 	d := py2v_new_derived('b')
 	mut l := py2v_new_late_assignment()
-	return s.size + l.add(1) + py2v_text_length1(d.label())
+	return py2v_integer_add1(int(py2v_integer_add1(s.size, l.add(1), 'field_extraction.py:50', 'addition')), py2v_text_length1(d.label()), 'field_extraction.py:50', 'addition')
+}
+
+@[noreturn]
+fn py2v_integer_overflow1(site string, operation string) {
+	flush_stdout()
+	eprintln('py2v_integer_overflow: ${site}: ${operation} exceeds the V int range')
+	exit(1)
+}
+
+@[inline]
+fn py2v_integer_add1(a int, b int, site string, operation string) int {
+	max := int(9223372036854775807)
+	min := -max - 1
+	if (b > 0 && a > max - b) || (b < 0 && a < min - b) { py2v_integer_overflow1(site, operation) }
+	return a + b
 }
 
 fn py2v_text_length1(text string) int {

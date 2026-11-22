@@ -655,28 +655,6 @@ for refusal in [
 		failures << fail_line('FAIL', name, '')
 	}
 }
-for refusal in [
-	['list_box_range_refusal', '[1, 1099511627776]', 'py2v: runtime integer does not fit'],
-] {
-	refusal_source := os.join_path(cases_dir, refusal[0] + '.py')
-	refusal_translation := os.exec([py2v, refusal_source])
-	refusal_v := os.join_path(execution_root, refusal[0] + '.v')
-	os.write_file(refusal_v, refusal_translation.output) or { panic(err) }
-	refusal_run := run_generated(refusal_v)
-	refusal_python := os.exec([python, '-X', 'utf8', '-I', refusal_source])
-	name := 'list identity: ${refusal[0]} refusal'
-	if refusal_translation.exit_code == 0 && refusal_python.exit_code == 0
-		&& refusal_python.output.trim_space() == refusal[1]
-		&& refusal_run.exit_code != 0 && refusal_run.output.contains(refusal[2]) {
-		report('PASS', name, '')
-		passed++
-	} else {
-		report('FAIL', name, '')
-		println(refusal_run.output)
-		failed++
-		failures << fail_line('FAIL', name, '')
-	}
-}
 os.rmdir_all(execution_root) or { panic(err) }
 
 // Definite assignment must preserve both Python results and unproven paths.

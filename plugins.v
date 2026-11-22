@@ -369,22 +369,17 @@ fn visit_bool(mut t VTranspiler, node Call, args []string) (string, bool) {
 }
 
 // Handle int() call
-fn visit_int(node Call, args []string) (string, bool) {
+fn visit_int(mut t VTranspiler, node Call, args []string) (string, bool) {
 	if args.len == 0 {
 		return '0', true
 	}
-	// Check if argument is a string - V uses '42'.int() syntax
-	if node.args.len > 0 {
-		if node.args[0] is Constant {
-			c := node.args[0] as Constant
-			if c.value is string {
-				return '${as_receiver(args[0])}.int()', true
-			}
-		}
-		ann := get_v_annotation(node.args[0])
-		if ann == 'string' {
-			return '${as_receiver(args[0])}.int()', true
-		}
+	typ := t.infer_expr_type(node.args[0])
+	if typ == 'string' {
+		return t.parse_native_integer(node, args[0], '10'), true
+	}
+	if typ in ['f32', 'f64', 'float'] {
+		arg := if typ == 'f32' { 'f64(${args[0]})' } else { args[0] }
+		return t.checked_integer('from_float', [arg], node.loc), true
 	}
 	return 'int(${args[0]})', true
 }
@@ -504,32 +499,20 @@ fn visit_round(args []string) (string, bool, string) {
 	return 'math.round(${args[0]})', true, 'math'
 }
 
-// Handle floor() call
-fn visit_floor(args []string) (string, bool, string) {
-	return 'int(math.floor(${args[0]}))', true, 'math'
-}
-
 // Handle pow() call
-fn visit_pow(args []string) (string, bool, string) {
-	return 'math.pow(${args[0]}, ${args[1]})', true, 'math'
-}
-
-// sum_start_has_no_call reports whether a start is built only from names, constants and operators.
-fn sum_start_has_no_call(e Expr) bool {
-	return match e {
-		Constant, Name { true }
-		UnaryOp { sum_start_has_no_call(*e.operand) }
-		BinOp { sum_start_has_no_call(*e.left) && sum_start_has_no_call(*e.right) }
-		else { false }
+fn visit_pow(mut t VTranspiler, node Call, args []string) (string, bool, string) {
+	if args.len != 2 { return '', false, '' }
+	if code := t.native_integer_binary('Pow', node.args[0], node.args[1], args[0], args[1],
+		node.loc) {
+		return code, true, ''
 	}
+	return 'math.pow(${args[0]}, ${args[1]})', true, 'math'
 }
 
 // Handle sum() call
 fn visit_sum(mut t VTranspiler, node Call, args []string) (string, bool, string) {
 	total := 'arrays.sum(${args[0]}) or { 0 }'
-	// sum(xs, start) and sum(xs, start=start): with floats on either side, a fold seeded with
-	// the start, which adds in Python's order; with ints on both, where the order cannot
-	// matter, the start added to the total. Any other start is dropped as before.
+	// Accumulate in Python order, starting from the supplied seed.
 	mut starts := []Expr{}
 	if node.args.len == 2 && node.keywords.len == 0 {
 		starts << node.args[1]
@@ -537,20 +520,57 @@ fn visit_sum(mut t VTranspiler, node Call, args []string) (string, bool, string)
 		&& (node.keywords[0].arg or { '' }) == 'start' {
 		starts << node.keywords[0].value
 	}
-	if starts.len == 1 && sum_start_has_no_call(starts[0]) {
+	elem_type := t.infer_iter_elem_type(node.args[0])
+	sequence := node.args[0]
+	if sequence is List && sequence.elts.all(it is Constant && t.has_builtin_type(it)) {
+		mut float_at := -1
+		for i, element in sequence.elts {
+			if t.infer_expr_type(element) in ['f32', 'f64', 'float'] {
+				float_at = i
+				break
+			}
+		}
+		if float_at >= 0 && sequence.elts.any(native_integer_type(t.infer_expr_type(it))) {
+			mut seed := '0'
+			mut split := float_at
+			if starts.len == 1 {
+				start_type := t.infer_expr_type(starts[0])
+				if start_type in ['f32', 'f64', 'float'] {
+					split = 0
+					seed = args[1]
+				} else if native_integer_type(start_type) {
+					seed = native_integer_input(start_type, args[1])
+				} else {
+					return t.unsupported_site('mixed_sum', 'mixed sum needs a numeric start', ''), true, ''
+				}
+			}
+			if split > 0 {
+				before := sequence.elts[..split].map('int(${t.visit_expr(it)})')
+				seed = t.checked_integer('sum', ['[${before.join(', ')}]', seed], node.loc)
+			}
+			after := sequence.elts[split..].map('f64(${t.visit_expr(it)})')
+			helper := t.runtime_helper('sum_float_suffix')
+			return '${helper}([${after.join(', ')}], f64(${seed}))', true, ''
+		}
+	}
+	if native_integer_type(elem_type) && starts.len == args.len - 1 {
+		if starts.len == 0 {
+			return t.checked_integer('sum', [args[0], '0'], node.loc), true, ''
+		}
+		start_type := t.infer_expr_type(starts[0])
+		if native_integer_type(start_type) {
+			start := native_integer_input(start_type, args[1])
+			return t.checked_integer('sum', [args[0], start], node.loc), true, ''
+		}
+	}
+	if starts.len == 1 {
 		start := starts[0]
 		// -s has the type of s
 		typed := if start is UnaryOp && start.op is USub { *start.operand } else { start }
 		start_type := t.infer_expr_type(typed)
-		elem_type := t.infer_iter_elem_type(node.args[0])
 		if start_type == 'f64' || (start_type in ['int', 'i64'] && elem_type == 'f64') {
 			// an f64 seed, so that an int start does not make the fold an int one
 			return 'arrays.fold(${args[0]}, f64(${args[1]}), |acc, x| acc + x)', true, 'arrays'
-		}
-		if start_type in ['int', 'i64'] && elem_type == 'int' {
-			// not an int seed: V may hold floats in a list whose first element is an int
-			added := if start is BinOp { '(${args[1]})' } else { args[1] }
-			return '(${total}) + ${added}', true, 'arrays'
 		}
 	}
 	return total, true, 'arrays'
@@ -615,6 +635,9 @@ fn sort_key_call(mut t VTranspiler, key Expr, elem string, operand string) ?stri
 				return '${operand}.len'
 			}
 			if key.id == 'abs' && elem in ['int', 'i64', 'f64'] {
+				if native_integer_type(elem) {
+					return t.checked_integer('abs', [native_integer_input(elem, operand)], key.loc)
+				}
 				t.add_using('math')
 				return 'math.abs(${operand})'
 			}
@@ -773,8 +796,14 @@ fn map_conversion(mut t VTranspiler, node Call, args []string) ?string {
 	if !iter_type.starts_with('[]') {
 		return none
 	}
-	conversion := map_element_conversion((node.args[0] as Name).id, iter_type[2..]) or {
-		return none
+	class := (node.args[0] as Name).id
+	elem := iter_type[2..]
+	conversion := if class == 'int' && elem == 'string' {
+		t.parse_native_integer(node, 'it', '10')
+	} else if class == 'int' && elem in ['f64', 'f32'] {
+		t.checked_integer('from_float', ['f64(it)'], node.loc)
+	} else {
+		map_element_conversion(class, elem) or { return none }
 	}
 	return '${receiver}.map(${conversion})'
 }
@@ -783,10 +812,7 @@ fn map_element_conversion(class string, elem string) ?string {
 	is_int := elem in ['int', 'i64']
 	match class {
 		'int' {
-			if elem == 'string' {
-				return 'it.int()'
-			}
-			if is_int || elem == 'f64' || elem == 'bool' {
+			if is_int || elem == 'bool' {
 				return 'int(it)'
 			}
 		}
@@ -1114,9 +1140,11 @@ fn visit_divmod(mut t VTranspiler, node Call, args []string) (string, bool) {
 	// literal constant is inferred as `f64`. Both select a native float pair.
 	left := if left_raw == 'float' { 'f64' } else { left_raw }
 	right := if right_raw == 'float' { 'f64' } else { right_raw }
-	kind := if is_v_int_type(left) && is_v_int_type(right) {
-		'divmod_int'
-	} else if left in ['int', 'f64', 'f32'] && right in ['int', 'f64', 'f32'] {
+	if native_integer_type(left) && native_integer_type(right) {
+		return t.checked_integer('divmod', [native_integer_input(left, args[0]),
+			native_integer_input(right, args[1])], node.loc), true
+	}
+	kind := if left in ['int', 'f64', 'f32'] && right in ['int', 'f64', 'f32'] {
 		'divmod_float'
 	} else {
 		'divmod_value'
@@ -1206,7 +1234,7 @@ fn dispatch_builtin_impl(mut t VTranspiler, fname string, node Call, args []stri
 			return DispatchResult{code, handled, ''}
 		}
 		'int' {
-			code, handled := visit_int(node, args)
+			code, handled := visit_int(mut t, node, args)
 			return DispatchResult{code, handled, ''}
 		}
 		'float' {
@@ -1233,6 +1261,17 @@ fn dispatch_builtin_impl(mut t VTranspiler, fname string, node Call, args []stri
 			if node.args.len == 1 && t.has_u64_bits(node.args[0]) {
 				return DispatchResult{args[0], true, ''}
 			}
+			if node.args.len == 1 {
+				typ := t.infer_expr_type(node.args[0])
+				if unresolved_native_type(typ) {
+					code := t.generic_integer('abs', '', args[0], '', node.loc)
+					return DispatchResult{code, true, ''}
+				}
+				if native_integer_type(typ) && t.native_integer_bounds(node.args[0]).low == native_integer_min {
+					code := t.checked_integer('abs', [native_integer_input(typ, args[0])], node.loc)
+					return DispatchResult{code, true, ''}
+				}
+			}
 			code, handled, using := visit_abs(args)
 			return DispatchResult{code, handled, using}
 		}
@@ -1245,19 +1284,28 @@ fn dispatch_builtin_impl(mut t VTranspiler, fname string, node Call, args []stri
 				if typ == 'bool' {
 					return DispatchResult{'int(${args[0]})', true, ''}
 				}
+				if typ in ['f32', 'f64', 'float'] {
+					code := t.checked_integer('from_float', ['math.round_to_even(${as_f64_argument(typ, args[0])})'], node.loc)
+					return DispatchResult{code, true, 'math'}
+				}
 			}
 			code, handled, using := visit_round(args)
 			return DispatchResult{code, handled, using}
 		}
 		'floor' {
-			code, handled, using := visit_floor(args)
-			return DispatchResult{code, handled, using}
+			typ := t.infer_expr_type(node.args[0])
+			if native_integer_type(typ) {
+				return DispatchResult{native_integer_input(typ, args[0]), true, ''}
+			}
+			code := t.checked_integer('from_float', ['math.floor(${as_f64_argument(typ, args[0])})'],
+				node.loc)
+			return DispatchResult{code, true, 'math'}
 		}
 		'pow' {
 			if t.has_wide_args(node.args) {
 				return DispatchResult{t.refuse_wide('pow has no proven unsigned result bound'), true, ''}
 			}
-			code, handled, using := visit_pow(args)
+			code, handled, using := visit_pow(mut t, node, args)
 			return DispatchResult{code, handled, using}
 		}
 		'sum' {

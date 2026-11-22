@@ -21,7 +21,9 @@ fn swap_ends(mut values []int) []int {
 fn drain(mut stack []int) int {
 	mut total := 0
 	for stack.len > 0 {
-		total += stack.pop()
+		py2v_old1 := total
+		py2v_aug_result2 := py2v_integer_add1(py2v_old1, stack.pop(), 'mut_inplace_methods.py:20', 'addition')
+		total = py2v_aug_result2
 	}
 	return total
 }
@@ -41,7 +43,7 @@ fn group(numbers []int) map[int][]int {
 fn collect(prefix int, mut out []int) {
 	out << prefix
 	if prefix < 3 {
-		collect(prefix + 1, mut out)
+		collect(py2v_integer_add1(prefix, 1, 'mut_inplace_methods.py:37', 'addition'), mut out)
 	}
 }
 
@@ -49,6 +51,21 @@ fn gather() []int {
 	mut found := []int{}
 	collect(1, mut found)
 	return found
+}
+
+@[noreturn]
+fn py2v_integer_overflow1(site string, operation string) {
+	flush_stdout()
+	eprintln('py2v_integer_overflow: ${site}: ${operation} exceeds the V int range')
+	exit(1)
+}
+
+@[inline]
+fn py2v_integer_add1(a int, b int, site string, operation string) int {
+	max := int(9223372036854775807)
+	min := -max - 1
+	if (b > 0 && a > max - b) || (b < 0 && a < min - b) { py2v_integer_overflow1(site, operation) }
+	return a + b
 }
 
 fn main() {

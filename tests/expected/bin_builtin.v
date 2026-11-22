@@ -31,7 +31,7 @@ fn main_func() {
 
 fn py2v_bin1(n i64) string {
 	if n < 0 {
-		return '-0b' + strconv.format_int(-n, 2)
+		return '-0b' + strconv.format_uint(u64(-(n + 1)) + 1, 2)
 	}
 	return '0b' + strconv.format_int(n, 2)
 }

@@ -2,7 +2,7 @@
 # Rows starting with @ bound totals: encoded identifiers in tests/expected, and the size of the runtime library in pyrt/.
 # Lower with `v run tests/purity.vsh -lower`. Raise a line only by hand, with the reason in the pull request.
 @encoded-identifiers	15
-@runtime-lines	12302
+@runtime-lines	12305
 @runtime-public-functions	635
 @runtime-unsafe	70
 annotation_as_text.v	2

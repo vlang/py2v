@@ -1,6 +1,5 @@
 module main
 
-import math
 import arrays
 
 pub struct Item {
@@ -25,7 +24,7 @@ fn heavy(item Item) int {
 }
 
 fn negate(x int) int {
-	return -x
+	return py2v_integer_neg1(x, 'sorted_key_reverse.py:12')
 }
 
 fn main_func() {
@@ -34,14 +33,14 @@ fn main_func() {
 	println((fn (a []int) []int {
 		mut b := a.clone()
 		arrays.stable_sort(mut b, fn (lhs int, rhs int) bool {
-			return math.abs(lhs) < math.abs(rhs)
+			return py2v_integer_abs1(lhs, 'sorted_key_reverse.py:18') < py2v_integer_abs1(rhs, 'sorted_key_reverse.py:18')
 		})
 		return b
 	}(nums)))
 	println((fn (a []int) []int {
 		mut b := a.clone()
 		arrays.stable_sort(mut b, fn (lhs int, rhs int) bool {
-			return math.abs(rhs) < math.abs(lhs)
+			return py2v_integer_abs1(rhs, 'sorted_key_reverse.py:19') < py2v_integer_abs1(lhs, 'sorted_key_reverse.py:19')
 		})
 		return b
 	}(nums)))
@@ -91,7 +90,9 @@ fn main_func() {
 	}
 	nums.sort(a > b)
 	println(nums)
-	arrays.stable_sort(mut nums, fn (lhs int, rhs int) bool { return math.abs(lhs) < math.abs(rhs) })
+	arrays.stable_sort(mut nums, fn (lhs int, rhs int) bool {
+		return py2v_integer_abs1(lhs, 'sorted_key_reverse.py:35') < py2v_integer_abs1(rhs, 'sorted_key_reverse.py:35')
+	})
 	println(nums)
 	arrays.stable_sort(mut words, fn (lhs string, rhs string) bool { return lhs.len < rhs.len })
 	println(words)
@@ -109,6 +110,25 @@ fn main_func() {
 	for item in items {
 		println('${item.name} ${item.weight}')
 	}
+}
+
+@[noreturn]
+fn py2v_integer_overflow1(site string, operation string) {
+	flush_stdout()
+	eprintln('py2v_integer_overflow: ${site}: ${operation} exceeds the V int range')
+	exit(1)
+}
+
+@[inline]
+fn py2v_integer_neg1(value int, site string) int {
+	if value == -9223372036854775807 - 1 { py2v_integer_overflow1(site, 'negation') }
+	return -value
+}
+
+@[inline]
+fn py2v_integer_abs1(value int, site string) int {
+	if value == -9223372036854775807 - 1 { py2v_integer_overflow1(site, 'absolute value') }
+	return if value < 0 { -value } else { value }
 }
 
 fn main() {

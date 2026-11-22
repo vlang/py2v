@@ -33,7 +33,7 @@ import os
 import unicodedata
 from dataclasses import dataclass, field
 from string import Formatter
-from typing import Any, Dict, List, Optional, Set, Tuple, Union
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple, Union
 
 import infer
 import symbols
@@ -2494,6 +2494,18 @@ def _node_to_dict(node: ast.AST, mutable_vars: Set[str],
 
     elif isinstance(node, (ast.For, ast.AsyncFor)):
         result["target"] = _node_to_dict(node.target, mutable_vars, redefined, ctx)
+        # A loop name with a single binding site and no captures can only be
+        # assigned by range itself. Its mutable flag also counts loop iteration.
+        if (isinstance(node, ast.For) and isinstance(node.target, ast.Name)
+                and isinstance(node.iter, ast.Call) and isinstance(node.iter.func, ast.Name)
+                and node.iter.func.id == "range" and getattr(node.iter.func, "_binding", None) is None
+                and ctx.table is not None):
+            target_binding = getattr(node.target, "_binding", None)
+            if target_binding is not None:
+                info = ctx.table.bindings[target_binding]
+                if (info.scope != 0 and not info.captured and not info.declared_global
+                        and not info.declared_nonlocal and len(info.sites) == 1):
+                    result["target"]["api"] = "__py2v__.range_induction"
         result["iter"] = _node_to_dict(node.iter, mutable_vars, redefined, ctx)
         result["body"] = [_node_to_dict(n, mutable_vars, redefined, ctx) for n in node.body]
         result["orelse"] = [_node_to_dict(n, mutable_vars, redefined, ctx) for n in node.orelse]
@@ -2749,6 +2761,7 @@ def _node_to_dict(node: ast.AST, mutable_vars: Set[str],
         # float beside ints. Do not turn formerly integral native lists into
         # f64 lists until the mixed-element representation can preserve tags.
         if (isinstance(node, ast.List) and node.elts
+                and not getattr(node, "_numeric_sum_display", False)
                 and all(isinstance(e, ast.Constant)
                         and (type(e.value) is int or type(e.value) is float
                              and e.value.is_integer() and -(1 << 31) <= e.value < (1 << 31))
@@ -6995,6 +7008,12 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
                                 node._api = "__py2v__.modular_pow"
                             else:
                                 node._api = "__py2v__.unsupported_keyword_evaluation_order"
+                if (node.func.id == "sum" and node.args and isinstance(node.args[0], ast.List)
+                        and all(isinstance(e, ast.Constant) and type(e.value) in (bool, int, float)
+                                for e in node.args[0].elts)
+                        and any(type(e.value) is float for e in node.args[0].elts)):
+                    node.args[0]._numeric_sum_display = True
+                    node._runtime_annotation = "float"
                 if (node.func.id == "format" and len(node.args) == 2 and not node.keywords
                         and isinstance(node.args[1], ast.Constant)
                         and isinstance(node.args[1].value, str)
@@ -7007,6 +7026,9 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
                         node.keywords.clear()
                     if len(node.args) == 2 and not node.keywords:
                         node._api = "__py2v__.int_base"
+                    elif (len(node.args) == 1 and not node.keywords
+                          and _truth_kind(node.args[0], facts) == "str"):
+                        node._api = "__py2v__.int_text"
             mark_integer_key_max(node)
             if is_native_list_index and isinstance(node.func, ast.Attribute):
                 return native_call("native_list_index", [node.func.value, node.args[0]], node, "int")
@@ -7271,7 +7293,7 @@ def _v_spelling(name: str) -> str:
 
 _RUNTIME_ERROR_HELPERS = ("__py2v__.checked_text_index", "__py2v__.native_list_index",
                           "__py2v__.enum_lookup", "__py2v__.max_integer_key")
-_VALUE_ERROR_HELPERS = ("__py2v__.int_base", "__py2v__.modular_pow")
+_VALUE_ERROR_HELPERS = ("__py2v__.int_base", "__py2v__.int_text", "__py2v__.modular_pow")
 
 
 def _plan_error_propagation(tree: ast.Module, table: Optional[symbols.SymbolTable],
@@ -7688,11 +7710,13 @@ def _plan_error_propagation(tree: ast.Module, table: Optional[symbols.SymbolTabl
 
     fallible: Set[int] = set()
 
-    def can_fail(call: ast.AST) -> bool:
+    def can_fail(call: ast.AST, include_int_text: bool = True) -> bool:
         if isinstance(call, ast.Raise):
             # a bare `raise` is planned with the handler it stands in
             return call.exc is not None and raised_class(call) != ""
         api_name = getattr(call, "_api", "")
+        if api_name == "__py2v__.int_text":
+            return include_int_text
         if (api_name.startswith(("__py2v__.checked_", "__py2v__.native_value_error_"))
                 or api_name in _RUNTIME_ERROR_HELPERS + _VALUE_ERROR_HELPERS):
             return True
@@ -7713,8 +7737,30 @@ def _plan_error_propagation(tree: ast.Module, table: Optional[symbols.SymbolTabl
             pending.extend(ast.iter_child_nodes(node))
         return found
 
-    def needs_result(fn: ast.FunctionDef) -> bool:
-        if any(can_fail(c) for c in calls_in(fn.body, False)):
+    def local_targets(calls: Iterable[ast.AST]) -> Set[int]:
+        return {binding for call in calls if isinstance(call, ast.Call)
+                and isinstance(call.func, ast.Name)
+                and (binding := getattr(call.func, "_binding", None)) in candidates}
+
+    # Decimal conversion can report an uncaught ValueError in plain V. A caller
+    # that can catch it needs the same result/guard path as explicit-base parsing.
+    scopes = [tree] + [n for n in ast.walk(tree)
+                     if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
+    reaches_handler: Set[int] = set()
+    pending_targets: Set[int] = set()
+    for scope in scopes:
+        for node in tries_of(scope.body):
+            pending_targets.update(local_targets(body_calls(node)))
+    while pending_targets:
+        binding_id = pending_targets.pop()
+        if binding_id in reaches_handler:
+            continue
+        reaches_handler.add(binding_id)
+        pending_targets.update(local_targets(calls_in(candidates[binding_id].body, False))
+                               - reaches_handler)
+
+    def needs_result(binding_id: int, fn: ast.FunctionDef) -> bool:
+        if any(can_fail(c, binding_id in reaches_handler) for c in calls_in(fn.body, False)):
             return True
         # a guarded failure that no handler of its `try` is sure to take leaves the function
         for t in tries_of(fn.body):
@@ -7728,7 +7774,7 @@ def _plan_error_propagation(tree: ast.Module, table: Optional[symbols.SymbolTabl
         return False
 
     while True:
-        grown = {b for b, fn in candidates.items() if b not in fallible and needs_result(fn)}
+        grown = {b for b, fn in candidates.items() if b not in fallible and needs_result(b, fn)}
         if not grown:
             break
         fallible |= grown
