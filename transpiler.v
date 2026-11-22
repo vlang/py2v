@@ -8401,7 +8401,7 @@ fn (mut t VTranspiler) visit_call_at(original Call, permit WideSink, permit_type
 		node = ordered
 		bound = true
 	}
-	if original.keywords.len > 0 && original.func is Name {
+	if !t.emit_pub && original.keywords.len > 0 && original.func is Name {
 		callee := (original.func as Name).id
 		if callee in t.module_functions && !bound {
 			mut effects := false
