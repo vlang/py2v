@@ -29,7 +29,7 @@ fn drain(mut stack []int) int {
 fn group(numbers []int) map[int][]int {
 	mut groups := map[int][]int{}
 	for number in numbers {
-		key := math.modulo_floored(number, 3)
+		key := math.modulo_floored[int](number, 3)
 		if (key !in groups) {
 			groups[key] = []
 		}

@@ -60,7 +60,7 @@ fn generator_with_condition(ch chan int) {
 	} else {
 		i > py2v_range_stop6
 	}; i = py2v_range_next1(i, py2v_range_stop6, py2v_range_step7) {
-		if math.modulo_floored(i, 2) == 0 {
+		if math.modulo_floored[int](i, 2) == 0 {
 			ch <- i
 		}
 	}

@@ -6,17 +6,49 @@ module main
 // Handle range() call
 // Note: range expressions like `0..n` only work in for loops, not as expressions
 // When used as an expression, we return an array initializer
-fn visit_range(args []string) (string, bool) {
+fn visit_range(mut t VTranspiler, node Call, args []string) (string, bool) {
+	if args.len !in [1, 2, 3] || args.len != node.args.len || node.keywords.len > 0 {
+		return '', false
+	}
+	if args.len == 3 && is_literal_zero_range_step(node.args[2]) {
+		return t.unsupported_site('range_zero_step', 'range() step must not be zero', ''), true
+	}
+	if node.args.any(it is Starred) {
+		if args.len == 1 && node.args[0] is Starred {
+			operand := (node.args[0] as Starred).value
+			if !t.infer_expr_type(operand).starts_with('(') {
+				t.runtime_helper('range_bound')
+				t.runtime_helper('range_array')
+				unpack := t.runtime_helper('range_unpack')
+				return '${unpack}(${args[0].trim_string_left('...')})', true
+			}
+		}
+		return t.unsupported_site('range_unpack', 'range needs one unpacked native array', ''), true
+	}
 	if args.len == 1 {
-		return '[]int{len: ${args[0]}, init: index}', true
+		if _ := literal_word(node.args[0]) {
+			return '[]int{len: ${args[0]}, init: index}', true
+		}
 	}
 	if args.len == 2 {
-		return '[]int{len: ${paren_left(args[1], 4)} - ${paren_right(args[0], 4)}, init: index + ${paren_right(args[0], 4)}}', true
+		if start := literal_word(node.args[0]) {
+			if stop := literal_word(node.args[1]) {
+				if stop >= start {
+					return '[]int{len: ${args[1]} - ${args[0]}, init: index + ${args[0]}}', true
+				}
+			}
+		}
 	}
-	if args.len == 3 {
-		return '[]int{len: (${args[1]} - ${args[0]}) / ${args[2]}, init: ${args[0]} + index * ${args[2]}}', true
+	convert := t.runtime_helper('range_bound')
+	mut bounds := []string{cap: 3}
+	if args.len == 1 {
+		bounds << '0'
 	}
-	return '', false
+	bounds << args.map('${convert}(${it})')
+	if args.len < 3 {
+		bounds << '1'
+	}
+	return '${t.runtime_helper('range_array')}(${bounds.join(', ')})', true
 }
 
 // Handle print() call
@@ -1162,7 +1194,7 @@ fn dispatch_builtin_impl(mut t VTranspiler, fname string, node Call, args []stri
 			if t.has_wide_args(node.args) {
 				return DispatchResult{t.refuse_wide('range may narrow an unsigned bound'), true, ''}
 			}
-			code, handled := visit_range(args)
+			code, handled := visit_range(mut t, node, args)
 			return DispatchResult{code, handled, ''}
 		}
 		'print' {
@@ -1205,6 +1237,15 @@ fn dispatch_builtin_impl(mut t VTranspiler, fname string, node Call, args []stri
 			return DispatchResult{code, handled, using}
 		}
 		'round' {
+			if node.args.len == 1 && node.keywords.len == 0 {
+				typ := t.infer_expr_type(node.args[0])
+				if is_v_int_type(typ) {
+					return DispatchResult{args[0], true, ''}
+				}
+				if typ == 'bool' {
+					return DispatchResult{'int(${args[0]})', true, ''}
+				}
+			}
 			code, handled, using := visit_round(args)
 			return DispatchResult{code, handled, using}
 		}

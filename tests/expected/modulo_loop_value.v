@@ -13,7 +13,7 @@ fn main_func() {
 		py2v_range_item4 > py2v_range_stop2
 	}; py2v_range_item4 = py2v_range_next1(py2v_range_item4, py2v_range_stop2, py2v_range_step3) {
 		py2v_ident_5f := py2v_range_item4
-		println(math.modulo_floored(py2v_ident_5f - 7, 3))
+		println(math.modulo_floored[int](py2v_ident_5f - 7, 3))
 	}
 }
 

@@ -10,7 +10,7 @@ fn main_func() {
 	println((a + b) * c)
 	println(a - (b - c))
 	println(a - (b + c))
-	println(a * math.modulo_floored(b, c))
+	println(a * math.modulo_floored[int](b, c))
 	println(math.modulo_floored(a + b, b + c + 1))
 	println(-(a - b) * c)
 	println(~(a + b))

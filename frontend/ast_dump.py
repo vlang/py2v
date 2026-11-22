@@ -6968,6 +6968,23 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
             is_callable = (not isinstance(node.func, ast.Attribute) and dynamic(node.func)
                            and not node.keywords and not any(isinstance(a, ast.Starred) for a in node.args))
             self.generic_visit(node)
+            if (isinstance(node.func, ast.Name)
+                    and getattr(node.func, "_binding", None) is None and not has_star_import
+                    and not any(isinstance(arg, ast.Starred) for arg in node.args)):
+                if node.func.id == "pow" and len(node.args) == 3 and not node.keywords:
+                    node._api = "__py2v__.modular_pow"
+                if (node.func.id == "format" and len(node.args) == 2 and not node.keywords
+                        and isinstance(node.args[1], ast.Constant)
+                        and isinstance(node.args[1].value, str)
+                        and node.args[1].value.endswith(("b", "o", "x", "X"))):
+                    node._api = "__py2v__.format_radix"
+                if node.func.id == "int":
+                    if (len(node.args) == 1 and len(node.keywords) == 1
+                            and node.keywords[0].arg == "base"):
+                        node.args.append(node.keywords[0].value)
+                        node.keywords.clear()
+                    if len(node.args) == 2 and not node.keywords:
+                        node._api = "__py2v__.int_base"
             mark_integer_key_max(node)
             if is_native_list_index and isinstance(node.func, ast.Attribute):
                 return native_call("native_list_index", [node.func.value, node.args[0]], node, "int")
@@ -7411,7 +7428,8 @@ def _plan_error_propagation(tree: ast.Module, table: Optional[symbols.SymbolTabl
             return call.exc is not None and raised_class(call) != ""
         api_name = getattr(call, "_api", "")
         if api_name in ("__py2v__.enum_lookup", "__py2v__.max_integer_key",
-                         "__py2v__.checked_text_index", "__py2v__.native_list_index"):
+                         "__py2v__.checked_text_index", "__py2v__.native_list_index",
+                         "__py2v__.modular_pow", "__py2v__.int_base"):
             return True
         entry = api.get(api_name) or api.get("__pyrt__." + api_name)
         if entry and entry.get("raises"):
