@@ -498,6 +498,9 @@ fn visit_round(args []string) (string, bool, string) {
 // Handle pow() call
 fn visit_pow(mut t VTranspiler, node Call, args []string) (string, bool, string) {
 	if args.len != 2 { return '', false, '' }
+	if is_zero_numeric_literal(node.args[0]) && is_negative_numeric_literal(node.args[1]) {
+		return t.unsupported_site('negative_zero_power', 'zero to a negative power raises a catchable Python ZeroDivisionError', ''), true, ''
+	}
 	if code := t.native_integer_binary('Pow', node.args[0], node.args[1], args[0], args[1],
 		node.loc, false) {
 		return code, true, ''

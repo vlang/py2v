@@ -446,6 +446,7 @@ pub fn (mut t VTranspiler) visit_module(node Module) string {
 	mut hoisted_body := t.hoist_module_fns(node.body, mut nested_fndefs)
 	t.integer_return_inputs = map[string][]int{}
 	find_growth_calls(hoisted_body, false, mut t.integer_return_inputs)
+	propagate_growth_calls(hoisted_body, mut t.integer_return_inputs)
 	t.numeric_array_results = map[string]bool{}
 	t.numeric_scalar_results = map[string]bool{}
 	t.recursive_int_results = map[string]bool{}
@@ -941,6 +942,14 @@ fn (mut t VTranspiler) integer_helper_declaration(kind string, name string) stri
 			return 'fn ${name}(a Py2vNumber, b Py2vNumber) Py2vNumber {\n' +
 				'\tif a is int && b is int { return Py2vNumber(a - b) }\n' +
 				'\treturn Py2vNumber(a.as_float() - b.as_float())\n}'
+		}
+		'numeric_type_name' {
+			return 'fn ${name}(value Py2vNumber) string {\n' +
+				"\treturn match value {\n\t\tf64 { 'float' }\n\t\tint { 'int' }\n\t}\n}"
+		}
+		'numeric_box' {
+			return 'fn ${name}(value Py2vNumber) pyrt.Value {\n' +
+				'\treturn match value {\n\t\tf64 { pyrt.box(value) }\n\t\tint { pyrt.box(value) }\n\t}\n}'
 		}
 		'numeric_as_float' {
 			return 'fn (value Py2vNumber) as_float() f64 {\n' +
@@ -1753,6 +1762,10 @@ fn (mut t VTranspiler) native_integer_bounds(expr Expr) NativeIntegerBounds {
 	if value := literal_signed_integer(expr) {
 		return NativeIntegerBounds{value, value}
 	}
+	if expr is Constant && expr.value is bool {
+		value := i64(int(expr.value))
+		return NativeIntegerBounds{value, value}
+	}
 	if expr is Call && expr.func is Name && expr.func.id == 'len'
 		&& expr.args.len == 1 && expr.keywords.len == 0 && 'len' !in t.func_return_types
 		&& !t.is_bound_in_scope('len') {
@@ -1845,7 +1858,12 @@ fn reads_integer_update(expr Expr, names []string) bool {
 		}
 		UnaryOp { reads_integer_update(*expr.operand, names) }
 		Subscript { reads_integer_update(*expr.value, names) }
-		Call { expr.args.any(reads_integer_update(it, names)) }
+		Attribute {
+			expr.value is Name && '${(expr.value as Name).id}.${expr.attr}' in names
+		}
+		Call {
+			expr.args.any(reads_integer_update(it, names)) || expr.keywords.any(reads_integer_update(it.value, names))
+		}
 		else { false }
 	}
 }
@@ -1853,6 +1871,13 @@ fn reads_integer_update(expr Expr, names []string) bool {
 fn growth_targets(target Expr) []string {
 	return match target {
 		Subscript { growth_targets(*target.value) }
+		Attribute {
+			if target.value is Name {
+				['${(target.value as Name).id}.${target.attr}']
+			} else {
+				[]string{}
+			}
+		}
 		else { for_target_names(target) }
 	}
 }
@@ -1898,7 +1923,7 @@ fn find_growth_calls(stmts []Stmt, in_loop bool, mut inputs map[string][]int) {
 				if !in_loop || stmt.targets.len != 1 || stmt.targets[0] !is Name { continue }
 				target := stmt.targets[0] as Name
 				value := *stmt.value
-				if value is Call && value.func is Name && value.keywords.len == 0 {
+				if value is Call && value.func is Name {
 					for i, arg in value.args {
 						if arg is Name && arg.id == target.id && i !in inputs[value.func.id] {
 							inputs[value.func.id] << i
@@ -1908,6 +1933,144 @@ fn find_growth_calls(stmts []Stmt, in_loop bool, mut inputs map[string][]int) {
 			}
 			else {}
 		}
+	}
+}
+
+// Map keyword calls back to formal argument positions before propagating
+// recurrence information into function bodies. A reordered keyword call must
+// not be treated as the source expression's positional argument order.
+fn find_growth_keyword_calls(stmts []Stmt, in_loop bool, formals map[string][]string, mut inputs map[string][]int) {
+	for stmt in stmts {
+		match stmt {
+			FunctionDef {
+				find_growth_keyword_calls(stmt.body, false, formals, mut inputs)
+			}
+			For, While {
+				find_growth_keyword_calls(stmt.body, true, formals, mut inputs)
+				find_growth_keyword_calls(stmt.orelse, in_loop, formals, mut inputs)
+			}
+			If {
+				find_growth_keyword_calls(stmt.body, in_loop, formals, mut inputs)
+				find_growth_keyword_calls(stmt.orelse, in_loop, formals, mut inputs)
+			}
+			Assign {
+				if !in_loop || stmt.targets.len != 1 || stmt.targets[0] !is Name {
+					continue
+				}
+				target := (stmt.targets[0] as Name).id
+				value := *stmt.value
+				if value is Call && value.func is Name {
+					name := (value.func as Name).id
+					names := formals[name]
+					for keyword in value.keywords {
+						keyword_name := keyword.arg or { continue }
+						if keyword.value is Name && keyword.value.id == target {
+							index := names.index(keyword_name)
+							if index >= 0 && index !in inputs[name] {
+								inputs[name] << index
+							}
+						}
+					}
+				}
+			}
+			else {}
+		}
+	}
+}
+
+// Mark a callee's parameters when a growing integer flows through forwarding
+// functions. Repeat to a fixed point, so the outer loop need not call the
+// arithmetic function directly.
+fn forward_growth_call(expr Expr, watched []string, formals map[string][]string, mut inputs map[string][]int) bool {
+	if expr !is Call { return false }
+	call := expr as Call
+	if call.func !is Name { return false }
+	name := (call.func as Name).id
+	mut changed := false
+	for index, arg in call.args {
+		current := inputs[name]
+		if reads_integer_update(arg, watched) && index !in current {
+			inputs[name] << index
+			changed = true
+		}
+	}
+	for keyword in call.keywords {
+		keyword_name := keyword.arg or { continue }
+		index := formals[name].index(keyword_name)
+		current := inputs[name]
+		if index >= 0 && reads_integer_update(keyword.value, watched) && index !in current {
+			inputs[name] << index
+			changed = true
+		}
+	}
+	return changed
+}
+
+// A forwarded integer can be returned under an if/else branch or while loop.
+// Only parameter reads are considered; the callee still decides the arithmetic
+// operation, and unchecked callers cannot reclassify a parameter as bounded.
+fn forward_growth_in_body(body []Stmt, watched []string, formals map[string][]string, mut inputs map[string][]int) bool {
+	mut changed := false
+	for stmt in body {
+		match stmt {
+			Return {
+				value := stmt.value or { continue }
+				if forward_growth_call(*value, watched, formals, mut inputs) { changed = true }
+			}
+			Assign {
+				if forward_growth_call(*stmt.value, watched, formals, mut inputs) { changed = true }
+			}
+			If {
+				if forward_growth_in_body(stmt.body, watched, formals, mut inputs) {
+					changed = true
+				}
+				if forward_growth_in_body(stmt.orelse, watched, formals, mut inputs) {
+					changed = true
+				}
+			}
+			For, While {
+				if forward_growth_in_body(stmt.body, watched, formals, mut inputs) {
+					changed = true
+				}
+				if forward_growth_in_body(stmt.orelse, watched, formals, mut inputs) {
+					changed = true
+				}
+			}
+			else {}
+		}
+	}
+	return changed
+}
+
+fn propagate_growth_calls(stmts []Stmt, mut inputs map[string][]int) {
+	mut functions := []FunctionDef{}
+	mut formals := map[string][]string{}
+	for stmt in stmts {
+		if stmt is FunctionDef {
+			functions << stmt
+			mut names := []string{}
+			for arg in stmt.args.posonlyargs { names << arg.arg }
+			for arg in stmt.args.args { names << arg.arg }
+			for arg in stmt.args.kwonlyargs { names << arg.arg }
+			formals[stmt.name] = names
+		}
+	}
+	find_growth_keyword_calls(stmts, false, formals, mut inputs)
+	for _ in 0 .. functions.len {
+		mut changed := false
+		for function in functions {
+			mut watched := []string{}
+			names := formals[function.name]
+			current := inputs[function.name]
+			for index in current {
+				if index < names.len { watched << names[index] }
+			}
+			if watched.len == 0 { continue }
+			if forward_growth_in_body(function.body, watched, formals, mut inputs) {
+				changed = true
+			}
+		}
+		if !changed { break }
 	}
 }
 
@@ -2076,6 +2239,27 @@ fn as_f64_argument(typ string, code string) string {
 	} else {
 		'f64(${code})'
 	}
+}
+
+// A zero base and a negative numeric exponent raise Python ZeroDivisionError.
+// A native floating-point power would instead print infinity, so refuse the
+// statically known exception until this catchable Python operation is modeled.
+fn is_zero_numeric_literal(expr Expr) bool {
+	if value := literal_signed_integer(expr) { return value == 0 }
+	if expr is Constant && expr.value is f64 { return expr.value == 0.0 }
+	if expr is UnaryOp && (expr.op is USub || expr.op is UAdd) {
+		return is_zero_numeric_literal(expr.operand)
+	}
+	return false
+}
+
+fn is_negative_numeric_literal(expr Expr) bool {
+	if value := literal_signed_integer(expr) { return value < 0 }
+	if expr is UnaryOp && expr.op is USub && expr.operand is Constant {
+		c := expr.operand as Constant
+		if c.value is f64 { return c.value > 0.0 }
+	}
+	return false
 }
 
 // is_nonzero_int_literal reports whether `expr` is an int literal other than 0, with or
@@ -8028,6 +8212,17 @@ pub fn (mut t VTranspiler) visit_binop(node BinOp) string {
 		}
 	}
 
+	if node.op is Pow && is_zero_numeric_literal(*node.left)
+		&& is_negative_numeric_literal(*node.right) {
+		return t.unsupported_site('negative_zero_power', 'zero to a negative power raises a catchable Python ZeroDivisionError', '')
+	}
+	if node.op is LShift || node.op is RShift {
+		if shift := literal_signed_integer(*node.right) {
+			if shift < 0 {
+				return t.unsupported_site('negative_shift_count', 'negative shifts raise a catchable Python ValueError', '')
+			}
+		}
+	}
 	if node.op !is Mod && node.left !is List && node.right !is List {
 		if code := t.native_integer_binary(get_op_type(node.op), *node.left, *node.right, left,
 			right, node.loc, false) {
@@ -9209,10 +9404,19 @@ fn (mut t VTranspiler) visit_call_at(original Call, permit WideSink, permit_type
 	// string conversion is exact and needs no runtime or boxing.
 	if original.func is Attribute && original.args.len == 1 && original.keywords.len == 0 {
 		func := original.func as Attribute
-		if func.attr in ['str', 'repr'] && func.value is Name
+		if func.attr == 'type_name' && func.value is Name
 			&& (func.value as Name).id == 'pyrt'
-			&& (t.has_u64_bits(original.args[0]) || t.has_large_integer(original.args[0])) {
-			return '${as_receiver(t.visit_expr_at(original.args[0], .decimal_text, ''))}.str()'
+			&& t.infer_expr_type(original.args[0]) == 'Py2vNumber' {
+			return '${t.runtime_helper('numeric_type_name')}(${t.visit_expr(original.args[0])})'
+		}
+		if func.attr in ['str', 'repr'] && func.value is Name
+			&& (func.value as Name).id == 'pyrt' {
+			if t.infer_expr_type(original.args[0]) == 'Py2vNumber' {
+				return '${as_receiver(t.visit_expr(original.args[0]))}.str()'
+			}
+			if t.has_u64_bits(original.args[0]) || t.has_large_integer(original.args[0]) {
+				return '${as_receiver(t.visit_expr_at(original.args[0], .decimal_text, ''))}.str()'
+			}
 		}
 	}
 	if original.func is Attribute && original.args.len == 0 && original.keywords.len == 0
@@ -9433,6 +9637,10 @@ fn (mut t VTranspiler) visit_call_at(original Call, permit WideSink, permit_type
 			arg_str = typ + t.visit_expr(arg)
 		} else if i < declared_params.len {
 			arg_str = t.integer_boundary(arg, arg_str, declared_params[i])
+		}
+		if param_type in ['Any', 'pyrt.Value'] && t.infer_expr_type(arg) == 'Py2vNumber' {
+			t.add_using('pyrt')
+			arg_str = '${t.runtime_helper('numeric_box')}(${arg_str})'
 		}
 		if param_type == '[]Py2vNumber' {
 			if arg is List {
@@ -13733,6 +13941,12 @@ fn (mut t VTranspiler) infer_expr_type(expr Expr) string {
 					val_type = 'Any'
 				}
 				return 'map[${key_type}]${val_type}'
+			}
+			return ''
+		}
+		ListComp {
+			if expr.elt is IfExp && t.is_numeric_choice(expr.elt) {
+				return '[]Py2vNumber'
 			}
 			return ''
 		}

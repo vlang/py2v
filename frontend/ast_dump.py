@@ -3844,6 +3844,68 @@ def _lower_scalar_aliases(tree: ast.Module, table: symbols.SymbolTable) -> None:
                     and getattr(node, "_binding", None) in local_wide):
                 node._native_unsigned_constant = True
 
+    # Fold a constant expression as a whole when its final value fits native
+    # int but an intermediate would overflow. Folding the children first would
+    # wrongly refuse `(1 << 62) * 2 // 2`, although its result fits. Walk
+    # iteratively to avoid introducing a deep-AST recursion failure.
+    parents: Dict[int, Tuple[ast.AST, str, Optional[int]]] = {}
+    nodes = list(ast.walk(tree))
+    for parent in nodes:
+        for field, value in ast.iter_fields(parent):
+            if isinstance(value, ast.expr):
+                parents[id(value)] = (parent, field, None)
+            elif isinstance(value, list):
+                for index, element in enumerate(value):
+                    if isinstance(element, ast.expr):
+                        parents[id(element)] = (parent, field, index)
+    for node in nodes:
+        if not isinstance(node, ast.BinOp):
+            continue
+        # Bit masks and class defaults participate in unsigned/native alias
+        # representation proofs. A numerically equal folded zero there is
+        # not evidence that the containing storage type is safe.
+        if not isinstance(node.op, (ast.Add, ast.Sub, ast.Mult,
+                                    ast.FloorDiv, ast.Mod, ast.RShift)):
+            continue
+        cursor = node
+        in_typed_storage = False
+        while id(cursor) in parents:
+            cursor = parents[id(cursor)][0]
+            if isinstance(cursor, (ast.AnnAssign, ast.ClassDef)):
+                in_typed_storage = True
+                break
+        if in_typed_storage:
+            continue
+        # Constrain both recursive exact evaluation and its cost. The large
+        # chains that cannot be proven remain under the existing wide guard.
+        descendants = []
+        for item in ast.walk(node):
+            descendants.append(item)
+            if len(descendants) > 128:
+                break
+        if len(descendants) > 128:
+            continue
+        try:
+            final = integer(node)
+            intermediate_wide = any(
+                isinstance(item, (ast.BinOp, ast.UnaryOp)) and item is not node
+                and (part := integer(item)) is not None
+                and not -(2**63) <= part < 2**63
+                for item in descendants)
+        except (RecursionError, OverflowError, ValueError):
+            continue
+        if final is None or not -(2**63) <= final < 2**63 or not intermediate_wide:
+            continue
+        location = parents.get(id(node))
+        if location is None:
+            continue
+        parent, field, index = location
+        replacement = ast.copy_location(ast.Constant(value=final), node)
+        if index is None:
+            setattr(parent, field, replacement)
+        else:
+            getattr(parent, field)[index] = replacement
+
 
 def _lower_unsigned_method_references(tree: ast.Module, table: symbols.SymbolTable) -> None:
     """Use native bit functions for callable declarations with an unsigned parameter."""
