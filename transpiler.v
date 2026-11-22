@@ -30,6 +30,7 @@ mut:
 	func_param_count       map[string]int
 	call_signatures        map[string]FunctionDef
 	module_safe_signatures map[string]FunctionDef
+	module_scalar_defaults map[string]int
 	module_functions       map[string]bool
 	default_import_names   map[string]bool
 	call_before_def        map[string]bool
@@ -334,13 +335,34 @@ pub fn (mut t VTranspiler) visit_module(node Module) string {
 	t.prepare_local_default_names(node)
 	mut signatures := map[string]FunctionDef{}
 	mut module_defs := map[string][]FunctionDef{}
+	t.module_scalar_defaults = map[string]int{}
 	for stmt in node.body {
-		if stmt is FunctionDef {
-			module_defs[stmt.name] << stmt
-			// In a project other files can call the function; this pass cannot see those calls.
-			if !t.emit_pub && bindings[stmt.name] == 1 && bindings['*'] == 0 && stmt.decorator_list.len == 0 {
-				signatures[stmt.name] = stmt
+		match stmt {
+			FunctionDef {
+				module_defs[stmt.name] << stmt
+				// In a project this pass cannot see calls from other files.
+				if !t.emit_pub && bindings[stmt.name] == 1 && bindings['*'] == 0 && stmt.decorator_list.len == 0 {
+					signatures[stmt.name] = stmt
+				}
 			}
+			Assign {
+				if stmt.targets.len == 1 && stmt.targets[0] is Name && call_literal_default(stmt.value) {
+					name := stmt.targets[0].id
+					if name in node.module_consts {
+						t.module_scalar_defaults[name] = stmt.loc.lineno
+					}
+				}
+			}
+			AnnAssign {
+				if stmt.target is Name && stmt.target.id in node.module_consts {
+					if value := stmt.value {
+						if call_literal_default(*value) {
+							t.module_scalar_defaults[stmt.target.id] = stmt.loc.lineno
+						}
+					}
+				}
+			}
+			else {}
 		}
 	}
 	t.call_signatures = signatures
@@ -374,7 +396,7 @@ pub fn (mut t VTranspiler) visit_module(node Module) string {
 			}
 			if call.keywords.len > 0 || (call.args.len < sig.args.posonlyargs.len + sig.args.args.len && sig.args.defaults.len > 0)
 				|| sig.args.kw_defaults.any(it != none) {
-				if _ := t.bind_module_call(call) {} else { rejected = true }
+				if _ := t.bind_module_call(call, false) {} else { rejected = true }
 			}
 		}
 	}
@@ -7964,11 +7986,19 @@ fn call_literal_default(expr Expr) bool {
 	return false
 }
 
-fn (t &VTranspiler) bind_module_call(node Call) ?Call {
+fn (t &VTranspiler) bind_module_call(node Call, allow_local_results bool) ?Call {
 	if node.func !is Name { return none }
 	if t.call_before_def[node.loc.str()] { return none }
+	allow_local_result := allow_local_results && node.keywords.len > 0
 	name := (node.func as Name).id
-	sig := t.call_signatures[name] or { return none }
+	sig := t.call_signatures[name] or {
+		// A different call may have canceled binding across the module. The local result
+		// signature still proves the parameter order for this call.
+		if !allow_local_result { return none }
+		known := t.module_safe_signatures[name] or { return none }
+		if !known.raises { return none }
+		known
+	}
 	if sig.args.posonlyargs.len > 0 || sig.args.vararg != none || sig.args.kwarg != none
 		|| node.args.len > sig.args.args.len || sig.is_generator {
 		return none
@@ -8020,7 +8050,13 @@ fn (t &VTranspiler) bind_module_call(node Call) ?Call {
 			bound << expr
 		} else {
 			expr := defaults[param.arg] or { return none }
-			if !call_literal_default(expr) { return none }
+			if !call_literal_default(expr) {
+				if !allow_local_result || !sig.raises || expr !is Name { return none }
+				// The frontend excludes shadowed and rebound module constants. Require an
+				// earlier scalar initializer so the name denotes the definition-time value.
+				line := t.module_scalar_defaults[expr.id] or { return none }
+				if line >= sig.loc.lineno { return none }
+			}
 			bound << expr
 		}
 	}
@@ -8358,7 +8394,7 @@ fn (mut t VTranspiler) visit_call_at(original Call, permit WideSink, permit_type
 	}
 	mut node := original
 	mut bound := false
-	if direct := t.bind_module_call(original) {
+	if direct := t.bind_module_call(original, true) {
 		node = direct
 		bound = true
 	} else if ordered := t.bind_source_order_call(original) {
@@ -8376,7 +8412,7 @@ fn (mut t VTranspiler) visit_call_at(original Call, permit WideSink, permit_type
 					effects = true
 				}
 			}
-			if effects {
+			if effects || t.module_safe_signatures[callee].raises {
 				return t.unsupported_site('keyword_argument_order', 'unproven local keyword binding and evaluation order', '')
 			}
 		}
