@@ -33,7 +33,7 @@ fn main_func() {
 	r_tail := 10
 	tr := 20
 	println([' r '].map(it.trim_space()))
-	println([1, 2].map(it + r_tail + tr))
+	println([1, 2].map(int(it + r_tail) + tr))
 	println([1].map('r'))
 	println([1, 2].map('r=${it}'))
 	println([py2v_new_box(3)].map(it.it))

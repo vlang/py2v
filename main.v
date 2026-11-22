@@ -160,6 +160,7 @@ fn run() {
 	// Transpile to V
 	mut transpiler := new_transpiler()
 	transpiler.module_name = module_name
+	transpiler.source_file = os.file_name(input_file)
 	v_code := transpiler.visit_module(ast)
 
 	// Format with vfmt
@@ -636,6 +637,7 @@ fn translate_package(python_cmd string, ast_dump string, package_dir string, out
 		t.registry = registry
 		t.current_dotted = key
 		t.current_stem = v_file_stem(info.v_relpath)
+		t.source_file = written[info.v_relpath]
 		t.current_is_package = py_stem_from_path(os.base(key)) == ''
 		t.module_name = info.v_module
 		code := t.visit_module(parsed[key]!)

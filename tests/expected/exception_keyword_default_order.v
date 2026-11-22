@@ -78,7 +78,24 @@ fn combine_py(first int, second int, offset int) !int {
 	if first < 0 {
 		return IError(Py2vErrorValueError{ data: Py2vErrorData{ args: Py2vErrorArgs{ values: [Py2vErrorArg('negative first argument')] } } })
 	}
-	return first * 100 + second * 10 + offset
+	return int(int(py2v_integer_mul1(first, 100, 'exception_keyword_default_order.py:7', 'multiplication')) + int(py2v_integer_mul1(second, 10, 'exception_keyword_default_order.py:7', 'multiplication'))) + offset
+}
+
+@[noreturn]
+fn py2v_integer_overflow1(site string, operation string) {
+	flush_stdout()
+	eprintln('py2v_integer_overflow: ${site}: ${operation} exceeds the V int range')
+	exit(1)
+}
+
+@[inline]
+fn py2v_integer_mul1(a int, b int, site string, operation string) int {
+	max := int(9223372036854775807)
+	min := -max - 1
+	if (a > 0 && ((b > 0 && a > max / b) || b < min / a)) || (a < 0 && ((b > 0 && a < min / b) || (b < 0 && a < max / b))) {
+		py2v_integer_overflow1(site, operation)
+	}
+	return a * b
 }
 
 fn py2v_entry1() ! {

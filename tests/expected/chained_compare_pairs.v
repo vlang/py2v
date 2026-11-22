@@ -49,7 +49,7 @@ fn main_func() {
 		py2v_range_item4 > py2v_range_stop2
 	}; py2v_range_item4 = py2v_range_next1(py2v_range_item4, py2v_range_stop2, py2v_range_step3) {
 		if 10 < n && n < 23 {
-			n += 1
+			n = py2v_integer_add1(n, 1, 'chained_compare_pairs.py:39', 'addition')
 		}
 	}
 	println(n)
@@ -72,6 +72,21 @@ fn py2v_range_next1(current int, stop int, step int) int {
 		return stop
 	}
 	return current + step
+}
+
+@[noreturn]
+fn py2v_integer_overflow1(site string, operation string) {
+	flush_stdout()
+	eprintln('py2v_integer_overflow: ${site}: ${operation} exceeds the V int range')
+	exit(1)
+}
+
+@[inline]
+fn py2v_integer_add1(a int, b int, site string, operation string) int {
+	max := int(9223372036854775807)
+	min := -max - 1
+	if (b > 0 && a > max - b) || (b < 0 && a < min - b) { py2v_integer_overflow1(site, operation) }
+	return a + b
 }
 
 fn main() {

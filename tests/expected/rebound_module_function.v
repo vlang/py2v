@@ -1,4 +1,4 @@
-@[translated]
+@[has_globals]
 module main
 
 __global latest = py2v_branch_736372697074_1

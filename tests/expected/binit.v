@@ -20,9 +20,36 @@ fn bin_it(limits []int, data []int) []int {
 		bins << 0
 	}
 	for d in data {
-		bins[bisect_right(limits, d)] += 1
+		mut py2v_container1 := &bins
+		py2v_index2 := bisect_right(limits, d)
+		py2v_old3 := (*py2v_container1)[if py2v_index2 < 0 {
+			py2v_container1.len + py2v_index2
+		} else {
+			py2v_index2
+		}]
+		py2v_aug_result4 := py2v_integer_add1(py2v_old3, 1, 'binit.py:27', 'addition')
+		(*py2v_container1)[if py2v_index2 < 0 {
+			py2v_container1.len + py2v_index2
+		} else {
+			py2v_index2
+		}] = py2v_aug_result4
 	}
 	return bins
+}
+
+@[noreturn]
+fn py2v_integer_overflow1(site string, operation string) {
+	flush_stdout()
+	eprintln('py2v_integer_overflow: ${site}: ${operation} exceeds the V int range')
+	exit(1)
+}
+
+@[inline]
+fn py2v_integer_add1(a int, b int, site string, operation string) int {
+	max := int(9223372036854775807)
+	min := -max - 1
+	if (b > 0 && a > max - b) || (b < 0 && a < min - b) { py2v_integer_overflow1(site, operation) }
+	return a + b
 }
 
 fn main() {

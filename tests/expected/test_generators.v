@@ -1,7 +1,5 @@
 module main
 
-import math
-
 fn simple_generator(ch chan int) {
 	defer { ch.close() }
 	ch <- 1
@@ -14,7 +12,7 @@ fn generator_with_type(ch chan int) {
 	mut x := 0
 	for x < 5 {
 		ch <- x
-		x += 1
+		x = py2v_integer_add1(x, 1, 'test_generators.py:16', 'addition')
 	}
 }
 
@@ -29,7 +27,7 @@ fn generator_with_args(a int, b int, ch chan i64) {
 	} else {
 		i > py2v_range_stop2
 	}; i = py2v_range_next1(i, py2v_range_stop2, py2v_range_step3) {
-		ch <- i * 2
+		ch <- py2v_integer_mul1(i, 2, 'test_generators.py:22', 'multiplication')
 	}
 }
 
@@ -60,7 +58,7 @@ fn generator_with_condition(ch chan int) {
 	} else {
 		i > py2v_range_stop6
 	}; i = py2v_range_next1(i, py2v_range_stop6, py2v_range_step7) {
-		if math.modulo_floored[int](i, 2) == 0 {
+		if i % 2 == 0 {
 			ch <- i
 		}
 	}
@@ -69,6 +67,21 @@ fn generator_with_condition(ch chan int) {
 fn test_generator_calls() {
 	gen1 := simple_generator()
 	gen2 := generator_with_args(1, 5)
+}
+
+@[noreturn]
+fn py2v_integer_overflow1(site string, operation string) {
+	flush_stdout()
+	eprintln('py2v_integer_overflow: ${site}: ${operation} exceeds the V int range')
+	exit(1)
+}
+
+@[inline]
+fn py2v_integer_add1(a int, b int, site string, operation string) int {
+	max := int(9223372036854775807)
+	min := -max - 1
+	if (b > 0 && a > max - b) || (b < 0 && a < min - b) { py2v_integer_overflow1(site, operation) }
+	return a + b
 }
 
 fn py2v_range_next1(current int, stop int, step int) int {
@@ -80,4 +93,14 @@ fn py2v_range_next1(current int, stop int, step int) int {
 		return stop
 	}
 	return current + step
+}
+
+@[inline]
+fn py2v_integer_mul1(a int, b int, site string, operation string) int {
+	max := int(9223372036854775807)
+	min := -max - 1
+	if (a > 0 && ((b > 0 && a > max / b) || b < min / a)) || (a < 0 && ((b > 0 && a < min / b) || (b < 0 && a < max / b))) {
+		py2v_integer_overflow1(site, operation)
+	}
+	return a * b
 }

@@ -1,6 +1,6 @@
 module main
 
-const py2v_numeric_1_800 = 1 << 8
+const py2v_numeric_1_800 = 256
 
 const py2v_numeric_py2v_numeric_1_800 = 11
 

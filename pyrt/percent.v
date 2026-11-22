@@ -171,7 +171,7 @@ fn percent_value(value Value, spec string, width int, precision int, left bool, 
             if spec in ['o', 'x', 'X'] { return raise('TypeError', '%${spec} format: an integer is required, not float') }
             if float_is_nan(value) { return raise('ValueError', 'cannot convert float NaN to integer') }
             if float_is_inf(value) { return raise('OverflowError', 'cannot convert float infinity to integer') }
-            if value < int_float_lower || value >= int_float_upper { return integer_overflow() }
+            if value < int_float_lower || value >= int_float_upper { integer_overflow('float to integer conversion', @FILE_LINE) }
             integer = i64(value)
         } else {
             needed := if spec in ['o', 'x', 'X'] { 'an integer' } else { 'a real number' }

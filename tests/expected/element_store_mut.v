@@ -51,7 +51,7 @@ fn main_func() {
 	println(counts['x'])
 	mut grid := [[1, 2], [3, 4]]
 	grid[0][1] = 5
-	grid[1][0] *= 3
+	grid[1][0] = py2v_integer_mul1(grid[1][0], 3, 'element_store_mut.py:28', 'multiplication')
 	println(grid)
 	mut b := py2v_new_box(pyrt.list_ref[int]([1, 2]))
 	b.put()
@@ -65,6 +65,23 @@ fn main_func() {
 	}
 	lists['a'][1] = 9
 	println(lists['a'])
+}
+
+@[noreturn]
+fn py2v_integer_overflow1(site string, operation string) {
+	flush_stdout()
+	eprintln('py2v_integer_overflow: ${site}: ${operation} exceeds the V int range')
+	exit(1)
+}
+
+@[inline]
+fn py2v_integer_mul1(a int, b int, site string, operation string) int {
+	max := int(9223372036854775807)
+	min := -max - 1
+	if (a > 0 && ((b > 0 && a > max / b) || b < min / a)) || (a < 0 && ((b > 0 && a < min / b) || (b < 0 && a < max / b))) {
+		py2v_integer_overflow1(site, operation)
+	}
+	return a * b
 }
 
 fn main() {

@@ -24,14 +24,14 @@ fn main_func() {
 	println(py2v_slice_step1((py2v_bin1(i64(n))).str().runes(), 2, ?int(none), 1).string())
 	println(count_ones(255))
 	println(bits(10))
-	println(py2v_text_length1(py2v_bin1(i64(1 << 10))))
+	println(py2v_text_length1(py2v_bin1(i64(1024))))
 	table := []int{len: 8, init: index}.map(py2v_bin1(i64(it)).count('1'))
 	println(table)
 }
 
 fn py2v_bin1(n i64) string {
 	if n < 0 {
-		return '-0b' + strconv.format_int(-n, 2)
+		return '-0b' + strconv.format_uint(u64(-(n + 1)) + 1, 2)
 	}
 	return '0b' + strconv.format_int(n, 2)
 }

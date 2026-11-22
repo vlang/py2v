@@ -1,7 +1,5 @@
 module main
 
-import math
-
 fn descending(start int, stop int, step int) {
 	py2v_range_start1 := int(start)
 	py2v_range_stop2 := int(stop)
@@ -52,7 +50,7 @@ fn main() {
 	}; value = py2v_range_next1(value, py2v_range_stop8, py2v_range_step9) {
 		println(value)
 	}
-	py2v_range_start10 := int(math.powi(3, 2))
+	py2v_range_start10 := int(9)
 	py2v_range_stop11 := int(11)
 	py2v_range_step12 := int(2)
 	if py2v_range_step12 == 0 { panic('ValueError: range() arg 3 must not be zero') }

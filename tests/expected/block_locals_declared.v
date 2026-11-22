@@ -41,7 +41,7 @@ fn collected(words []string) int {
 
 fn only_inside(n int) int {
 	if n > 3 {
-		local := n * 2
+		local := py2v_integer_mul1(n, 2, 'block_locals_declared.py:33', 'multiplication')
 		return local
 	}
 	return n
@@ -53,6 +53,23 @@ fn py2v_text_length1(text string) int {
 		if (byte & 0xc0) != 0x80 { length++ }
 	}
 	return length
+}
+
+@[noreturn]
+fn py2v_integer_overflow1(site string, operation string) {
+	flush_stdout()
+	eprintln('py2v_integer_overflow: ${site}: ${operation} exceeds the V int range')
+	exit(1)
+}
+
+@[inline]
+fn py2v_integer_mul1(a int, b int, site string, operation string) int {
+	max := int(9223372036854775807)
+	min := -max - 1
+	if (a > 0 && ((b > 0 && a > max / b) || b < min / a)) || (a < 0 && ((b > 0 && a < min / b) || (b < 0 && a < max / b))) {
+		py2v_integer_overflow1(site, operation)
+	}
+	return a * b
 }
 
 fn main() {

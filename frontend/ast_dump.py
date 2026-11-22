@@ -33,7 +33,7 @@ import os
 import unicodedata
 from dataclasses import dataclass, field
 from string import Formatter
-from typing import Any, Dict, List, Optional, Set, Tuple, Union
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple, Union
 
 import infer
 import symbols
@@ -2494,6 +2494,18 @@ def _node_to_dict(node: ast.AST, mutable_vars: Set[str],
 
     elif isinstance(node, (ast.For, ast.AsyncFor)):
         result["target"] = _node_to_dict(node.target, mutable_vars, redefined, ctx)
+        # A loop name with a single binding site and no captures can only be
+        # assigned by range itself. Its mutable flag also counts loop iteration.
+        if (isinstance(node, ast.For) and isinstance(node.target, ast.Name)
+                and isinstance(node.iter, ast.Call) and isinstance(node.iter.func, ast.Name)
+                and node.iter.func.id == "range" and getattr(node.iter.func, "_binding", None) is None
+                and ctx.table is not None):
+            target_binding = getattr(node.target, "_binding", None)
+            if target_binding is not None:
+                info = ctx.table.bindings[target_binding]
+                if (info.scope != 0 and not info.captured and not info.declared_global
+                        and not info.declared_nonlocal and len(info.sites) == 1):
+                    result["target"]["api"] = "__py2v__.range_induction"
         result["iter"] = _node_to_dict(node.iter, mutable_vars, redefined, ctx)
         result["body"] = [_node_to_dict(n, mutable_vars, redefined, ctx) for n in node.body]
         result["orelse"] = [_node_to_dict(n, mutable_vars, redefined, ctx) for n in node.orelse]
@@ -2749,6 +2761,7 @@ def _node_to_dict(node: ast.AST, mutable_vars: Set[str],
         # float beside ints. Do not turn formerly integral native lists into
         # f64 lists until the mixed-element representation can preserve tags.
         if (isinstance(node, ast.List) and node.elts
+                and not getattr(node, "_numeric_sum_display", False)
                 and all(isinstance(e, ast.Constant)
                         and (type(e.value) is int or type(e.value) is float
                              and e.value.is_integer() and -(1 << 31) <= e.value < (1 << 31))
@@ -3831,6 +3844,68 @@ def _lower_scalar_aliases(tree: ast.Module, table: symbols.SymbolTable) -> None:
                     and getattr(node, "_binding", None) in local_wide):
                 node._native_unsigned_constant = True
 
+    # Fold a constant expression as a whole when its final value fits native
+    # int but an intermediate would overflow. Folding the children first would
+    # wrongly refuse `(1 << 62) * 2 // 2`, although its result fits. Walk
+    # iteratively to avoid introducing a deep-AST recursion failure.
+    parents: Dict[int, Tuple[ast.AST, str, Optional[int]]] = {}
+    nodes = list(ast.walk(tree))
+    for parent in nodes:
+        for field, value in ast.iter_fields(parent):
+            if isinstance(value, ast.expr):
+                parents[id(value)] = (parent, field, None)
+            elif isinstance(value, list):
+                for index, element in enumerate(value):
+                    if isinstance(element, ast.expr):
+                        parents[id(element)] = (parent, field, index)
+    for node in nodes:
+        if not isinstance(node, ast.BinOp):
+            continue
+        # Bit masks and class defaults participate in unsigned/native alias
+        # representation proofs. A numerically equal folded zero there is
+        # not evidence that the containing storage type is safe.
+        if not isinstance(node.op, (ast.Add, ast.Sub, ast.Mult,
+                                    ast.FloorDiv, ast.Mod, ast.RShift)):
+            continue
+        cursor = node
+        in_typed_storage = False
+        while id(cursor) in parents:
+            cursor = parents[id(cursor)][0]
+            if isinstance(cursor, (ast.AnnAssign, ast.ClassDef)):
+                in_typed_storage = True
+                break
+        if in_typed_storage:
+            continue
+        # Constrain both recursive exact evaluation and its cost. The large
+        # chains that cannot be proven remain under the existing wide guard.
+        descendants = []
+        for item in ast.walk(node):
+            descendants.append(item)
+            if len(descendants) > 128:
+                break
+        if len(descendants) > 128:
+            continue
+        try:
+            final = integer(node)
+            intermediate_wide = any(
+                isinstance(item, (ast.BinOp, ast.UnaryOp)) and item is not node
+                and (part := integer(item)) is not None
+                and not -(2**63) <= part < 2**63
+                for item in descendants)
+        except (RecursionError, OverflowError, ValueError):
+            continue
+        if final is None or not -(2**63) <= final < 2**63 or not intermediate_wide:
+            continue
+        location = parents.get(id(node))
+        if location is None:
+            continue
+        parent, field, index = location
+        replacement = ast.copy_location(ast.Constant(value=final), node)
+        if index is None:
+            setattr(parent, field, replacement)
+        else:
+            getattr(parent, field)[index] = replacement
+
 
 def _lower_unsigned_method_references(tree: ast.Module, table: symbols.SymbolTable) -> None:
     """Use native bit functions for callable declarations with an unsigned parameter."""
@@ -4467,6 +4542,73 @@ def _truth_kind(node: ast.expr, facts: infer.TypeFacts) -> str:
     if type_id is None:
         type_id = getattr(node, "_type", None)
     return facts.types[type_id]["k"] if type_id is not None else "unknown"
+
+
+def _reduce_masked_recurrences(tree: ast.Module, table: symbols.SymbolTable,
+                               facts: infer.TypeFacts) -> None:
+    """Reduce a local string-loop accumulator when only its low bits escape."""
+    def binding(node: ast.AST) -> Optional[int]:
+        return getattr(node, "_binding", None) if isinstance(node, ast.Name) else None
+
+    for fn in ast.walk(tree):
+        if not isinstance(fn, ast.FunctionDef):
+            continue
+        body = fn.body[1:] if ast.get_docstring(fn, clean=False) is not None else fn.body
+        if len(body) != 3:
+            continue
+        seed, loop, result = body
+        if (not isinstance(seed, ast.Assign) or len(seed.targets) != 1
+                or not isinstance(loop, ast.For) or loop.orelse or len(loop.body) != 1
+                or not isinstance(result, ast.Return) or not isinstance(result.value, ast.BinOp)
+                or not isinstance(result.value.op, ast.BitAnd)):
+            continue
+        target, character = binding(seed.targets[0]), binding(loop.target)
+        mask, initial, change = result.value.right, seed.value, loop.body[0]
+        if (target is None or character is None or target == character
+                or table.bindings[target].captured or table.bindings[target].declared_global
+                or table.bindings[target].declared_nonlocal or binding(result.value.left) != target
+                or not isinstance(mask, ast.Constant) or type(mask.value) is not int
+                or not 0 < mask.value <= 0xFFFFFFFF or mask.value & (mask.value + 1)
+                or not isinstance(initial, ast.Constant) or type(initial.value) is not int
+                or not 0 <= initial.value <= mask.value
+                or not isinstance(loop.iter, ast.Name) or binding(loop.iter) in (target, character)
+                or _truth_kind(loop.iter, facts) != "str"
+                or not isinstance(change, ast.Assign) or len(change.targets) != 1
+                or binding(change.targets[0]) != target):
+            continue
+
+        def maximum(expr: ast.expr) -> Optional[int]:
+            if binding(expr) == target:
+                return mask.value
+            if isinstance(expr, ast.Constant) and type(expr.value) is int:
+                return expr.value if 0 <= expr.value < 1 << 63 else None
+            if (isinstance(expr, ast.Call) and isinstance(expr.func, ast.Name)
+                    and expr.func.id == "ord" and binding(expr.func) is None
+                    and not expr.keywords and len(expr.args) == 1
+                    and binding(expr.args[0]) == character):
+                return 0x10FFFF
+            if not isinstance(expr, ast.BinOp):
+                return None
+            left, right = maximum(expr.left), maximum(expr.right)
+            if left is None or right is None:
+                return None
+            if isinstance(expr.op, ast.Add):
+                bound = left + right
+            elif isinstance(expr.op, ast.Mult):
+                bound = left * right
+            elif (isinstance(expr.op, ast.LShift) and isinstance(expr.right, ast.Constant)
+                  and right < 63):
+                bound = left << right
+            else:
+                return None
+            return bound if bound < 1 << 63 else None
+
+        if maximum(change.value) is not None:
+            # The admitted operations preserve congruence modulo mask + 1.
+            # The local accumulator has no observer before the masked return.
+            bits = ast.copy_location(ast.Constant(value=mask.value), change.value)
+            change.value = ast.copy_location(ast.BinOp(left=change.value, op=ast.BitAnd(),
+                                                       right=bits), change.value)
 
 
 def _literal_scalar(node: ast.expr) -> Optional[ast.Constant]:
@@ -6995,6 +7137,12 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
                                 node._api = "__py2v__.modular_pow"
                             else:
                                 node._api = "__py2v__.unsupported_keyword_evaluation_order"
+                if (node.func.id == "sum" and node.args and isinstance(node.args[0], ast.List)
+                        and all(isinstance(e, ast.Constant) and type(e.value) in (bool, int, float)
+                                for e in node.args[0].elts)
+                        and any(type(e.value) is float for e in node.args[0].elts)):
+                    node.args[0]._numeric_sum_display = True
+                    node._runtime_annotation = "float"
                 if (node.func.id == "format" and len(node.args) == 2 and not node.keywords
                         and isinstance(node.args[1], ast.Constant)
                         and isinstance(node.args[1].value, str)
@@ -7007,6 +7155,9 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
                         node.keywords.clear()
                     if len(node.args) == 2 and not node.keywords:
                         node._api = "__py2v__.int_base"
+                    elif (len(node.args) == 1 and not node.keywords
+                          and _truth_kind(node.args[0], facts) == "str"):
+                        node._api = "__py2v__.int_text"
             mark_integer_key_max(node)
             if is_native_list_index and isinstance(node.func, ast.Attribute):
                 return native_call("native_list_index", [node.func.value, node.args[0]], node, "int")
@@ -7271,7 +7422,7 @@ def _v_spelling(name: str) -> str:
 
 _RUNTIME_ERROR_HELPERS = ("__py2v__.checked_text_index", "__py2v__.native_list_index",
                           "__py2v__.enum_lookup", "__py2v__.max_integer_key")
-_VALUE_ERROR_HELPERS = ("__py2v__.int_base", "__py2v__.modular_pow")
+_VALUE_ERROR_HELPERS = ("__py2v__.int_base", "__py2v__.int_text", "__py2v__.modular_pow")
 
 
 def _plan_error_propagation(tree: ast.Module, table: Optional[symbols.SymbolTable],
@@ -7688,11 +7839,13 @@ def _plan_error_propagation(tree: ast.Module, table: Optional[symbols.SymbolTabl
 
     fallible: Set[int] = set()
 
-    def can_fail(call: ast.AST) -> bool:
+    def can_fail(call: ast.AST, include_int_text: bool = True) -> bool:
         if isinstance(call, ast.Raise):
             # a bare `raise` is planned with the handler it stands in
             return call.exc is not None and raised_class(call) != ""
         api_name = getattr(call, "_api", "")
+        if api_name == "__py2v__.int_text":
+            return include_int_text
         if (api_name.startswith(("__py2v__.checked_", "__py2v__.native_value_error_"))
                 or api_name in _RUNTIME_ERROR_HELPERS + _VALUE_ERROR_HELPERS):
             return True
@@ -7713,8 +7866,30 @@ def _plan_error_propagation(tree: ast.Module, table: Optional[symbols.SymbolTabl
             pending.extend(ast.iter_child_nodes(node))
         return found
 
-    def needs_result(fn: ast.FunctionDef) -> bool:
-        if any(can_fail(c) for c in calls_in(fn.body, False)):
+    def local_targets(calls: Iterable[ast.AST]) -> Set[int]:
+        return {binding for call in calls if isinstance(call, ast.Call)
+                and isinstance(call.func, ast.Name)
+                and (binding := getattr(call.func, "_binding", None)) in candidates}
+
+    # Decimal conversion can report an uncaught ValueError in plain V. A caller
+    # that can catch it needs the same result/guard path as explicit-base parsing.
+    scopes = [tree] + [n for n in ast.walk(tree)
+                     if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
+    reaches_handler: Set[int] = set()
+    pending_targets: Set[int] = set()
+    for scope in scopes:
+        for node in tries_of(scope.body):
+            pending_targets.update(local_targets(body_calls(node)))
+    while pending_targets:
+        binding_id = pending_targets.pop()
+        if binding_id in reaches_handler:
+            continue
+        reaches_handler.add(binding_id)
+        pending_targets.update(local_targets(calls_in(candidates[binding_id].body, False))
+                               - reaches_handler)
+
+    def needs_result(binding_id: int, fn: ast.FunctionDef) -> bool:
+        if any(can_fail(c, binding_id in reaches_handler) for c in calls_in(fn.body, False)):
             return True
         # a guarded failure that no handler of its `try` is sure to take leaves the function
         for t in tries_of(fn.body):
@@ -7728,7 +7903,7 @@ def _plan_error_propagation(tree: ast.Module, table: Optional[symbols.SymbolTabl
         return False
 
     while True:
-        grown = {b for b, fn in candidates.items() if b not in fallible and needs_result(fn)}
+        grown = {b for b, fn in candidates.items() if b not in fallible and needs_result(b, fn)}
         if not grown:
             break
         fallible |= grown
@@ -9870,7 +10045,7 @@ def _declare_block_locals(tree: ast.Module, table: Optional[symbols.SymbolTable]
         for binding_id, found in occurrences.items():
             binding = table.bindings[binding_id]
             fact = known.get(binding_id)
-            if (fact is None or fact.get("declared") is not None or binding.is_param
+            if (fact is None or binding.is_param
                     or binding.declared_global or binding.declared_nonlocal
                     or table.scopes[binding.scope].kind != "function"
                     or getattr(table.scopes[binding.scope], "_node", None) is not fn):
@@ -9879,7 +10054,16 @@ def _declare_block_locals(tree: ast.Module, table: Optional[symbols.SymbolTable]
             blocks, first, stmt = found[0]
             if not blocks or not isinstance(first.ctx, ast.Store):
                 continue
-            if not (isinstance(stmt, ast.Assign) and len(stmt.targets) == 1 and stmt.targets[0] is first):
+            typed_parse = (dynamic_bindings is None and isinstance(stmt, ast.AnnAssign)
+                           and stmt.target is first and isinstance(stmt.annotation, ast.Name)
+                           and stmt.annotation.id == "int" and isinstance(stmt.value, ast.Call)
+                           and isinstance(stmt.value.func, ast.Name) and stmt.value.func.id == "int"
+                           and getattr(stmt.value.func, "_binding", None) is None
+                           and not stmt.value.keywords and len(stmt.value.args) == 1
+                           and _truth_kind(stmt.value.args[0], facts) == "str")
+            if not typed_parse and (fact.get("declared") is not None
+                                    or not isinstance(stmt, ast.Assign)
+                                    or len(stmt.targets) != 1 or stmt.targets[0] is not first):
                 continue  # a loop variable, a `with` name, an unpacking: declared by their own form
             if all(other[:len(blocks)] == blocks for other, _, _ in found):
                 eager = eager_occurrences.get(binding_id, [])
@@ -9894,6 +10078,14 @@ def _declare_block_locals(tree: ast.Module, table: Optional[symbols.SymbolTable]
                     continue  # preserve today's output when assignment is not proven
             type_id = fact.get("assumed", fact.get("inferred"))
             text = _annotation_for_type(facts.types, type_id) if type_id is not None else None
+            if typed_parse:
+                # The guard introduces a V block. Lift only a definitely assigned local.
+                if proven_loads is None:
+                    proven_loads = _definitely_assigned_loads(fn)
+                if any(isinstance(load.ctx, ast.Load) and id(load) not in proven_loads
+                       for _, load, _ in found + eager_occurrences.get(binding_id, [])):
+                    continue
+                text = "int"
             value: Optional[ast.expr] = None
             special_type, default = "", None
             if dynamic_bindings is None and receiver is not None and fields:
@@ -10280,6 +10472,8 @@ def process_file(file_path: str, project: Optional[ProjectFacts] = None) -> str:
     if _lower_colliding_accessors(tree, table, facts):
         table = _resolve_bindings(tree)
         facts = _infer_types(tree, table, project)
+    if table is not None and facts is not None:
+        _reduce_masked_recurrences(tree, table, facts)
     _plan_closures(tree, table, facts)
     _lower_named_dunder_operations(tree, facts)
     _plan_bound_appends(tree, table, facts)

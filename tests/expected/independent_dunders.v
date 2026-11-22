@@ -1,7 +1,5 @@
 module main
 
-import math
-
 pub struct Number {
 pub mut:
 	value int
@@ -40,7 +38,7 @@ fn (self Number) / (other Number) Number {
 }
 
 fn (self Number) py_floor_div(other Number) int {
-	return math.divide_floored(self.value, other.value).quot
+	return py2v_integer_floor_div1(self.value, other.value, 'independent_dunders.py:29')
 }
 
 fn (self Number) + (other Number) Number {
@@ -79,6 +77,14 @@ fn check(a Number, b Number) {
 	println(a.py_pos())
 	println(a.py_invert())
 	println(if a.py_ne(b) { 'True' } else { 'False' })
+}
+
+@[inline]
+fn py2v_integer_floor_div1(a int, b int, _ string) int {
+	if b == 0 { panic('ZeroDivisionError: integer division or modulo by zero') }
+	r := a % b
+	adjust := r != 0 && (r < 0) != (b < 0)
+	return a / b - int(adjust)
 }
 
 fn main() {

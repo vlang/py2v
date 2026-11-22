@@ -18,7 +18,7 @@ type SignedWidth = int
 
 const signed_negative = -1
 
-const signed_small = 1 << 30
+const signed_small = 1073741824
 
 pub struct Board {
 pub mut:

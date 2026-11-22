@@ -76,12 +76,29 @@ fn evaluate_py(a int, b int) !int {
 	if a < 0 {
 		return IError(Py2vErrorValueError{ data: Py2vErrorData{ args: Py2vErrorArgs{ values: [Py2vErrorArg('bad')] } } })
 	}
-	return a * 100 + b
+	return int(py2v_integer_mul1(a, 100, 'exception_keyword_source_order.py:14', 'multiplication')) + b
 }
 
 fn effect(label string, value int) int {
 	println(label)
 	return value
+}
+
+@[noreturn]
+fn py2v_integer_overflow1(site string, operation string) {
+	flush_stdout()
+	eprintln('py2v_integer_overflow: ${site}: ${operation} exceeds the V int range')
+	exit(1)
+}
+
+@[inline]
+fn py2v_integer_mul1(a int, b int, site string, operation string) int {
+	max := int(9223372036854775807)
+	min := -max - 1
+	if (a > 0 && ((b > 0 && a > max / b) || b < min / a)) || (a < 0 && ((b > 0 && a < min / b) || (b < 0 && a < max / b))) {
+		py2v_integer_overflow1(site, operation)
+	}
+	return a * b
 }
 
 fn py2v_entry1() ! {

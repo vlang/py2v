@@ -78,7 +78,7 @@ fn nested() int {
 			py2v_iter_value13 = value_
 			// pass
 		}
-		result += py2v_iter_value13
+		result = py2v_integer_add1(result, py2v_iter_value13, 'loop_target_rebinding.py:35', 'addition')
 	}
 	return result
 }
@@ -92,6 +92,21 @@ fn py2v_range_next1(current int, stop int, step int) int {
 		return stop
 	}
 	return current + step
+}
+
+@[noreturn]
+fn py2v_integer_overflow1(site string, operation string) {
+	flush_stdout()
+	eprintln('py2v_integer_overflow: ${site}: ${operation} exceeds the V int range')
+	exit(1)
+}
+
+@[inline]
+fn py2v_integer_add1(a int, b int, site string, operation string) int {
+	max := int(9223372036854775807)
+	min := -max - 1
+	if (b > 0 && a > max - b) || (b < 0 && a < min - b) { py2v_integer_overflow1(site, operation) }
+	return a + b
 }
 
 fn main() {

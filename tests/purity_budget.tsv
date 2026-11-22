@@ -2,7 +2,7 @@
 # Rows starting with @ bound totals: encoded identifiers in tests/expected, and the size of the runtime library in pyrt/.
 # Lower with `v run tests/purity.vsh -lower`. Raise a line only by hand, with the reason in the pull request.
 @encoded-identifiers	15
-@runtime-lines	12302
+@runtime-lines	12305
 @runtime-public-functions	635
 @runtime-unsafe	70
 annotation_as_text.v	2
@@ -38,7 +38,7 @@ dict_local_any_writes.v	5
 dict_local_inferred_writes.v	5
 dict_widen_local.v	5
 dict_widen_reassign.v	4
-divmod_value.v	10
+divmod_value.v	5
 dynamic_attribute_store.v	19
 dynamic_attributes.v	23
 dynamic_boxed_bytes.v	6
@@ -61,7 +61,7 @@ dynamic_optional.v	7
 dynamic_or_default.v	20
 dynamic_range_bounds.v	1
 dynamic_runtime_returns.v	18
-dynamic_slice_axes.v	7
+dynamic_slice_axes.v	1
 dynamic_stores.v	14
 dynamic_truth.v	10
 dynamic_unpacking.v	30
@@ -73,7 +73,7 @@ empty_set_uncaught.v	3
 env_mapping.v	1
 env_optional.v	6
 equations.v	8
-exception_int_base_error_text.v	2
+exception_int_base_error_text.v	1
 exception_lowering.v	1
 external_dynamic.v	4
 frozenset_annotations.v	10
@@ -84,7 +84,7 @@ getattr_computed_name.v	1
 hello-wuffs.v	2
 independent_dunder_chain.v	1
 infer_ops.v	1
-int_base.v	2
+int_base.v	1
 isinstance_types.v	1
 itertools_basic.v	1
 join_string_iterable.v	14
@@ -139,10 +139,11 @@ named_enum_lookup.v	5
 native_list_index.v	6
 native_map_types.v	11
 nested_untyped_dict.v	19
+numeric_choice_dynamic.v	5
 optional_block_local.v	3
 optional_return_fallible.v	5
 os_path_dirname.v	1
-parameter_bindings.v	7
+parameter_bindings.v	1
 pathlib_path.v	7
 pathlib_runtime.v	4
 pkg_call_defaults/consumer/keyword_only.v	1
@@ -196,7 +197,7 @@ try_except_runtime.v	12
 typing_abc_annotations.v	1
 typing_constructs.v	1
 unresolved_qualified_call.v	5
-unsupported_closure_capture.v	7
+unsupported_closure_capture.v	1
 unsupported_super_value.v	1
 walrus_in_comprehension_element.v	1
 with.v	1

@@ -1,7 +1,6 @@
 module main
 
 import pyrt
-import math
 
 type Any = pyrt.Value
 
@@ -11,7 +10,7 @@ fn append_number_py(values Any, number Any) ! {
 
 fn main_func_py() ! {
 	source := pyrt.list_ref[int]([1])
-	append_number_py(pyrt.box(source), math.powi(2, 40))!
+	append_number_py(pyrt.box(source), int(1099511627776))!
 	println(source.items.str())
 }
 

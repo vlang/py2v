@@ -2,5 +2,5 @@ module py_pkg_guard_class
 
 pub fn total() int {
 	saved := choose
-	return read() + saved(7, 2) + local_read()
+	return int(read() + saved(7, 2)) + local_read()
 }

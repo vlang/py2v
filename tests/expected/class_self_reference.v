@@ -55,7 +55,9 @@ fn (self LinkedList) total() int {
 	mut result := 0
 	mut current := self.head
 	for current != none {
-		result += current.data
+		py2v_old1 := result
+		py2v_aug_result2 := py2v_integer_add1(py2v_old1, current.data, 'class_self_reference.py:36', 'addition')
+		result = py2v_aug_result2
 		current = current.next
 	}
 	return result
@@ -146,7 +148,7 @@ fn tree_sum(node ?&TreeNode) int {
 	if node == none {
 		return 0
 	}
-	return node.value + tree_sum(node.left) + tree_sum(node.right)
+	return int(node.value + tree_sum(node.left)) + tree_sum(node.right)
 }
 
 fn main_func() {
@@ -187,6 +189,21 @@ fn main_func() {
 	}
 	println(child.value)
 	println(tree_sum(parent))
+}
+
+@[noreturn]
+fn py2v_integer_overflow1(site string, operation string) {
+	flush_stdout()
+	eprintln('py2v_integer_overflow: ${site}: ${operation} exceeds the V int range')
+	exit(1)
+}
+
+@[inline]
+fn py2v_integer_add1(a int, b int, site string, operation string) int {
+	max := int(9223372036854775807)
+	min := -max - 1
+	if (b > 0 && a > max - b) || (b < 0 && a < min - b) { py2v_integer_overflow1(site, operation) }
+	return a + b
 }
 
 fn main() {

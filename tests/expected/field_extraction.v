@@ -82,7 +82,7 @@ fn use() int {
 	s := py2v_new_slots('a')
 	d := py2v_new_derived('b')
 	mut l := py2v_new_late_assignment()
-	return s.size + l.add(1) + py2v_text_length1(d.label())
+	return int(s.size + l.add(1)) + py2v_text_length1(d.label())
 }
 
 fn py2v_text_length1(text string) int {

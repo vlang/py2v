@@ -16,7 +16,8 @@ fn main_func() {
 	}
 	mut value := -7.5
 	py2v_old1 := value
-	value = py2v_float_mod1(f64(py2v_old1), f64(3.0))
+	py2v_aug_result2 := py2v_float_mod1(f64(py2v_old1), f64(3.0))
+	value = py2v_aug_result2
 	println(py2v_float_text1(value))
 	println('${py2v_float_text1(py2v_float_mod1(f64(-7), f64(3.5)))} ${py2v_float_text1(py2v_float_mod1(f64(7.5), f64(-3)))}')
 }

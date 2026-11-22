@@ -4,7 +4,7 @@ pub const status_valid = py2v_class_status_valid_1
 pub const status_busy = py2v_class_status_busy_1
 
 const py2v_class_status_valid_1 = 0
-const py2v_class_status_busy_1 = 1 << 3
+const py2v_class_status_busy_1 = 8
 
 pub struct Status {
 }

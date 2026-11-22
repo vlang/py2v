@@ -69,12 +69,29 @@ fn weighted_py(first int, middle int, last int) !int {
 	if middle == 0 {
 		return IError(Py2vErrorValueError{ data: Py2vErrorData{ args: Py2vErrorArgs{ values: [Py2vErrorArg('middle cannot be zero')] } } })
 	}
-	return first * 100 + middle * 10 + last
+	return int(int(py2v_integer_mul1(first, 100, 'fallible_keyword_order.py:4', 'multiplication')) + int(py2v_integer_mul1(middle, 10, 'fallible_keyword_order.py:4', 'multiplication'))) + last
 }
 
 fn score_py(values []int) !int {
 	start := values[0]
 	return weighted_py(-2, start, 3)!
+}
+
+@[noreturn]
+fn py2v_integer_overflow1(site string, operation string) {
+	flush_stdout()
+	eprintln('py2v_integer_overflow: ${site}: ${operation} exceeds the V int range')
+	exit(1)
+}
+
+@[inline]
+fn py2v_integer_mul1(a int, b int, site string, operation string) int {
+	max := int(9223372036854775807)
+	min := -max - 1
+	if (a > 0 && ((b > 0 && a > max / b) || b < min / a)) || (a < 0 && ((b > 0 && a < min / b) || (b < 0 && a < max / b))) {
+		py2v_integer_overflow1(site, operation)
+	}
+	return a * b
 }
 
 fn py2v_entry1() ! {

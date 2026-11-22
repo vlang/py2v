@@ -1,4 +1,4 @@
-@[translated]
+@[has_globals]
 module py_pkg_runtime_binding
 
 __global latest = py2v_branch_706b675f72756e74696d655f62696e64696e672e63686f696365_1

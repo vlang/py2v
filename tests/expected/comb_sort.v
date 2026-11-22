@@ -7,7 +7,7 @@ fn comb_sort(mut seq []int) []int {
 	mut gap := seq.len
 	mut swap := true
 	for gap > 1 || swap {
-		gap = arrays.max([1, int(math.floor(f64(gap) / 1.25))]) or { panic('!') }
+		gap = arrays.max([1, int(math.floor(f64(f64(gap) / 1.25)))]) or { panic('!') }
 		swap = false
 		py2v_range_start1 := int(0)
 		py2v_range_stop2 := int(seq.len - gap)

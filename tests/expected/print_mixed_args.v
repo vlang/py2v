@@ -11,5 +11,5 @@ fn main() {
 	} else {
 		'False'
 	}).str() + ' ' + ('[1, 2]').str())
-	println(((2 + 3) * 4).str() + ' ' + (n - 1).str() + ' ' + ('n=${n}').str())
+	println((20).str() + ' ' + (n - 1).str() + ' ' + ('n=${n}').str())
 }

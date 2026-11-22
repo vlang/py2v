@@ -1,7 +1,5 @@
 module main
 
-import math
-
 fn get_pair() []int {
 	return [1, 2]
 }
@@ -11,7 +9,8 @@ fn get_triple() []int {
 }
 
 fn divmod_custom(a int, b int) []int {
-	return [math.divide_floored(a, b).quot, math.modulo_floored[int](a, b)]
+	return [py2v_integer_floor_div1(a, b, 'multiple_return.py:10'),
+		py2v_integer_mod1(a, b, 'multiple_return.py:10')]
 }
 
 fn main_func() {
@@ -32,6 +31,23 @@ fn main_func() {
 	mut remainder := py2v_unpack3[1]
 	println(quotient)
 	println(remainder)
+}
+
+@[inline]
+fn py2v_integer_floor_div1(a int, b int, _ string) int {
+	if b == 0 { panic('ZeroDivisionError: integer division or modulo by zero') }
+	r := a % b
+	adjust := r != 0 && (r < 0) != (b < 0)
+	return a / b - int(adjust)
+}
+
+@[inline]
+fn py2v_integer_mod1(a int, b int, _ string) int {
+	if b == 0 { panic('ZeroDivisionError: integer modulo by zero') }
+	if b == -1 { return 0 }
+	r := a % b
+	adjust := r != 0 && (r < 0) != (b < 0)
+	return if adjust { r + b } else { r }
 }
 
 fn main() {
