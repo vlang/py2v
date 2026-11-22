@@ -139,6 +139,7 @@ named_enum_lookup.v	5
 native_list_index.v	6
 native_map_types.v	11
 nested_untyped_dict.v	19
+numeric_choice_dynamic.v	5
 optional_block_local.v	3
 optional_return_fallible.v	5
 os_path_dirname.v	1
