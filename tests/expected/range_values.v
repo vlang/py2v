@@ -1,13 +1,14 @@
 module main
 
 import arrays
+import math
 
 fn collect(begin int, end int, step int) []int {
 	return py2v_range_array1(py2v_range_bound1(begin), py2v_range_bound1(end), py2v_range_bound1(step)).clone()
 }
 
 fn from_bounds(bounds []int) int {
-	return arrays.sum(py2v_range_array1(py2v_range_bound1(bounds[0]), py2v_range_bound1(bounds[1]), 1).map(py2v_integer_mul1(it, it, 'range_values.py:6', 'multiplication'))) or { 0 }
+	return py2v_integer_inferred_sum1(py2v_range_array1(py2v_range_bound1(bounds[0]), py2v_range_bound1(bounds[1]), 1).map(py2v_integer_mul1(it, it, 'range_values.py:6', 'multiplication')), 0, 'range_values.py:6')
 }
 
 @[inline]
@@ -59,6 +60,41 @@ fn py2v_integer_mul1(a int, b int, site string, operation string) int {
 		py2v_integer_overflow1(site, operation)
 	}
 	return a * b
+}
+
+@[inline]
+fn py2v_integer_add1(a int, b int, site string, operation string) int {
+	max := int(9223372036854775807)
+	min := -max - 1
+	if (b > 0 && a > max - b) || (b < 0 && a < min - b) { py2v_integer_overflow1(site, operation) }
+	return a + b
+}
+
+fn py2v_integer_sum1[T](items []T, start int, site string) int {
+	$if (T is $int && T !is u64) || T is bool {
+		mut total := start
+		for item in items { total = py2v_integer_add1(total, int(item), site, 'sum') }
+		return total
+	} $else {
+		$compile_error('py2v_unsupported_integer_sum: expected native integer elements')
+	}
+}
+
+fn py2v_integer_inferred_sum1[T](items []T, start int, site string) T {
+	$if T is u64 {
+		$compile_error('py2v_unsupported_wide_integer: sum may exceed u64')
+	} $else $if T is $int {
+		value := py2v_integer_sum1(items, start, site)
+		if value < int(math.minof[T]()) || value > int(math.maxof[T]()) {
+			py2v_integer_overflow1(site, 'integer narrowing')
+		}
+		return T(value)
+	} $else {
+		$if T is $float {
+			if start != 0 { return arrays.fold(items, T(start), |acc, item| acc + item) }
+		}
+		return arrays.sum(items) or { 0 }
+	}
 }
 
 fn py2v_integer_power1(a int, b int, site string) int {

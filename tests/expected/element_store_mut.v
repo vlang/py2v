@@ -31,16 +31,7 @@ fn (mut self Box) put() {
 }
 
 fn (mut self Box) bump() {
-	mut py2v_list3 := unsafe { self.items }
-	mut py2v_container1 := &py2v_list3.items
-	py2v_index2 := 1
-	py2v_old4 := (*py2v_container1)[if py2v_index2 < 0 {
-		py2v_container1.len + py2v_index2
-	} else {
-		py2v_index2
-	}]
-	py2v_aug_result5 := py2v_integer_add1(py2v_old4, 5, 'element_store_mut.py:14', 'addition')
-	(*py2v_container1)[if py2v_index2 < 0 { py2v_container1.len + py2v_index2 } else { py2v_index2 }] = py2v_aug_result5
+	self.items.items[1] = py2v_integer_add1(self.items.items[1], 5, 'element_store_mut.py:14', 'addition')
 }
 
 pub fn py2v_new_box(items &pyrt.ListRef[int]) Box {
@@ -51,24 +42,12 @@ pub fn py2v_new_box(items &pyrt.ListRef[int]) Box {
 
 fn main_func() {
 	mut a := [int(1), 2]
-	mut py2v_container6 := &a
-	py2v_index7 := 0
-	py2v_old8 := (*py2v_container6)[if py2v_index7 < 0 {
-		py2v_container6.len + py2v_index7
-	} else {
-		py2v_index7
-	}]
-	py2v_aug_result9 := py2v_integer_add1(py2v_old8, 1, 'element_store_mut.py:19', 'addition')
-	(*py2v_container6)[if py2v_index7 < 0 { py2v_container6.len + py2v_index7 } else { py2v_index7 }] = py2v_aug_result9
+	a[0] = py2v_integer_add1(a[0], 1, 'element_store_mut.py:19', 'addition')
 	println(a)
 	mut counts := map[string]int{
 		'x': 1
 	}
-	mut py2v_container10 := &counts
-	py2v_index11 := 'x'
-	py2v_old12 := (*py2v_container10)[py2v_index11]
-	py2v_aug_result13 := py2v_integer_add1(py2v_old12, 1, 'element_store_mut.py:23', 'addition')
-	(*py2v_container10)[py2v_index11] = py2v_aug_result13
+	counts['x'] = py2v_integer_add1(counts['x'], 1, 'element_store_mut.py:23', 'addition')
 	println(counts['x'])
 	mut grid := [[1, 2], [3, 4]]
 	grid[0][1] = 5

@@ -1,7 +1,5 @@
 module main
 
-import arrays
-
 fn parse(line string) []int {
 	return py2v_split_whitespace1(line).map((py2v_int_base1(it, 10, 'map_builtin_types.py:2') or { panic('ValueError: ' + err.msg()) })).clone()
 }
@@ -147,13 +145,31 @@ fn py2v_integer_mul1(a int, b int, site string, operation string) int {
 	return a * b
 }
 
+@[inline]
+fn py2v_integer_add1(a int, b int, site string, operation string) int {
+	max := int(9223372036854775807)
+	min := -max - 1
+	if (b > 0 && a > max - b) || (b < 0 && a < min - b) { py2v_integer_overflow1(site, operation) }
+	return a + b
+}
+
+fn py2v_integer_sum1[T](items []T, start int, site string) int {
+	$if (T is $int && T !is u64) || T is bool {
+		mut total := start
+		for item in items { total = py2v_integer_add1(total, int(item), site, 'sum') }
+		return total
+	} $else {
+		$compile_error('py2v_unsupported_integer_sum: expected native integer elements')
+	}
+}
+
 fn main() {
 	println(parse('3 14 15'))
-	println(arrays.sum(parse('1 2 3')) or { 0 })
+	println(py2v_integer_sum1(parse('1 2 3'), 0, 'map_builtin_types.py:23'))
 	println(halves('1.5,2.25'))
 	println(texts([1, 2, 3]))
 	println(whole([1.9, 2.1]))
 	println(pair('6 7'))
 	println([4, 5].map(it.str()).join(' '))
-	println(arrays.sum('1234'.split('').map((py2v_int_base1(it, 10, 'map_builtin_types.py:29') or { panic('ValueError: ' + err.msg()) }))) or { 0 })
+	println(py2v_integer_sum1('1234'.split('').map((py2v_int_base1(it, 10, 'map_builtin_types.py:29') or { panic('ValueError: ' + err.msg()) })), 0, 'map_builtin_types.py:29'))
 }

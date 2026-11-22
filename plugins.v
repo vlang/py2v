@@ -520,8 +520,14 @@ fn visit_sum(mut t VTranspiler, node Call, args []string) (string, bool, string)
 		&& (node.keywords[0].arg or { '' }) == 'start' {
 		starts << node.keywords[0].value
 	}
-	elem_type := t.infer_iter_elem_type(node.args[0])
 	sequence := node.args[0]
+	mut elem_type := t.infer_iter_elem_type(sequence)
+	if elem_type == '' {
+		sequence_type := t.infer_expr_type(sequence)
+		if sequence_type.starts_with('[]') {
+			elem_type = sequence_type[2..]
+		}
+	}
 	if sequence is List && sequence.elts.all(it is Constant && t.has_builtin_type(it)) {
 		mut float_at := -1
 		for i, element in sequence.elts {
@@ -572,6 +578,13 @@ fn visit_sum(mut t VTranspiler, node Call, args []string) (string, bool, string)
 			// an f64 seed, so that an int start does not make the fold an int one
 			return 'arrays.fold(${args[0]}, f64(${args[1]}), |acc, x| acc + x)', true, 'arrays'
 		}
+		if native_integer_type(start_type) {
+			seed := native_integer_input(start_type, args[1])
+			return t.checked_integer('inferred_sum', [args[0], seed], node.loc), true, ''
+		}
+	}
+	if elem_type !in ['f32', 'f64', 'float'] {
+		return t.checked_integer('inferred_sum', [args[0], '0'], node.loc), true, ''
 	}
 	return total, true, 'arrays'
 }

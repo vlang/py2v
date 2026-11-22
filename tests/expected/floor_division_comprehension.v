@@ -11,11 +11,7 @@ fn scaled_copy(source []int, denominator int, scale bool) []int {
 	} else {
 		index > py2v_range_stop2
 	}; index = py2v_range_next1(index, py2v_range_stop2, py2v_range_step3) {
-		mut py2v_container4 := &values
-		py2v_index5 := index
-		py2v_old6 := (*py2v_container4)[py2v_index5]
-		py2v_aug_result7 := py2v_integer_add1(py2v_old6, 1, 'floor_division_comprehension.py:4', 'addition')
-		(*py2v_container4)[py2v_index5] = py2v_aug_result7
+		values[index] = py2v_integer_add1(values[index], 1, 'floor_division_comprehension.py:4', 'addition')
 	}
 	if scale {
 		values = values.map(int(py2v_integer_floor_div1(it, denominator, 'floor_division_comprehension.py:6')))

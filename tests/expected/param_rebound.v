@@ -16,10 +16,7 @@ fn (mut self Counter) add(py2v_amount_in5 int) int {
 	if amount < 0 {
 		amount = 0
 	}
-	mut py2v_receiver6 := &self
-	py2v_old7 := py2v_receiver6.total
-	py2v_aug_result8 := py2v_integer_add1(py2v_old7, amount, 'param_rebound.py:30', 'addition')
-	py2v_receiver6.total = py2v_aug_result8
+	self.total = py2v_integer_add1(self.total, amount, 'param_rebound.py:30', 'addition')
 	return self.total
 }
 

@@ -841,6 +841,11 @@ fn (mut t VTranspiler) require_integer_helper(kind string) string {
 	if kind in ['power', 'sum'] {
 		t.runtime_helper(if kind == 'power' { 'integer_mul' } else { 'integer_add' })
 	}
+	if kind == 'inferred_sum' {
+		t.require_integer_helper('sum')
+		t.add_using('arrays')
+		t.add_using('math')
+	}
 	if kind == 'divmod' {
 		t.runtime_helper('integer_floor_div')
 		t.runtime_helper('integer_mod')
@@ -1014,6 +1019,20 @@ fn (mut t VTranspiler) integer_helper_declaration(kind string, name string) stri
 				'\t\$if (T is \$int && T !is u64) || T is bool {\n' +
 				"\t\tmut total := start\n\t\tfor item in items { total = ${add}(total, int(item), site, 'sum') }\n\t\treturn total\n" +
 				"\t} \$else { \$compile_error('py2v_unsupported_integer_sum: expected native integer elements') }\n}"
+		}
+		'integer_inferred_sum' {
+			sum := t.runtime_helper_name('integer_sum')
+			return 'fn ${name}[T](items []T, start int, site string) T {\n' +
+				'\t\$if T is u64 {\n' +
+				"\t\t\$compile_error('py2v_unsupported_wide_integer: sum may exceed u64')\n" +
+				'\t} \$else \$if T is \$int {\n' +
+				'\t\tvalue := ${sum}(items, start, site)\n' +
+				'\t\tif value < int(math.minof[T]()) || value > int(math.maxof[T]()) {\n' +
+				"\t\t\t${failure}(site, 'integer narrowing')\n\t\t}\n" +
+				'\t\treturn T(value)\n\t} \$else {\n' +
+				'\t\t\$if T is \$float {\n' +
+				'\t\t\tif start != 0 { return arrays.fold(items, T(start), |acc, item| acc + item) }\n' +
+				'\t\t}\n\t\treturn arrays.sum(items) or { 0 }\n\t}\n}'
 		}
 		'integer_factorial' {
 			return '@[inline]\nfn ${name}(value int, site string) int {\n' +
@@ -4299,15 +4318,19 @@ pub fn (mut t VTranspiler) visit_aug_assign(node AugAssign) string {
 		&& may_use_native_integer(t.infer_expr_type(*node.target))
 		&& may_use_native_integer(t.infer_expr_type(node.value))
 	target_expr := *node.target
-	simple_target := match target_expr {
-		Name { !t.runs_no_code(node.value) }
+	rhs_can_run_code := !t.runs_no_code(node.value)
+	// A direct field or plain index needs no temporary pointer when the RHS
+	// cannot change which receiver or index the store addresses.
+	capture_target := match target_expr {
+		Name { rhs_can_run_code }
 		Subscript {
-			target_expr.value is Name || t.augmented_list_owner(*target_expr.value) != none
+			(target_expr.value is Name || t.augmented_list_owner(*target_expr.value) != none)
+				&& (rhs_can_run_code || has_computed_index(target_expr))
 		}
-		Attribute { target_expr.value is Name }
+		Attribute { target_expr.value is Name && rhs_can_run_code }
 		else { false }
 	}
-	if native && simple_target {
+	if native && capture_target {
 		return t.captured_aug_assign(node, op_type)
 	}
 	if op_type == 'Mod' || (op_type in ['Pow', 'FloorDiv'] && has_list_reference(*node.target))
@@ -4324,7 +4347,7 @@ pub fn (mut t VTranspiler) visit_aug_assign(node AugAssign) string {
 	// indices select (`grid[i]` in `grid[f()][g()]`) still comes after all of them.
 	mut prelude := []string{}
 	target_node := if (native || op_type in ['Pow', 'FloorDiv']) && can_hoist_indices(*node.target)
-		&& (has_computed_index(*node.target) || !t.runs_no_code(node.value)) {
+		&& (has_computed_index(*node.target) || rhs_can_run_code) {
 		t.index_once(*node.target, mut prelude)
 	} else {
 		*node.target
@@ -4332,7 +4355,7 @@ pub fn (mut t VTranspiler) visit_aug_assign(node AugAssign) string {
 	target := t.visit_expr(target_node)
 	val := t.visit_expr(node.value)
 	mut old := target
-	if native && !t.runs_no_code(node.value) {
+	if native && rhs_can_run_code {
 		old = t.new_tmp('old')
 		prelude << '${old} := ${target}'
 	}
@@ -7661,7 +7684,7 @@ pub fn (mut t VTranspiler) visit_binop(node BinOp) string {
 	right := t.visit_expr_at(*node.right, right_sink, '')
 	mut op := op_to_symbol(get_op_type(node.op))
 
-	if node.op !is Mod {
+	if node.op !is Mod && node.left !is List && node.right !is List {
 		if code := t.native_integer_binary(get_op_type(node.op), *node.left, *node.right, left,
 			right, node.loc) {
 			return code

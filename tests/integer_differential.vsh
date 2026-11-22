@@ -74,6 +74,8 @@ fn main() {
 		IntegerProbe{'shift', 'print(number("3") << number("63"))', 'left shift'},
 		IntegerProbe{'power', 'print(number("2") ** number("1000"))', 'power'},
 		IntegerProbe{'sum', 'print(sum([${b}], ${a}))', 'sum'},
+		IntegerProbe{'sum_call', 'def values() -> list[int]:\n    return [${a}, ${b}]\nprint(sum(values()))', 'sum'},
+		IntegerProbe{'sum_comprehension', 'print(sum([value for value in [${a}, ${b}]]))', 'sum'},
 		IntegerProbe{'factorial', 'print(math.factorial(number("100")))', 'factorial'},
 		IntegerProbe{'decimal', 'print(number("${wide}"))', 'integer parsing'},
 		IntegerProbe{'based', 'print(int("${wide}", 10))', 'integer parsing'},
@@ -88,6 +90,9 @@ fn main() {
 		IntegerProbe{'least_multiple', 'print(math.lcm(${a}, 2))', 'least common multiple'},
 		IntegerProbe{'nested_aug', 'def replace(rows: list[list[int]]) -> int:\n    rows[0] = [9]\n    return 2\nold = [3]\nrows = [old]\nrows[0][0] += replace(rows)\nprint(old, rows)', ''},
 		IntegerProbe{'generic_add', 'from typing import TypeVar\nT = TypeVar("T")\ndef add(a: T, b: T) -> T:\n    return a + b\nprint(add("a", "b"))\nprint(add(${a}, ${b}))', 'addition'},
+		IntegerProbe{'guarded_local', 'def parse(text: str) -> int:\n    try:\n        index: int = int(text)\n    except ValueError:\n        return -1\n    return index\nprint(parse("bad"), parse("4294967296"))', ''},
+		IntegerProbe{'masked_right_shift', 'def reduced(text: str) -> int:\n    state = 5\n    for x in text:\n        state = ((state << 20) >> 1) + ord(x)\n    return state & 0xFFFFFFFF\nprint(reduced("abcdefghi"))', 'left shift'},
+		IntegerProbe{'list_repetition', 'print([math.pi] * 2)', ''},
 	]
 	mut failed := 0
 	for item in probes {

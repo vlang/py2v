@@ -18,6 +18,14 @@ fn count_nonzero(values []int) int {
 	return count
 }
 
+fn masked_accumulator(text string) int {
+	mut state := 5381
+	for character in text.split('') {
+		state = py2v_integer_add1(int(py2v_integer_add1(int(py2v_integer_left_shift1(state, 5, 'native_integer_boundaries.py:19')), state, 'native_integer_boundaries.py:19', 'addition')), int(character.runes()[0]), 'native_integer_boundaries.py:19', 'addition') & i64(4294967295)
+	}
+	return state & i64(4294967295)
+}
+
 fn shift_last(mut values []int) int {
 	println('rhs')
 	values << 20
@@ -38,32 +46,32 @@ fn main_func() {
 	println(number('9007199254740992'))
 	println(number('9007199254740993'))
 	println(number('1099511627776'))
-	println(low.str() + ' ' + high.str() + ' ' + (py2v_integer_add1(low, 1, 'native_integer_boundaries.py:36', 'addition')).str() + ' ' + (py2v_integer_sub1(high, 1, 'native_integer_boundaries.py:36', 'subtraction')).str())
-	println((py2v_integer_sub1(low, low, 'native_integer_boundaries.py:37', 'subtraction')).str() + ' ' + (py2v_integer_add1(high, low, 'native_integer_boundaries.py:37', 'addition')).str() + ' ' + (low * 1).str())
+	println(low.str() + ' ' + high.str() + ' ' + (py2v_integer_add1(low, 1, 'native_integer_boundaries.py:43', 'addition')).str() + ' ' + (py2v_integer_sub1(high, 1, 'native_integer_boundaries.py:43', 'subtraction')).str())
+	println((py2v_integer_sub1(low, low, 'native_integer_boundaries.py:44', 'subtraction')).str() + ' ' + (py2v_integer_add1(high, low, 'native_integer_boundaries.py:44', 'addition')).str() + ' ' + (low * 1).str())
 	root := number('3037000499')
-	println(py2v_integer_mul1(root, root, 'native_integer_boundaries.py:39', 'multiplication'))
+	println(py2v_integer_mul1(root, root, 'native_integer_boundaries.py:46', 'multiplication'))
 	for count in [0, 1, 63, 64, 65, i64(4294967296)] {
-		println((py2v_integer_right_shift1(low, count, 'native_integer_boundaries.py:41')).str() + ' ' + (py2v_integer_right_shift1(high, count, 'native_integer_boundaries.py:41')).str() + ' ' + (py2v_integer_left_shift1(0, count, 'native_integer_boundaries.py:41')).str())
+		println((py2v_integer_right_shift1(low, count, 'native_integer_boundaries.py:48')).str() + ' ' + (py2v_integer_right_shift1(high, count, 'native_integer_boundaries.py:48')).str() + ' ' + (py2v_integer_left_shift1(0, count, 'native_integer_boundaries.py:48')).str())
 	}
-	println(py2v_integer_left_shift1(number('-1'), 63, 'native_integer_boundaries.py:42'))
-	println((py2v_integer_mod1(low, -1, 'native_integer_boundaries.py:43')).str() + ' ' + (math.divide_floored[int](high, -3).quot).str() + ' ' + (math.modulo_floored[int](-7, 3)).str() + ' ' + (math.modulo_floored[int](7, -3)).str())
-	py2v_unpack1 := py2v_integer_divmod1(low, high, 'native_integer_boundaries.py:44')
+	println(py2v_integer_left_shift1(number('-1'), 63, 'native_integer_boundaries.py:49'))
+	println((py2v_integer_mod1(low, -1, 'native_integer_boundaries.py:50')).str() + ' ' + (math.divide_floored[int](high, -3).quot).str() + ' ' + (math.modulo_floored[int](-7, 3)).str() + ' ' + (math.modulo_floored[int](7, -3)).str())
+	py2v_unpack1 := py2v_integer_divmod1(low, high, 'native_integer_boundaries.py:51')
 	mut quot := py2v_unpack1[0]
 	mut rem := py2v_unpack1[1]
 	println('${quot} ${rem}')
-	println((py2v_integer_power1(high, 1, 'native_integer_boundaries.py:46')).str() + ' ' + (py2v_integer_power1(1, high, 'native_integer_boundaries.py:46')).str() + ' ' + (py2v_integer_power1(-1, high, 'native_integer_boundaries.py:46')).str() + ' ' + (py2v_integer_power1(0, high, 'native_integer_boundaries.py:46')).str())
-	println((py2v_integer_sum1([-1, high], 1, 'native_integer_boundaries.py:47')).str() + ' ' + (py2v_integer_sum1([
+	println((py2v_integer_power1(high, 1, 'native_integer_boundaries.py:53')).str() + ' ' + (py2v_integer_power1(1, high, 'native_integer_boundaries.py:53')).str() + ' ' + (py2v_integer_power1(-1, high, 'native_integer_boundaries.py:53')).str() + ' ' + (py2v_integer_power1(0, high, 'native_integer_boundaries.py:53')).str())
+	println((py2v_integer_sum1([-1, high], 1, 'native_integer_boundaries.py:54')).str() + ' ' + (py2v_integer_sum1([
 		1,
 		-1,
-	], low, 'native_integer_boundaries.py:47')).str())
-	println((py2v_float_text1(py2v_sum_float_suffix1([f64(2.5)], f64(py2v_integer_sum1([int(1)], 0, 'native_integer_boundaries.py:48'))))).str() + ' ' + (py2v_float_text1(py2v_sum_float_suffix1([f64(2.0)], f64(py2v_integer_sum1([int(1)], 0, 'native_integer_boundaries.py:48'))))).str())
+	], low, 'native_integer_boundaries.py:54')).str())
+	println((py2v_float_text1(py2v_sum_float_suffix1([f64(2.5)], f64(py2v_integer_sum1([int(1)], 0, 'native_integer_boundaries.py:55'))))).str() + ' ' + (py2v_float_text1(py2v_sum_float_suffix1([f64(2.0)], f64(py2v_integer_sum1([int(1)], 0, 'native_integer_boundaries.py:55'))))).str())
 	println('${int(math.factoriali(0))} ${int(math.factoriali(20))}')
-	println((py2v_integer_isqrt1(high)).str() + ' ' + (py2v_integer_gcd1(low, 6, 'native_integer_boundaries.py:50')).str() + ' ' + (py2v_integer_lcm1(high, high, 'native_integer_boundaries.py:50')).str())
-	println((py2v_integer_from_float1(-9.223372036854776e+18, 'native_integer_boundaries.py:51')).str() + ' ' + (py2v_integer_from_float1(4.294967296e+09, 'native_integer_boundaries.py:51')).str() + ' ' + (py2v_integer_from_float1(-4.9, 'native_integer_boundaries.py:51')).str())
+	println((py2v_integer_isqrt1(high)).str() + ' ' + (py2v_integer_gcd1(low, 6, 'native_integer_boundaries.py:57')).str() + ' ' + (py2v_integer_lcm1(high, high, 'native_integer_boundaries.py:57')).str())
+	println((py2v_integer_from_float1(-9.223372036854776e+18, 'native_integer_boundaries.py:58')).str() + ' ' + (py2v_integer_from_float1(4.294967296e+09, 'native_integer_boundaries.py:58')).str() + ' ' + (py2v_integer_from_float1(-4.9, 'native_integer_boundaries.py:58')).str())
 	py2v_enumerated2 := [3, 5]
-	py2v_enum_start3 := py2v_integer_sub1(high, 1, 'native_integer_boundaries.py:52', 'subtraction')
+	py2v_enum_start3 := py2v_integer_sub1(high, 1, 'native_integer_boundaries.py:59', 'subtraction')
 	for py2v_enum_index4, value in py2v_enumerated2 {
-		index := py2v_integer_add1(py2v_enum_index4, py2v_enum_start3, 'native_integer_boundaries.py:52', 'addition')
+		index := py2v_integer_add1(py2v_enum_index4, py2v_enum_start3, 'native_integer_boundaries.py:59', 'addition')
 		println('${index} ${value}')
 	}
 	mut values := [7, 11]
@@ -74,10 +82,12 @@ fn main_func() {
 	} else {
 		py2v_index6
 	}]
-	py2v_aug_result8 := py2v_integer_add1(py2v_old7, shift_last(mut values), 'native_integer_boundaries.py:55', 'addition')
+	py2v_aug_result8 := py2v_integer_add1(py2v_old7, shift_last(mut values), 'native_integer_boundaries.py:62', 'addition')
 	(*py2v_container5)[if py2v_index6 < 0 { py2v_container5.len + py2v_index6 } else { py2v_index6 }] = py2v_aug_result8
 	println(values)
 	println(count_nonzero([-1, 0, 2, 3]))
+	println((masked_accumulator('Algorithms')).str() + ' ' + (masked_accumulator('scramble bits')).str())
+	println(masked_accumulator(''))
 	py2v_range_start9 := int(0)
 	py2v_range_stop10 := int(values.len)
 	py2v_range_step11 := int(1)
@@ -192,6 +202,19 @@ fn py2v_int_base1(value string, requested_base int, site string) !int {
 }
 
 @[inline]
+fn py2v_integer_left_shift1(a int, b int, site string) int {
+	if b < 0 { panic('ValueError: negative shift count') }
+	if a == 0 { return 0 }
+	max := int(9223372036854775807)
+	min := -max - 1
+	if b == 63 && a == -1 { return min }
+	if b >= 63 || a > (max >> b) || a < (min >> b) {
+		py2v_integer_overflow1(site, 'left shift')
+	}
+	return a * (int(1) << b)
+}
+
+@[inline]
 fn py2v_integer_add1(a int, b int, site string, operation string) int {
 	max := int(9223372036854775807)
 	min := -max - 1
@@ -222,19 +245,6 @@ fn py2v_integer_right_shift1(a int, b int, _ string) int {
 	if b < 0 { panic('ValueError: negative shift count') }
 	if b >= 63 { return if a < 0 { -1 } else { 0 } }
 	return a >> b
-}
-
-@[inline]
-fn py2v_integer_left_shift1(a int, b int, site string) int {
-	if b < 0 { panic('ValueError: negative shift count') }
-	if a == 0 { return 0 }
-	max := int(9223372036854775807)
-	min := -max - 1
-	if b == 63 && a == -1 { return min }
-	if b >= 63 || a > (max >> b) || a < (min >> b) {
-		py2v_integer_overflow1(site, 'left shift')
-	}
-	return a * (int(1) << b)
 }
 
 @[inline]

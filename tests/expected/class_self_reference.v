@@ -34,18 +34,12 @@ fn (mut self LinkedList) push_front(data int) {
 	mut node := py2v_new_node(data)
 	node.next = self.head
 	self.head = node
-	mut py2v_receiver1 := &self
-	py2v_old2 := py2v_receiver1.size
-	py2v_aug_result3 := py2v_integer_add1(py2v_old2, 1, 'class_self_reference.py:19', 'addition')
-	py2v_receiver1.size = py2v_aug_result3
+	self.size = py2v_integer_add1(self.size, 1, 'class_self_reference.py:19', 'addition')
 }
 
 fn (mut self LinkedList) push_back(data int) {
 	node := py2v_new_node(data)
-	mut py2v_receiver4 := &self
-	py2v_old5 := py2v_receiver4.size
-	py2v_aug_result6 := py2v_integer_add1(py2v_old5, 1, 'class_self_reference.py:23', 'addition')
-	py2v_receiver4.size = py2v_aug_result6
+	self.size = py2v_integer_add1(self.size, 1, 'class_self_reference.py:23', 'addition')
 	if self.head == none {
 		self.head = node
 		return
@@ -61,9 +55,9 @@ fn (self LinkedList) total() int {
 	mut result := 0
 	mut current := self.head
 	for current != none {
-		py2v_old7 := result
-		py2v_aug_result8 := py2v_integer_add1(py2v_old7, current.data, 'class_self_reference.py:36', 'addition')
-		result = py2v_aug_result8
+		py2v_old1 := result
+		py2v_aug_result2 := py2v_integer_add1(py2v_old1, current.data, 'class_self_reference.py:36', 'addition')
+		result = py2v_aug_result2
 		current = current.next
 	}
 	return result

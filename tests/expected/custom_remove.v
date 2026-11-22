@@ -10,10 +10,7 @@ fn (mut self Leaf) init(value int) {
 }
 
 fn (mut self Leaf) remove() int {
-	mut py2v_receiver1 := &self
-	py2v_old2 := py2v_receiver1.value
-	py2v_aug_result3 := py2v_integer_add1(py2v_old2, 1, 'custom_remove.py:6', 'addition')
-	py2v_receiver1.value = py2v_aug_result3
+	self.value = py2v_integer_add1(self.value, 1, 'custom_remove.py:6', 'addition')
 	return self.value
 }
 

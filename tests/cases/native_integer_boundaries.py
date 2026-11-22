@@ -13,6 +13,13 @@ def count_nonzero(values: list[int]) -> int:
     return count
 
 
+def masked_accumulator(text: str) -> int:
+    state = 5381
+    for character in text:
+        state = ((state << 5) + state) + ord(character)
+    return state & 0xFFFFFFFF
+
+
 def shift_last(values: list[int]) -> int:
     print("rhs")
     values.append(20)
@@ -55,6 +62,8 @@ def main() -> None:
     values[last_index()] += shift_last(values)
     print(values)
     print(count_nonzero([-1, 0, 2, 3]))
+    print(masked_accumulator("Algorithms"), masked_accumulator("scramble bits"))
+    print(masked_accumulator(""))
     for position in range(len(values)):
         print(position + 1)
 

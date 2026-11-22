@@ -11,10 +11,7 @@ fn (mut self Registry) init() {
 }
 
 fn (mut self Registry) bump(by_ int) int {
-	mut py2v_receiver1 := &self
-	py2v_old2 := py2v_receiver1.count_
-	py2v_aug_result3 := py2v_integer_add1(py2v_old2, by_, 'underscore_identifiers.py:17', 'addition')
-	py2v_receiver1.count_ = py2v_aug_result3
+	self.count_ = py2v_integer_add1(self.count_, by_, 'underscore_identifiers.py:17', 'addition')
 	return self.count_
 }
 

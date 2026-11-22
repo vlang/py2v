@@ -13,10 +13,7 @@ fn (mut self Slots) init(name_ string) {
 }
 
 fn (mut self Slots) bump(name_ string) string {
-	mut py2v_receiver1 := &self
-	py2v_old2 := py2v_receiver1.size
-	py2v_aug_result3 := py2v_integer_add1(py2v_old2, 1, 'field_extraction.py:12', 'addition')
-	py2v_receiver1.size = py2v_aug_result3
+	self.size = py2v_integer_add1(self.size, 1, 'field_extraction.py:12', 'addition')
 	return self.name_
 }
 
@@ -71,10 +68,7 @@ fn (mut self LateAssignment) init() {
 }
 
 fn (mut self LateAssignment) add(by int) int {
-	mut py2v_receiver4 := &self
-	py2v_old5 := py2v_receiver4.count
-	py2v_aug_result6 := py2v_integer_add1(py2v_old5, by, 'field_extraction.py:42', 'addition')
-	py2v_receiver4.count = py2v_aug_result6
+	self.count = py2v_integer_add1(self.count, by, 'field_extraction.py:42', 'addition')
 	return self.count
 }
 

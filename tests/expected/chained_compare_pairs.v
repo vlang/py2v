@@ -13,15 +13,7 @@ fn ascending(a int, b int, c int, d int) bool {
 }
 
 fn bump(mut counter []int) int {
-	mut py2v_container1 := &counter
-	py2v_index2 := 0
-	py2v_old3 := (*py2v_container1)[if py2v_index2 < 0 {
-		py2v_container1.len + py2v_index2
-	} else {
-		py2v_index2
-	}]
-	py2v_aug_result4 := py2v_integer_add1(py2v_old3, 1, 'chained_compare_pairs.py:14', 'addition')
-	(*py2v_container1)[if py2v_index2 < 0 { py2v_container1.len + py2v_index2 } else { py2v_index2 }] = py2v_aug_result4
+	counter[0] = py2v_integer_add1(counter[0], 1, 'chained_compare_pairs.py:14', 'addition')
 	return counter[0]
 }
 
@@ -47,23 +39,23 @@ fn main_func() {
 		println('seven')
 	}
 	mut n := 20
-	py2v_range_start5 := int(0)
-	py2v_range_stop6 := int(50)
-	py2v_range_step7 := int(1)
-	if py2v_range_step7 == 0 { panic('ValueError: range() arg 3 must not be zero') }
-	for py2v_range_item8 := py2v_range_start5; if py2v_range_step7 > 0 {
-		py2v_range_item8 < py2v_range_stop6
+	py2v_range_start1 := int(0)
+	py2v_range_stop2 := int(50)
+	py2v_range_step3 := int(1)
+	if py2v_range_step3 == 0 { panic('ValueError: range() arg 3 must not be zero') }
+	for py2v_range_item4 := py2v_range_start1; if py2v_range_step3 > 0 {
+		py2v_range_item4 < py2v_range_stop2
 	} else {
-		py2v_range_item8 > py2v_range_stop6
-	}; py2v_range_item8 = py2v_range_next1(py2v_range_item8, py2v_range_stop6, py2v_range_step7) {
+		py2v_range_item4 > py2v_range_stop2
+	}; py2v_range_item4 = py2v_range_next1(py2v_range_item4, py2v_range_stop2, py2v_range_step3) {
 		if 10 < n && n < 23 {
 			n = py2v_integer_add1(n, 1, 'chained_compare_pairs.py:39', 'addition')
 		}
 	}
 	println(n)
 	mut counter := [0]
-	py2v_cmp9 := bump(mut counter)
-	if 0 < py2v_cmp9 && py2v_cmp9 < 5 {
+	py2v_cmp5 := bump(mut counter)
+	if 0 < py2v_cmp5 && py2v_cmp5 < 5 {
 		println('bumped once')
 	}
 	println(counter[0])

@@ -4482,6 +4482,73 @@ def _truth_kind(node: ast.expr, facts: infer.TypeFacts) -> str:
     return facts.types[type_id]["k"] if type_id is not None else "unknown"
 
 
+def _reduce_masked_recurrences(tree: ast.Module, table: symbols.SymbolTable,
+                               facts: infer.TypeFacts) -> None:
+    """Reduce a local string-loop accumulator when only its low bits escape."""
+    def binding(node: ast.AST) -> Optional[int]:
+        return getattr(node, "_binding", None) if isinstance(node, ast.Name) else None
+
+    for fn in ast.walk(tree):
+        if not isinstance(fn, ast.FunctionDef):
+            continue
+        body = fn.body[1:] if ast.get_docstring(fn, clean=False) is not None else fn.body
+        if len(body) != 3:
+            continue
+        seed, loop, result = body
+        if (not isinstance(seed, ast.Assign) or len(seed.targets) != 1
+                or not isinstance(loop, ast.For) or loop.orelse or len(loop.body) != 1
+                or not isinstance(result, ast.Return) or not isinstance(result.value, ast.BinOp)
+                or not isinstance(result.value.op, ast.BitAnd)):
+            continue
+        target, character = binding(seed.targets[0]), binding(loop.target)
+        mask, initial, change = result.value.right, seed.value, loop.body[0]
+        if (target is None or character is None or target == character
+                or table.bindings[target].captured or table.bindings[target].declared_global
+                or table.bindings[target].declared_nonlocal or binding(result.value.left) != target
+                or not isinstance(mask, ast.Constant) or type(mask.value) is not int
+                or not 0 < mask.value <= 0xFFFFFFFF or mask.value & (mask.value + 1)
+                or not isinstance(initial, ast.Constant) or type(initial.value) is not int
+                or not 0 <= initial.value <= mask.value
+                or not isinstance(loop.iter, ast.Name) or binding(loop.iter) in (target, character)
+                or _truth_kind(loop.iter, facts) != "str"
+                or not isinstance(change, ast.Assign) or len(change.targets) != 1
+                or binding(change.targets[0]) != target):
+            continue
+
+        def maximum(expr: ast.expr) -> Optional[int]:
+            if binding(expr) == target:
+                return mask.value
+            if isinstance(expr, ast.Constant) and type(expr.value) is int:
+                return expr.value if 0 <= expr.value < 1 << 63 else None
+            if (isinstance(expr, ast.Call) and isinstance(expr.func, ast.Name)
+                    and expr.func.id == "ord" and binding(expr.func) is None
+                    and not expr.keywords and len(expr.args) == 1
+                    and binding(expr.args[0]) == character):
+                return 0x10FFFF
+            if not isinstance(expr, ast.BinOp):
+                return None
+            left, right = maximum(expr.left), maximum(expr.right)
+            if left is None or right is None:
+                return None
+            if isinstance(expr.op, ast.Add):
+                bound = left + right
+            elif isinstance(expr.op, ast.Mult):
+                bound = left * right
+            elif (isinstance(expr.op, ast.LShift) and isinstance(expr.right, ast.Constant)
+                  and right < 63):
+                bound = left << right
+            else:
+                return None
+            return bound if bound < 1 << 63 else None
+
+        if maximum(change.value) is not None:
+            # The admitted operations preserve congruence modulo mask + 1.
+            # The local accumulator has no observer before the masked return.
+            bits = ast.copy_location(ast.Constant(value=mask.value), change.value)
+            change.value = ast.copy_location(ast.BinOp(left=change.value, op=ast.BitAnd(),
+                                                       right=bits), change.value)
+
+
 def _literal_scalar(node: ast.expr) -> Optional[ast.Constant]:
     """Recover exact builtin values without evaluating source expressions."""
     if isinstance(node, ast.Constant) and type(node.value) in (type(None), bool, int, float, str):
@@ -9916,7 +9983,7 @@ def _declare_block_locals(tree: ast.Module, table: Optional[symbols.SymbolTable]
         for binding_id, found in occurrences.items():
             binding = table.bindings[binding_id]
             fact = known.get(binding_id)
-            if (fact is None or fact.get("declared") is not None or binding.is_param
+            if (fact is None or binding.is_param
                     or binding.declared_global or binding.declared_nonlocal
                     or table.scopes[binding.scope].kind != "function"
                     or getattr(table.scopes[binding.scope], "_node", None) is not fn):
@@ -9925,7 +9992,16 @@ def _declare_block_locals(tree: ast.Module, table: Optional[symbols.SymbolTable]
             blocks, first, stmt = found[0]
             if not blocks or not isinstance(first.ctx, ast.Store):
                 continue
-            if not (isinstance(stmt, ast.Assign) and len(stmt.targets) == 1 and stmt.targets[0] is first):
+            typed_parse = (dynamic_bindings is None and isinstance(stmt, ast.AnnAssign)
+                           and stmt.target is first and isinstance(stmt.annotation, ast.Name)
+                           and stmt.annotation.id == "int" and isinstance(stmt.value, ast.Call)
+                           and isinstance(stmt.value.func, ast.Name) and stmt.value.func.id == "int"
+                           and getattr(stmt.value.func, "_binding", None) is None
+                           and not stmt.value.keywords and len(stmt.value.args) == 1
+                           and _truth_kind(stmt.value.args[0], facts) == "str")
+            if not typed_parse and (fact.get("declared") is not None
+                                    or not isinstance(stmt, ast.Assign)
+                                    or len(stmt.targets) != 1 or stmt.targets[0] is not first):
                 continue  # a loop variable, a `with` name, an unpacking: declared by their own form
             if all(other[:len(blocks)] == blocks for other, _, _ in found):
                 eager = eager_occurrences.get(binding_id, [])
@@ -9940,6 +10016,14 @@ def _declare_block_locals(tree: ast.Module, table: Optional[symbols.SymbolTable]
                     continue  # preserve today's output when assignment is not proven
             type_id = fact.get("assumed", fact.get("inferred"))
             text = _annotation_for_type(facts.types, type_id) if type_id is not None else None
+            if typed_parse:
+                # The guard introduces a V block. Lift only a definitely assigned local.
+                if proven_loads is None:
+                    proven_loads = _definitely_assigned_loads(fn)
+                if any(isinstance(load.ctx, ast.Load) and id(load) not in proven_loads
+                       for _, load, _ in found + eager_occurrences.get(binding_id, [])):
+                    continue
+                text = "int"
             value: Optional[ast.expr] = None
             special_type, default = "", None
             if dynamic_bindings is None and receiver is not None and fields:
@@ -10326,6 +10410,8 @@ def process_file(file_path: str, project: Optional[ProjectFacts] = None) -> str:
     if _lower_colliding_accessors(tree, table, facts):
         table = _resolve_bindings(tree)
         facts = _infer_types(tree, table, project)
+    if table is not None and facts is not None:
+        _reduce_masked_recurrences(tree, table, facts)
     _plan_closures(tree, table, facts)
     _lower_named_dunder_operations(tree, facts)
     _plan_bound_appends(tree, table, facts)

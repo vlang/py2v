@@ -1,6 +1,7 @@
 module main
 
 import arrays
+import math
 
 fn show(small map[string]int, big map[string]int, rank int) {
 	mut py2v_comp1 := []bool{}
@@ -20,7 +21,7 @@ fn show(small map[string]int, big map[string]int, rank int) {
 		py2v_comp3[k] = py2v_integer_mul1(v_, 2, 'comprehension_items.py:7', 'multiplication')
 	}
 	println(py2v_comp3)
-	println(arrays.sum(small.values().map(it)) or { 0 })
+	println(py2v_integer_inferred_sum1(small.values().map(it), 0, 'comprehension_items.py:8'))
 	println(big.keys().filter((it !in small)).map(it).sorted())
 	mut py2v_comp4 := []bool{}
 	for _, v_ in big {
@@ -87,6 +88,23 @@ fn py2v_integer_sum1[T](items []T, start int, site string) int {
 		return total
 	} $else {
 		$compile_error('py2v_unsupported_integer_sum: expected native integer elements')
+	}
+}
+
+fn py2v_integer_inferred_sum1[T](items []T, start int, site string) T {
+	$if T is u64 {
+		$compile_error('py2v_unsupported_wide_integer: sum may exceed u64')
+	} $else $if T is $int {
+		value := py2v_integer_sum1(items, start, site)
+		if value < int(math.minof[T]()) || value > int(math.maxof[T]()) {
+			py2v_integer_overflow1(site, 'integer narrowing')
+		}
+		return T(value)
+	} $else {
+		$if T is $float {
+			if start != 0 { return arrays.fold(items, T(start), |acc, item| acc + item) }
+		}
+		return arrays.sum(items) or { 0 }
 	}
 }
 
