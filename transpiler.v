@@ -10154,6 +10154,10 @@ fn (mut t VTranspiler) visit_generator_exp_impl(elt Expr, generators []Comprehen
 	} else {
 		map_expr.replace(target, 'it')
 	}
+	// V can allocate C int elements for an inferred native quotient field.
+	if elt is BinOp && elt.op is FloorDiv && get_expr_annotation(elt) == 'int' {
+		map_expr = 'int(${map_expr})'
+	}
 	result = '${as_receiver(result)}.map(${map_expr})'
 
 	return result
