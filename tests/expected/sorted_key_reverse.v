@@ -1,6 +1,7 @@
 module main
 
 import math
+import pyrt
 
 pub struct Item {
 pub mut:
@@ -122,7 +123,7 @@ fn main_func() {
 		return order.map(items[it])
 	})(words))
 	println((fn (items []string) []string {
-		keys := items.map(it.to_lower())
+		keys := items.map(pyrt.str(pyrt.lower(it) or { panic(err.msg()) }))
 		mut order := []int{len: items.len, init: index}
 		order.sort_with_compare(fn [keys] (lhs &int, rhs &int) int {
 			a := keys[*lhs]
@@ -242,7 +243,7 @@ fn main_func() {
 	})(mut words)
 	println(words)
 	(fn (mut items []string) {
-		keys := items.map(it.to_lower())
+		keys := items.map(pyrt.str(pyrt.lower(it) or { panic(err.msg()) }))
 		mut order := []int{len: items.len, init: index}
 		order.sort_with_compare(fn [keys] (lhs &int, rhs &int) int {
 			a := keys[*rhs]

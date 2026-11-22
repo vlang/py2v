@@ -3,10 +3,15 @@ module main
 import math
 import strconv
 
-fn py2v_float_sum1(values []f64, start f64) f64 {
+fn py2v_float_sum1(values []f64, start f64, integer_start bool) f64 {
 	mut total := start
 	mut correction := 0.0
-	for value in values {
+	mut first := 0
+	if integer_start && values.len > 0 {
+		total += values[0]
+		first = 1
+	}
+	for value in values[first..] {
 		next := total + value
 		correction += if math.abs(total) >= math.abs(value) {
 			(total - next) + value
@@ -47,7 +52,7 @@ fn py2v_float_text1[T](value T) string {
 
 fn main() {
 	values := [1e+16, 1.0, -1e+16]
-	println(py2v_float_text1(py2v_float_sum1(values, 0.0)))
-	println(py2v_float_text1(py2v_float_sum1([1.0, -1e+16], f64(1e+16))))
-	println(py2v_float_text1(py2v_float_sum1([-1e+16, 1e+16, 1.0], f64(2.0))))
+	println(py2v_float_text1(py2v_float_sum1(values, 0.0, true)))
+	println(py2v_float_text1(py2v_float_sum1([1.0, -1e+16], f64(1e+16), false)))
+	println(py2v_float_text1(py2v_float_sum1([-1e+16, 1e+16, 1.0], f64(2.0), false)))
 }

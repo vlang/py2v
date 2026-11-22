@@ -508,6 +508,67 @@ fn visit_pow(mut t VTranspiler, node Call, args []string) (string, bool, string)
 	return 'math.pow(${args[0]}, ${args[1]})', true, 'math'
 }
 
+// Numeric literal provenance is needed because native []f64 can contain Python integers.
+// A Python annotation alone never converts a value.
+fn python_numeric_literal_kind(t &VTranspiler, expr Expr) string {
+	return match expr {
+		Constant {
+			if expr.value is f64 {
+				'float'
+			} else if expr.value is int || expr.value is i64 || expr.value is u64
+				|| expr.value is bool {
+				'int'
+			} else {
+				'unknown'
+			}
+		}
+		UnaryOp {
+			if expr.op is UAdd || expr.op is USub {
+				python_numeric_literal_kind(t, *expr.operand)
+			} else {
+				'unknown'
+			}
+		}
+		Call {
+			if expr.func is Name && expr.func.id == 'float'
+				&& 'float' !in t.module_functions && !t.is_bound_in_scope('float')
+				&& expr.args.len == 1 && expr.keywords.len == 0 {
+				'float'
+			} else {
+				'unknown'
+			}
+		}
+		else { 'unknown' }
+	}
+}
+
+fn python_numeric_list_kind(t &VTranspiler, items List) string {
+	if items.elts.len == 0 { return 'empty' }
+	mut has_int := false
+	mut has_float := false
+	for item in items.elts {
+		kind := python_numeric_literal_kind(t, item)
+		if kind == 'unknown' { return 'unknown' }
+		if kind == 'float' { has_float = true }
+		if kind == 'int' { has_int = true }
+	}
+	return if has_int && has_float {
+		'mixed'
+	} else if has_float {
+		'float'
+	} else {
+		'int'
+	}
+}
+
+fn python_numeric_arg_list_kind(t &VTranspiler, expr Expr) string {
+	return match expr {
+		List { python_numeric_list_kind(t, expr) }
+		Name { t.sum_list_kinds[expr.id] or { 'unknown' } }
+		else { 'unknown' }
+	}
+}
+
 // Handle sum() call
 fn visit_sum(mut t VTranspiler, node Call, args []string) (string, bool, string) {
 	total := 'arrays.sum(${args[0]}) or { 0 }'
@@ -570,23 +631,47 @@ fn visit_sum(mut t VTranspiler, node Call, args []string) (string, bool, string)
 		}
 	}
 	items := node.args[0]
-	is_float_array := if items is List {
-		items.elts.len > 0
-			&& items.elts.all(get_expr_annotation(it) in ['float', 'f64']
-				|| t.infer_expr_type(it) == 'f64')
-	} else {
-		t.infer_expr_type(items) == '[]f64'
+	// A float-producing generator can be empty. Python then returns the int 0,
+	// not a float zero: native []f64 alone cannot represent both outcomes.
+	if items is GeneratorExp {
+		if items.elt is BinOp && (items.elt as BinOp).op is Div {
+			return t.unsupported_site('unproven_float_generator_sum',
+				'empty float generators return Python integer zero', ''), true, ''
+		}
 	}
+	if items is ListComp {
+		if items.elt is BinOp && (items.elt as BinOp).op is Div {
+			return t.unsupported_site('unproven_float_generator_sum',
+				'empty float comprehensions return Python integer zero', ''), true, ''
+		}
+	}
+	kind := python_numeric_arg_list_kind(t, items)
+	if kind == 'empty' {
+		return if starts.len == 1 { args[1] } else { '0' }, true, ''
+	}
+	if kind == 'mixed' {
+		return t.unsupported_site('mixed_numeric_sum',
+			'native numeric arrays lose Python float/int element identity', ''), true, ''
+	}
+	// A native []f64 does not establish homogeneous Python float elements.
+	// Unproven float sums must not silently use the compensated-float path.
+	if kind != 'float' && t.infer_expr_type(items) == '[]f64' {
+		return t.unsupported_site('unproven_float_sum',
+			'Python numeric element types are not statically proven', ''), true, ''
+	}
+	is_float_array := kind == 'float'
 	default_start := node.args.len == 1 && node.keywords.len == 0
-	numeric_start := starts.len == 1 && t.division_operand_type(starts[0], t.infer_expr_type(starts[0])) in [
-		'int',
-		'i64',
-		'f64',
-	]
+	float_start_type := if starts.len == 1 {
+		t.division_operand_type(starts[0], t.infer_expr_type(starts[0]))
+	} else {
+		'int'
+	}
+	numeric_start := starts.len == 1 && float_start_type in ['int', 'i64', 'f64']
 	if is_float_array && (default_start || numeric_start) {
 		start := if starts.len == 1 { 'f64(${args[1]})' } else { '0.0' }
+		integer_start := float_start_type in ['int', 'i64']
 		t.add_using('math')
-		return '${t.runtime_helper('float_sum')}(${args[0]}, ${start})', true, ''
+		return '${t.runtime_helper('float_sum')}(${args[0]}, ${start}, ${integer_start})', true, ''
 	}
 	if native_integer_type(elem_type) && starts.len == args.len - 1 {
 		if starts.len == 0 {
@@ -651,7 +736,14 @@ fn sort_order(mut t VTranspiler, node Call, elem string) ?(string, bool) {
 			if key is Constant && (key as Constant).value is NoneValue {
 				continue
 			}
-			key_code = sort_key_call(mut t, key, elem, 'it')?
+			// NaNs make float comparison non-transitive. V's sort does not use
+			// CPython's Timsort comparison sequence, even with an index tie-break.
+			if elem == 'f64' || (key is Name && t.func_return_types[key.id] == 'f64')
+				|| (key is Lambda && get_expr_annotation(*key.body) in ['float', 'f64']) {
+				key_code = '__py2v_non_total_float_key__'
+			} else {
+				key_code = sort_key_call(mut t, key, elem, 'it')?
+			}
 		} else {
 			return none
 		}
@@ -681,10 +773,13 @@ fn sort_key_call(mut t VTranspiler, key Expr, elem string, operand string) ?stri
 		Attribute {
 			if elem == 'string' && key.value is Name && (key.value as Name).id == 'str' {
 				if key.attr == 'lower' {
-					return '${operand}.to_lower()'
+					// V's case conversion is not equivalent to Python's full Unicode mapping.
+					t.add_using('pyrt')
+					return 'pyrt.str(pyrt.lower(${operand}) or { panic(err.msg()) })'
 				}
 				if key.attr == 'upper' {
-					return '${operand}.to_upper()'
+					t.add_using('pyrt')
+					return 'pyrt.str(pyrt.upper(${operand}) or { panic(err.msg()) })'
 				}
 			}
 		}
@@ -791,6 +886,10 @@ fn visit_sorted_keywords(mut t VTranspiler, node Call, args []string) ?string {
 		return none
 	}
 	key, reverse := sort_order(mut t, node, elem)?
+	if key == '__py2v_non_total_float_key__' {
+		return t.unsupported_site('float_sort_key',
+			'float keys may contain NaN and require CPython comparison order', '')
+	}
 	if key == '' {
 		return if reverse { '${receiver}.sorted(a > b)' } else { '${receiver}.sorted()' }
 	}
@@ -1301,6 +1400,22 @@ fn dispatch_builtin_impl(mut t VTranspiler, fname string, node Call, args []stri
 			return DispatchResult{code, handled, ''}
 		}
 		'min' {
+			if node.args.len == 1 && python_numeric_arg_list_kind(t, node.args[0]) in [
+				'empty',
+				'mixed',
+			] {
+				return DispatchResult{t.unsupported_site('min_numeric_shape',
+					'empty or mixed numeric lists need Python ValueError and type preservation', ''), true, ''}
+			}
+			// Inferred V numeric types do not prove runtime Python value identity.
+			// Only literal-proven int/float mixtures are safe to recognize here.
+			if node.args.len == 2
+				&& python_numeric_literal_kind(t, node.args[0]) in ['int', 'float']
+				&& python_numeric_literal_kind(t, node.args[1]) in ['int', 'float']
+				&& python_numeric_literal_kind(t, node.args[0]) != python_numeric_literal_kind(t, node.args[1]) {
+				return DispatchResult{t.unsupported_site('min_mixed_numeric',
+					'mixed numeric extrema preserve the winning Python type', ''), true, ''}
+			}
 			if node.args.len == 2 && node.keywords.len == 0
 				&& node.args.all((it is Name || it is Constant) && t.infer_expr_type(it) == 'int') {
 				return DispatchResult{'math.min(${args[0]}, ${args[1]})', true, 'math'}
@@ -1309,6 +1424,22 @@ fn dispatch_builtin_impl(mut t VTranspiler, fname string, node Call, args []stri
 			return DispatchResult{code, handled, using}
 		}
 		'max' {
+			if node.args.len == 1 && python_numeric_arg_list_kind(t, node.args[0]) in [
+				'empty',
+				'mixed',
+			] {
+				return DispatchResult{t.unsupported_site('max_numeric_shape',
+					'empty or mixed numeric lists need Python ValueError and type preservation', ''), true, ''}
+			}
+			// Inferred V numeric types do not prove runtime Python value identity.
+			// Only literal-proven int/float mixtures are safe to recognize here.
+			if node.args.len == 2
+				&& python_numeric_literal_kind(t, node.args[0]) in ['int', 'float']
+				&& python_numeric_literal_kind(t, node.args[1]) in ['int', 'float']
+				&& python_numeric_literal_kind(t, node.args[0]) != python_numeric_literal_kind(t, node.args[1]) {
+				return DispatchResult{t.unsupported_site('max_mixed_numeric',
+					'mixed numeric extrema preserve the winning Python type', ''), true, ''}
+			}
 			if node.args.len == 2 && node.keywords.len == 0
 				&& node.args.all((it is Name || it is Constant) && t.infer_expr_type(it) == 'int') {
 				return DispatchResult{'math.max(${args[0]}, ${args[1]})', true, 'math'}

@@ -157,12 +157,14 @@ quoted_annotation_subscript.v	1
 re_module.v	8
 re_runtime.v	6
 review_divmod_negative_float.v	5
+review_w_unicode_key_case.v	3
 runtime_block_locals.v	4
 runtime_class_annotations.v	3
 runtime_field_types.v	4
 runtime_process_and_hashes.v	5
 scheduling_refusal.v	2
 shadow_rebind.v	6
+sorted_key_reverse.v	2
 sqlite_optional_row.v	7
 sqlite_row_comprehension.v	5
 sqlite_row_unpack.v	7

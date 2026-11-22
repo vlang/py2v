@@ -50,6 +50,8 @@ mut:
 	generator_signatures        map[string]GeneratorSignature
 	func_param_types            map[string][]string // module function -> the V types of its parameters
 	var_types                   map[string]string
+	// Exact numeric element provenance; []f64 by itself does not prove Python floats.
+	sum_list_kinds map[string]string
 	// State for the if-condition lowering, saved separately for each scope.
 	condition_walrus_vars    map[string]bool
 	condition_walrus_types   map[string]string
@@ -287,6 +289,7 @@ pub fn new_transpiler() VTranspiler {
 		tmp_gen:              new_tmp_var_gen()
 		usings:               []string{}
 		var_types:            map[string]string{}
+		sum_list_kinds:       map[string]string{}
 	}
 }
 
@@ -1611,9 +1614,10 @@ fn (mut t VTranspiler) runtime_helper_declaration(kind string) string {
 				'\treturn zeros + text\n}'
 		}
 		'float_sum' {
-			'fn ${name}(values []f64, start f64) f64 {\n' +
-				'\tmut total := start\n\tmut correction := 0.0\n' +
-				'\tfor value in values {\n\t\tnext := total + value\n' +
+			'fn ${name}(values []f64, start f64, integer_start bool) f64 {\n' +
+				'\tmut total := start\n\tmut correction := 0.0\n\tmut first := 0\n' +
+				'\tif integer_start && values.len > 0 {\n\t\ttotal += values[0]\n\t\tfirst = 1\n\t}\n' +
+				'\tfor value in values[first..] {\n\t\tnext := total + value\n' +
 				'\t\tcorrection += if math.abs(total) >= math.abs(value) {\n' +
 				'\t\t\t(total - next) + value\n\t\t} else {\n' +
 				'\t\t\t(value - next) + total\n\t\t}\n\t\ttotal = next\n\t}\n' +
@@ -3093,6 +3097,8 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 
 	// Save var_types and escaped_identifiers for function scope (keep globals, reset locals)
 	saved_var_types := t.var_types.clone()
+	saved_sum_list_kinds := t.sum_list_kinds.clone()
+	t.sum_list_kinds = map[string]string{}
 	saved_escaped_identifiers := t.escaped_identifiers.clone()
 	t.escaped_identifiers = map[string]bool{}
 	saved_local_idents := t.local_idents.clone()
@@ -3650,6 +3656,7 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 
 	// Restore var_types and escaped_identifiers from parent scope
 	t.var_types = saved_var_types.clone()
+	t.sum_list_kinds = saved_sum_list_kinds.clone()
 	t.escaped_identifiers = saved_escaped_identifiers.clone()
 	t.local_idents = saved_local_idents.clone()
 	t.init_import_aliases = saved_init_aliases.clone()
@@ -4181,6 +4188,19 @@ fn (mut t VTranspiler) visit_assignment(node Assign, package_initializer bool) s
 		}
 	}
 	defer { t.integer_update_names = saved_updates }
+	if node.targets.len == 1 && node.targets[0] is Name {
+		name := (node.targets[0] as Name).id
+		if node.value is List && !(node.targets[0] as Name).is_mutable
+			&& !t.extra_mut_vars[name] {
+			t.sum_list_kinds[name] = python_numeric_list_kind(t, node.value)
+		} else {
+			t.sum_list_kinds.delete(name)
+		}
+		// Aliases can mutate the original Python list through another name.
+		if node.value is Name {
+			t.sum_list_kinds.delete(node.value.id)
+		}
+	}
 	// Record what this assignment binds, so a later `for` over the same Python
 	// name is given a fresh V variable instead of shadowing it. Whether a name
 	// was already bound has to be sampled before this statement binds anything,
@@ -5141,6 +5161,18 @@ fn (mut t VTranspiler) visit_aug_assign_once(node AugAssign, op_type string, tar
 // visit_ann_assign emits V code for an AnnAssign statement.
 pub fn (mut t VTranspiler) visit_ann_assign(node AnnAssign) string {
 	was_bound := node.target is Name && t.is_bound_in_scope(node.target.id)
+	if node.target is Name {
+		name := node.target.id
+		if val := node.value {
+			if val is List && !node.target.is_mutable && !t.extra_mut_vars[name] {
+				t.sum_list_kinds[name] = python_numeric_list_kind(t, val)
+			} else {
+				t.sum_list_kinds.delete(name)
+			}
+		} else {
+			t.sum_list_kinds.delete(name)
+		}
+	}
 	if node.target is Name { t.note_scope_binding(node.target.id) }
 	type_str := t.typename_from_annotation(*node.annotation)
 	target := t.visit_expr_at(node.target, .scalar_storage, type_str)
@@ -10631,6 +10663,10 @@ fn (mut t VTranspiler) visit_call_at(original Call, permit WideSink, permit_type
 					if list_type.starts_with('[]') && !list_type.contains('Any') {
 						elem := list_type[2..]
 						if key, reverse := sort_order(mut t, node, elem) {
+							if key == '__py2v_non_total_float_key__' {
+								return t.unsupported_site('float_sort_key',
+									'float keys may contain NaN and require CPython comparison order', '')
+							}
 							if key != '' {
 								return keyed_sort(obj, elem, key, reverse, true)
 							}
