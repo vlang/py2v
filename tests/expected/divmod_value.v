@@ -4,7 +4,7 @@ import pyrt
 import strconv
 
 fn integer(a int, b int) int {
-	return py2v_integer_add1(int(py2v_integer_mul1(py2v_integer_divmod1(a, b, 'divmod_value.py:2')[0], 10, 'divmod_value.py:2', 'multiplication')), py2v_integer_divmod1(a, b, 'divmod_value.py:2')[1], 'divmod_value.py:2', 'addition')
+	return int(py2v_integer_mul1(py2v_integer_divmod1(a, b, 'divmod_value.py:2')[0], 10, 'divmod_value.py:2', 'multiplication')) + py2v_integer_divmod1(a, b, 'divmod_value.py:2')[1]
 }
 
 fn floating(a f64, b f64) f64 {
@@ -19,17 +19,9 @@ fn argument(value int) int {
 	return value
 }
 
-@[noreturn]
-fn py2v_integer_overflow1(site string, operation string) {
-	flush_stdout()
-	eprintln('py2v_integer_overflow: ${site}: ${operation} exceeds the V int range')
-	exit(1)
-}
-
 @[inline]
-fn py2v_integer_floor_div1(a int, b int, site string) int {
+fn py2v_integer_floor_div1(a int, b int, _ string) int {
 	if b == 0 { panic('ZeroDivisionError: integer division or modulo by zero') }
-	if b == -1 && a == -9223372036854775807 - 1 { py2v_integer_overflow1(site, 'floor division') }
 	r := a % b
 	adjust := r != 0 && (r < 0) != (b < 0)
 	return a / b - int(adjust)
@@ -48,6 +40,13 @@ fn py2v_integer_divmod1(a int, b int, site string) []int {
 	return [py2v_integer_floor_div1(a, b, site), py2v_integer_mod1(a, b, site)]
 }
 
+@[noreturn]
+fn py2v_integer_overflow1(site string, operation string) {
+	flush_stdout()
+	eprintln('py2v_integer_overflow: ${site}: ${operation} exceeds the V int range')
+	exit(1)
+}
+
 @[inline]
 fn py2v_integer_mul1(a int, b int, site string, operation string) int {
 	max := int(9223372036854775807)
@@ -56,14 +55,6 @@ fn py2v_integer_mul1(a int, b int, site string, operation string) int {
 		py2v_integer_overflow1(site, operation)
 	}
 	return a * b
-}
-
-@[inline]
-fn py2v_integer_add1(a int, b int, site string, operation string) int {
-	max := int(9223372036854775807)
-	min := -max - 1
-	if (b > 0 && a > max - b) || (b < 0 && a < min - b) { py2v_integer_overflow1(site, operation) }
-	return a + b
 }
 
 fn py2v_divmod_float1[A, B](a A, b B) []f64 {

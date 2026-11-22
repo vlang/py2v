@@ -1,6 +1,5 @@
 module main
 
-import math
 import pyrt
 
 type Any = pyrt.Value
@@ -30,7 +29,7 @@ fn (a Any) < (b Any) bool {
 }
 
 fn add(a Any, b Any) Any {
-	return py2v_integer_generic_add1(a, b, 'dynamic_values.py:2', |py2v_operand1, py2v_operand2| py2v_operand1 + py2v_operand2)
+	return a + b
 }
 
 fn biggest(xs []int) int {
@@ -78,22 +77,6 @@ fn py2v_integer_add1(a int, b int, site string, operation string) int {
 	min := -max - 1
 	if (b > 0 && a > max - b) || (b < 0 && a < min - b) { py2v_integer_overflow1(site, operation) }
 	return a + b
-}
-
-fn py2v_integer_generic_add1[A, B, R](a A, b B, site string, fallback fn (A, B) R) R {
-	$if A is $int && B is $int && R is $int {
-		$if A is u64 || B is u64 || R is u64 {
-			$compile_error('py2v_unsupported_wide_integer: generic arithmetic needs a signed native result')
-		} $else {
-			value := py2v_integer_add1(int(a), int(b), site, 'addition')
-			if value < int(math.minof[R]()) || value > int(math.maxof[R]()) {
-				py2v_integer_overflow1(site, 'integer narrowing')
-			}
-			return R(value)
-		}
-	} $else {
-		return fallback(a, b)
-	}
 }
 
 fn main() {

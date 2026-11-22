@@ -13,7 +13,7 @@ fn texts(numbers []int) []string {
 }
 
 fn whole(values []f64) []int {
-	return values.map(py2v_integer_from_float1(f64(it), 'map_builtin_types.py:14')).clone()
+	return values.map(int(it)).clone()
 }
 
 fn pair(line string) int {
@@ -125,14 +125,6 @@ fn py2v_int_base1(value string, requested_base int, site string) !int {
 		return 0
 	}
 	return if negative { -int(magnitude - 1) - 1 } else { int(magnitude) }
-}
-
-@[inline]
-fn py2v_integer_from_float1(value f64, site string) int {
-	if !(value >= -9223372036854775808.0 && value < 9223372036854775808.0) {
-		py2v_integer_overflow1(site, 'float to integer conversion')
-	}
-	return int(value)
 }
 
 @[inline]

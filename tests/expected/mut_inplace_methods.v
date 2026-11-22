@@ -43,7 +43,7 @@ fn group(numbers []int) map[int][]int {
 fn collect(prefix int, mut out []int) {
 	out << prefix
 	if prefix < 3 {
-		collect(py2v_integer_add1(prefix, 1, 'mut_inplace_methods.py:37', 'addition'), mut out)
+		collect(prefix + 1, mut out)
 	}
 }
 

@@ -1,7 +1,7 @@
 module main
 
 fn sub(a int, b int) int {
-	return py2v_integer_sub1(a, b, 'call_binding.py:2', 'subtraction')
+	return a - b
 }
 
 fn main_func() {
@@ -18,7 +18,7 @@ fn area(w int, h int, depth int, scale int) int {
 }
 
 fn negative(a int, b int) int {
-	return py2v_integer_sub1(a, b, 'call_binding.py:19', 'subtraction')
+	return a - b
 }
 
 fn text(a string, b string) string {
@@ -29,7 +29,7 @@ fn descend(n int) int {
 	if n == 0 {
 		return 0
 	}
-	return py2v_integer_add1(1, descend(py2v_integer_sub1(n, 1, 'call_binding.py:29', 'subtraction')), 'call_binding.py:29', 'addition')
+	return 1 + descend(n - 1)
 }
 
 fn first(xs []int) int {
@@ -44,14 +44,6 @@ fn py2v_integer_overflow1(site string, operation string) {
 }
 
 @[inline]
-fn py2v_integer_sub1(a int, b int, site string, operation string) int {
-	max := int(9223372036854775807)
-	min := -max - 1
-	if (b > 0 && a < min + b) || (b < 0 && a > max + b) { py2v_integer_overflow1(site, operation) }
-	return a - b
-}
-
-@[inline]
 fn py2v_integer_mul1(a int, b int, site string, operation string) int {
 	max := int(9223372036854775807)
 	min := -max - 1
@@ -59,14 +51,6 @@ fn py2v_integer_mul1(a int, b int, site string, operation string) int {
 		py2v_integer_overflow1(site, operation)
 	}
 	return a * b
-}
-
-@[inline]
-fn py2v_integer_add1(a int, b int, site string, operation string) int {
-	max := int(9223372036854775807)
-	min := -max - 1
-	if (b > 0 && a > max - b) || (b < 0 && a < min - b) { py2v_integer_overflow1(site, operation) }
-	return a + b
 }
 
 fn main() {

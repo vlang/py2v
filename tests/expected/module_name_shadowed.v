@@ -19,13 +19,13 @@ fn twice(n int) int {
 
 fn outer() int {
 	inner := fn (count int) int {
-		return py2v_integer_add1(count, 1, 'module_name_shadowed.py:29', 'addition')
+		return count + 1
 	}
 	other := fn () int {
 		count := 10
 		return py2v_integer_mul1(count, 3, 'module_name_shadowed.py:33', 'multiplication')
 	}
-	return py2v_integer_add1(inner(1), other(), 'module_name_shadowed.py:35', 'addition')
+	return inner(1) + other()
 }
 
 @[noreturn]

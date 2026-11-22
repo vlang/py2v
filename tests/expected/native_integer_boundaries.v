@@ -1,6 +1,7 @@
 module main
 
 import math
+import arrays
 import strconv
 import math.bits as py2v_math_bits1
 
@@ -46,32 +47,32 @@ fn main_func() {
 	println(number('9007199254740992'))
 	println(number('9007199254740993'))
 	println(number('1099511627776'))
-	println(low.str() + ' ' + high.str() + ' ' + (py2v_integer_add1(low, 1, 'native_integer_boundaries.py:43', 'addition')).str() + ' ' + (py2v_integer_sub1(high, 1, 'native_integer_boundaries.py:43', 'subtraction')).str())
-	println((py2v_integer_sub1(low, low, 'native_integer_boundaries.py:44', 'subtraction')).str() + ' ' + (py2v_integer_add1(high, low, 'native_integer_boundaries.py:44', 'addition')).str() + ' ' + (low * 1).str())
+	println('${low} ${high} ${low + 1} ${high - 1}')
+	println('${low - low} ${high + low} ${low * 1}')
 	root := number('3037000499')
 	println(py2v_integer_mul1(root, root, 'native_integer_boundaries.py:46', 'multiplication'))
 	for count in [0, 1, 63, 64, 65, i64(4294967296)] {
 		println((py2v_integer_right_shift1(low, count, 'native_integer_boundaries.py:48')).str() + ' ' + (py2v_integer_right_shift1(high, count, 'native_integer_boundaries.py:48')).str() + ' ' + (py2v_integer_left_shift1(0, count, 'native_integer_boundaries.py:48')).str())
 	}
 	println(py2v_integer_left_shift1(number('-1'), 63, 'native_integer_boundaries.py:49'))
-	println((py2v_integer_mod1(low, -1, 'native_integer_boundaries.py:50')).str() + ' ' + (math.divide_floored[int](high, -3).quot).str() + ' ' + (math.modulo_floored[int](-7, 3)).str() + ' ' + (math.modulo_floored[int](7, -3)).str())
+	println((py2v_integer_mod1(low, -1, 'native_integer_boundaries.py:50')).str() + ' ' + (math.divide_floored[int](high, -3).quot).str() + ' ' + (2).str() + ' ' + (-2).str())
 	py2v_unpack1 := py2v_integer_divmod1(low, high, 'native_integer_boundaries.py:51')
 	mut quot := py2v_unpack1[0]
 	mut rem := py2v_unpack1[1]
 	println('${quot} ${rem}')
 	println((py2v_integer_power1(high, 1, 'native_integer_boundaries.py:53')).str() + ' ' + (py2v_integer_power1(1, high, 'native_integer_boundaries.py:53')).str() + ' ' + (py2v_integer_power1(-1, high, 'native_integer_boundaries.py:53')).str() + ' ' + (py2v_integer_power1(0, high, 'native_integer_boundaries.py:53')).str())
-	println((py2v_integer_sum1([-1, high], 1, 'native_integer_boundaries.py:54')).str() + ' ' + (py2v_integer_sum1([
+	println((int(arrays.fold([-1, high], 1, |acc, item| acc + int(item)))).str() + ' ' + (py2v_integer_sum1([
 		1,
 		-1,
 	], low, 'native_integer_boundaries.py:54')).str())
-	println((py2v_float_text1(py2v_sum_float_suffix1([f64(2.5)], f64(py2v_integer_sum1([int(1)], 0, 'native_integer_boundaries.py:55'))))).str() + ' ' + (py2v_float_text1(py2v_sum_float_suffix1([f64(2.0)], f64(py2v_integer_sum1([int(1)], 0, 'native_integer_boundaries.py:55'))))).str())
+	println('${py2v_float_text1(py2v_sum_float_suffix1([f64(2.5)], f64(arrays.fold([int(1)], 0, |acc, item| acc + item))))} ${py2v_float_text1(py2v_sum_float_suffix1([f64(2.0)], f64(arrays.fold([int(1)], 0, |acc, item| acc + item))))}')
 	println('${int(math.factoriali(0))} ${int(math.factoriali(20))}')
-	println((py2v_integer_isqrt1(high)).str() + ' ' + (py2v_integer_gcd1(low, 6, 'native_integer_boundaries.py:57')).str() + ' ' + (py2v_integer_lcm1(high, high, 'native_integer_boundaries.py:57')).str())
-	println((py2v_integer_from_float1(-9.223372036854776e+18, 'native_integer_boundaries.py:58')).str() + ' ' + (py2v_integer_from_float1(4.294967296e+09, 'native_integer_boundaries.py:58')).str() + ' ' + (py2v_integer_from_float1(-4.9, 'native_integer_boundaries.py:58')).str())
+	println('${py2v_integer_isqrt1(high)} ${math.gcd[int](low, 6)} ${math.lcm[int](high, high)}')
+	println('${int(-9.223372036854776e+18)} ${int(4.294967296e+09)} ${int(-4.9)}')
 	py2v_enumerated2 := [3, 5]
-	py2v_enum_start3 := py2v_integer_sub1(high, 1, 'native_integer_boundaries.py:59', 'subtraction')
+	py2v_enum_start3 := high - 1
 	for py2v_enum_index4, value in py2v_enumerated2 {
-		index := py2v_integer_add1(py2v_enum_index4, py2v_enum_start3, 'native_integer_boundaries.py:59', 'addition')
+		index := py2v_enum_index4 + py2v_enum_start3
 		println('${index} ${value}')
 	}
 	mut values := [7, 11]
@@ -82,7 +83,7 @@ fn main_func() {
 	} else {
 		py2v_index6
 	}]
-	py2v_aug_result8 := py2v_integer_add1(py2v_old7, shift_last(mut values), 'native_integer_boundaries.py:62', 'addition')
+	py2v_aug_result8 := py2v_old7 + shift_last(mut values)
 	(*py2v_container5)[if py2v_index6 < 0 { py2v_container5.len + py2v_index6 } else { py2v_index6 }] = py2v_aug_result8
 	println(values)
 	println(count_nonzero([-1, 0, 2, 3]))
@@ -223,14 +224,6 @@ fn py2v_integer_add1(a int, b int, site string, operation string) int {
 }
 
 @[inline]
-fn py2v_integer_sub1(a int, b int, site string, operation string) int {
-	max := int(9223372036854775807)
-	min := -max - 1
-	if (b > 0 && a < min + b) || (b < 0 && a > max + b) { py2v_integer_overflow1(site, operation) }
-	return a - b
-}
-
-@[inline]
 fn py2v_integer_mul1(a int, b int, site string, operation string) int {
 	max := int(9223372036854775807)
 	min := -max - 1
@@ -257,9 +250,8 @@ fn py2v_integer_mod1(a int, b int, _ string) int {
 }
 
 @[inline]
-fn py2v_integer_floor_div1(a int, b int, site string) int {
+fn py2v_integer_floor_div1(a int, b int, _ string) int {
 	if b == 0 { panic('ZeroDivisionError: integer division or modulo by zero') }
-	if b == -1 && a == -9223372036854775807 - 1 { py2v_integer_overflow1(site, 'floor division') }
 	r := a % b
 	adjust := r != 0 && (r < 0) != (b < 0)
 	return a / b - int(adjust)
@@ -340,33 +332,6 @@ fn py2v_integer_isqrt1(value int) int {
 		bit >>= 2
 	}
 	return int(root)
-}
-
-fn py2v_integer_gcd1(a int, b int, site string) int {
-	x := if a < 0 { u64(-(a + 1)) + 1 } else { u64(a) }
-	y := if b < 0 { u64(-(b + 1)) + 1 } else { u64(b) }
-	max := u64(9223372036854775807)
-	result := math.gcd[u64](x, y)
-	if result > max { py2v_integer_overflow1(site, 'greatest common divisor') }
-	return int(result)
-}
-
-fn py2v_integer_lcm1(a int, b int, site string) int {
-	x := if a < 0 { u64(-(a + 1)) + 1 } else { u64(a) }
-	y := if b < 0 { u64(-(b + 1)) + 1 } else { u64(b) }
-	max := u64(9223372036854775807)
-	if x == 0 || y == 0 { return 0 }
-	q := x / math.gcd[u64](x, y)
-	if q > max / y { py2v_integer_overflow1(site, 'least common multiple') }
-	return int(q * y)
-}
-
-@[inline]
-fn py2v_integer_from_float1(value f64, site string) int {
-	if !(value >= -9223372036854775808.0 && value < 9223372036854775808.0) {
-		py2v_integer_overflow1(site, 'float to integer conversion')
-	}
-	return int(value)
 }
 
 fn py2v_range_next1(current int, stop int, step int) int {

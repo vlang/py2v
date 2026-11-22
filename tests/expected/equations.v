@@ -9,7 +9,7 @@ fn equation_py(x int, y int) !bool {
 	if pyrt.truth(pyrt.untranslated_import('py2many.smt.pre')!) {
 		assert x > 2
 		assert y < 10
-		assert py2v_integer_add1(x, int(py2v_integer_mul1(2, y, 'equations.py:13', 'multiplication')), 'equations.py:13', 'addition') == 7
+		assert x + int(py2v_integer_mul1(2, y, 'equations.py:13', 'multiplication')) == 7
 	}
 	true
 }
@@ -46,14 +46,6 @@ fn py2v_integer_mul1(a int, b int, site string, operation string) int {
 		py2v_integer_overflow1(site, operation)
 	}
 	return a * b
-}
-
-@[inline]
-fn py2v_integer_add1(a int, b int, site string, operation string) int {
-	max := int(9223372036854775807)
-	min := -max - 1
-	if (b > 0 && a > max - b) || (b < 0 && a < min - b) { py2v_integer_overflow1(site, operation) }
-	return a + b
 }
 
 fn main() {

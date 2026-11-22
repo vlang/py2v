@@ -31,7 +31,7 @@ fn (mut self Box) put() {
 }
 
 fn (mut self Box) bump() {
-	self.items.items[1] = py2v_integer_add1(self.items.items[1], 5, 'element_store_mut.py:14', 'addition')
+	self.items.items[1] += 5
 }
 
 pub fn py2v_new_box(items &pyrt.ListRef[int]) Box {
@@ -42,12 +42,12 @@ pub fn py2v_new_box(items &pyrt.ListRef[int]) Box {
 
 fn main_func() {
 	mut a := [int(1), 2]
-	a[0] = py2v_integer_add1(a[0], 1, 'element_store_mut.py:19', 'addition')
+	a[0] += 1
 	println(a)
 	mut counts := map[string]int{
 		'x': 1
 	}
-	counts['x'] = py2v_integer_add1(counts['x'], 1, 'element_store_mut.py:23', 'addition')
+	counts['x'] += 1
 	println(counts['x'])
 	mut grid := [[1, 2], [3, 4]]
 	grid[0][1] = 5
@@ -72,14 +72,6 @@ fn py2v_integer_overflow1(site string, operation string) {
 	flush_stdout()
 	eprintln('py2v_integer_overflow: ${site}: ${operation} exceeds the V int range')
 	exit(1)
-}
-
-@[inline]
-fn py2v_integer_add1(a int, b int, site string, operation string) int {
-	max := int(9223372036854775807)
-	min := -max - 1
-	if (b > 0 && a > max - b) || (b < 0 && a < min - b) { py2v_integer_overflow1(site, operation) }
-	return a + b
 }
 
 @[inline]

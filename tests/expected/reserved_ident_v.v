@@ -22,11 +22,11 @@ pub fn py2v_new_holder(v_ int) Holder {
 
 fn local_use() int {
 	mut v_ := py2v_new_holder(1)
-	return py2v_integer_add1(v_.v, v_.bump(2), 'reserved_ident_v.py:12', 'addition')
+	return v_.v + v_.bump(2)
 }
 
 fn param_use(v_ int) int {
-	return py2v_integer_add1(v_, 1, 'reserved_ident_v.py:16', 'addition')
+	return v_ + 1
 }
 
 fn comprehension(rows [][]int) []string {
@@ -44,7 +44,7 @@ fn spawn_(x int) int {
 }
 
 fn exit_(x int) int {
-	return py2v_integer_sub1(x, 1, 'reserved_ident_v.py:27', 'subtraction')
+	return x - 1
 }
 
 fn malloc_(n int) []int {
@@ -63,14 +63,6 @@ fn py2v_integer_overflow1(site string, operation string) {
 }
 
 @[inline]
-fn py2v_integer_add1(a int, b int, site string, operation string) int {
-	max := int(9223372036854775807)
-	min := -max - 1
-	if (b > 0 && a > max - b) || (b < 0 && a < min - b) { py2v_integer_overflow1(site, operation) }
-	return a + b
-}
-
-@[inline]
 fn py2v_integer_mul1(a int, b int, site string, operation string) int {
 	max := int(9223372036854775807)
 	min := -max - 1
@@ -78,14 +70,6 @@ fn py2v_integer_mul1(a int, b int, site string, operation string) int {
 		py2v_integer_overflow1(site, operation)
 	}
 	return a * b
-}
-
-@[inline]
-fn py2v_integer_sub1(a int, b int, site string, operation string) int {
-	max := int(9223372036854775807)
-	min := -max - 1
-	if (b > 0 && a < min + b) || (b < 0 && a > max + b) { py2v_integer_overflow1(site, operation) }
-	return a - b
 }
 
 fn main() {

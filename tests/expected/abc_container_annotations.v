@@ -64,5 +64,5 @@ fn main() {
 		items: nums
 		names: table
 	}
-	println(py2v_integer_add1(total(box.items), lookup(box.names, 'x'), 'abc_container_annotations.py:38', 'addition'))
+	println(total(box.items) + lookup(box.names, 'x'))
 }

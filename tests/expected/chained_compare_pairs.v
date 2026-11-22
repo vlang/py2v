@@ -13,7 +13,7 @@ fn ascending(a int, b int, c int, d int) bool {
 }
 
 fn bump(mut counter []int) int {
-	counter[0] = py2v_integer_add1(counter[0], 1, 'chained_compare_pairs.py:14', 'addition')
+	counter[0] += 1
 	return counter[0]
 }
 
@@ -63,6 +63,17 @@ fn main_func() {
 	println(if ok { 'True' } else { 'False' })
 }
 
+fn py2v_range_next1(current int, stop int, step int) int {
+	if step > 0 {
+		if u64(step) >= u64(stop) - u64(current) {
+			return stop
+		}
+	} else if u64(0) - u64(step) >= u64(current) - u64(stop) {
+		return stop
+	}
+	return current + step
+}
+
 @[noreturn]
 fn py2v_integer_overflow1(site string, operation string) {
 	flush_stdout()
@@ -76,17 +87,6 @@ fn py2v_integer_add1(a int, b int, site string, operation string) int {
 	min := -max - 1
 	if (b > 0 && a > max - b) || (b < 0 && a < min - b) { py2v_integer_overflow1(site, operation) }
 	return a + b
-}
-
-fn py2v_range_next1(current int, stop int, step int) int {
-	if step > 0 {
-		if u64(step) >= u64(stop) - u64(current) {
-			return stop
-		}
-	} else if u64(0) - u64(step) >= u64(current) - u64(stop) {
-		return stop
-	}
-	return current + step
 }
 
 fn main() {

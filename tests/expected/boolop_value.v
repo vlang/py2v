@@ -16,7 +16,7 @@ fn (self Cipher) shift(value int, py2v_key_in1 int) int {
 	} else {
 		if self.key != 0 { self.key } else { 1 }
 	}
-	return py2v_integer_add1(value, key, 'boolop_value.py:7', 'addition')
+	return value + key
 }
 
 pub fn py2v_new_cipher(key int) Cipher {
@@ -55,21 +55,6 @@ fn main_func() {
 	println(both(2, 3))
 	println(if neither(1, 1) { 'True' } else { 'False' })
 	println(if neither(1, 0) { 'True' } else { 'False' })
-}
-
-@[noreturn]
-fn py2v_integer_overflow1(site string, operation string) {
-	flush_stdout()
-	eprintln('py2v_integer_overflow: ${site}: ${operation} exceeds the V int range')
-	exit(1)
-}
-
-@[inline]
-fn py2v_integer_add1(a int, b int, site string, operation string) int {
-	max := int(9223372036854775807)
-	min := -max - 1
-	if (b > 0 && a > max - b) || (b < 0 && a < min - b) { py2v_integer_overflow1(site, operation) }
-	return a + b
 }
 
 fn main() {

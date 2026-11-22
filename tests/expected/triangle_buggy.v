@@ -21,24 +21,24 @@ fn classify_triangle_correct(a int, b int, c int) TriangleType {
 	} else if a == b || b == c || a == c {
 		return TriangleType.ISOSCELES
 	} else if a >= b && a >= c {
-		if py2v_integer_mul1(a, a, 'triangle_buggy.py:39', 'multiplication') == py2v_integer_add1(int(py2v_integer_mul1(b, b, 'triangle_buggy.py:39', 'multiplication')), int(py2v_integer_mul1(c, c, 'triangle_buggy.py:39', 'multiplication')), 'triangle_buggy.py:39', 'addition') {
+		if py2v_integer_mul1(a, a, 'triangle_buggy.py:39', 'multiplication') == int(py2v_integer_mul1(b, b, 'triangle_buggy.py:39', 'multiplication')) + int(py2v_integer_mul1(c, c, 'triangle_buggy.py:39', 'multiplication')) {
 			return TriangleType.RIGHT
-		} else if py2v_integer_mul1(a, a, 'triangle_buggy.py:41', 'multiplication') < py2v_integer_add1(int(py2v_integer_mul1(b, b, 'triangle_buggy.py:41', 'multiplication')), int(py2v_integer_mul1(c, c, 'triangle_buggy.py:41', 'multiplication')), 'triangle_buggy.py:41', 'addition') {
+		} else if py2v_integer_mul1(a, a, 'triangle_buggy.py:41', 'multiplication') < int(py2v_integer_mul1(b, b, 'triangle_buggy.py:41', 'multiplication')) + int(py2v_integer_mul1(c, c, 'triangle_buggy.py:41', 'multiplication')) {
 			return TriangleType.ACUTE
 		} else {
 			return TriangleType.OBTUSE
 		}
 	} else if b >= a && b >= c {
-		if py2v_integer_mul1(b, b, 'triangle_buggy.py:47', 'multiplication') == py2v_integer_add1(int(py2v_integer_mul1(a, a, 'triangle_buggy.py:47', 'multiplication')), int(py2v_integer_mul1(c, c, 'triangle_buggy.py:47', 'multiplication')), 'triangle_buggy.py:47', 'addition') {
+		if py2v_integer_mul1(b, b, 'triangle_buggy.py:47', 'multiplication') == int(py2v_integer_mul1(a, a, 'triangle_buggy.py:47', 'multiplication')) + int(py2v_integer_mul1(c, c, 'triangle_buggy.py:47', 'multiplication')) {
 			return TriangleType.RIGHT
-		} else if py2v_integer_mul1(b, b, 'triangle_buggy.py:49', 'multiplication') < py2v_integer_add1(int(py2v_integer_mul1(a, a, 'triangle_buggy.py:49', 'multiplication')), int(py2v_integer_mul1(c, c, 'triangle_buggy.py:49', 'multiplication')), 'triangle_buggy.py:49', 'addition') {
+		} else if py2v_integer_mul1(b, b, 'triangle_buggy.py:49', 'multiplication') < int(py2v_integer_mul1(a, a, 'triangle_buggy.py:49', 'multiplication')) + int(py2v_integer_mul1(c, c, 'triangle_buggy.py:49', 'multiplication')) {
 			return TriangleType.ACUTE
 		} else {
 			return TriangleType.OBTUSE
 		}
-	} else if py2v_integer_mul1(c, c, 'triangle_buggy.py:55', 'multiplication') == py2v_integer_add1(int(py2v_integer_mul1(a, a, 'triangle_buggy.py:55', 'multiplication')), int(py2v_integer_mul1(b, b, 'triangle_buggy.py:55', 'multiplication')), 'triangle_buggy.py:55', 'addition') {
+	} else if py2v_integer_mul1(c, c, 'triangle_buggy.py:55', 'multiplication') == int(py2v_integer_mul1(a, a, 'triangle_buggy.py:55', 'multiplication')) + int(py2v_integer_mul1(b, b, 'triangle_buggy.py:55', 'multiplication')) {
 		return TriangleType.RIGHT
-	} else if py2v_integer_mul1(c, c, 'triangle_buggy.py:57', 'multiplication') < py2v_integer_add1(int(py2v_integer_mul1(a, a, 'triangle_buggy.py:57', 'multiplication')), int(py2v_integer_mul1(b, b, 'triangle_buggy.py:57', 'multiplication')), 'triangle_buggy.py:57', 'addition') {
+	} else if py2v_integer_mul1(c, c, 'triangle_buggy.py:57', 'multiplication') < int(py2v_integer_mul1(a, a, 'triangle_buggy.py:57', 'multiplication')) + int(py2v_integer_mul1(b, b, 'triangle_buggy.py:57', 'multiplication')) {
 		return TriangleType.ACUTE
 	} else {
 		return TriangleType.OBTUSE
@@ -50,7 +50,7 @@ fn classify_triangle_py(a int, b int, c int) !TriangleType {
 		assert a > 0
 		assert b > 0
 		assert c > 0
-		assert a < py2v_integer_add1(b, c, 'triangle_buggy.py:70', 'addition')
+		assert a < b + c
 	}
 	if a >= b && b >= c {
 		if a == c || b == c {
@@ -59,8 +59,8 @@ fn classify_triangle_py(a int, b int, c int) !TriangleType {
 			} else {
 				return TriangleType.ISOSCELES
 			}
-		} else if py2v_integer_mul1(a, a, 'triangle_buggy.py:82', 'multiplication') != py2v_integer_add1(int(py2v_integer_mul1(b, b, 'triangle_buggy.py:82', 'multiplication')), int(py2v_integer_mul1(c, c, 'triangle_buggy.py:82', 'multiplication')), 'triangle_buggy.py:82', 'addition') {
-			if py2v_integer_mul1(a, a, 'triangle_buggy.py:83', 'multiplication') < py2v_integer_add1(int(py2v_integer_mul1(b, b, 'triangle_buggy.py:83', 'multiplication')), int(py2v_integer_mul1(c, c, 'triangle_buggy.py:83', 'multiplication')), 'triangle_buggy.py:83', 'addition') {
+		} else if py2v_integer_mul1(a, a, 'triangle_buggy.py:82', 'multiplication') != int(py2v_integer_mul1(b, b, 'triangle_buggy.py:82', 'multiplication')) + int(py2v_integer_mul1(c, c, 'triangle_buggy.py:82', 'multiplication')) {
+			if py2v_integer_mul1(a, a, 'triangle_buggy.py:83', 'multiplication') < int(py2v_integer_mul1(b, b, 'triangle_buggy.py:83', 'multiplication')) + int(py2v_integer_mul1(c, c, 'triangle_buggy.py:83', 'multiplication')) {
 				return TriangleType.ACUTE
 			} else {
 				return TriangleType.OBTUSE
@@ -97,14 +97,6 @@ fn py2v_integer_mul1(a int, b int, site string, operation string) int {
 		py2v_integer_overflow1(site, operation)
 	}
 	return a * b
-}
-
-@[inline]
-fn py2v_integer_add1(a int, b int, site string, operation string) int {
-	max := int(9223372036854775807)
-	min := -max - 1
-	if (b > 0 && a > max - b) || (b < 0 && a < min - b) { py2v_integer_overflow1(site, operation) }
-	return a + b
 }
 
 fn main() {

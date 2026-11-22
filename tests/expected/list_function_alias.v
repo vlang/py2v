@@ -35,7 +35,7 @@ fn split_sum(values []int) int {
 			right << value
 		}
 	}
-	return py2v_integer_add1(split_sum(left), split_sum(right), 'list_function_alias.py:28', 'addition')
+	return split_sum(left) + split_sum(right)
 }
 
 fn main_func() {

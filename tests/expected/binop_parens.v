@@ -7,20 +7,20 @@ fn main_func() {
 	a := 7
 	b := 3
 	c := 2
-	println(py2v_integer_mul1(int(py2v_integer_add1(a, b, 'binop_parens.py:7', 'addition')), c, 'binop_parens.py:7', 'multiplication'))
-	println(py2v_integer_sub1(a, py2v_integer_sub1(b, c, 'binop_parens.py:8', 'subtraction'), 'binop_parens.py:8', 'subtraction'))
-	println(py2v_integer_sub1(a, int(py2v_integer_add1(b, c, 'binop_parens.py:9', 'addition')), 'binop_parens.py:9', 'subtraction'))
+	println(py2v_integer_mul1(int(a + b), c, 'binop_parens.py:7', 'multiplication'))
+	println(a - (b - c))
+	println(a - int(b + c))
 	println(py2v_integer_mul1(a, int(py2v_integer_mod1(b, c, 'binop_parens.py:10')), 'binop_parens.py:10', 'multiplication'))
-	println(py2v_integer_mod1(int(py2v_integer_add1(a, b, 'binop_parens.py:11', 'addition')), int(py2v_integer_add1(int(py2v_integer_add1(b, c, 'binop_parens.py:11', 'addition')), 1, 'binop_parens.py:11', 'addition')), 'binop_parens.py:11'))
-	println(py2v_integer_mul1(py2v_integer_neg1(py2v_integer_sub1(a, b, 'binop_parens.py:12', 'subtraction'), 'binop_parens.py:12'), c, 'binop_parens.py:12', 'multiplication'))
-	println(~(py2v_integer_add1(a, b, 'binop_parens.py:13', 'addition')))
-	println(py2v_integer_mul1(+(py2v_integer_sub1(b, a, 'binop_parens.py:14', 'subtraction')), c, 'binop_parens.py:14', 'multiplication'))
-	println(py2v_integer_left_shift1(int(py2v_integer_add1(a, b, 'binop_parens.py:17', 'addition')), c, 'binop_parens.py:17'))
-	println(py2v_integer_left_shift1(a, int(py2v_integer_add1(b, c, 'binop_parens.py:18', 'addition')), 'binop_parens.py:18'))
-	println(b & py2v_integer_add1(a, c, 'binop_parens.py:19', 'addition'))
+	println(py2v_integer_mod1(int(a + b), int(int(b + c) + 1), 'binop_parens.py:11'))
+	println(py2v_integer_mul1(-(a - b), c, 'binop_parens.py:12', 'multiplication'))
+	println(~(a + b))
+	println(py2v_integer_mul1(+(b - a), c, 'binop_parens.py:14', 'multiplication'))
+	println(py2v_integer_left_shift1(int(a + b), c, 'binop_parens.py:17'))
+	println(py2v_integer_left_shift1(a, int(b + c), 'binop_parens.py:18'))
+	println(b & (a + c))
 	println(a | (b ^ c))
-	println(py2v_integer_add1(int(py2v_integer_mul1(a, b, 'binop_parens.py:23', 'multiplication')), c, 'binop_parens.py:23', 'addition'))
-	println(py2v_integer_sub1(py2v_integer_sub1(a, b, 'binop_parens.py:24', 'subtraction'), c, 'binop_parens.py:24', 'subtraction'))
+	println(int(py2v_integer_mul1(a, b, 'binop_parens.py:23', 'multiplication')) + c)
+	println(a - b - c)
 	println(a ^ b & c)
 	x := 7.5
 	y := 2.5
@@ -50,10 +50,10 @@ fn main_func() {
 	if p && (q || r) {
 		println('p and (q or r), again')
 	}
-	println(py2v_integer_neg1(py2v_integer_neg1(a, 'binop_parens.py:57'), 'binop_parens.py:57'))
+	println(-(-a))
 	mut total := 0
-	py2v_range_start1 := int(py2v_integer_sub1(c, py2v_integer_sub1(b, a, 'binop_parens.py:61', 'subtraction'), 'binop_parens.py:61', 'subtraction'))
-	py2v_range_stop2 := int(py2v_integer_add1(a, 1, 'binop_parens.py:61', 'addition'))
+	py2v_range_start1 := int(c - (b - a))
+	py2v_range_stop2 := int(a + 1)
 	py2v_range_step3 := int(1)
 	if py2v_range_step3 == 0 { panic('ValueError: range() arg 3 must not be zero') }
 	for i := py2v_range_start1; if py2v_range_step3 > 0 {
@@ -84,14 +84,6 @@ fn py2v_integer_overflow1(site string, operation string) {
 }
 
 @[inline]
-fn py2v_integer_add1(a int, b int, site string, operation string) int {
-	max := int(9223372036854775807)
-	min := -max - 1
-	if (b > 0 && a > max - b) || (b < 0 && a < min - b) { py2v_integer_overflow1(site, operation) }
-	return a + b
-}
-
-@[inline]
 fn py2v_integer_mul1(a int, b int, site string, operation string) int {
 	max := int(9223372036854775807)
 	min := -max - 1
@@ -102,26 +94,12 @@ fn py2v_integer_mul1(a int, b int, site string, operation string) int {
 }
 
 @[inline]
-fn py2v_integer_sub1(a int, b int, site string, operation string) int {
-	max := int(9223372036854775807)
-	min := -max - 1
-	if (b > 0 && a < min + b) || (b < 0 && a > max + b) { py2v_integer_overflow1(site, operation) }
-	return a - b
-}
-
-@[inline]
 fn py2v_integer_mod1(a int, b int, _ string) int {
 	if b == 0 { panic('ZeroDivisionError: integer modulo by zero') }
 	if b == -1 { return 0 }
 	r := a % b
 	adjust := r != 0 && (r < 0) != (b < 0)
 	return if adjust { r + b } else { r }
-}
-
-@[inline]
-fn py2v_integer_neg1(value int, site string) int {
-	if value == -9223372036854775807 - 1 { py2v_integer_overflow1(site, 'negation') }
-	return -value
 }
 
 @[inline]
@@ -169,6 +147,14 @@ fn py2v_range_next1(current int, stop int, step int) int {
 		return stop
 	}
 	return current + step
+}
+
+@[inline]
+fn py2v_integer_add1(a int, b int, site string, operation string) int {
+	max := int(9223372036854775807)
+	min := -max - 1
+	if (b > 0 && a > max - b) || (b < 0 && a < min - b) { py2v_integer_overflow1(site, operation) }
+	return a + b
 }
 
 fn main() {

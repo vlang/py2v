@@ -6,7 +6,7 @@ type Any = pyrt.Value
 
 fn choose(start int, py2v_LIMIT_in1 int) int {
 	mut limit := py2v_LIMIT_in1
-	limit = py2v_integer_add1(limit, start, 'parameter_bindings.py:2', 'addition')
+	limit += start
 	return limit
 }
 

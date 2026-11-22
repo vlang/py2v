@@ -4,11 +4,11 @@ fn bisect_right(data []int, item int) int {
 	mut low := 0
 	mut high := int(data.len)
 	for low < high {
-		middle := py2v_integer_from_float1(f64(py2v_integer_add1(low, high, 'binit.py:12', 'addition')) / 2, 'binit.py:12')
+		middle := int(f64(low + high) / 2)
 		if item < data[middle] {
 			high = middle
 		} else {
-			low = py2v_integer_add1(middle, 1, 'binit.py:16', 'addition')
+			low = middle + 1
 		}
 	}
 	return low
@@ -50,14 +50,6 @@ fn py2v_integer_add1(a int, b int, site string, operation string) int {
 	min := -max - 1
 	if (b > 0 && a > max - b) || (b < 0 && a < min - b) { py2v_integer_overflow1(site, operation) }
 	return a + b
-}
-
-@[inline]
-fn py2v_integer_from_float1(value f64, site string) int {
-	if !(value >= -9223372036854775808.0 && value < 9223372036854775808.0) {
-		py2v_integer_overflow1(site, 'float to integer conversion')
-	}
-	return int(value)
 }
 
 fn main() {

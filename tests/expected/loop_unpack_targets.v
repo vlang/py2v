@@ -9,7 +9,7 @@ fn zipped() int {
 		first := py2v_item2[0]
 		second := py2v_item2[1]
 		third := py2v_item2[2]
-		result = py2v_integer_add1(result, int(py2v_integer_add1(int(py2v_integer_add1(first, second, 'loop_unpack_targets.py:4', 'addition')), third, 'loop_unpack_targets.py:4', 'addition')), 'loop_unpack_targets.py:4', 'addition')
+		result = py2v_integer_add1(result, int(int(first + second) + third), 'loop_unpack_targets.py:4', 'addition')
 	}
 	return result
 }
@@ -20,7 +20,7 @@ fn list_target() int {
 	for py2v_item4 in py2v_seq3 {
 		first := py2v_item4[0]
 		second := py2v_item4[1]
-		result = py2v_integer_add1(result, int(py2v_integer_add1(first, second, 'loop_unpack_targets.py:11', 'addition')), 'loop_unpack_targets.py:11', 'addition')
+		result = py2v_integer_add1(result, int(first + second), 'loop_unpack_targets.py:11', 'addition')
 	}
 	return result
 }

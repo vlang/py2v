@@ -10,9 +10,9 @@ fn note(value int) int {
 
 fn values(ch chan i64, first int, bonus int, remaining ...int) {
 	defer { ch.close() }
-	ch <- py2v_integer_add1(first, bonus, 'variadic_generator_kwonly.py:10', 'addition')
+	ch <- first + bonus
 	for item in remaining {
-		ch <- py2v_integer_add1(item, bonus, 'variadic_generator_kwonly.py:12', 'addition')
+		ch <- item + bonus
 	}
 }
 
@@ -35,21 +35,6 @@ fn show() {
 		item := <-py2v_ch5 or { break }
 		println(item)
 	}
-}
-
-@[noreturn]
-fn py2v_integer_overflow1(site string, operation string) {
-	flush_stdout()
-	eprintln('py2v_integer_overflow: ${site}: ${operation} exceeds the V int range')
-	exit(1)
-}
-
-@[inline]
-fn py2v_integer_add1(a int, b int, site string, operation string) int {
-	max := int(9223372036854775807)
-	min := -max - 1
-	if (b > 0 && a > max - b) || (b < 0 && a < min - b) { py2v_integer_overflow1(site, operation) }
-	return a + b
 }
 
 fn main() {

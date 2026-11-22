@@ -26,19 +26,19 @@ fn (self Reader) r() int {
 }
 
 fn f(x int, y int) int {
-	return py2v_integer_add1(x, y, 'comprehension_identifier_replace.py:13', 'addition')
+	return x + y
 }
 
 fn main_func() {
 	r_tail := 10
 	tr := 20
 	println([' r '].map(it.trim_space()))
-	println([1, 2].map(py2v_integer_add1(int(py2v_integer_add1(it, r_tail, 'comprehension_identifier_replace.py:19', 'addition')), tr, 'comprehension_identifier_replace.py:19', 'addition')))
+	println([1, 2].map(int(it + r_tail) + tr))
 	println([1].map('r'))
 	println([1, 2].map('r=${it}'))
 	println([py2v_new_box(3)].map(it.it))
 	x := py2v_new_box(4)
-	println([1, 2].map(py2v_integer_add1(x.it, it, 'comprehension_identifier_replace.py:24', 'addition')))
+	println([1, 2].map(x.it + it))
 	println([Reader{}].map(it.it()))
 	println([1, 2].filter(it >= py2v_text_length1('r')).map(it))
 	println([1, 2].map(it))
@@ -57,21 +57,6 @@ fn main_func() {
 		}
 		return result
 	}()))
-}
-
-@[noreturn]
-fn py2v_integer_overflow1(site string, operation string) {
-	flush_stdout()
-	eprintln('py2v_integer_overflow: ${site}: ${operation} exceeds the V int range')
-	exit(1)
-}
-
-@[inline]
-fn py2v_integer_add1(a int, b int, site string, operation string) int {
-	max := int(9223372036854775807)
-	min := -max - 1
-	if (b > 0 && a > max - b) || (b < 0 && a < min - b) { py2v_integer_overflow1(site, operation) }
-	return a + b
 }
 
 fn py2v_text_length1(text string) int {

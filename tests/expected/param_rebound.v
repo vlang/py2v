@@ -16,7 +16,7 @@ fn (mut self Counter) add(py2v_amount_in5 int) int {
 	if amount < 0 {
 		amount = 0
 	}
-	self.total = py2v_integer_add1(self.total, amount, 'param_rebound.py:30', 'addition')
+	self.total += amount
 	return self.total
 }
 
@@ -30,7 +30,7 @@ fn countdown(py2v_n_in1 int) int {
 	mut n := py2v_n_in1
 	mut steps := 0
 	for n > 0 {
-		n = py2v_integer_sub1(n, 1, 'param_rebound.py:4', 'subtraction')
+		n -= 1
 		steps = py2v_integer_add1(steps, 1, 'param_rebound.py:5', 'addition')
 	}
 	return steps
@@ -42,7 +42,7 @@ fn shout(py2v_text_in2 string, py2v_times_in3 int) string {
 	text = text.to_upper()
 	for times > 1 {
 		text += '!'
-		times = py2v_integer_sub1(times, 1, 'param_rebound.py:13', 'subtraction')
+		times -= 1
 	}
 	return text
 }
@@ -60,14 +60,6 @@ fn py2v_integer_overflow1(site string, operation string) {
 	flush_stdout()
 	eprintln('py2v_integer_overflow: ${site}: ${operation} exceeds the V int range')
 	exit(1)
-}
-
-@[inline]
-fn py2v_integer_sub1(a int, b int, site string, operation string) int {
-	max := int(9223372036854775807)
-	min := -max - 1
-	if (b > 0 && a < min + b) || (b < 0 && a > max + b) { py2v_integer_overflow1(site, operation) }
-	return a - b
 }
 
 @[inline]

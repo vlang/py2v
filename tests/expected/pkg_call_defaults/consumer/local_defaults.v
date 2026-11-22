@@ -9,7 +9,7 @@ pub fn local_greet_(name string, prefix string) string {
 }
 
 pub fn local_shift_(value int, offset int) int {
-	return py2v_integer_add1(value, offset, 'consumer/local_defaults.py:9', 'addition')
+	return value + offset
 }
 
 pub fn local_optional_(payload Any) string {
@@ -60,19 +60,4 @@ pub fn run_local_defaults_py() ! {
 
 pub fn run_local_defaults() {
 	run_local_defaults_py() or { pyrt.fail(err) }
-}
-
-@[noreturn]
-fn py2v_integer_overflow1(site string, operation string) {
-	flush_stdout()
-	eprintln('py2v_integer_overflow: ${site}: ${operation} exceeds the V int range')
-	exit(1)
-}
-
-@[inline]
-fn py2v_integer_add1(a int, b int, site string, operation string) int {
-	max := int(9223372036854775807)
-	min := -max - 1
-	if (b > 0 && a > max - b) || (b < 0 && a < min - b) { py2v_integer_overflow1(site, operation) }
-	return a + b
 }

@@ -4,13 +4,13 @@ fn outer(x int) int {
 	inner := fn (y int) int {
 		return py2v_integer_mul1(y, 2, 'nested_functions.py:3', 'multiplication')
 	}
-	return py2v_integer_add1(inner(x), 1, 'nested_functions.py:5', 'addition')
+	return inner(x) + 1
 }
 
 fn make_adder(n int) fn (int) int {
 	py2v_capture1 := &n
 	adder := fn [py2v_capture1] (x int) int {
-		return py2v_integer_add1(x, (*py2v_capture1), 'nested_functions.py:10', 'addition')
+		return x + (*py2v_capture1)
 	}
 	return adder
 }
@@ -38,14 +38,6 @@ fn py2v_integer_mul1(a int, b int, site string, operation string) int {
 		py2v_integer_overflow1(site, operation)
 	}
 	return a * b
-}
-
-@[inline]
-fn py2v_integer_add1(a int, b int, site string, operation string) int {
-	max := int(9223372036854775807)
-	min := -max - 1
-	if (b > 0 && a > max - b) || (b < 0 && a < min - b) { py2v_integer_overflow1(site, operation) }
-	return a + b
 }
 
 fn main() {

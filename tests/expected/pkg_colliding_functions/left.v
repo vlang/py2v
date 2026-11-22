@@ -1,7 +1,7 @@
 module py_pkg_colliding_functions
 
 pub fn py2v_def_override_1_1(value int) int {
-	return py2v_integer_add1(value, 1, 'left.py:7', 'addition')
+	return value + 1
 }
 
 pub fn keep_local(override int) int {

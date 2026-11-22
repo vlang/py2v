@@ -50,9 +50,8 @@ fn py2v_integer_add1(a int, b int, site string, operation string) int {
 }
 
 @[inline]
-fn py2v_integer_floor_div1(a int, b int, site string) int {
+fn py2v_integer_floor_div1(a int, b int, _ string) int {
 	if b == 0 { panic('ZeroDivisionError: integer division or modulo by zero') }
-	if b == -1 && a == -9223372036854775807 - 1 { py2v_integer_overflow1(site, 'floor division') }
 	r := a % b
 	adjust := r != 0 && (r < 0) != (b < 0)
 	return a / b - int(adjust)

@@ -67,8 +67,8 @@ fn show() {
 	}; i = py2v_range_next1(i, py2v_range_stop10, py2v_range_step11) {
 		println(i)
 	}
-	a3 := py2v_integer_neg1(a1, 'coverage.py:45')
-	a4 := py2v_integer_add1(a3, a1, 'coverage.py:47', 'addition')
+	a3 := -a1
+	a4 := a3 + a1
 	println(a4)
 	t1 := if a1 > 5 { 10 } else { 5 }
 	assert t1 == 10
@@ -99,7 +99,7 @@ fn show() {
 	}
 	println(if true { 'True' } else { 'False' })
 	if true {
-		a1 = py2v_integer_add1(a1, 1, 'coverage.py:77', 'addition')
+		a1 += 1
 	}
 	assert a1 == 11
 	if true {
@@ -162,12 +162,6 @@ fn py2v_float_text1[T](value T) string {
 	} $else {
 		return value.str()
 	}
-}
-
-@[inline]
-fn py2v_integer_neg1(value int, site string) int {
-	if value == -9223372036854775807 - 1 { py2v_integer_overflow1(site, 'negation') }
-	return -value
 }
 
 fn main() {

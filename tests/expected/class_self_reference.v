@@ -34,12 +34,12 @@ fn (mut self LinkedList) push_front(data int) {
 	mut node := py2v_new_node(data)
 	node.next = self.head
 	self.head = node
-	self.size = py2v_integer_add1(self.size, 1, 'class_self_reference.py:19', 'addition')
+	self.size += 1
 }
 
 fn (mut self LinkedList) push_back(data int) {
 	node := py2v_new_node(data)
-	self.size = py2v_integer_add1(self.size, 1, 'class_self_reference.py:23', 'addition')
+	self.size += 1
 	if self.head == none {
 		self.head = node
 		return
@@ -141,14 +141,14 @@ fn height(node ?&TreeNode) int {
 	if node == none {
 		return 0
 	}
-	return py2v_integer_add1(1, arrays.max([height(node.left), height(node.right)]) or { panic('!') }, 'class_self_reference.py:91', 'addition')
+	return 1 + (arrays.max([height(node.left), height(node.right)]) or { panic('!') })
 }
 
 fn tree_sum(node ?&TreeNode) int {
 	if node == none {
 		return 0
 	}
-	return py2v_integer_add1(int(py2v_integer_add1(node.value, tree_sum(node.left), 'class_self_reference.py:97', 'addition')), tree_sum(node.right), 'class_self_reference.py:97', 'addition')
+	return int(node.value + tree_sum(node.left)) + tree_sum(node.right)
 }
 
 fn main_func() {

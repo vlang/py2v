@@ -26,7 +26,7 @@ fn unpacked(upper int) int {
 	if !py2v_broke4 {
 		println(value)
 	}
-	return py2v_integer_add1(left, value, 'loop_target_rebinding.py:9', 'addition')
+	return left + value
 }
 
 fn distinct(n int) int {

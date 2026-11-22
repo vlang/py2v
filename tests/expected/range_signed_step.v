@@ -25,39 +25,6 @@ fn py2v_range_next1(current int, stop int, step int) int {
 	return current + step
 }
 
-@[noreturn]
-fn py2v_integer_overflow1(site string, operation string) {
-	flush_stdout()
-	eprintln('py2v_integer_overflow: ${site}: ${operation} exceeds the V int range')
-	exit(1)
-}
-
-@[inline]
-fn py2v_integer_mul1(a int, b int, site string, operation string) int {
-	max := int(9223372036854775807)
-	min := -max - 1
-	if (a > 0 && ((b > 0 && a > max / b) || b < min / a)) || (a < 0 && ((b > 0 && a < min / b) || (b < 0 && a < max / b))) {
-		py2v_integer_overflow1(site, operation)
-	}
-	return a * b
-}
-
-fn py2v_integer_power1(a int, b int, site string) int {
-	if b < 0 { panic('py2v_unsupported_integer_power: a negative exponent needs a float result') }
-	mut base, mut exponent := a, b
-	mut result := 1
-	for exponent != 0 {
-		if exponent & 1 != 0 {
-			result = py2v_integer_mul1(result, base, site, 'power')
-		}
-		exponent >>= 1
-		if exponent != 0 {
-			base = py2v_integer_mul1(base, base, site, 'power')
-		}
-	}
-	return result
-}
-
 fn main() {
 	descending(7, -1, -3)
 	descending(1, 7, -2)
@@ -83,7 +50,7 @@ fn main() {
 	}; value = py2v_range_next1(value, py2v_range_stop8, py2v_range_step9) {
 		println(value)
 	}
-	py2v_range_start10 := int(py2v_integer_power1(3, 2, 'range_signed_step.py:12'))
+	py2v_range_start10 := int(9)
 	py2v_range_stop11 := int(11)
 	py2v_range_step12 := int(2)
 	if py2v_range_step12 == 0 { panic('ValueError: range() arg 3 must not be zero') }

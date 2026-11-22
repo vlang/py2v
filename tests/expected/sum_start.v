@@ -18,7 +18,7 @@ fn main_func() {
 	println(py2v_integer_mul1(py2v_integer_sum1(xs, 10, 'sum_start.py:13'), 2, 'sum_start.py:13', 'multiplication'))
 	println(py2v_integer_sum1(xs, 10, 'sum_start.py:14'))
 	println(py2v_integer_sum1(xs, -1, 'sum_start.py:15'))
-	println(py2v_integer_sum1(xs, py2v_integer_sub1(base, step, 'sum_start.py:16', 'subtraction'), 'sum_start.py:16'))
+	println(py2v_integer_sum1(xs, base - step, 'sum_start.py:16'))
 }
 
 @[noreturn]
@@ -77,14 +77,6 @@ fn py2v_integer_mul1(a int, b int, site string, operation string) int {
 		py2v_integer_overflow1(site, operation)
 	}
 	return a * b
-}
-
-@[inline]
-fn py2v_integer_sub1(a int, b int, site string, operation string) int {
-	max := int(9223372036854775807)
-	min := -max - 1
-	if (b > 0 && a < min + b) || (b < 0 && a > max + b) { py2v_integer_overflow1(site, operation) }
-	return a - b
 }
 
 fn main() {

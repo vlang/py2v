@@ -17,7 +17,7 @@ fn bubble(mut collection []int) []int {
 		i > py2v_range_stop2
 	}; i = py2v_range_next1(i, py2v_range_stop2, py2v_range_step3) {
 		py2v_range_start4 := int(0)
-		py2v_range_stop5 := int(py2v_integer_sub1(py2v_integer_sub1(n, 1, 'typing_abc_annotations.py:7', 'subtraction'), i, 'typing_abc_annotations.py:7', 'subtraction'))
+		py2v_range_stop5 := int(n - 1 - i)
 		py2v_range_step6 := int(1)
 		if py2v_range_step6 == 0 { panic('ValueError: range() arg 3 must not be zero') }
 		for j := py2v_range_start4; if py2v_range_step6 > 0 {
@@ -57,21 +57,6 @@ fn py2v_range_next1(current int, stop int, step int) int {
 		return stop
 	}
 	return current + step
-}
-
-@[noreturn]
-fn py2v_integer_overflow1(site string, operation string) {
-	flush_stdout()
-	eprintln('py2v_integer_overflow: ${site}: ${operation} exceeds the V int range')
-	exit(1)
-}
-
-@[inline]
-fn py2v_integer_sub1(a int, b int, site string, operation string) int {
-	max := int(9223372036854775807)
-	min := -max - 1
-	if (b > 0 && a < min + b) || (b < 0 && a > max + b) { py2v_integer_overflow1(site, operation) }
-	return a - b
 }
 
 fn main() {

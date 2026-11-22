@@ -9,7 +9,7 @@ fn test_python(iterations int) {
 	for iteration < iterations {
 		mut innerloop := 0
 		for innerloop < 100 {
-			total += array[py2v_integer_mod1(int(py2v_integer_add1(iteration, innerloop, 'langcomp_bench.py:15', 'addition')), array_length, 'langcomp_bench.py:15')]
+			total += array[py2v_integer_mod1(int(iteration + innerloop), array_length, 'langcomp_bench.py:15')]
 			innerloop = py2v_integer_add1(innerloop, 1, 'langcomp_bench.py:16', 'addition')
 		}
 		iteration = py2v_integer_add1(iteration, 1, 'langcomp_bench.py:17', 'addition')
@@ -54,6 +54,15 @@ fn py2v_range_array1(start int, stop int, step int) []int {
 	return values
 }
 
+@[inline]
+fn py2v_integer_mod1(a int, b int, _ string) int {
+	if b == 0 { panic('ZeroDivisionError: integer modulo by zero') }
+	if b == -1 { return 0 }
+	r := a % b
+	adjust := r != 0 && (r < 0) != (b < 0)
+	return if adjust { r + b } else { r }
+}
+
 @[noreturn]
 fn py2v_integer_overflow1(site string, operation string) {
 	flush_stdout()
@@ -67,15 +76,6 @@ fn py2v_integer_add1(a int, b int, site string, operation string) int {
 	min := -max - 1
 	if (b > 0 && a > max - b) || (b < 0 && a < min - b) { py2v_integer_overflow1(site, operation) }
 	return a + b
-}
-
-@[inline]
-fn py2v_integer_mod1(a int, b int, _ string) int {
-	if b == 0 { panic('ZeroDivisionError: integer modulo by zero') }
-	if b == -1 { return 0 }
-	r := a % b
-	adjust := r != 0 && (r < 0) != (b < 0)
-	return if adjust { r + b } else { r }
 }
 
 fn main() {

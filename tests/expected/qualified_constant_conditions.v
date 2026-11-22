@@ -9,7 +9,7 @@ fn advance(py2v_kind_in1 int, active bool) int {
 		kind = py2v_integer_add1(kind, 1, 'qualified_constant_conditions.py:6', 'addition')
 	}
 	if (kind == token.NUMBER) {
-		return py2v_integer_add1(kind, 1, 'qualified_constant_conditions.py:8', 'addition')
+		return kind + 1
 	}
 	return kind
 }

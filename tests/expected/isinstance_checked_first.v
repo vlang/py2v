@@ -111,7 +111,7 @@ fn as_text_py(py2v_num_in3 int) !string {
 		return IError(Py2vErrorTypeError{ data: Py2vErrorData{ args: Py2vErrorArgs{ values: [Py2vErrorArg('not a number')] } } })
 	}
 	if num < 0 {
-		num = py2v_integer_neg1(num, 'isinstance_checked_first.py:26')
+		num = -num
 	}
 	return num.str()
 }
@@ -198,12 +198,6 @@ fn py2v_integer_left_shift1(a int, b int, site string) int {
 		py2v_integer_overflow1(site, 'left shift')
 	}
 	return a * (int(1) << b)
-}
-
-@[inline]
-fn py2v_integer_neg1(value int, site string) int {
-	if value == -9223372036854775807 - 1 { py2v_integer_overflow1(site, 'negation') }
-	return -value
 }
 
 fn py2v_float_text1[T](value T) string {

@@ -19,7 +19,7 @@ fn main_func() {
 		} else {
 			j > py2v_range_stop5
 		}; j = py2v_range_next1(j, py2v_range_stop5, py2v_range_step6) {
-			println(py2v_integer_add1(int(py2v_integer_mul1(i, 3, 'nested_loops.py:5', 'multiplication')), j, 'nested_loops.py:5', 'addition'))
+			println(int(py2v_integer_mul1(i, 3, 'nested_loops.py:5', 'multiplication')) + j)
 		}
 	}
 	py2v_range_start7 := int(0)
@@ -43,7 +43,7 @@ fn main_func() {
 			if j == 2 {
 				break
 			}
-			println(py2v_integer_add1(int(py2v_integer_mul1(i, 10, 'nested_loops.py:12', 'multiplication')), j, 'nested_loops.py:12', 'addition'))
+			println(int(py2v_integer_mul1(i, 10, 'nested_loops.py:12', 'multiplication')) + j)
 		}
 	}
 }
@@ -74,14 +74,6 @@ fn py2v_integer_mul1(a int, b int, site string, operation string) int {
 		py2v_integer_overflow1(site, operation)
 	}
 	return a * b
-}
-
-@[inline]
-fn py2v_integer_add1(a int, b int, site string, operation string) int {
-	max := int(9223372036854775807)
-	min := -max - 1
-	if (b > 0 && a > max - b) || (b < 0 && a < min - b) { py2v_integer_overflow1(site, operation) }
-	return a + b
 }
 
 fn main() {

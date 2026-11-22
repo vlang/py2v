@@ -7,7 +7,7 @@ pub mut:
 }
 
 fn (mut self Box) init(a int, b int) {
-	self.total = py2v_integer_add1(a, b, 'init_execution.py:7', 'addition')
+	self.total = a + b
 	self.label = 'box'
 }
 
@@ -47,7 +47,7 @@ fn (mut self CallsMethod) init(amount int) {
 }
 
 fn (mut self CallsMethod) add(amount int) {
-	self.value = py2v_integer_add1(self.value, amount, 'init_execution.py:24', 'addition')
+	self.value += amount
 }
 
 pub fn py2v_new_calls_method(amount int) CallsMethod {
@@ -141,31 +141,16 @@ fn ordered_calls() {
 	start := 4
 	positional := (fn [start] () Defaulted {
 		py2v_init_arg1 := mark(start)
-		py2v_init_arg2 := mark(py2v_integer_add1(start, 1, 'init_execution.py:64', 'addition'))
+		py2v_init_arg2 := mark(start + 1)
 		return py2v_new_defaulted(py2v_init_arg1, py2v_init_arg2, 'positional')
 	})()
 	println('${positional.a} ${positional.b} ${positional.label}')
 	keyword := (fn [start] () Defaulted {
-		py2v_init_arg3 := mark(py2v_integer_add1(start, 2, 'init_execution.py:66', 'addition'))
-		py2v_init_arg4 := mark(py2v_integer_add1(start, 3, 'init_execution.py:66', 'addition'))
+		py2v_init_arg3 := mark(start + 2)
+		py2v_init_arg4 := mark(start + 3)
 		return py2v_new_defaulted(py2v_init_arg4, py2v_init_arg3, 'keyword')
 	})()
 	println('${keyword.a} ${keyword.b} ${keyword.label}')
-}
-
-@[noreturn]
-fn py2v_integer_overflow1(site string, operation string) {
-	flush_stdout()
-	eprintln('py2v_integer_overflow: ${site}: ${operation} exceeds the V int range')
-	exit(1)
-}
-
-@[inline]
-fn py2v_integer_add1(a int, b int, site string, operation string) int {
-	max := int(9223372036854775807)
-	min := -max - 1
-	if (b > 0 && a > max - b) || (b < 0 && a < min - b) { py2v_integer_overflow1(site, operation) }
-	return a + b
 }
 
 fn main() {

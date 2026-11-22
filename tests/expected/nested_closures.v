@@ -5,17 +5,17 @@ fn total(start int) int {
 	py2v_capture1 := &value
 	add := fn [py2v_capture1] (amount int) int {
 		unsafe {
-			(*py2v_capture1) = py2v_integer_add1((*py2v_capture1), amount, 'nested_closures.py:6', 'addition')
+			(*py2v_capture1) += amount
 		}
 		py2v_capture2 := &(*py2v_capture1)
 		finish := fn [py2v_capture2] (extra int) int {
-			return py2v_integer_add1((*py2v_capture2), extra, 'nested_closures.py:9', 'addition')
+			return (*py2v_capture2) + extra
 		}
 		return finish(1)
 	}
 	first := add(2)
 	second := add(3)
-	return py2v_integer_add1(int(py2v_integer_add1(first, second, 'nested_closures.py:15', 'addition')), value, 'nested_closures.py:15', 'addition')
+	return int(first + second) + value
 }
 
 fn recursive(n int) int {
@@ -24,19 +24,19 @@ fn recursive(n int) int {
 	py2v_capture3 := &count
 	factorial = fn [py2v_capture3, mut factorial] (k int) int {
 		unsafe {
-			(*py2v_capture3) = py2v_integer_add1((*py2v_capture3), 1, 'nested_closures.py:23', 'addition')
+			(*py2v_capture3) += 1
 		}
 		if k <= 1 {
 			return 1
 		}
-		return py2v_integer_mul1(k, factorial(py2v_integer_sub1(k, 1, 'nested_closures.py:26', 'subtraction')), 'nested_closures.py:26', 'multiplication')
+		return py2v_integer_mul1(k, factorial(k - 1), 'nested_closures.py:26', 'multiplication')
 	}
 	result := factorial(n)
-	return py2v_integer_add1(int(py2v_integer_mul1(result, 10, 'nested_closures.py:29', 'multiplication')), count, 'nested_closures.py:29', 'addition')
+	return int(py2v_integer_mul1(result, 10, 'nested_closures.py:29', 'multiplication')) + count
 }
 
 fn choose(x int) int {
-	return py2v_integer_add1(x, 3, 'nested_closures.py:35', 'addition')
+	return x + 3
 }
 
 fn conditional(flag bool) int {
@@ -61,7 +61,7 @@ fn siblings(n int) int {
 		return *py2v_capture5
 	}
 	write(9)
-	return py2v_integer_add1(read(), state, 'nested_closures.py:52', 'addition')
+	return read() + state
 }
 
 fn late_read() int {
@@ -93,22 +93,6 @@ fn py2v_integer_overflow1(site string, operation string) {
 	flush_stdout()
 	eprintln('py2v_integer_overflow: ${site}: ${operation} exceeds the V int range')
 	exit(1)
-}
-
-@[inline]
-fn py2v_integer_add1(a int, b int, site string, operation string) int {
-	max := int(9223372036854775807)
-	min := -max - 1
-	if (b > 0 && a > max - b) || (b < 0 && a < min - b) { py2v_integer_overflow1(site, operation) }
-	return a + b
-}
-
-@[inline]
-fn py2v_integer_sub1(a int, b int, site string, operation string) int {
-	max := int(9223372036854775807)
-	min := -max - 1
-	if (b > 0 && a < min + b) || (b < 0 && a > max + b) { py2v_integer_overflow1(site, operation) }
-	return a - b
 }
 
 @[inline]

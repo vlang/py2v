@@ -1,7 +1,7 @@
 module py_pkg_colliding_functions
 
 pub fn total() int {
-	return py2v_integer_add1(int(py2v_integer_mul1(py2v_def_read_2_1(), 10, '__init__.py:6', 'multiplication')), py2v_def_read_4_1(), '__init__.py:6', 'addition')
+	return int(py2v_integer_mul1(py2v_def_read_2_1(), 10, '__init__.py:6', 'multiplication')) + py2v_def_read_4_1()
 }
 
 @[noreturn]
@@ -19,12 +19,4 @@ fn py2v_integer_mul1(a int, b int, site string, operation string) int {
 		py2v_integer_overflow1(site, operation)
 	}
 	return a * b
-}
-
-@[inline]
-fn py2v_integer_add1(a int, b int, site string, operation string) int {
-	max := int(9223372036854775807)
-	min := -max - 1
-	if (b > 0 && a > max - b) || (b < 0 && a < min - b) { py2v_integer_overflow1(site, operation) }
-	return a + b
 }

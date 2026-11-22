@@ -3,7 +3,7 @@ module main
 fn pick(mode int) fn (int) int {
 	if mode == 1 {
 		calculate := fn (value int) int {
-			return py2v_integer_add1(value, 2, 'returned_branch_definitions.py:7', 'addition')
+			return value + 2
 		}
 		return calculate
 	} else if mode == 2 {
@@ -13,7 +13,7 @@ fn pick(mode int) fn (int) int {
 		return calculate
 	} else {
 		calculate := fn (value int) int {
-			return py2v_integer_sub1(value, 2, 'returned_branch_definitions.py:13', 'subtraction')
+			return value - 2
 		}
 		return calculate
 	}
@@ -27,14 +27,6 @@ fn py2v_integer_overflow1(site string, operation string) {
 }
 
 @[inline]
-fn py2v_integer_add1(a int, b int, site string, operation string) int {
-	max := int(9223372036854775807)
-	min := -max - 1
-	if (b > 0 && a > max - b) || (b < 0 && a < min - b) { py2v_integer_overflow1(site, operation) }
-	return a + b
-}
-
-@[inline]
 fn py2v_integer_mul1(a int, b int, site string, operation string) int {
 	max := int(9223372036854775807)
 	min := -max - 1
@@ -42,14 +34,6 @@ fn py2v_integer_mul1(a int, b int, site string, operation string) int {
 		py2v_integer_overflow1(site, operation)
 	}
 	return a * b
-}
-
-@[inline]
-fn py2v_integer_sub1(a int, b int, site string, operation string) int {
-	max := int(9223372036854775807)
-	min := -max - 1
-	if (b > 0 && a < min + b) || (b < 0 && a > max + b) { py2v_integer_overflow1(site, operation) }
-	return a - b
 }
 
 fn main() {

@@ -3,12 +3,12 @@ module main
 import math
 
 fn main_func() {
-	println(math.divide_floored[int](17, 5).quot)
-	println(math.divide_floored[int](-17, 5).quot)
-	println(17 % 5)
-	println(math.modulo_floored[int](-17, 5))
-	println(py2v_integer_power1(2, 10, 'numeric_ops.py:11'))
-	println(py2v_integer_power1(3, 4, 'numeric_ops.py:12'))
+	println(3)
+	println(-4)
+	println(2)
+	println(3)
+	println(1024)
+	println(81)
 	println(math.pow(f64(2), f64(-1)))
 	println(math.pow(f64(10), f64(-2)))
 	mut b := 2
@@ -21,8 +21,8 @@ fn main_func() {
 	mut c := -7
 	c = math.divide_floored[int](c, 2).quot
 	println(c)
-	println(math.divide_floored[int](-5, 2).quot)
-	println(math.modulo_floored[int](-5, 2))
+	println(-3)
+	println(1)
 }
 
 @[noreturn]

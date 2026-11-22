@@ -97,22 +97,6 @@ fn py2v_integer_inferred_sum1[T](items []T, start int, site string) T {
 	}
 }
 
-fn py2v_integer_power1(a int, b int, site string) int {
-	if b < 0 { panic('py2v_unsupported_integer_power: a negative exponent needs a float result') }
-	mut base, mut exponent := a, b
-	mut result := 1
-	for exponent != 0 {
-		if exponent & 1 != 0 {
-			result = py2v_integer_mul1(result, base, site, 'power')
-		}
-		exponent >>= 1
-		if exponent != 0 {
-			base = py2v_integer_mul1(base, base, site, 'power')
-		}
-	}
-	return result
-}
-
 fn main() {
 	limit := -3
 	println(py2v_range_array1(0, py2v_range_bound1(limit), 1).clone())
@@ -122,7 +106,7 @@ fn main() {
 	println(collect(1, 8, -3))
 	println(from_bounds([4, 2]))
 	println(from_bounds([-2, 2]))
-	println(py2v_range_array1(0, py2v_range_bound1(py2v_integer_power1(2, 3, 'range_values.py:17')), 1).clone())
-	println(py2v_range_array1(py2v_range_bound1(py2v_integer_power1(2, 3, 'range_values.py:18')), py2v_range_bound1(py2v_integer_power1(3, 2, 'range_values.py:18')), 1).map(it))
+	println(py2v_range_array1(0, py2v_range_bound1(8), 1).clone())
+	println(py2v_range_array1(py2v_range_bound1(8), py2v_range_bound1(9), 1).map(it))
 	println(py2v_range_array1(0, py2v_range_bound1(true), 1).clone())
 }

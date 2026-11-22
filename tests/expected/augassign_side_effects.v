@@ -164,7 +164,7 @@ fn main_func() {
 	} else {
 		py2v_index33
 	}] = py2v_integer_power1(py2v_old34, two + two, 'augassign_side_effects.py:91')
-	nums[i] = py2v_integer_floor_div1(nums[i], int(py2v_integer_add1(i, 1, 'augassign_side_effects.py:92', 'addition')), 'augassign_side_effects.py:92')
+	nums[i] = py2v_integer_floor_div1(nums[i], int(i + 1), 'augassign_side_effects.py:92')
 	println(nums)
 	scale(5)
 }
@@ -224,17 +224,8 @@ fn py2v_integer_power1(a int, b int, site string) int {
 }
 
 @[inline]
-fn py2v_integer_add1(a int, b int, site string, operation string) int {
-	max := int(9223372036854775807)
-	min := -max - 1
-	if (b > 0 && a > max - b) || (b < 0 && a < min - b) { py2v_integer_overflow1(site, operation) }
-	return a + b
-}
-
-@[inline]
-fn py2v_integer_floor_div1(a int, b int, site string) int {
+fn py2v_integer_floor_div1(a int, b int, _ string) int {
 	if b == 0 { panic('ZeroDivisionError: integer division or modulo by zero') }
-	if b == -1 && a == -9223372036854775807 - 1 { py2v_integer_overflow1(site, 'floor division') }
 	r := a % b
 	adjust := r != 0 && (r < 0) != (b < 0)
 	return a / b - int(adjust)

@@ -3,7 +3,7 @@ module main
 fn after_loop(n int) int {
 	mut x := 0
 	for {
-		x = py2v_integer_add1(n, 1, 'block_locals_declared.py:3', 'addition')
+		x = n + 1
 		break
 	}
 	return x
@@ -33,7 +33,7 @@ fn collected(words []string) int {
 			total = 0
 		}
 		if total > 2 {
-			return py2v_integer_add1(hits.len, total, 'block_locals_declared.py:27', 'addition')
+			return hits.len + total
 		}
 	}
 	return -1
@@ -47,27 +47,19 @@ fn only_inside(n int) int {
 	return n
 }
 
-@[noreturn]
-fn py2v_integer_overflow1(site string, operation string) {
-	flush_stdout()
-	eprintln('py2v_integer_overflow: ${site}: ${operation} exceeds the V int range')
-	exit(1)
-}
-
-@[inline]
-fn py2v_integer_add1(a int, b int, site string, operation string) int {
-	max := int(9223372036854775807)
-	min := -max - 1
-	if (b > 0 && a > max - b) || (b < 0 && a < min - b) { py2v_integer_overflow1(site, operation) }
-	return a + b
-}
-
 fn py2v_text_length1(text string) int {
 	mut length := 0
 	for byte in text {
 		if (byte & 0xc0) != 0x80 { length++ }
 	}
 	return length
+}
+
+@[noreturn]
+fn py2v_integer_overflow1(site string, operation string) {
+	flush_stdout()
+	eprintln('py2v_integer_overflow: ${site}: ${operation} exceeds the V int range')
+	exit(1)
 }
 
 @[inline]

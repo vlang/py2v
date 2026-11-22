@@ -3,9 +3,9 @@ module main
 import strconv
 
 fn main_func() {
-	println(py2v_integer_from_float1(3.7, 'type_convert.py:3'))
+	println(int(3.7))
 	println((py2v_int_base1('42', 10, 'type_convert.py:4') or { panic('ValueError: ' + err.msg()) }))
-	println(py2v_integer_from_float1(-3.9, 'type_convert.py:5'))
+	println(int(-3.9))
 	println(py2v_float_text1(f64(42)))
 	println('3.14')
 	println((42).str())
@@ -22,14 +22,6 @@ fn py2v_integer_overflow1(site string, operation string) {
 	flush_stdout()
 	eprintln('py2v_integer_overflow: ${site}: ${operation} exceeds the V int range')
 	exit(1)
-}
-
-@[inline]
-fn py2v_integer_from_float1(value f64, site string) int {
-	if !(value >= -9223372036854775808.0 && value < 9223372036854775808.0) {
-		py2v_integer_overflow1(site, 'float to integer conversion')
-	}
-	return int(value)
 }
 
 fn py2v_int_base1(value string, requested_base int, site string) !int {

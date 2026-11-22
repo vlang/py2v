@@ -69,7 +69,7 @@ fn weighted_py(first int, middle int, last int) !int {
 	if middle == 0 {
 		return IError(Py2vErrorValueError{ data: Py2vErrorData{ args: Py2vErrorArgs{ values: [Py2vErrorArg('middle cannot be zero')] } } })
 	}
-	return py2v_integer_add1(int(py2v_integer_add1(int(py2v_integer_mul1(first, 100, 'fallible_keyword_order.py:4', 'multiplication')), int(py2v_integer_mul1(middle, 10, 'fallible_keyword_order.py:4', 'multiplication')), 'fallible_keyword_order.py:4', 'addition')), last, 'fallible_keyword_order.py:4', 'addition')
+	return int(int(py2v_integer_mul1(first, 100, 'fallible_keyword_order.py:4', 'multiplication')) + int(py2v_integer_mul1(middle, 10, 'fallible_keyword_order.py:4', 'multiplication'))) + last
 }
 
 fn score_py(values []int) !int {
@@ -97,14 +97,6 @@ fn py2v_integer_mul1(a int, b int, site string, operation string) int {
 		py2v_integer_overflow1(site, operation)
 	}
 	return a * b
-}
-
-@[inline]
-fn py2v_integer_add1(a int, b int, site string, operation string) int {
-	max := int(9223372036854775807)
-	min := -max - 1
-	if (b > 0 && a > max - b) || (b < 0 && a < min - b) { py2v_integer_overflow1(site, operation) }
-	return a + b
 }
 
 fn main() {

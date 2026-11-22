@@ -35,6 +35,8 @@ mut:
 	default_import_names   map[string]bool
 	call_before_def        map[string]bool
 	func_return_types      map[string]string
+	numeric_scalar_results map[string]bool
+	numeric_array_results  map[string]bool
 	// Methods whose receiver must be `mut` in V, keyed ClassName_method.
 	mut_receiver_methods map[string]bool
 	// Constructor factories mark an emitted fallback parameter here.
@@ -117,9 +119,12 @@ mut:
 	imported_modules map[string]bool
 	// loop_idents holds the iteration variables currently in scope. V forbids a
 	// nested loop from reusing one, so a collision forces a fresh name.
-	loop_idents         map[string]bool
-	integer_loop_bounds map[string]NativeIntegerBounds
-	proven_counter_step string
+	loop_idents           map[string]bool
+	integer_loop_bounds   map[string]NativeIntegerBounds
+	integer_update_names  []string
+	integer_return_inputs map[string][]int
+	integer_return_names  []string
+	proven_counter_step   string
 	// loop_breaks has one entry per loop whose body is being emitted, innermost
 	// last, so a `break` knows whether it leaves a loop that has an `else`.
 	loop_breaks []LoopBreak
@@ -438,6 +443,21 @@ pub fn (mut t VTranspiler) visit_module(node Module) string {
 	// A `def` nested inside a module-level `if`/`for`/`try` cannot be emitted
 	// there: V only allows `fn` declarations at module top level.
 	mut hoisted_body := t.hoist_module_fns(node.body, mut nested_fndefs)
+	t.integer_return_inputs = map[string][]int{}
+	find_growth_calls(hoisted_body, false, mut t.integer_return_inputs)
+	t.numeric_array_results = map[string]bool{}
+	t.numeric_scalar_results = map[string]bool{}
+	if t.module_name in ['', 'main'] {
+		for stmt in hoisted_body {
+			if stmt is FunctionDef {
+				match numeric_choice_result(stmt) {
+					'Py2vNumber' { t.numeric_scalar_results[stmt.name] = true }
+					'[]Py2vNumber' { t.numeric_array_results[stmt.name] = true }
+					else {}
+				}
+			}
+		}
+	}
 
 	// A caller may be emitted before its callee. Predeclare native mutable
 	// parameters so those earlier calls include V's required `mut` keyword.
@@ -835,7 +855,7 @@ fn (t &VTranspiler) integer_site(loc Location) string {
 
 // require_integer_helper registers a native implementation and its dependencies.
 fn (mut t VTranspiler) require_integer_helper(kind string) string {
-	if kind !in ['mod', 'right_shift'] {
+	if kind !in ['floor_div', 'mod', 'divmod', 'right_shift'] {
 		t.runtime_helper('integer_overflow')
 	}
 	if kind in ['power', 'sum'] {
@@ -844,6 +864,10 @@ fn (mut t VTranspiler) require_integer_helper(kind string) string {
 	if kind == 'inferred_sum' {
 		t.require_integer_helper('sum')
 		t.add_using('arrays')
+		t.add_using('math')
+	}
+	if kind == 'inferred_power' {
+		t.require_integer_helper('power')
 		t.add_using('math')
 	}
 	if kind == 'divmod' {
@@ -856,7 +880,6 @@ fn (mut t VTranspiler) require_integer_helper(kind string) string {
 fn integer_operation_suffix(kind string) string {
 	return match kind {
 		'add' { ", 'addition'" }
-		'sub' { ", 'subtraction'" }
 		'mul' { ", 'multiplication'" }
 		else { '' }
 	}
@@ -876,39 +899,23 @@ fn (mut t VTranspiler) generic_integer(kind string, op string, a string, b strin
 	t.add_using('math')
 	helper := t.runtime_helper('integer_generic_${kind}')
 	lhs := t.new_tmp('operand')
-	if b == '' {
-		raw := if kind == 'neg' { '-${lhs}' } else { 'math.abs(${lhs})' }
-		return '${helper}(${a}, ${t.integer_site(loc)}, |${lhs}| ${raw})'
-	}
 	rhs := t.new_tmp('operand')
-	raw := if kind == 'floor_div' {
-		'math.divide_floored(${lhs}, ${rhs}).quot'
-	} else {
-		'${lhs} ${op} ${rhs}'
-	}
-	return '${helper}(${a}, ${b}, ${t.integer_site(loc)}, |${lhs}, ${rhs}| ${raw})'
+	return '${helper}(${a}, ${b}, ${t.integer_site(loc)}, |${lhs}, ${rhs}| ${lhs} ${op} ${rhs})'
 }
 
 fn (mut t VTranspiler) generic_integer_declaration(kind string, name string) string {
-	unary := kind in ['neg', 'abs']
-	types := if unary { 'A, R' } else { 'A, B, R' }
-	args := if unary { 'a A' } else { 'a A, b B' }
-	callback := if unary { 'A' } else { 'A, B' }
-	operands := if unary { 'a' } else { 'a, b' }
-	casts := if unary { 'int(a)' } else { 'int(a), int(b)' }
-	condition := if unary { 'A is \$int' } else { 'A is \$int && B is \$int' }
-	wide := if unary { 'A is u64 || R is u64' } else { 'A is u64 || B is u64 || R is u64' }
 	checked := t.runtime_helper_name('integer_${kind}')
 	failure := t.runtime_helper_name('integer_overflow')
-	return 'fn ${name}[${types}](${args}, site string, fallback fn (${callback}) R) R {\n' +
-		'\t\$if ${condition} && R is \$int {\n' + '\t\t\$if ${wide} {\n' +
+	return 'fn ${name}[A, B, R](a A, b B, site string, fallback fn (A, B) R) R {\n' +
+		'\t\$if A is \$int && B is \$int && R is \$int {\n' +
+		'\t\t\$if A is u64 || B is u64 || R is u64 {\n' +
 		"\t\t\t\$compile_error('py2v_unsupported_wide_integer: generic arithmetic needs a signed native result')\n" +
 		'\t\t} \$else {\n' +
-		'\t\t\tvalue := ${checked}(${casts}, site${integer_operation_suffix(kind)})\n' +
+		'\t\t\tvalue := ${checked}(int(a), int(b), site${integer_operation_suffix(kind)})\n' +
 		'\t\t\tif value < int(math.minof[R]()) || value > int(math.maxof[R]()) {\n' +
 		"\t\t\t\t${failure}(site, 'integer narrowing')\n\t\t\t}\n" +
 		'\t\t\treturn R(value)\n\t\t}\n\t} \$else {\n' +
-		'\t\treturn fallback(${operands})\n\t}\n}'
+		'\t\treturn fallback(a, b)\n\t}\n}'
 }
 
 // integer_helper_declaration emits the checked or exact native integer operations.
@@ -918,6 +925,43 @@ fn (mut t VTranspiler) integer_helper_declaration(kind string, name string) stri
 	}
 	failure := t.runtime_helper_name('integer_overflow')
 	match kind {
+		'numeric_choice' {
+			float_text := t.runtime_helper_name('float_text')
+			return 'type Py2vNumber = f64 | int\n\n' +
+				'fn (value Py2vNumber) str() string {\n' +
+				'\treturn match value {\n\t\tf64 { ${float_text}(value) }\n\t\tint { value.str() }\n\t}\n}'
+		}
+		'numeric_subtract' {
+			return 'fn ${name}(a Py2vNumber, b Py2vNumber) Py2vNumber {\n' +
+				'\tif a is int && b is int { return Py2vNumber(a - b) }\n' +
+				'\treturn Py2vNumber(a.as_float() - b.as_float())\n}\n\n' +
+				'fn (value Py2vNumber) as_float() f64 {\n' +
+				'\treturn match value {\n\t\tf64 { value }\n\t\tint { f64(value) }\n\t}\n}'
+		}
+		'numeric_abs' {
+			return 'fn ${name}(value Py2vNumber) Py2vNumber {\n' +
+				'\treturn match value {\n\t\tf64 { Py2vNumber(math.abs(value)) }\n' +
+				'\t\tint { Py2vNumber(math.abs(value)) }\n\t}\n}'
+		}
+		'numeric_compare_float' {
+			return 'fn ${name}(value Py2vNumber, other f64) int {\n' + r"
+	if math.is_nan(other) { return 2 }
+	if value is f64 {
+		if math.is_nan(value) { return 2 }
+		return int(value > other) - int(value < other)
+	}
+	if other >= 9223372036854775808.0 { return -1 }
+	if other < -9223372036854775808.0 { return 1 }
+	whole := int(other)
+	signed := value as int
+	if signed != whole { return int(signed > whole) - int(signed < whole) }
+	return int(f64(whole) > other) - int(f64(whole) < other)
+}"
+		}
+		'numeric_compare_from_float' {
+			compare := t.runtime_helper_name('numeric_compare_float')
+			return 'fn ${name}(left f64, right Py2vNumber) int {\n\treturn ${compare}(right, left)\n}'
+		}
 		'integer_overflow' {
 			return '@[noreturn]\nfn ${name}(site string, operation string) {' + r"
 	flush_stdout()
@@ -925,37 +969,19 @@ fn (mut t VTranspiler) integer_helper_declaration(kind string, name string) stri
 	exit(1)
 }"
 		}
-		'integer_add', 'integer_sub', 'integer_mul' {
-			op, check := match kind {
-				'integer_add' {
-					'+', '(b > 0 && a > max - b) || (b < 0 && a < min - b)'
-				}
-				'integer_sub' {
-					'-', '(b > 0 && a < min + b) || (b < 0 && a > max + b)'
-				}
-				else {
-					'*', '(a > 0 && ((b > 0 && a > max / b) || b < min / a)) || (a < 0 && ((b > 0 && a < min / b) || (b < 0 && a < max / b)))'
-				}
+		'integer_add', 'integer_mul' {
+			op, check := if kind == 'integer_add' {
+				'+', '(b > 0 && a > max - b) || (b < 0 && a < min - b)'
+			} else {
+				'*', '(a > 0 && ((b > 0 && a > max / b) || b < min / a)) || (a < 0 && ((b > 0 && a < min / b) || (b < 0 && a < max / b)))'
 			}
 			return '@[inline]\nfn ${name}(a int, b int, site string, operation string) int {\n' +
 				'\tmax := int(9223372036854775807)\n\tmin := -max - 1\n' +
 				'\tif ${check} { ${failure}(site, operation) }\n\treturn a ${op} b\n}'
 		}
-		'integer_neg', 'integer_abs' {
-			operation := if kind == 'integer_neg' { 'negation' } else { 'absolute value' }
-			value := if kind == 'integer_neg' {
-				'-value'
-			} else {
-				'if value < 0 { -value } else { value }'
-			}
-			return '@[inline]\nfn ${name}(value int, site string) int {\n' +
-				"\tif value == -9223372036854775807 - 1 { ${failure}(site, '${operation}') }\n" +
-				'\treturn ${value}\n}'
-		}
 		'integer_floor_div', 'integer_mod' {
 			head := if kind == 'integer_floor_div' {
-				"\tif b == 0 { panic('ZeroDivisionError: integer division or modulo by zero') }\n" +
-					"\tif b == -1 && a == -9223372036854775807 - 1 { ${failure}(site, 'floor division') }\n"
+				"\tif b == 0 { panic('ZeroDivisionError: integer division or modulo by zero') }\n"
 			} else {
 				"\tif b == 0 { panic('ZeroDivisionError: integer modulo by zero') }\n" +
 					'\tif b == -1 { return 0 }\n'
@@ -965,8 +991,7 @@ fn (mut t VTranspiler) integer_helper_declaration(kind string, name string) stri
 			} else {
 				'if adjust { r + b } else { r }'
 			}
-			site_arg := if kind == 'integer_floor_div' { 'site' } else { '_' }
-			return '@[inline]\nfn ${name}(a int, b int, ${site_arg} string) int {\n' + head +
+			return '@[inline]\nfn ${name}(a int, b int, _ string) int {\n' + head +
 				'\tr := a % b\n\tadjust := r != 0 && (r < 0) != (b < 0)\n\treturn ${result}\n}'
 		}
 		'integer_divmod' {
@@ -1013,6 +1038,16 @@ fn (mut t VTranspiler) integer_helper_declaration(kind string, name string) stri
 	return result
 }"
 		}
+		'integer_inferred_power' {
+			power := t.runtime_helper_name('integer_power')
+			return 'fn ${name}[T](base T, exponent int, site string) T {\n' +
+				'\t\$if T is \$float {\n\t\treturn T(math.pow(f64(base), f64(exponent)))\n' +
+				'\t} \$else \$if T is \$int && T !is u64 {\n' +
+				'\t\tvalue := ${power}(int(base), exponent, site)\n' +
+				'\t\tif value < int(math.minof[T]()) || value > int(math.maxof[T]()) {\n' +
+				"\t\t\t${failure}(site, 'power')\n\t\t}\n\t\treturn T(value)\n" +
+				"\t} \$else { \$compile_error('py2v_unsupported_integer_power: expected a native number') }\n}"
+		}
 		'integer_sum' {
 			add := t.runtime_helper_name('integer_add')
 			return 'fn ${name}[T](items []T, start int, site string) int {\n' +
@@ -1058,33 +1093,6 @@ fn (mut t VTranspiler) integer_helper_declaration(kind string, name string) stri
 	return int(root)
 }"
 		}
-		'integer_gcd', 'integer_lcm' {
-			magnitude := r"
-	x := if a < 0 { u64(-(a + 1)) + 1 } else { u64(a) }
-	y := if b < 0 { u64(-(b + 1)) + 1 } else { u64(b) }
-	max := u64(9223372036854775807)
-"
-			body := if kind == 'integer_gcd' {
-				'\tresult := math.gcd[u64](x, y)\n' +
-					"\tif result > max { ${failure}(site, 'greatest common divisor') }\n" +
-					'\treturn int(result)\n'
-			} else {
-				'\tif x == 0 || y == 0 { return 0 }\n\tq := x / math.gcd[u64](x, y)\n' +
-					"\tif q > max / y { ${failure}(site, 'least common multiple') }\n" +
-					'\treturn int(q * y)\n'
-			}
-			return 'fn ${name}(a int, b int, site string) int {' + magnitude + body + '}'
-		}
-		'integer_from_float' {
-			return '@[inline]\nfn ${name}(value f64, site string) int {\n' +
-				"\tif !(value >= -9223372036854775808.0 && value < 9223372036854775808.0) { ${failure}(site, 'float to integer conversion') }\n" +
-				'\treturn int(value)\n}'
-		}
-		'integer_narrow' {
-			return '@[inline]\nfn ${name}(value int, low int, high int, site string) int {\n' +
-				"\tif value < low || value > high { ${failure}(site, 'integer narrowing') }\n" +
-				'\treturn value\n}'
-		}
 		'integer_word_product' {
 			bits := t.runtime_helper_name('math_bits')
 			return '@[inline]\nfn ${name}(a u64, b u64, modulus u64) u64 {\n' +
@@ -1097,7 +1105,7 @@ fn (mut t VTranspiler) integer_helper_declaration(kind string, name string) stri
 // runtime_helper_declaration returns the V source of the run-time helper `kind`.
 fn (mut t VTranspiler) runtime_helper_declaration(kind string) string {
 	name := t.runtime_helper_name(kind)
-	if kind.starts_with('integer_') {
+	if kind.starts_with('integer_') || kind.starts_with('numeric_') {
 		return t.integer_helper_declaration(kind, name)
 	}
 	return match kind {
@@ -1716,6 +1724,12 @@ fn literal_signed_integer(expr Expr) ?i64 {
 			if expr.op is UAdd { return value }
 			if expr.op is USub && value != native_integer_min { return -value }
 		}
+		BinOp {
+			a := literal_signed_integer(*expr.left)?
+			b := literal_signed_integer(*expr.right)?
+			result := fold_native_integer(integer_operation_kind(get_op_type(expr.op)), a, b)?
+			if !result.wide { return result.value }
+		}
 		else {}
 	}
 	return none
@@ -1770,11 +1784,197 @@ fn native_mul_fits(a i64, b i64) bool {
 	return true
 }
 
+// integer_growth_point keeps representation checks at operations that accumulate
+// magnitude. The semantic handling of operators such as // is independent.
+fn (mut t VTranspiler) integer_growth_point(kind string, operands []Expr, recurrence bool) bool {
+	match kind {
+		'power', 'parse' { return true }
+		'factorial' {
+			input := t.native_integer_bounds(operands[0])
+			return input.low < 0 || input.high > 20
+		}
+		'add', 'mul', 'left_shift' {
+			if kind == 'add' && !recurrence { return false }
+			left := t.native_integer_bounds(operands[0])
+			right := t.native_integer_bounds(operands[1])
+			return match kind {
+				'add' {
+					!native_add_fits(left.low, right.low) || !native_add_fits(left.high, right.high)
+				}
+				'mul' {
+					!native_mul_fits(left.low, right.low) || !native_mul_fits(left.low, right.high)
+						|| !native_mul_fits(left.high, right.low) || !native_mul_fits(left.high, right.high)
+				}
+				else {
+					right.low < 0 || right.high >= 63 || left.low < native_integer_min >> right.high
+						|| left.high > native_integer_max >> right.high
+				}
+			}
+		}
+		'sum' {
+			sequence := operands[0]
+			if sequence !is List { return true }
+			mut total := NativeIntegerBounds{}
+			if operands.len > 1 { total = t.native_integer_bounds(operands[1]) }
+			for item in sequence.elts {
+				bounds := t.native_integer_bounds(item)
+				if !native_add_fits(total.low, bounds.low) || !native_add_fits(total.high, bounds.high) {
+					return true
+				}
+				total = NativeIntegerBounds{total.low + bounds.low, total.high + bounds.high}
+			}
+			return false
+		}
+		else { return false }
+	}
+}
+
+fn reads_integer_update(expr Expr, names []string) bool {
+	return match expr {
+		Name { expr.id in names }
+		BinOp {
+			reads_integer_update(*expr.left, names) || reads_integer_update(*expr.right, names)
+		}
+		UnaryOp { reads_integer_update(*expr.operand, names) }
+		Subscript { reads_integer_update(*expr.value, names) }
+		Call { expr.args.any(reads_integer_update(it, names)) }
+		else { false }
+	}
+}
+
+fn growth_targets(target Expr) []string {
+	return match target {
+		Subscript { growth_targets(*target.value) }
+		else { for_target_names(target) }
+	}
+}
+
+// A temporary copied back to a loop variable carries the same recurrence.
+// Record simple copies such as f1, f2 = f2, next.
+fn growth_copy_targets(body []Stmt) map[string][]string {
+	mut copies := map[string][]string{}
+	for stmt in body {
+		if stmt !is Assign { continue }
+		assignment := stmt as Assign
+		if assignment.targets.len != 1 { continue }
+		target := assignment.targets[0]
+		value := *assignment.value
+		if target is Name && value is Name {
+			copies[value.id] << target.id
+		} else if target is Tuple && value is Tuple && target.elts.len == value.elts.len {
+			for i, name in target.elts {
+				from := value.elts[i]
+				if name is Name && from is Name {
+					copies[from.id] << name.id
+				}
+			}
+		}
+	}
+	return copies
+}
+
+// find_growth_calls records direct calls that feed their output back into an input.
+fn find_growth_calls(stmts []Stmt, in_loop bool, mut inputs map[string][]int) {
+	for stmt in stmts {
+		match stmt {
+			FunctionDef { find_growth_calls(stmt.body, false, mut inputs) }
+			For, While {
+				find_growth_calls(stmt.body, true, mut inputs)
+				find_growth_calls(stmt.orelse, in_loop, mut inputs)
+			}
+			If {
+				find_growth_calls(stmt.body, in_loop, mut inputs)
+				find_growth_calls(stmt.orelse, in_loop, mut inputs)
+			}
+			Assign {
+				if !in_loop || stmt.targets.len != 1 || stmt.targets[0] !is Name { continue }
+				target := stmt.targets[0] as Name
+				value := *stmt.value
+				if value is Call && value.func is Name && value.keywords.len == 0 {
+					for i, arg in value.args {
+						if arg is Name && arg.id == target.id && i !in inputs[value.func.id] {
+							inputs[value.func.id] << i
+						}
+					}
+				}
+			}
+			else {}
+		}
+	}
+}
+
+struct FoldedInteger {
+	value i64
+	wide  bool
+}
+
+// fold_native_integer handles constant arithmetic without overflowing the emitter.
+fn fold_native_integer(kind string, a i64, b i64) ?FoldedInteger {
+	mut value := i64(0)
+	match kind {
+		'add' {
+			if !native_add_fits(a, b) { return FoldedInteger{ wide: true } }
+			value = a + b
+		}
+		'sub' {
+			if !native_sub_fits(a, b) { return FoldedInteger{ wide: true } }
+			value = a - b
+		}
+		'mul' {
+			if !native_mul_fits(a, b) { return FoldedInteger{ wide: true } }
+			value = a * b
+		}
+		'left_shift' {
+			if b < 0 { return none }
+			if a == 0 { return FoldedInteger{} }
+			if b == 63 && a == -1 { return FoldedInteger{ value: native_integer_min } }
+			if b >= 63 || a < native_integer_min >> b || a > native_integer_max >> b {
+				return FoldedInteger{ wide: true }
+			}
+			value = a * (i64(1) << b)
+		}
+		'right_shift' {
+			if b < 0 { return none }
+			value = a >> if b >= 63 { 63 } else { b }
+		}
+		'floor_div', 'mod' {
+			if b == 0 { return none }
+			if b == -1 {
+				if kind == 'mod' { return FoldedInteger{} }
+				if a == native_integer_min { return FoldedInteger{ wide: true } }
+			}
+			r := a % b
+			adjust := r != 0 && (r < 0) != (b < 0)
+			value = if kind == 'mod' {
+				if adjust { r + b } else { r }
+			} else {
+				a / b - i64(adjust)
+			}
+		}
+		'power' {
+			if b < 0 { return none }
+			mut factor, mut exponent := a, b
+			value = 1
+			for exponent != 0 {
+				if exponent & 1 != 0 {
+					if !native_mul_fits(value, factor) { return FoldedInteger{ wide: true } }
+					value *= factor
+				}
+				exponent >>= 1
+				if exponent != 0 {
+					if !native_mul_fits(factor, factor) { return FoldedInteger{ wide: true } }
+					factor *= factor
+				}
+			}
+		}
+		else { return none }
+	}
+	return FoldedInteger{ value: value }
+}
+
 // native_integer_binary is the common path for native binary and augmented operations.
-fn (mut t VTranspiler) native_integer_binary(op string, left Expr, right Expr, a string, b string, loc Location) ?string {
-	lt := t.division_operand_type(left, t.infer_expr_type(left))
-	rt := t.division_operand_type(right, t.infer_expr_type(right))
-	kind := match op {
+fn integer_operation_kind(op string) string {
+	return match op {
 		'Add' { 'add' }
 		'Sub' { 'sub' }
 		'Mult' { 'mul' }
@@ -1783,10 +1983,40 @@ fn (mut t VTranspiler) native_integer_binary(op string, left Expr, right Expr, a
 		'Pow' { 'power' }
 		'LShift' { 'left_shift' }
 		'RShift' { 'right_shift' }
-		else { return none }
+		else { '' }
 	}
+}
+
+fn (mut t VTranspiler) native_integer_binary(op string, left Expr, right Expr, a string, b string, loc Location, augmented bool) ?string {
+	kind := integer_operation_kind(op)
+	if kind == '' { return none }
+	lt := t.division_operand_type(left, t.infer_expr_type(left))
+	rt := t.division_operand_type(right, t.infer_expr_type(right))
+	if !augmented {
+		if lhs := literal_signed_integer(left) {
+			if rhs := literal_signed_integer(right) {
+				if folded := fold_native_integer(kind, lhs, rhs) {
+					if folded.wide {
+						return t.refuse_wide('line ${loc.lineno}: constant integer result exceeds the native range')
+					}
+					// V requires an explicit type for a literal above its implicit i32 range.
+					if folded.value < -2147483648 || folded.value > 2147483647 {
+						return 'int(${folded.value})'
+					}
+					return folded.value.str()
+				}
+			}
+		}
+	}
+	recurrence := (augmented && t.loop_breaks.len > 0)
+		|| reads_integer_update(left, t.integer_update_names)
+		|| reads_integer_update(right, t.integer_update_names)
+	growth := t.integer_growth_point(kind, [left, right], recurrence)
 	if !native_integer_type(lt) || !native_integer_type(rt) {
-		if kind !in ['mod', 'power'] && may_use_native_integer(lt) && may_use_native_integer(rt) {
+		if kind == 'power' && unresolved_native_type(lt) && native_integer_type(rt) {
+			return t.checked_integer('inferred_power', [a, native_integer_input(rt, b)], loc)
+		}
+		if growth && kind != 'power' && may_use_native_integer(lt) && may_use_native_integer(rt) {
 			t.note_any_operator(left, right, a, b)
 			return t.generic_integer(kind, op_to_symbol(op), a, b, loc)
 		}
@@ -1811,20 +2041,16 @@ fn (mut t VTranspiler) native_integer_binary(op string, left Expr, right Expr, a
 		t.add_using('math')
 		return 'math.pow(f64(${lhs}), f64(${rhs}))'
 	}
-	proven := match kind {
-		'add' { native_add_fits(l.low, r.low) && native_add_fits(l.high, r.high) }
-		'sub' { native_sub_fits(l.low, r.high) && native_sub_fits(l.high, r.low) }
-		'mul' {
-			native_mul_fits(l.low, r.low) && native_mul_fits(l.low, r.high)
-				&& native_mul_fits(l.high, r.low) && native_mul_fits(l.high, r.high)
+	if !growth && kind in ['add', 'sub', 'mul', 'left_shift'] {
+		if lt != 'bool' && rt != 'bool' {
+			if augmented { return none }
+			symbol := op_to_symbol(op)
+			prec := v_prec(symbol)
+			return '${paren_left(lhs, prec)} ${symbol} ${paren_right(rhs, prec)}'
 		}
-		'left_shift' {
-			r.low >= 0 && r.high < 63 && l.low >= 0 && l.high <= native_integer_max >> r.high
-		}
-		'right_shift' { r.low >= 0 && r.high < 63 }
-		else { false }
 	}
-	if proven {
+	if !growth && kind !in ['floor_div', 'mod']
+		&& (kind != 'right_shift' || (r.low >= 0 && r.high < 63)) {
 		symbol := op_to_symbol(op)
 		prec := v_prec(symbol)
 		return '${paren_left(lhs, prec)} ${symbol} ${paren_right(rhs, prec)}'
@@ -1982,6 +2208,9 @@ pub fn (mut t VTranspiler) visit_return(node Return) string {
 		return 'py2v_unsupported_return_from_finally()'
 	}
 	if val := node.value {
+		if t.current_return_type == '[]Py2vNumber' && val is List {
+			return 'return ${t.numeric_choice_list(val)}'
+		}
 		// A function with an N-tuple return type must return N separate values;
 		// returning the V array literal is not a multi-return.
 		if t.current_return_count > 0 && (val is Tuple || val is List) {
@@ -1996,7 +2225,16 @@ pub fn (mut t VTranspiler) visit_return(node Return) string {
 		}
 		mut prelude := []string{}
 		bound := t.bind_chain_middle(val, mut prelude)
-		prelude << 'return ${t.visit_integer_boundary(bound, .scalar_return, t.current_return_type)}'
+		saved_updates := t.integer_update_names
+		t.integer_update_names = t.integer_return_names
+		defer { t.integer_update_names = saved_updates }
+		value := t.visit_integer_boundary(bound, .scalar_return, t.current_return_type)
+		output := if t.current_return_type == 'Py2vNumber' {
+			t.numeric_choice_value(bound, value)
+		} else {
+			value
+		}
+		prelude << 'return ${output}'
 		return prelude.join('\n')
 	}
 	return 'return'
@@ -2588,6 +2826,18 @@ fn (mut t VTranspiler) visit_closure_from_funcdef(node FunctionDef, nl_names []s
 
 // visit_function_def emits V code for a Python FunctionDef node.
 pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
+	previous_return_names := t.integer_return_names
+	t.integer_return_names = []
+	defer { t.integer_return_names = previous_return_names }
+	if !node.is_class_method && !node.is_nested {
+		mut args := node.args.posonlyargs.clone()
+		args << node.args.args
+		for index in t.integer_return_inputs[node.name] {
+			if index < args.len {
+				t.integer_return_names << args[index].arg
+			}
+		}
+	}
 	if !node.is_class_method {
 		t.init_import_aliases.delete(node.name)
 	}
@@ -2800,6 +3050,9 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 		if typename == '' && arg.v_annotation != '' {
 			typename = t.map_type(arg.v_annotation)
 		}
+		if typename == '[]f64' && t.numeric_array_results.len > 0 && !node.is_class_method {
+			typename = '[]Py2vNumber'
+		}
 
 		// Python commonly leaves the operand of a comparison unannotated, which
 		// would otherwise become `Any`; V needs the receiver type there.
@@ -2988,8 +3241,16 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 	t.current_return_count = 0
 	t.current_return_type = ''
 	if !node.is_void && !node.is_generator && node.name != '__init__' {
-		if ret := node.returns {
-			ret_type := v_return_type(t.typename_from_annotation(*ret))
+		if t.numeric_scalar_results[node.name] && !node.is_class_method && !node.is_nested {
+			t.current_return_type = 'Py2vNumber'
+			signature << t.current_return_type
+			t.func_return_types[node.name] = t.current_return_type
+		} else if ret := node.returns {
+			ret_type := if t.numeric_array_results[node.name] && !node.is_class_method {
+				'[]Py2vNumber'
+			} else {
+				v_return_type(t.typename_from_annotation(*ret))
+			}
 			t.current_return_type = ret_type
 			if ret_type.starts_with('(') {
 				t.current_return_count = ret_type.count(',') + 1
@@ -3702,14 +3963,25 @@ pub fn (mut t VTranspiler) visit_assign(node Assign) string {
 }
 
 fn (mut t VTranspiler) visit_assignment(node Assign, package_initializer bool) string {
+	saved_updates := t.integer_update_names
+	t.integer_update_names = []
+	if t.loop_breaks.len > 0 {
+		for target in node.targets {
+			for name in growth_targets(target) {
+				t.integer_update_names << name
+				t.integer_update_names << t.loop_breaks.last().copy_targets[name]
+			}
+		}
+	}
+	defer { t.integer_update_names = saved_updates }
 	// Record what this assignment binds, so a later `for` over the same Python
 	// name is given a fresh V variable instead of shadowing it. Whether a name
 	// was already bound has to be sampled before this statement binds anything,
 	// or a first declaration would look like a rebind of itself.
 	mut was_bound := map[string]bool{}
 	for target in node.targets {
-		if target is Name {
-			was_bound[(target as Name).id] = t.is_bound_in_scope((target as Name).id)
+		for name in for_target_names(target) {
+			was_bound[name] = t.is_bound_in_scope(name)
 		}
 	}
 	for target in node.targets {
@@ -3978,7 +4250,7 @@ fn (mut t VTranspiler) visit_assignment(node Assign, package_initializer bool) s
 					if is_tuple_swap || is_multi_return {
 						// Direct tuple swap: x, y = y, x or a, b, c = 1, 2, 3
 						mut subtargets := []string{}
-						mut any_redefined := false
+						mut any_redefined := elts.len > 0 && elts.all(it is Name && was_bound[it.id])
 						mut has_subscript_or_attr := false
 
 						// Check if all targets are mutable names (meaning they were defined earlier)
@@ -4204,7 +4476,7 @@ fn (mut t VTranspiler) modulo_expression(left Expr, right Expr, a string, b stri
 		t.add_using('math')
 		return '${t.runtime_helper('float_mod')}(f64(${a}), f64(${b}))'
 	}
-	if code := t.native_integer_binary('Mod', left, right, a, b, loc) {
+	if code := t.native_integer_binary('Mod', left, right, a, b, loc, false) {
 		return code
 	}
 	if (is_v_int_type(la) || la == 'bool') && (is_v_int_type(ra) || ra == 'bool') {
@@ -4314,9 +4586,11 @@ pub fn (mut t VTranspiler) visit_aug_assign(node AugAssign) string {
 	if t.proven_counter_step != '' && t.proven_counter_step == node.loc.str() {
 		return '${t.visit_expr(*node.target)} += 1'
 	}
+	left_type := t.infer_expr_type(*node.target)
+	right_type := t.infer_expr_type(node.value)
 	native := op_type in ['Add', 'Sub', 'Mult', 'FloorDiv', 'Pow', 'LShift', 'RShift']
-		&& may_use_native_integer(t.infer_expr_type(*node.target))
-		&& may_use_native_integer(t.infer_expr_type(node.value))
+		&& (native_integer_type(left_type) || native_integer_type(right_type))
+		&& may_use_native_integer(left_type) && may_use_native_integer(right_type)
 	target_expr := *node.target
 	rhs_can_run_code := !t.runs_no_code(node.value)
 	// A direct field or plain index needs no temporary pointer when the RHS
@@ -4570,7 +4844,7 @@ fn is_plain_index(e Expr) bool {
 // visit_aug_assign_once emits an augmented assignment whose target and value are already
 // rendered, so that each is evaluated as written.
 fn (mut t VTranspiler) visit_aug_assign_once(node AugAssign, op_type string, target string, val string, old string) string {
-	if code := t.native_integer_binary(op_type, *node.target, node.value, old, val, node.loc) {
+	if code := t.native_integer_binary(op_type, *node.target, node.value, old, val, node.loc, true) {
 		if target != old {
 			result := t.new_tmp('aug_result')
 			return '${result} := ${code}\n${target} = ${result}'
@@ -4637,6 +4911,11 @@ fn (mut t VTranspiler) visit_aug_assign_once(node AugAssign, op_type string, tar
 	}
 	if op_sym in ['+', '-', '*', '/', '%'] {
 		t.note_any_operator(*node.target, node.value, old, val)
+	}
+	if target != old {
+		prec := v_prec(op_sym)
+		result := t.new_tmp('aug_result')
+		return '${result} := ${paren_left(old, prec)} ${op_sym} ${paren_right(val, prec)}\n${target} = ${result}'
 	}
 	return '${target} ${op_sym}= ${val}'
 }
@@ -5231,8 +5510,7 @@ pub fn (mut t VTranspiler) visit_for(node For) string {
 						}
 						buf << 'for ${index}, ${target_names[1]} in ${iter0} {'
 						if offset != '' {
-							checked := t.checked_integer('add', [index, offset], call.loc)
-							buf << '\t${target_names[0]} := ${checked}'
+							buf << '\t${target_names[0]} := ${index} + ${offset}'
 						}
 						body, flag := t.visit_for_body(node, 1, has_else, writebacks)
 						buf << body
@@ -5466,8 +5744,9 @@ fn (mut t VTranspiler) visit_for_body(node For, level int, has_else bool, writeb
 // loop has its own entry, so its breaks never set the flag.
 struct LoopBreak {
 mut:
-	has_else bool
-	flag     string
+	has_else     bool
+	flag         string
+	copy_targets map[string][]string
 }
 
 // visit_loop_body emits a loop body and returns it with the name of the flag
@@ -5488,7 +5767,8 @@ fn (mut t VTranspiler) visit_loop_body(stmts []Stmt, level int, has_else bool) (
 		for name, iter in condition_renames { t.renamed_idents[name] = iter }
 	}
 	t.loop_breaks << LoopBreak{
-		has_else: has_else
+		has_else:     has_else
+		copy_targets: growth_copy_targets(stmts)
 	}
 	mut first := t.loop_prelude.clone()
 	t.loop_prelude = []string{}
@@ -7683,10 +7963,16 @@ pub fn (mut t VTranspiler) visit_binop(node BinOp) string {
 	}
 	right := t.visit_expr_at(*node.right, right_sink, '')
 	mut op := op_to_symbol(get_op_type(node.op))
+	if node.op is Sub && (t.infer_expr_type(node.left) == 'Py2vNumber'
+		|| t.infer_expr_type(node.right) == 'Py2vNumber') {
+		lhs := t.numeric_choice_value(*node.left, left)
+		rhs := t.numeric_choice_value(*node.right, right)
+		return '${t.runtime_helper('numeric_subtract')}(${lhs}, ${rhs})'
+	}
 
 	if node.op !is Mod && node.left !is List && node.right !is List {
 		if code := t.native_integer_binary(get_op_type(node.op), *node.left, *node.right, left,
-			right, node.loc) {
+			right, node.loc, false) {
 			return code
 		}
 	}
@@ -8205,28 +8491,13 @@ fn (mut t VTranspiler) unsigned_bit_function(method string) string {
 
 // integer_boundary reconciles native widths when a declared type requires it.
 fn (mut t VTranspiler) integer_boundary(expr Expr, code string, typ string) string {
-	low, high := match typ {
-		'i8' { i64(-128), i64(127) }
-		'i16' { i64(-32768), i64(32767) }
-		'i32' { i64(-2147483648), i64(2147483647) }
-		'u8' { i64(0), i64(255) }
-		'u16' { i64(0), i64(65535) }
-		'u32' { i64(0), i64(4294967295) }
-		else { i64(0), i64(0) }
-	}
-	if high != 0 {
+	if typ in ['i8', 'i16', 'i32', 'u8', 'u16', 'u32'] {
 		if t.has_u64_bits(expr) {
 			return t.refuse_wide('unsigned conversion to ${typ} is unsupported')
 		}
 		from := t.infer_expr_type(expr)
 		if from != typ && native_integer_type(from) {
-			bound := t.native_integer_bounds(expr)
-			value := if bound.low >= low && bound.high <= high {
-				code
-			} else {
-				t.checked_integer('narrow', [native_integer_input(from, code), low.str(), high.str()], expr.loc)
-			}
-			return '${typ}(${value})'
+			return '${typ}(${code})'
 		}
 		return code
 	}
@@ -8276,17 +8547,8 @@ pub fn (mut t VTranspiler) visit_unaryop(node UnaryOp) string {
 	operand := t.visit_expr(node.operand)
 	if node.op is USub {
 		typ := t.infer_expr_type(*node.operand)
-		if unresolved_native_type(typ) {
-			return t.generic_integer('neg', '-', operand, '', node.loc)
-		}
-		if native_integer_type(typ) {
-			bounds := t.native_integer_bounds(*node.operand)
-			if bounds.low == native_integer_min {
-				return t.checked_integer('neg', [native_integer_input(typ, operand)], node.loc)
-			}
-			if typ !in ['int', 'i64'] {
-				return '-int(${operand})'
-			}
+		if native_integer_type(typ) && typ !in ['int', 'i64'] {
+			return '-int(${operand})'
 		}
 	}
 	// A prefix binds tighter than any binary operator, so an operand that binds less tightly
@@ -8375,6 +8637,16 @@ pub fn (mut t VTranspiler) visit_compare(node Compare) string {
 
 	op := op_to_symbol(get_cmp_op_type(node.ops[0]))
 	mut right := t.visit_expr_at(node.comparators[0], sink, '')
+	if op in ['==', '!=', '<', '<=', '>', '>='] {
+		lt := t.infer_expr_type(node.left)
+		rt := t.infer_expr_type(node.comparators[0])
+		if lt == 'Py2vNumber' && rt in ['f64', 'float'] {
+			return t.numeric_float_comparison(left, right, op, false)
+		}
+		if rt == 'Py2vNumber' && lt in ['f64', 'float'] {
+			return t.numeric_float_comparison(left, right, reverse_comparison(op), true)
+		}
+	}
 	if op in ['==', '!='] {
 		text := if right == 'none' && t.is_plain_text_parameter(node.left) {
 			left
@@ -9086,11 +9358,16 @@ fn (mut t VTranspiler) visit_call_at(original Call, permit WideSink, permit_type
 	for i, arg in node.args {
 		param_type := declared_params[i] or { '' }
 		sink := t.wide_call_argument(node, fname, param_type)
+		saved_updates := t.integer_update_names
+		if t.loop_breaks.len > 0 && node.func is Attribute && node.func.attr == 'append' {
+			t.integer_update_names = growth_targets(*node.func.value)
+		}
 		mut arg_str := if sink == .unapproved {
 			t.typed_literal_arg(arg)
 		} else {
 			t.visit_expr_at(arg, sink, param_type)
 		}
+		t.integer_update_names = saved_updates
 		// A dict literal for a parameter declared with a value type has that type
 		if arg is Dict && (arg as Dict).keys.len > 0 && i < declared_params.len
 			&& declared_params[i].starts_with('map[') && !declared_params[i].ends_with(']Any') {
@@ -9098,6 +9375,13 @@ fn (mut t VTranspiler) visit_call_at(original Call, permit WideSink, permit_type
 			arg_str = typ + t.visit_expr(arg)
 		} else if i < declared_params.len {
 			arg_str = t.integer_boundary(arg, arg_str, declared_params[i])
+		}
+		if param_type == '[]Py2vNumber' {
+			if arg is List {
+				arg_str = t.numeric_choice_list(arg)
+			} else if t.infer_expr_type(arg) in ['[]f64', '[]int'] {
+				arg_str = '${as_receiver(arg_str)}.map(Py2vNumber(it))'
+			}
 		}
 		// Add mut keyword if this parameter index requires it
 		if i in mut_indices {
@@ -9150,10 +9434,8 @@ fn (mut t VTranspiler) visit_call_at(original Call, permit WideSink, permit_type
 	if vargs.len == 1 && fname in ['math.isqrt', 'math.factorial'] {
 		t.add_using('math')
 		if fname == 'math.factorial' {
-			if value := literal_signed_integer(original.args[0]) {
-				if value >= 0 && value <= 20 {
-					return 'int(math.factoriali(${vargs[0]}))'
-				}
+			if !t.integer_growth_point('factorial', original.args, false) {
+				return 'int(math.factoriali(${vargs[0]}))'
 			}
 			return t.checked_integer('factorial', [vargs[0]], original.loc)
 		}
@@ -9165,8 +9447,7 @@ fn (mut t VTranspiler) visit_call_at(original Call, permit WideSink, permit_type
 	}
 	if vargs.len == 2 && fname in ['math.gcd', 'math.lcm'] {
 		t.add_using('math')
-		args := original.args.map(native_integer_input(t.infer_expr_type(it), t.visit_expr(it)))
-		return t.checked_integer(fname.all_after('.'), args, original.loc)
+		return '${fname}[int](${vargs.join(', ')})'
 	}
 	if vargs.len == 1 && fname in ['math.floor', 'math.ceil', 'math.trunc'] {
 		typ := t.infer_expr_type(original.args[0])
@@ -9174,8 +9455,7 @@ fn (mut t VTranspiler) visit_call_at(original Call, permit WideSink, permit_type
 			return native_integer_input(typ, vargs[0])
 		}
 		t.add_using('math')
-		return t.checked_integer('from_float', ['${fname}(${as_f64_argument(typ, vargs[0])})'],
-			original.loc)
+		return 'int(${fname}(${as_f64_argument(typ, vargs[0])}))'
 	}
 
 	// `math.log(x, base)`: V's `math.log` takes the value alone.
@@ -11057,7 +11337,111 @@ pub fn (mut t VTranspiler) visit_ifexp(node IfExp) string {
 	// A bare map at the start of a branch is parsed as a statement block.
 	body := t.ifexp_branch(node.body)
 	orelse := t.ifexp_branch(node.orelse)
+	if t.is_numeric_choice(node) {
+		if t.emit_pub {
+			// Package code already shares the runtime value across module boundaries.
+			t.add_using('pyrt')
+			return 'if ${test} { pyrt.box(${body}) } else { pyrt.box(${orelse}) }'
+		}
+		lhs := t.numeric_choice_value(*node.body, body)
+		rhs := t.numeric_choice_value(*node.orelse, orelse)
+		return 'if ${test} { ${lhs} } else { ${rhs} }'
+	}
 	return 'if ${test} { ${body} } else { ${orelse} }'
+}
+
+fn numeric_choice_result(node FunctionDef) string {
+	float_annotation := Expr(Name{ id: 'float' })
+	ret := node.returns or { &float_annotation }
+	mut list_result := false
+	if ret is Subscript {
+		collection := *ret.value
+		member := *ret.slice
+		list_result = collection is Name && collection.id in ['list', 'List']
+			&& member is Name && member.id == 'float'
+	}
+	if !list_result && !(ret is Name && ret.id == 'float') { return '' }
+	mut choices := map[string]bool{}
+	for stmt in node.body {
+		if stmt is Assign && stmt.targets.len == 1 && stmt.targets[0] is Name {
+			choices[(stmt.targets[0] as Name).id] = annotated_numeric_choice(*stmt.value)
+		}
+		if stmt is Return {
+			value := stmt.value or { continue }
+			if list_result && value is List
+				&& value.elts.any(annotated_numeric_choice(it) || (it is Name && choices[it.id])) {
+				return '[]Py2vNumber'
+			}
+			if !list_result && (annotated_numeric_choice(value) || (value is Name && choices[value.id])) {
+				return 'Py2vNumber'
+			}
+		}
+	}
+	return ''
+}
+
+fn annotated_numeric_choice(expr Expr) bool {
+	if expr !is IfExp { return false }
+	a := get_expr_annotation(*expr.body)
+	b := get_expr_annotation(*expr.orelse)
+	return (a == 'int' && b == 'float') || (a == 'float' && b == 'int')
+}
+
+fn (mut t VTranspiler) is_numeric_choice(node IfExp) bool {
+	a := t.infer_expr_type(*node.body)
+	b := t.infer_expr_type(*node.orelse)
+	return (a in ['int', 'i64'] && b in ['float', 'f64'])
+		|| (a in ['float', 'f64'] && b in ['int', 'i64'])
+}
+
+fn (mut t VTranspiler) numeric_choice_value(expr Expr, code string) string {
+	typ := t.infer_expr_type(expr)
+	if typ == 'Py2vNumber' { return code }
+	t.runtime_helper('float_text')
+	t.runtime_helper('numeric_choice')
+	cast := if typ in ['f64', 'float', 'f32'] {
+		'f64'
+	} else if typ in ['int', 'i64'] {
+		'int'
+	} else {
+		''
+	}
+	return if cast != '' { 'Py2vNumber(${cast}(${code}))' } else { 'Py2vNumber(${code})' }
+}
+
+fn (mut t VTranspiler) numeric_choice_list(node List) string {
+	if node.elts.len == 0 { return '[]Py2vNumber{}' }
+	mut values := []string{cap: node.elts.len}
+	for item in node.elts {
+		code := t.visit_expr(item)
+		values << t.numeric_choice_value(item, code)
+	}
+	return '[${values.join(', ')}]'
+}
+
+fn reverse_comparison(op string) string {
+	return match op {
+		'<' { '>' }
+		'<=' { '>=' }
+		'>' { '<' }
+		'>=' { '<=' }
+		else { op }
+	}
+}
+
+fn (mut t VTranspiler) numeric_float_comparison(left string, right string, op string, float_first bool) string {
+	t.add_using('math')
+	compare := t.runtime_helper('numeric_compare_float')
+	helper := if float_first { t.runtime_helper('numeric_compare_from_float') } else { compare }
+	comparison := '${helper}(${left}, ${right})'
+	return match op {
+		'<' { '${comparison} == -1' }
+		'<=' { '${comparison} <= 0' }
+		'>' { '${comparison} == 1' }
+		'>=' { '(${comparison} in [0, 1])' }
+		'!=' { '${comparison} != 0' }
+		else { '${comparison} == 0' }
+	}
 }
 
 // ifexp_value retains the float type of integral literals in a value choice.
@@ -13054,6 +13438,9 @@ fn (mut t VTranspiler) infer_expr_type(expr Expr) string {
 		}
 		Name {
 			// Prefer any frontend-provided v_annotation on the Name node
+			if t.var_types[expr.id] in ['Py2vNumber', '[]Py2vNumber'] {
+				return t.var_types[expr.id]
+			}
 			ann := get_expr_annotation(expr)
 			if ann.len > 0 {
 				if ann == 'float' {
@@ -13088,6 +13475,9 @@ fn (mut t VTranspiler) infer_expr_type(expr Expr) string {
 				return 'string'
 			}
 			right_type := t.infer_expr_type(expr.right)
+			if expr.op is Sub && (left_type == 'Py2vNumber' || right_type == 'Py2vNumber') {
+				return 'Py2vNumber'
+			}
 			if right_type == 'string' {
 				return 'string'
 			}
@@ -13115,6 +13505,13 @@ fn (mut t VTranspiler) infer_expr_type(expr Expr) string {
 			return ''
 		}
 		Call {
+			if expr.func is Name {
+				if t.numeric_array_results[expr.func.id] { return '[]Py2vNumber' }
+				if t.numeric_scalar_results[expr.func.id] { return 'Py2vNumber' }
+				if expr.func.id == 'abs' && expr.args.len == 1 && t.infer_expr_type(expr.args[0]) == 'Py2vNumber' {
+					return 'Py2vNumber'
+				}
+			}
 			// Prefer any frontend-provided annotation on the Call node
 			ann := get_expr_annotation(expr)
 			if ann.len > 0 {
@@ -13235,6 +13632,9 @@ fn (mut t VTranspiler) infer_expr_type(expr Expr) string {
 			return ''
 		}
 		Subscript {
+			if t.infer_expr_type(expr.value) == '[]Py2vNumber' {
+				return if expr.slice is Slice { '[]Py2vNumber' } else { 'Py2vNumber' }
+			}
 			// Check v_annotation on the subscript
 			ann := get_expr_annotation(expr)
 			if ann != '' {
@@ -13252,6 +13652,12 @@ fn (mut t VTranspiler) infer_expr_type(expr Expr) string {
 				if bracket_end > 0 && bracket_end + 1 < coll_type.len {
 					return coll_type[bracket_end + 1..]
 				}
+			}
+			return ''
+		}
+		IfExp {
+			if t.is_numeric_choice(expr) {
+				return if t.emit_pub { 'pyrt.Value' } else { 'Py2vNumber' }
 			}
 			return ''
 		}

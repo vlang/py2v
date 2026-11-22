@@ -43,24 +43,9 @@ fn minimum(items []Any, last int) Any {
 	if last == 0 {
 		return items[0]
 	}
-	previous := minimum(items, py2v_integer_sub1(last, 1, 'dynamic_operator_operands.py:11', 'subtraction'))
+	previous := minimum(items, last - 1)
 	current := items[last]
 	return if previous <= current { previous } else { current }
-}
-
-@[noreturn]
-fn py2v_integer_overflow1(site string, operation string) {
-	flush_stdout()
-	eprintln('py2v_integer_overflow: ${site}: ${operation} exceeds the V int range')
-	exit(1)
-}
-
-@[inline]
-fn py2v_integer_sub1(a int, b int, site string, operation string) int {
-	max := int(9223372036854775807)
-	min := -max - 1
-	if (b > 0 && a < min + b) || (b < 0 && a > max + b) { py2v_integer_overflow1(site, operation) }
-	return a - b
 }
 
 fn main() {

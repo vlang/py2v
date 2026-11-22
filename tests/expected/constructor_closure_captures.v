@@ -41,7 +41,7 @@ fn scalar_capture() {
 	py2v_capture1 := &value
 	build := fn [py2v_capture1] () Pair {
 		return (fn [py2v_capture1] () Pair {
-			py2v_init_arg2 := py2v_integer_add1((*py2v_capture1), 1, 'constructor_closure_captures.py:17', 'addition')
+			py2v_init_arg2 := (*py2v_capture1) + 1
 			py2v_init_arg3 := py2v_integer_mul1((*py2v_capture1), 2, 'constructor_closure_captures.py:17', 'multiplication')
 			return py2v_new_pair(py2v_init_arg2, py2v_init_arg3)
 		})()
@@ -87,8 +87,8 @@ fn nested_capture() {
 		py2v_capture12 := &(*py2v_capture11)
 		build := fn [py2v_capture12] () Pair {
 			return (fn [py2v_capture12] () Pair {
-				py2v_init_arg13 := py2v_integer_add1((*py2v_capture12), 2, 'constructor_closure_captures.py:49', 'addition')
-				py2v_init_arg14 := py2v_integer_add1((*py2v_capture12), 3, 'constructor_closure_captures.py:49', 'addition')
+				py2v_init_arg13 := (*py2v_capture12) + 2
+				py2v_init_arg14 := (*py2v_capture12) + 3
 				return py2v_new_pair(py2v_init_arg13, py2v_init_arg14)
 			})()
 		}
@@ -117,14 +117,6 @@ fn py2v_integer_overflow1(site string, operation string) {
 	flush_stdout()
 	eprintln('py2v_integer_overflow: ${site}: ${operation} exceeds the V int range')
 	exit(1)
-}
-
-@[inline]
-fn py2v_integer_add1(a int, b int, site string, operation string) int {
-	max := int(9223372036854775807)
-	min := -max - 1
-	if (b > 0 && a > max - b) || (b < 0 && a < min - b) { py2v_integer_overflow1(site, operation) }
-	return a + b
 }
 
 @[inline]
