@@ -1,7 +1,76 @@
 module main
 
-// TODO(py2v): 1 except handler(s) need a V Result equivalent:
-//   except ValueError as e (1 stmt)
+type Py2vErrorArg = bool | i64 | string
+
+fn (arg Py2vErrorArg) str() string {
+	return match arg {
+		bool {
+			if arg { 'True' } else { 'False' }
+		}
+		i64 { arg.str() }
+		string { arg }
+	}
+}
+
+struct Py2vErrorArgs {
+	values []Py2vErrorArg
+}
+
+fn (args Py2vErrorArgs) str() string {
+	mut parts := []string{cap: args.values.len}
+	for value in args.values {
+		if value is string {
+			quote := if value.contains('\x27') && !value.contains('\x22') { '\x22' } else { '\x27' }
+			escaped := value.replace('\\', '\\\\').replace('\n', '\\n').replace('\r', '\\r').replace('\t', '\\t').replace(quote, '\\' + quote)
+			parts << quote + escaped + quote
+		} else {
+			parts << value.str()
+		}
+	}
+	suffix := if parts.len == 1 { ',)' } else { ')' }
+	return '(' + parts.join(', ') + suffix
+}
+
+struct Py2vErrorData {
+	args     Py2vErrorArgs
+	original ?IError
+	cause    ?IError
+}
+
+fn (data Py2vErrorData) str() string {
+	if data.args.values.len > 1 {
+		return data.args.str()
+	}
+	value := data.args.values[0] or { return '' }
+	return value.str()
+}
+
+struct Py2vErrorValueError {
+	Error
+	data Py2vErrorData
+}
+
+fn (err Py2vErrorValueError) msg() string {
+	return err.data.str()
+}
+
+fn py2v_bind_exception1(err IError) Py2vErrorData {
+	return match err {
+		Py2vErrorValueError { Py2vErrorData{ ...err.data, original: IError(err) } }
+		else { panic(err) }
+	}
+}
+
+@[noreturn]
+fn py2v_uncaught_exception1(err IError) {
+	class_name := match err {
+		Py2vErrorValueError { 'ValueError' }
+		else { panic(err) }
+	}
+	message := err.msg()
+	eprintln(if message == '' { class_name } else { class_name + ': ' + message })
+	exit(1)
+}
 
 fn pure_finally() int {
 	mut result := 0
@@ -24,14 +93,29 @@ fn nested_finally() int {
 	return x
 }
 
-fn mixed_handlers() {
-	defer {
-		println('done')
+fn mixed_handlers_py() ! {
+	{
+		defer {
+			println('done')
+		}
+		mut py2v_err_1 := ?IError(none)
+		py2v_try_1: for {
+			value := (py2v_int_base1('123', 10, 'defer_finally.py:29') or {
+				py2v_err_1 = IError(Py2vErrorValueError{ data: Py2vErrorData{ args: Py2vErrorArgs{ values: [Py2vErrorArg(err.msg())] } } })
+				break py2v_try_1
+			})
+			println(value)
+			break
+		}
+		if py2v_raised_1 := py2v_err_1 {
+			if py2v_raised_1 is Py2vErrorValueError {
+				e := py2v_bind_exception1(py2v_raised_1)
+				println('bad value')
+			} else {
+				return py2v_raised_1
+			}
+		}
 	}
-	value := (py2v_int_base1('123', 10, 'defer_finally.py:29') or { panic('ValueError: ' + err.msg()) })
-	println(value)
-	// except handlers are not translated: see the TODO(py2v) note above
-	//   except ValueError as e: 1 statement(s) need an `or { ... }` equivalent
 }
 
 fn multi_stmt_finally() {
@@ -144,9 +228,13 @@ fn py2v_int_base1(value string, requested_base int, site string) !int {
 	return if negative { -int(magnitude - 1) - 1 } else { int(magnitude) }
 }
 
-fn main() {
+fn py2v_entry1() ! {
 	println(pure_finally())
 	println(nested_finally())
-	mixed_handlers()
+	mixed_handlers_py()!
 	multi_stmt_finally()
+}
+
+fn main() {
+	py2v_entry1() or { py2v_uncaught_exception1(err) }
 }

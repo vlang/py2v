@@ -16,3 +16,19 @@ print(selected_saturation(0.0, 0.0), selected_saturation(0.25, 0.5))
 print(isinstance(selected_saturation(0.0, 0.0), int), isinstance(selected_saturation(0.0, 0.5), float))
 large = selected_saturation(0.0, 0.0, 9007199254740992 + 1)
 print(large == 9007199254740992.0, 9007199254740992.0 < large)
+print(1.25 + selected_saturation(0.0, 0.0), selected_saturation(0.25, 0.5) + 1.25)
+
+
+def recursive_power(base: int, exponent: int) -> float:
+    return base * recursive_power(base, exponent - 1) if exponent else 1
+
+
+def display_power(base: int, exponent: int) -> None:
+    result = recursive_power(base, abs(exponent))
+    if exponent < 0:
+        result = 1 / result
+    print(result)
+
+
+display_power(23, 12)
+display_power(2, -3)

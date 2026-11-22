@@ -128,16 +128,10 @@ fn check_py(n int) !int {
 		return IError(Py2vErrorValueError{ data: Py2vErrorData{ args: Py2vErrorArgs{ values: [Py2vErrorArg('negative: ${n}')] } } })
 	}
 	if n == 13 {
-		return IError(Py2vErrorRuntimeError{
-			data: Py2vErrorData{
-				args: Py2vErrorArgs{
-					values: [
-						Py2vErrorArg('unlucky'),
-						Py2vErrorArg(i64(n)),
-					]
-				}
-			}
-		})
+		return IError(Py2vErrorRuntimeError{ data: Py2vErrorData{ args: Py2vErrorArgs{ values: [
+			Py2vErrorArg('unlucky'),
+			Py2vErrorArg(i64(n)),
+		] } } })
 	}
 	return py2v_integer_mul1(n, 2, 'raise_and_handlers.py:14', 'multiplication')
 }
@@ -247,10 +241,6 @@ fn main_func_py() ! {
 	println('${outer(4)} | ${outer(13)} | ${outer(-5)}')
 }
 
-fn py2v_entry1() ! {
-	main_func_py()!
-}
-
 @[noreturn]
 fn py2v_integer_overflow1(site string, operation string) {
 	flush_stdout()
@@ -266,6 +256,10 @@ fn py2v_integer_mul1(a int, b int, site string, operation string) int {
 		py2v_integer_overflow1(site, operation)
 	}
 	return a * b
+}
+
+fn py2v_entry1() ! {
+	main_func_py()!
 }
 
 fn main() {

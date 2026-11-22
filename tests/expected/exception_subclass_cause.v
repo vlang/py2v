@@ -110,17 +110,10 @@ fn translate_py() ! {
 	if py2v_raised_2 := py2v_err_2 {
 		if py2v_raised_2 is Py2vErrorValueError {
 			cause := py2v_bind_exception1(py2v_raised_2)
-			return IError(Py2vErrorMissingEntry{
-				data: Py2vErrorData{
-					args:  Py2vErrorArgs{
-						values: [
-							Py2vErrorArg('entry'),
-							Py2vErrorArg(i64(2)),
-						]
-					}
-					cause: cause.original
-				}
-			})
+			return IError(Py2vErrorMissingEntry{ data: Py2vErrorData{ args: Py2vErrorArgs{ values: [
+				Py2vErrorArg('entry'),
+				Py2vErrorArg(i64(2)),
+			] }, cause: cause.original } })
 		} else {
 			return py2v_raised_2
 		}

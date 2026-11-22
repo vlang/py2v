@@ -1,6 +1,6 @@
 module main
 
-import math.big as py2v_big
+import math.bits as py2v_math_bits1
 
 type Py2vErrorArg = bool | i64 | string
 
@@ -74,6 +74,12 @@ fn py2v_uncaught_exception1(err IError) {
 	exit(1)
 }
 
+@[inline]
+fn py2v_integer_word_product1(a u64, b u64, modulus u64) u64 {
+	hi, lo := py2v_math_bits1.mul_64(a, b)
+	return py2v_math_bits1.rem_64(hi, lo, modulus)
+}
+
 fn py2v_modular_pow1(base int, exponent int, modulus int) !int {
 	if modulus == 0 {
 		return error('pow() 3rd argument cannot be 0')
@@ -81,17 +87,39 @@ fn py2v_modular_pow1(base int, exponent int, modulus int) !int {
 	if modulus == 1 || modulus == -1 {
 		return 0
 	}
-	m := py2v_big.integer_from_i64(i64(modulus)).abs()
-	mut x := py2v_big.integer_from_i64(i64(base))
+	m := if modulus < 0 { u64(-(modulus + 1)) + 1 } else { u64(modulus) }
+	remainder := base % modulus
+	mut x := if remainder < 0 { m - u64(-remainder) } else { u64(remainder) }
 	if exponent < 0 {
-		x = x.mod_inverse(m) or { return error('base is not invertible for the given modulus') }
+		// Euclid's coefficients can be kept reduced modulo m throughout.
+		mut old_r, mut r := m, x
+		mut old_coefficient, mut coefficient := u64(0), u64(1)
+		for r != 0 {
+			product := py2v_integer_word_product1(old_r / r, coefficient, m)
+			old_r, r = r, old_r % r
+			old_coefficient, coefficient = coefficient, if old_coefficient >= product {
+				old_coefficient - product
+			} else {
+				m - (product - old_coefficient)
+			}
+		}
+		if old_r != 1 {
+			return error('base is not invertible for the given modulus')
+		}
+		x = old_coefficient
 	}
-	degree := if exponent < 0 { u64(-(exponent + 1)) + 1 } else { u64(exponent) }
-	result := x.mod_pow(degree, m)
-	if modulus < 0 && result != py2v_big.integer_from_u64(0) {
-		return int((result - m).str().i64())
+	mut degree := if exponent < 0 { u64(-(exponent + 1)) + 1 } else { u64(exponent) }
+	mut result := u64(1)
+	for degree != 0 {
+		if degree & 1 != 0 {
+			result = py2v_integer_word_product1(result, x, m)
+		}
+		degree >>= 1
+		if degree != 0 {
+			x = py2v_integer_word_product1(x, x, m)
+		}
 	}
-	return int(result.str().i64())
+	return if modulus < 0 && result != 0 { -int(m - result) } else { int(result) }
 }
 
 fn py2v_entry1() ! {

@@ -27,10 +27,6 @@ fn main_func_py() ! {
 	logger.info('plain message')
 }
 
-fn py2v_entry1() ! {
-	main_func_py()!
-}
-
 @[noreturn]
 fn py2v_integer_overflow1(site string, operation string) {
 	flush_stdout()
@@ -46,6 +42,10 @@ fn py2v_integer_mul1(a int, b int, site string, operation string) int {
 		py2v_integer_overflow1(site, operation)
 	}
 	return a * b
+}
+
+fn py2v_entry1() ! {
+	main_func_py()!
 }
 
 fn main() {

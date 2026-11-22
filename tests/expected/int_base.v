@@ -1,6 +1,5 @@
 module main
 
-import strconv
 import pyrt
 
 type Py2vErrorArg = bool | i64 | string
@@ -70,10 +69,17 @@ fn py2v_uncaught_exception1(err IError) {
 
 fn parse_digits_py(values []string, index int, base int) !int {
 	text := values[index]
-	return py2v_int_base1(text, int(base)) or { return IError(Py2vErrorValueError{ data: Py2vErrorData{ args: Py2vErrorArgs{ values: [Py2vErrorArg(err.msg())] } } }) }
+	return py2v_int_base_error_text1(text, int(base), 'int_base.py:3') or { return IError(Py2vErrorValueError{ data: Py2vErrorData{ args: Py2vErrorArgs{ values: [Py2vErrorArg(err.msg())] } } }) }
 }
 
-fn py2v_int_base1(value string, requested_base int) !int {
+@[noreturn]
+fn py2v_integer_overflow1(site string, operation string) {
+	flush_stdout()
+	eprintln('py2v_integer_overflow: ${site}: ${operation} exceeds the V int range')
+	exit(1)
+}
+
+fn py2v_int_base1(value string, requested_base int, site string) !int {
 	if requested_base != 0 && (requested_base < 2 || requested_base > 36) {
 		return error('int() base must be >= 2 and <= 36, or 0')
 	}
@@ -102,15 +108,15 @@ fn py2v_int_base1(value string, requested_base int) !int {
 			normalized << digit
 		}
 	}
-	text := normalized.bytestr().trim_space()
+	text := normalized.bytestr().trim(' \t\n\r\u000b\u000c')
 	if text == '' {
-		return error('invalid literal for int() with base ${requested_base}: ' + pyrt.repr(pyrt.box(value)))
+		return error('invalid literal for int()')
 	}
 	negative := text[0] == `-`
 	mut start := if negative || text[0] == `+` { 1 } else { 0 }
 	mut base := if requested_base == 0 { 10 } else { requested_base }
 	mut zero_only := requested_base == 0 && start < text.len && text[start] == `0`
-	if start + 1 < text.len && text[start] == `0` {
+	if start < text.len - 1 && text[start] == `0` {
 		prefix_base := match text[start + 1] | 32 {
 			`b` { 2 }
 			`o` { 8 }
@@ -126,18 +132,52 @@ fn py2v_int_base1(value string, requested_base int) !int {
 			}
 		}
 	}
-	magnitude, status := strconv.common_parse_uint2(text[start..], base, 64)
-	limit := (u64(1) << (sizeof(int) * 8 - 1)) - u64(!negative)
-	if status == -3 || (status == 0 && magnitude > limit) {
-		panic('py2v_unsupported_int_range: based integer is outside native int')
+	limit := (u64(1) << 63) - u64(!negative)
+	mut magnitude := u64(0)
+	mut overflow := false
+	mut need_digit := true
+	radix := u64(base)
+	for i in start .. text.len {
+		ch := text[i]
+		if ch == `_` && !need_digit {
+			need_digit = true
+			continue
+		}
+		digit := match ch {
+			`0`...`9` { int(ch - `0`) }
+			`a`...`z` { int(ch - `a`) + 10 }
+			`A`...`Z` { int(ch - `A`) + 10 }
+			else { base }
+		}
+		if digit >= base || (zero_only && digit != 0) {
+			return error('invalid literal for int()')
+		}
+		need_digit = false
+		if !overflow {
+			overflow = magnitude > (limit - u64(digit)) / radix
+			if !overflow {
+				magnitude = magnitude * radix + u64(digit)
+			}
+		}
 	}
-	if status != 0 || (zero_only && magnitude != 0) {
-		return error('invalid literal for int() with base ${requested_base}: ' + pyrt.repr(pyrt.box(value)))
+	if need_digit {
+		return error('invalid literal for int()')
+	}
+	if overflow {
+		py2v_integer_overflow1(site, 'integer parsing')
 	}
 	if magnitude == 0 {
 		return 0
 	}
 	return if negative { -int(magnitude - 1) - 1 } else { int(magnitude) }
+}
+
+fn py2v_int_base_error_text1(value string, base int, site string) !int {
+	return py2v_int_base1(value, base, site) or {
+		if err.msg() != 'invalid literal for int()' { return err }
+
+		return error('invalid literal for int() with base ${base}: ' + pyrt.repr(pyrt.box(value)))
+	}
 }
 
 fn py2v_range_next1(current int, stop int, step int) int {
@@ -165,13 +205,13 @@ fn py2v_entry1() ! {
 	}; index = py2v_range_next1(index, py2v_range_stop2, py2v_range_step3) {
 		println(parse_digits_py(values, index, bases[index])!)
 	}
-	println((py2v_int_base1('0b1', int(16)) or { return IError(Py2vErrorValueError{ data: Py2vErrorData{ args: Py2vErrorArgs{ values: [Py2vErrorArg(err.msg())] } } }) }))
-	println((py2v_int_base1('00', int(10)) or { return IError(Py2vErrorValueError{ data: Py2vErrorData{ args: Py2vErrorArgs{ values: [Py2vErrorArg(err.msg())] } } }) }))
-	println((py2v_int_base1('1', int(int(true) + 1)) or { return IError(Py2vErrorValueError{ data: Py2vErrorData{ args: Py2vErrorArgs{ values: [Py2vErrorArg(err.msg())] } } }) }))
+	println((py2v_int_base_error_text1('0b1', int(16), 'int_base.py:10') or { return IError(Py2vErrorValueError{ data: Py2vErrorData{ args: Py2vErrorArgs{ values: [Py2vErrorArg(err.msg())] } } }) }))
+	println((py2v_int_base_error_text1('00', int(10), 'int_base.py:11') or { return IError(Py2vErrorValueError{ data: Py2vErrorData{ args: Py2vErrorArgs{ values: [Py2vErrorArg(err.msg())] } } }) }))
+	println((py2v_int_base_error_text1('1', int(int(true) + 1), 'int_base.py:12') or { return IError(Py2vErrorValueError{ data: Py2vErrorData{ args: Py2vErrorArgs{ values: [Py2vErrorArg(err.msg())] } } }) }))
 	for invalid in ['01', '', '_0', '0x__f', '0b', '0o9', '0_xa', '10\x00', '3\x1c', '²'] {
 		mut py2v_err_2 := ?IError(none)
 		py2v_try_2: for {
-			println((py2v_int_base1(invalid, int(0)) or {
+			println((py2v_int_base_error_text1(invalid, int(0), 'int_base.py:15') or {
 				py2v_err_2 = IError(Py2vErrorValueError{ data: Py2vErrorData{ args: Py2vErrorArgs{ values: [Py2vErrorArg(err.msg())] } } })
 				break py2v_try_2
 			}))
@@ -187,7 +227,7 @@ fn py2v_entry1() ! {
 	}
 	mut py2v_err_1 := ?IError(none)
 	py2v_try_1: for {
-		println((py2v_int_base1('40', int(37)) or {
+		println((py2v_int_base_error_text1('40', int(37), 'int_base.py:19') or {
 			py2v_err_1 = IError(Py2vErrorValueError{ data: Py2vErrorData{ args: Py2vErrorArgs{ values: [Py2vErrorArg(err.msg())] } } })
 			break py2v_try_1
 		}))

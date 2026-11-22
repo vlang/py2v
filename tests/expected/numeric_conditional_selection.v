@@ -12,6 +12,22 @@ fn selected_saturation(chroma f64, value f64, zero int) Py2vNumber {
 	return if value == 0 { Py2vNumber(int(zero)) } else { Py2vNumber(f64(chroma / value)) }
 }
 
+fn recursive_power(base int, exponent int) int {
+	return if exponent != 0 {
+		py2v_integer_mul1(base, recursive_power(base, exponent - 1), 'numeric_conditional_selection.py:23', 'multiplication')
+	} else {
+		1
+	}
+}
+
+fn display_power(base int, exponent int) {
+	mut result := Py2vNumber(int(recursive_power(base, math.abs(exponent))))
+	if exponent < 0 {
+		result = Py2vNumber(f64(py2v_true_div1(f64(1), result.as_float())))
+	}
+	println(result)
+}
+
 fn py2v_float_text1[T](value T) string {
 	$if T is $float {
 		scientific := strconv.f64_to_str(f64(value), 16)
@@ -62,6 +78,37 @@ fn py2v_numeric_compare_from_float1(left f64, right Py2vNumber) int {
 	return py2v_numeric_compare_float1(right, left)
 }
 
+fn (value Py2vNumber) as_float() f64 {
+	return match value {
+		f64 { value }
+		int { f64(value) }
+	}
+}
+
+@[noreturn]
+fn py2v_integer_overflow1(site string, operation string) {
+	flush_stdout()
+	eprintln('py2v_integer_overflow: ${site}: ${operation} exceeds the V int range')
+	exit(1)
+}
+
+@[inline]
+fn py2v_integer_mul1(a int, b int, site string, operation string) int {
+	max := int(9223372036854775807)
+	min := -max - 1
+	if (a > 0 && ((b > 0 && a > max / b) || b < min / a)) || (a < 0 && ((b > 0 && a < min / b) || (b < 0 && a < max / b))) {
+		py2v_integer_overflow1(site, operation)
+	}
+	return a * b
+}
+
+fn py2v_true_div1(a f64, b f64) f64 {
+	if b == 0 {
+		panic('division by zero')
+	}
+	return a / b
+}
+
 fn main() {
 	black := components(0.0, 0.0)
 	color := components(0.25, 0.5)
@@ -88,4 +135,7 @@ fn main() {
 	} else {
 		'False'
 	}).str())
+	println('${py2v_float_text1(1.25 + selected_saturation(0.0, 0.0, 0).as_float())} ${py2v_float_text1(selected_saturation(0.25, 0.5, 0).as_float() + 1.25)}')
+	display_power(23, 12)
+	display_power(2, -3)
 }

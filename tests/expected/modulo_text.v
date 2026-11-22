@@ -1,7 +1,5 @@
 module main
 
-import math
-
 type Py2vErrorArg = bool | i64 | string
 
 fn (arg Py2vErrorArg) str() string {
@@ -73,16 +71,25 @@ fn render_py(items []int, divisor int) !string {
 	}
 	mut result := ''
 	for value in items {
-		result += (math.modulo_floored[int](value, divisor)).str()
+		result += (py2v_integer_mod1(value, divisor, 'modulo_text.py:6')).str()
 	}
 	return result
+}
+
+@[inline]
+fn py2v_integer_mod1(a int, b int, _ string) int {
+	if b == 0 { panic('ZeroDivisionError: integer modulo by zero') }
+	if b == -1 { return 0 }
+	r := a % b
+	adjust := r != 0 && (r < 0) != (b < 0)
+	return if adjust { r + b } else { r }
 }
 
 fn py2v_entry1() ! {
 	println(render_py([1, 2, -3, 4], 2)!)
 	println(render_py([1, 2, -3, 4], -3)!)
 	println(-7)
-	println(math.modulo_floored[int](15, 8))
+	println(7)
 	println(1)
 }
 

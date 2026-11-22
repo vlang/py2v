@@ -37,6 +37,7 @@ mut:
 	func_return_types      map[string]string
 	numeric_scalar_results map[string]bool
 	numeric_array_results  map[string]bool
+	recursive_int_results  map[string]bool
 	// Methods whose receiver must be `mut` in V, keyed ClassName_method.
 	mut_receiver_methods map[string]bool
 	// Constructor factories mark an emitted fallback parameter here.
@@ -447,9 +448,14 @@ pub fn (mut t VTranspiler) visit_module(node Module) string {
 	find_growth_calls(hoisted_body, false, mut t.integer_return_inputs)
 	t.numeric_array_results = map[string]bool{}
 	t.numeric_scalar_results = map[string]bool{}
+	t.recursive_int_results = map[string]bool{}
 	if t.module_name in ['', 'main'] {
 		for stmt in hoisted_body {
 			if stmt is FunctionDef {
+				if stmt.name in signatures && recursive_int_result(stmt) {
+					t.recursive_int_results[stmt.name] = true
+					continue
+				}
 				match numeric_choice_result(stmt) {
 					'Py2vNumber' { t.numeric_scalar_results[stmt.name] = true }
 					'[]Py2vNumber' { t.numeric_array_results[stmt.name] = true }
@@ -934,8 +940,10 @@ fn (mut t VTranspiler) integer_helper_declaration(kind string, name string) stri
 		'numeric_subtract' {
 			return 'fn ${name}(a Py2vNumber, b Py2vNumber) Py2vNumber {\n' +
 				'\tif a is int && b is int { return Py2vNumber(a - b) }\n' +
-				'\treturn Py2vNumber(a.as_float() - b.as_float())\n}\n\n' +
-				'fn (value Py2vNumber) as_float() f64 {\n' +
+				'\treturn Py2vNumber(a.as_float() - b.as_float())\n}'
+		}
+		'numeric_as_float' {
+			return 'fn (value Py2vNumber) as_float() f64 {\n' +
 				'\treturn match value {\n\t\tf64 { value }\n\t\tint { f64(value) }\n\t}\n}'
 		}
 		'numeric_abs' {
@@ -3241,7 +3249,11 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 	t.current_return_count = 0
 	t.current_return_type = ''
 	if !node.is_void && !node.is_generator && node.name != '__init__' {
-		if t.numeric_scalar_results[node.name] && !node.is_class_method && !node.is_nested {
+		if t.recursive_int_results[node.name] && !node.is_class_method && !node.is_nested {
+			t.current_return_type = 'int'
+			signature << 'int'
+			t.func_return_types[node.name] = 'int'
+		} else if t.numeric_scalar_results[node.name] && !node.is_class_method && !node.is_nested {
 			t.current_return_type = 'Py2vNumber'
 			signature << t.current_return_type
 			t.func_return_types[node.name] = t.current_return_type
@@ -4032,6 +4044,17 @@ fn (mut t VTranspiler) visit_assignment(node Assign, package_initializer bool) s
 				}
 				kw := if target.is_mutable || t.extra_mut_vars[target.id] { 'mut ' } else { '' }
 				return '${kw}${dest} := ${value}'
+			}
+			if target is Name {
+				value := *node.value
+				if t.var_types[target.id] == 'Py2vNumber'
+					|| (!rebind && target.is_mutable && value is Call && value.func is Name
+						&& t.recursive_int_results[value.func.id]) {
+					code := t.numeric_choice_value(value, t.visit_expr(value))
+					dest := t.visit_expr(target)
+					t.var_types[target.id] = 'Py2vNumber'
+					return if rebind { '${dest} = ${code}' } else { 'mut ${dest} := ${code}' }
+				}
 			}
 		}
 	}
@@ -7963,11 +7986,46 @@ pub fn (mut t VTranspiler) visit_binop(node BinOp) string {
 	}
 	right := t.visit_expr_at(*node.right, right_sink, '')
 	mut op := op_to_symbol(get_op_type(node.op))
-	if node.op is Sub && (t.infer_expr_type(node.left) == 'Py2vNumber'
-		|| t.infer_expr_type(node.right) == 'Py2vNumber') {
-		lhs := t.numeric_choice_value(*node.left, left)
-		rhs := t.numeric_choice_value(*node.right, right)
-		return '${t.runtime_helper('numeric_subtract')}(${lhs}, ${rhs})'
+	if node.op is Add || node.op is Sub || node.op is Mult || node.op is Div {
+		left_type := t.infer_expr_type(node.left)
+		right_type := t.infer_expr_type(node.right)
+		if left_type == 'Py2vNumber' || right_type == 'Py2vNumber' {
+			if node.op is Div {
+				t.runtime_helper('numeric_as_float')
+				lhs := if left_type == 'Py2vNumber' {
+					'${as_receiver(left)}.as_float()'
+				} else {
+					'f64(${left})'
+				}
+				rhs := if right_type == 'Py2vNumber' {
+					'${as_receiver(right)}.as_float()'
+				} else {
+					'f64(${right})'
+				}
+				return '${t.runtime_helper('true_div')}(${lhs}, ${rhs})'
+			}
+			if left_type in ['f64', 'float'] || right_type in ['f64', 'float'] {
+				t.runtime_helper('numeric_as_float')
+				prec := v_prec(op)
+				lhs := if left_type == 'Py2vNumber' {
+					'${as_receiver(left)}.as_float()'
+				} else {
+					left
+				}
+				rhs := if right_type == 'Py2vNumber' {
+					'${as_receiver(right)}.as_float()'
+				} else {
+					right
+				}
+				return '${paren_left(lhs, prec)} ${op} ${paren_right(rhs, prec)}'
+			}
+			if node.op is Sub {
+				lhs := t.numeric_choice_value(*node.left, left)
+				rhs := t.numeric_choice_value(*node.right, right)
+				t.runtime_helper('numeric_as_float')
+				return '${t.runtime_helper('numeric_subtract')}(${lhs}, ${rhs})'
+			}
+		}
 	}
 
 	if node.op !is Mod && node.left !is List && node.right !is List {
@@ -9439,8 +9497,8 @@ fn (mut t VTranspiler) visit_call_at(original Call, permit WideSink, permit_type
 			}
 			return t.checked_integer('factorial', [vargs[0]], original.loc)
 		}
-		bound := t.native_integer_bounds(original.args[0])
-		if bound.low >= 0 && bound.high < i64(1) << 62 {
+		input := t.native_integer_bounds(original.args[0])
+		if input.low >= 0 && input.high < i64(1) << 62 {
 			return 'int(math.sqrti(${vargs[0]}))'
 		}
 		return '${t.runtime_helper('integer_isqrt')}(${vargs[0]})'
@@ -11378,6 +11436,45 @@ fn numeric_choice_result(node FunctionDef) string {
 		}
 	}
 	return ''
+}
+
+// A literal base case and integer arithmetic on a recursive result prove an
+// integer return even when the Python signature permits a float.
+fn recursive_int_result(node FunctionDef) bool {
+	annotation := node.returns or { return false }
+	typ := *annotation
+	if typ !is Name || typ.id != 'float' || node.is_class_method {
+		return false
+	}
+	body := node.body.filter(!(it is ExprStmt && it.value is Constant && it.value.value is string))
+	if body.len != 1 || body[0] !is Return { return false }
+	result := (body[0] as Return).value or { return false }
+	if result !is IfExp { return false }
+	then := *result.body
+	otherwise := *result.orelse
+	for i, arm in [then, otherwise] {
+		if arm !is BinOp { continue }
+		step := arm as BinOp
+		if !(step.op is Add || step.op is Sub || step.op is Mult) { continue }
+		base := if i == 0 { otherwise } else { then }
+		if literal_signed_integer(base) == none { continue }
+		for pair in [[*step.left, *step.right], [*step.right, *step.left]] {
+			call := pair[0]
+			value := pair[1]
+			if call is Call && call.func is Name && call.func.id == node.name
+				&& (literal_signed_integer(value) != none || (value is Name
+					&& node.args.args.any(it.arg == value.id && integer_arg_annotation(it)))) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+fn integer_arg_annotation(arg Arg) bool {
+	annotation := arg.annotation or { return false }
+	typ := *annotation
+	return typ is Name && typ.id == 'int'
 }
 
 fn annotated_numeric_choice(expr Expr) bool {
@@ -13475,8 +13572,15 @@ fn (mut t VTranspiler) infer_expr_type(expr Expr) string {
 				return 'string'
 			}
 			right_type := t.infer_expr_type(expr.right)
+			if expr.op is Div && (left_type == 'Py2vNumber' || right_type == 'Py2vNumber') {
+				return 'f64'
+			}
 			if expr.op is Sub && (left_type == 'Py2vNumber' || right_type == 'Py2vNumber') {
-				return 'Py2vNumber'
+				return if left_type in ['float', 'f64'] || right_type in ['float', 'f64'] {
+					'f64'
+				} else {
+					'Py2vNumber'
+				}
 			}
 			if right_type == 'string' {
 				return 'string'
@@ -13506,6 +13610,7 @@ fn (mut t VTranspiler) infer_expr_type(expr Expr) string {
 		}
 		Call {
 			if expr.func is Name {
+				if t.recursive_int_results[expr.func.id] { return 'int' }
 				if t.numeric_array_results[expr.func.id] { return '[]Py2vNumber' }
 				if t.numeric_scalar_results[expr.func.id] { return 'Py2vNumber' }
 				if expr.func.id == 'abs' && expr.args.len == 1 && t.infer_expr_type(expr.args[0]) == 'Py2vNumber' {

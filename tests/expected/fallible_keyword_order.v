@@ -77,11 +77,6 @@ fn score_py(values []int) !int {
 	return weighted_py(-2, start, 3)!
 }
 
-fn py2v_entry1() ! {
-	println(score_py([10])!)
-	println(weighted_py(3, 2, 1)!)
-}
-
 @[noreturn]
 fn py2v_integer_overflow1(site string, operation string) {
 	flush_stdout()
@@ -97,6 +92,11 @@ fn py2v_integer_mul1(a int, b int, site string, operation string) int {
 		py2v_integer_overflow1(site, operation)
 	}
 	return a * b
+}
+
+fn py2v_entry1() ! {
+	println(score_py([10])!)
+	println(weighted_py(3, 2, 1)!)
 }
 
 fn main() {

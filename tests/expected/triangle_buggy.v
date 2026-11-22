@@ -73,15 +73,6 @@ fn classify_triangle_py(a int, b int, c int) !TriangleType {
 	}
 }
 
-fn py2v_entry1() ! {
-	a := pyrt.untranslated_import('py2many.smt.default_value')!
-	b := pyrt.untranslated_import('py2many.smt.default_value')!
-	c := pyrt.untranslated_import('py2many.smt.default_value')!
-	assert !(classify_triangle_correct(a, b, c) == classify_triangle_py(a, b, c)!)
-	pyrt.untranslated_import('py2many.smt.check_sat')!
-	pyrt.untranslated_import('py2many.smt.get_model')!
-}
-
 @[noreturn]
 fn py2v_integer_overflow1(site string, operation string) {
 	flush_stdout()
@@ -97,6 +88,15 @@ fn py2v_integer_mul1(a int, b int, site string, operation string) int {
 		py2v_integer_overflow1(site, operation)
 	}
 	return a * b
+}
+
+fn py2v_entry1() ! {
+	a := pyrt.untranslated_import('py2many.smt.default_value')!
+	b := pyrt.untranslated_import('py2many.smt.default_value')!
+	c := pyrt.untranslated_import('py2many.smt.default_value')!
+	assert !(classify_triangle_correct(a, b, c) == classify_triangle_py(a, b, c)!)
+	pyrt.untranslated_import('py2many.smt.check_sat')!
+	pyrt.untranslated_import('py2many.smt.get_model')!
 }
 
 fn main() {
