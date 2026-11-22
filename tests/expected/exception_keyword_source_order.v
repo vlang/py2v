@@ -3,6 +3,10 @@ module main
 pub struct Stub {
 }
 
+fn (self Stub) marker() int {
+	return 1
+}
+
 type Py2vErrorArg = bool | i64 | string
 
 fn (arg Py2vErrorArg) str() string {
@@ -82,6 +86,9 @@ fn effect(label string, value int) int {
 
 fn py2v_entry1() ! {
 	stub := Stub{}
+	if stub.marker() != 1 {
+		println('stub marker failed')
+	}
 	mut py2v_err_1 := ?IError(none)
 	py2v_try_1: for {
 		println(evaluate_py(effect('A', 1), effect('B', 2)) or {

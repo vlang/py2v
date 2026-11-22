@@ -1,8 +1,11 @@
 class Stub:
-    pass
+    def marker(self) -> int:
+        return 1
 
 
 stub = Stub()
+if stub.marker() != 1:
+    print("stub marker failed")
 
 
 def evaluate(a: int, b: int = 7) -> int:
