@@ -8065,9 +8065,9 @@ fn (t &VTranspiler) bind_source_order_call(node Call) ?Call {
 
 // guarded_call turns the text of a call that ends the program on an error into one that
 // hands the error to the handlers of `try` number `n` and leaves the try body.
-fn guarded_call(code string, n int, local_method bool) string {
+fn (t &VTranspiler) guarded_call(code string, n int, local_method bool) string {
 	leave := ' or {\n\tpy2v_err_${n} = err\n\tbreak py2v_try_${n}\n}'
-	passed := propagated_call(code, local_method)
+	passed := t.propagated_call(code, local_method)
 	if passed.ends_with('!') && passed != code {
 		return passed[..passed.len - 1] + leave
 	}
@@ -8078,7 +8078,7 @@ fn guarded_call(code string, n int, local_method bool) string {
 // that passes the error on: `f(x) or { pyrt.fail(err) }` becomes `f(x)!`, and a call of a
 // function of this file `g(x)` becomes `g_py(x)!` (the frontend marks only calls of
 // functions it made fallible). Any other text is returned as it is.
-fn propagated_call(code string, local_method bool) string {
+fn (t &VTranspiler) propagated_call(code string, local_method bool) string {
 	suffix := ' or { pyrt.fail(err) }'
 	if code.starts_with('(') && code.ends_with(suffix + ')') {
 		return code[1..code.len - suffix.len - 1] + '!'
@@ -8088,7 +8088,8 @@ fn propagated_call(code string, local_method bool) string {
 	}
 	open := code.index('(') or { return code }
 	mut name := code[..open]
-	if name.len == 0 || !code.ends_with(')') || name.contains_any(' \n{}[]=')
+	if name in t.unsupported_sites || name.len == 0 || !code.ends_with(')')
+		|| name.contains_any(' \n{}[]=')
 		|| (!local_method && name.contains('.')) {
 		return code
 	}
@@ -8249,8 +8250,8 @@ fn (mut t VTranspiler) visit_call_at(original Call, permit WideSink, permit_type
 	if original.api == '__py2v__.checked_text_index' && original.args.len == 2 {
 		value := t.visit_expr(original.args[0])
 		code := t.emit_string_index(value, original.args[1], original.guard > 0 || original.propagate)
-		if original.guard > 0 { return guarded_call(code, original.guard, false) }
-		return if original.propagate { propagated_call(code, false) } else { code }
+		if original.guard > 0 { return t.guarded_call(code, original.guard, false) }
+		return if original.propagate { t.propagated_call(code, false) } else { code }
 	}
 	if original.api == '__py2v__.format_radix' && original.args.len == 2
 		&& original.args[1] is Constant {
@@ -8292,7 +8293,7 @@ fn (mut t VTranspiler) visit_call_at(original Call, permit WideSink, permit_type
 			...original
 			guard: 0
 		}, permit, permit_type))
-		guarded := guarded_call(code, original.guard, local_method)
+		guarded := t.guarded_call(code, original.guard, local_method)
 		return if optional { '(${guarded}).opt()' } else { guarded }
 	}
 	if original.propagate {
@@ -8301,9 +8302,9 @@ fn (mut t VTranspiler) visit_call_at(original Call, permit WideSink, permit_type
 			...original
 			propagate: false
 		}, permit, permit_type))
-		passed := propagated_call(code, local_method)
+		passed := t.propagated_call(code, local_method)
 		if t.active_error_guard > 0 {
-			guarded := guarded_call(code, t.active_error_guard, local_method)
+			guarded := t.guarded_call(code, t.active_error_guard, local_method)
 			return if optional { '(${guarded}).opt()' } else { guarded }
 		}
 		if t.in_entry && passed != code {
