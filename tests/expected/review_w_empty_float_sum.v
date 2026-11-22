@@ -4,7 +4,7 @@ import strconv
 
 fn main_func() {
 	empty := []f64{}
-	println(py2v_float_text1(0))
+	println(0)
 	println(py2v_float_text1(2.0))
 }
 

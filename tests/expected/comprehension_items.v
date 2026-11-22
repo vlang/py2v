@@ -1,6 +1,5 @@
 module main
 
-import arrays
 import math
 
 fn show(small map[string]int, big map[string]int, rank int) {
@@ -108,11 +107,10 @@ fn py2v_integer_inferred_sum1[T](items []T, start int, site string) T {
 			py2v_integer_overflow1(site, 'integer narrowing')
 		}
 		return T(value)
+	} $else $if T is $float {
+		$compile_error('py2v_unsupported_unproven_float_sum: Python element types are not proven')
 	} $else {
-		$if T is $float {
-			if start != 0 { return arrays.fold(items, T(start), |acc, item| acc + item) }
-		}
-		return arrays.sum(items) or { 0 }
+		$compile_error('py2v_unsupported_integer_sum: expected native integer elements')
 	}
 }
 

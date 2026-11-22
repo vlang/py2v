@@ -51,11 +51,12 @@ mut:
 	func_param_types            map[string][]string // module function -> the V types of its parameters
 	var_types                   map[string]string
 	// Exact numeric element provenance; []f64 by itself does not prove Python floats.
-	sum_list_kinds      map[string]string
-	sum_float_results   map[string]bool
-	sum_parameter_kinds map[string][]string
-	sum_array_binding   string
-	sum_array_results   map[string]bool
+	sum_list_kinds            map[string]string
+	sum_float_results         map[string]bool
+	sum_parameter_kinds       map[string][]string
+	sum_array_binding         string
+	sum_array_results         map[string]bool
+	sum_uniform_array_results map[string]bool
 	// State for the if-condition lowering, saved separately for each scope.
 	condition_walrus_vars    map[string]bool
 	condition_walrus_types   map[string]string
@@ -454,6 +455,7 @@ pub fn (mut t VTranspiler) visit_module(node Module) string {
 	mut hoisted_body := t.hoist_module_fns(node.body, mut nested_fndefs)
 	t.plan_float_sum_sources(hoisted_body, bindings, calls)
 	t.sum_array_results = map[string]bool{}
+	t.sum_uniform_array_results = map[string]bool{}
 	t.integer_return_inputs = map[string][]int{}
 	find_growth_calls(hoisted_body, false, mut t.integer_return_inputs)
 	propagate_growth_calls(hoisted_body, mut t.integer_return_inputs)
@@ -880,7 +882,6 @@ fn (mut t VTranspiler) require_integer_helper(kind string) string {
 	}
 	if kind == 'inferred_sum' {
 		t.require_integer_helper('sum')
-		t.add_using('arrays')
 		t.add_using('math')
 	}
 	if kind == 'inferred_power' {
@@ -953,6 +954,24 @@ fn (mut t VTranspiler) integer_helper_declaration(kind string, name string) stri
 				'\tif a is int && b is int { return Py2vNumber(a - b) }\n' +
 				'\treturn Py2vNumber(a.as_float() - b.as_float())\n}'
 		}
+		'numeric_add', 'numeric_multiply' {
+			op := if kind == 'numeric_add' { '+' } else { '*' }
+			product := t.runtime_helper_name('integer_mul')
+			integer := if kind == 'numeric_add' {
+				'a + b'
+			} else {
+				"${product}(a, b, site, 'multiplication')"
+			}
+			location := if kind == 'numeric_add' { '' } else { ', site string' }
+			return 'fn ${name}(a Py2vNumber, b Py2vNumber${location}) Py2vNumber {\n' +
+				'\tif a is int && b is int { return Py2vNumber(${integer}) }\n' +
+				'\treturn Py2vNumber(a.as_float() ${op} b.as_float())\n}'
+		}
+		'numeric_round_sig' {
+			return 'fn ${name}(value Py2vNumber, digits int) Py2vNumber {\n' +
+				'\tif value is int { return value }\n' +
+				'\treturn Py2vNumber(math.round_sig(value as f64, digits))\n}'
+		}
 		'numeric_type_name' {
 			return 'fn ${name}(value Py2vNumber) string {\n' +
 				"\treturn match value {\n\t\tf64 { 'float' }\n\t\tint { 'int' }\n\t}\n}"
@@ -988,6 +1007,13 @@ fn (mut t VTranspiler) integer_helper_declaration(kind string, name string) stri
 		'numeric_compare_from_float' {
 			compare := t.runtime_helper_name('numeric_compare_float')
 			return 'fn ${name}(left f64, right Py2vNumber) int {\n\treturn ${compare}(right, left)\n}'
+		}
+		'numeric_compare_int' {
+			compare := t.runtime_helper_name('numeric_compare_float')
+			return 'fn ${name}(value Py2vNumber, other int) int {\n' +
+				'\tif value is int { return int(value > other) - int(value < other) }\n' +
+				'\tresult := ${compare}(Py2vNumber(other), value as f64)\n' +
+				'\treturn if result == 2 { 2 } else { -result }\n}'
 		}
 		'integer_overflow' {
 			return '@[noreturn]\nfn ${name}(site string, operation string) {' + r"
@@ -1091,10 +1117,9 @@ fn (mut t VTranspiler) integer_helper_declaration(kind string, name string) stri
 				'\t\tvalue := ${sum}(items, start, site)\n' +
 				'\t\tif value < int(math.minof[T]()) || value > int(math.maxof[T]()) {\n' +
 				"\t\t\t${failure}(site, 'integer narrowing')\n\t\t}\n" +
-				'\t\treturn T(value)\n\t} \$else {\n' +
-				'\t\t\$if T is \$float {\n' +
-				'\t\t\tif start != 0 { return arrays.fold(items, T(start), |acc, item| acc + item) }\n' +
-				'\t\t}\n\t\treturn arrays.sum(items) or { 0 }\n\t}\n}'
+				'\t\treturn T(value)\n\t} \$else \$if T is \$float {\n' +
+				"\t\t\$compile_error('py2v_unsupported_unproven_float_sum: Python element types are not proven')\n" +
+				"\t} \$else { \$compile_error('py2v_unsupported_integer_sum: expected native integer elements') }\n}"
 		}
 		'integer_factorial' {
 			return '@[inline]\nfn ${name}(value int, site string) int {\n' +
@@ -1635,6 +1660,12 @@ fn (mut t VTranspiler) runtime_helper_declaration(kind string) string {
 			'fn ${name}(values []f64, start int) Py2vNumber {\n' +
 				'\tif values.len == 0 { return Py2vNumber(start) }\n' +
 				'\treturn Py2vNumber(${sum}(values, f64(start), true))\n}'
+		}
+		'float_sum_uniform_tagged' {
+			sum := t.runtime_helper_name('float_sum')
+			'fn ${name}(values []Py2vNumber) Py2vNumber {\n' +
+				'\tif values.len == 0 || values[0] is int { return Py2vNumber(0) }\n' +
+				'\treturn Py2vNumber(${sum}(values.map(it as f64), 0.0, true))\n}'
 		}
 		'typed_list_index' {
 			'fn ${name}[T](items []T, needle T) !int {\n' +
@@ -2388,9 +2419,27 @@ pub fn (mut t VTranspiler) visit_body_stmts(stmts []Stmt, level int) string {
 }
 
 fn (mut t VTranspiler) note_sum_source(name string, value Expr) {
-	if value is List || value is Tuple || value is ListComp || value is GeneratorExp {
+	if value is GeneratorExp || python_numeric_arg_list_kind(t, value) == 'one_shot_generator' {
+		t.sum_list_kinds[name] = 'one_shot_generator'
+		return
+	}
+	if value is List || value is Tuple || value is ListComp {
 		t.sum_list_kinds[name] = python_numeric_arg_list_kind(t, value)
 		return
+	}
+	if value is BinOp && value.op is Mult {
+		kind := python_numeric_arg_list_kind(t, value)
+		if kind in ['float', 'maybe_float', 'empty'] {
+			t.sum_list_kinds[name] = kind
+			return
+		}
+	}
+	if value is Call {
+		kind := python_numeric_arg_list_kind(t, value)
+		if kind in ['uniform_sum_array', 'float', 'maybe_float', 'int'] {
+			t.sum_list_kinds[name] = kind
+			return
+		}
 	}
 	kind := python_number_kind(t, value, t.sum_list_kinds)
 	if kind in ['float', 'int'] {
@@ -3343,6 +3392,9 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 		if typename == '' && arg.v_annotation != '' {
 			typename = t.map_type(arg.v_annotation)
 		}
+		if typename == '[]f64' && kind == 'int' {
+			typename = '[]int'
+		}
 		if typename == '[]f64' && t.numeric_array_results.len > 0 && !node.is_class_method {
 			typename = '[]Py2vNumber'
 		}
@@ -3554,6 +3606,7 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 					if t.typename_from_annotation(*declared) == '[]f64' {
 						t.sum_array_binding = array_binding
 						t.sum_array_results[node.name] = true
+						t.sum_uniform_array_results[node.name] = t.sum_result_array_is_uniform(node.body, array_binding)
 					}
 				}
 			}
@@ -8441,11 +8494,16 @@ pub fn (mut t VTranspiler) visit_binop(node BinOp) string {
 				}
 				return '${paren_left(lhs, prec)} ${op} ${paren_right(rhs, prec)}'
 			}
-			if node.op is Sub {
+			if node.op is Sub || node.op is Add || node.op is Mult {
 				lhs := t.numeric_choice_value(*node.left, left)
 				rhs := t.numeric_choice_value(*node.right, right)
 				t.runtime_helper('numeric_as_float')
-				return '${t.runtime_helper('numeric_subtract')}(${lhs}, ${rhs})'
+				if node.op is Mult {
+					t.require_integer_helper('mul')
+					return '${t.runtime_helper('numeric_multiply')}(${lhs}, ${rhs}, ${t.integer_site(node.loc)})'
+				}
+				helper := if node.op is Add { 'numeric_add' } else { 'numeric_subtract' }
+				return '${t.runtime_helper(helper)}(${lhs}, ${rhs})'
 			}
 		}
 	}
@@ -8573,6 +8631,9 @@ pub fn (mut t VTranspiler) visit_binop(node BinOp) string {
 		left_ann := get_expr_annotation(node.left)
 		right_ann := get_expr_annotation(node.right)
 		if right_ann == 'int' && (left_ann == 'string' || left_ann.starts_with('[]')) {
+			if left_ann != 'string' {
+				return t.list_repetition(*node.left, *node.right, left, right)
+			}
 			return '${as_receiver(left)}.repeat(${right})'
 		}
 		// Also check by inferring types when v_annotation is not set
@@ -8581,8 +8642,9 @@ pub fn (mut t VTranspiler) visit_binop(node BinOp) string {
 			return '${as_receiver(left)}.repeat(${right})'
 		}
 		// Check if left is a List literal - list repetition
-		if node.left is List {
-			return '${as_receiver(left)}.repeat(${right})'
+		left_expr := *node.left
+		if left_expr is List {
+			return t.list_repetition(left_expr, *node.right, left, right)
 		}
 	}
 
@@ -9144,6 +9206,9 @@ pub fn (mut t VTranspiler) visit_compare(node Compare) string {
 		if lt == 'Py2vNumber' && rt in ['f64', 'float'] {
 			return t.numeric_float_comparison(left, right, op, false)
 		}
+		if lt == 'Py2vNumber' && rt in ['int', 'i64'] && !is_zero_numeric_literal(node.comparators[0]) {
+			return t.numeric_int_comparison(left, right, op)
+		}
 		if lt == 'Py2vNumber' {
 			if n := literal_signed_integer(node.comparators[0]) {
 				if n == 0 { return t.numeric_float_comparison(left, '0.0', op, false) }
@@ -9151,6 +9216,9 @@ pub fn (mut t VTranspiler) visit_compare(node Compare) string {
 		}
 		if rt == 'Py2vNumber' && lt in ['f64', 'float'] {
 			return t.numeric_float_comparison(left, right, reverse_comparison(op), true)
+		}
+		if rt == 'Py2vNumber' && lt in ['int', 'i64'] {
+			return t.numeric_int_comparison(right, left, reverse_comparison(op))
 		}
 	}
 	if op in ['==', '!='] {
@@ -12051,6 +12119,17 @@ fn (mut t VTranspiler) numeric_choice_list(node List) string {
 	return '[${values.join(', ')}]'
 }
 
+fn (mut t VTranspiler) list_repetition(items Expr, count Expr, left string, right string) string {
+	if python_numeric_arg_list_kind(t, items) in ['float', 'maybe_float'] {
+		if literal := literal_signed_integer(count) {
+			return '${as_receiver(left)}.repeat(${if literal < 0 { '0' } else { right }})'
+		}
+		t.add_using('math')
+		return '${as_receiver(left)}.repeat(math.max(0, int(${right})))'
+	}
+	return '${as_receiver(left)}.repeat(${right})'
+}
+
 fn reverse_comparison(op string) string {
 	return match op {
 		'<' { '>' }
@@ -12065,7 +12144,17 @@ fn (mut t VTranspiler) numeric_float_comparison(left string, right string, op st
 	t.add_using('math')
 	compare := t.runtime_helper('numeric_compare_float')
 	helper := if float_first { t.runtime_helper('numeric_compare_from_float') } else { compare }
-	comparison := '${helper}(${left}, ${right})'
+	return numeric_comparison_result('${helper}(${left}, ${right})', op)
+}
+
+fn (mut t VTranspiler) numeric_int_comparison(number string, integer string, op string) string {
+	t.add_using('math')
+	t.runtime_helper('numeric_compare_float')
+	helper := t.runtime_helper('numeric_compare_int')
+	return numeric_comparison_result('${helper}(${number}, int(${integer}))', op)
+}
+
+fn numeric_comparison_result(comparison string, op string) string {
 	return match op {
 		'<' { '${comparison} == -1' }
 		'<=' { '${comparison} <= 0' }
@@ -14203,7 +14292,8 @@ fn (mut t VTranspiler) infer_expr_type(expr Expr) string {
 			if expr.op is Div && (left_type == 'Py2vNumber' || right_type == 'Py2vNumber') {
 				return 'f64'
 			}
-			if expr.op is Sub && (left_type == 'Py2vNumber' || right_type == 'Py2vNumber') {
+			if (expr.op is Sub || expr.op is Add || expr.op is Mult)
+				&& (left_type == 'Py2vNumber' || right_type == 'Py2vNumber') {
 				return if left_type in ['float', 'f64'] || right_type in ['float', 'f64'] {
 					'f64'
 				} else {
@@ -14238,7 +14328,23 @@ fn (mut t VTranspiler) infer_expr_type(expr Expr) string {
 		}
 		Call {
 			if expr.func is Name {
+				if expr.func.id == 'round' && expr.args.len == 2 && expr.keywords.len == 0
+					&& t.infer_expr_type(expr.args[0]) == 'Py2vNumber' {
+					return 'Py2vNumber'
+				}
 				if t.sum_may_return_integer_zero(expr) { return 'Py2vNumber' }
+				if expr.func.id == 'sum' && expr.args.len > 0 && 'sum' !in t.module_functions
+					&& !t.is_bound_in_scope('sum') {
+					kind := python_numeric_arg_list_kind(t, expr.args[0])
+					if kind == 'uniform_sum_array' && expr.args.len == 1 && expr.keywords.len == 0 {
+						return 'Py2vNumber'
+					}
+					if kind == 'empty' {
+						if start := python_sum_start(expr) { return t.infer_expr_type(start) }
+						return 'int'
+					}
+					if kind in ['float', 'maybe_float'] { return 'f64' }
+				}
 				if t.recursive_int_results[expr.func.id] { return 'int' }
 				if t.numeric_array_results[expr.func.id] || t.sum_array_results[expr.func.id] {
 					return '[]Py2vNumber'

@@ -26,7 +26,7 @@ fn seeded_sum(count int) f64 {
 }
 
 fn collected_sums(width int) []Py2vNumber {
-	mut values := [0.0].repeat(width).map(Py2vNumber(it))
+	mut values := [0.0].repeat(math.max(0, int(width))).map(Py2vNumber(it))
 	values << py2v_float_sum_optional1(py2v_range_array1(0, py2v_range_bound1(width), 1).map(f64(it)), 0)
 	return values
 }
@@ -128,7 +128,7 @@ fn py2v_range_array1(start int, stop int, step int) []int {
 
 fn main() {
 	println(py2v_float_text1(py2v_float_sum1([1e+16 + 0.0, halved(1), -1e+16 * converted(1)], 0.0, true)))
-	println(py2v_float_sum1([1, 2, 3].map(halved(it)), 0.0, true))
+	println(py2v_float_text1(py2v_float_sum1([1, 2, 3].map(halved(it)), 0.0, true)))
 	samples := [1.0]
 	println(py2v_float_sum_optional1(samples.filter(it < 0.0), 0))
 	println(filtered([1e+16, 1.0, -1e+16]))

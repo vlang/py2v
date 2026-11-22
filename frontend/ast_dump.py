@@ -2794,6 +2794,8 @@ def _node_to_dict(node: ast.AST, mutable_vars: Set[str],
 
     if isinstance(node, ast.expr) and getattr(node, "_runtime_annotation", ""):
         result["v_annotation"] = node._runtime_annotation
+    if isinstance(node, ast.Name) and getattr(node, "_bound_generator_sum", False):
+        result["v_annotation"] = "py2v_bound_generator"
     if isinstance(node, ast.Name) and getattr(node, "_native_unsigned_constant", False):
         result["v_annotation"] = "u64"
     if isinstance(node, (ast.Name, ast.Attribute)) and getattr(node, "_class_path", ""):
@@ -3044,6 +3046,171 @@ def _mutating_function_params(tree: ast.Module,
             return found
         found = current
         ScopeTracker.mutating_functions = found
+
+
+def _mark_bound_generator_sums(tree: ast.Module) -> None:
+    nodes = list(ast.walk(tree))
+    bindings: set[int] = set()
+    aliases: list[tuple[int, int]] = []
+    for node in nodes:
+        if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+            continue
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+        for target in targets:
+            dest = getattr(target, "_binding", None)
+            if not isinstance(target, ast.Name) or dest is None:
+                continue
+            if isinstance(node.value, ast.GeneratorExp):
+                bindings.add(dest)
+            elif isinstance(node.value, ast.Name):
+                source = getattr(node.value, "_binding", None)
+                if source is not None:
+                    aliases.append((dest, source))
+    while True:
+        before = len(bindings)
+        bindings.update(dest for dest, source in aliases if source in bindings)
+        if len(bindings) == before:
+            break
+    for node in nodes:
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "sum"
+                and getattr(node.func, "_binding", None) is None and node.args
+                and isinstance(node.args[0], ast.Name)
+                and getattr(node.args[0], "_binding", None) in bindings):
+            node.args[0]._bound_generator_sum = True
+
+
+def _mark_float_index_reads(tree: ast.Module, table: symbols.SymbolTable) -> None:
+    """Prove that local list copies, rebinds, and indexed writes retain Python floats."""
+    if table.scopes[0].has_star_import:
+        return
+    nodes = list(ast.walk(tree))
+    parents = {child: node for node in nodes for child in ast.iter_child_nodes(node)}
+    local = {b.id for b in table.bindings if not b.is_param and table.scopes[b.scope].kind == "function"}
+
+    def float_value(value: ast.AST) -> bool:
+        if isinstance(value, ast.Constant):
+            return type(value.value) is float
+        if isinstance(value, ast.UnaryOp) and isinstance(value.op, (ast.UAdd, ast.USub)):
+            return float_value(value.operand)
+        if isinstance(value, ast.BinOp) and isinstance(value.op, ast.Div):
+            return True
+        return (isinstance(value, ast.Call) and isinstance(value.func, ast.Name)
+                and value.func.id == "float" and getattr(value.func, "_binding", None) is None
+                and len(value.args) <= 1 and not value.keywords)
+
+    def copy_call(value: ast.AST) -> bool:
+        return (isinstance(value, ast.Call) and isinstance(value.func, ast.Attribute)
+                and value.func.attr == "copy" and not value.args and not value.keywords)
+
+    roots: set[int] = set()
+    unsafe: set[int] = set()
+    inputs: dict[int, set[int]] = {}
+    aliases: dict[int, set[int]] = {}
+    readers: list[tuple[int, ast.Subscript]] = []
+    for node in nodes:
+        if not isinstance(node, ast.Name):
+            continue
+        binding = getattr(node, "_binding", None)
+        if binding not in local:
+            continue
+        parent = parents.get(node)
+        if isinstance(node.ctx, ast.Store):
+            if not isinstance(parent, ast.Assign) or parent.targets != [node]:
+                unsafe.add(binding)
+                continue
+            value = parent.value
+            if ((isinstance(value, ast.List) and all(map(float_value, value.elts)))
+                    or (isinstance(value, ast.ListComp) and float_value(value.elt))):
+                roots.add(binding)
+            else:
+                source = value.func.value if copy_call(value) else value
+                origin = getattr(source, "_binding", None)
+                if isinstance(source, ast.Name) and origin in local:
+                    inputs.setdefault(binding, set()).add(origin)
+                    if source is value:
+                        aliases.setdefault(origin, set()).add(binding)
+                else:
+                    unsafe.add(binding)
+            continue
+        if isinstance(parent, ast.Subscript) and parent.value is node and not isinstance(parent.slice, ast.Slice):
+            if isinstance(parent.ctx, ast.Load):
+                readers.append((binding, parent))
+                continue
+            stmt = parents.get(parent)
+            if isinstance(stmt, ast.Assign) and stmt.targets == [parent] and float_value(stmt.value):
+                continue
+        if isinstance(parent, ast.Attribute) and copy_call(parents.get(parent)):
+            continue
+        if isinstance(parent, ast.Assign) and parent.value is node and len(parent.targets) == 1:
+            target = parent.targets[0]
+            if isinstance(target, ast.Name) and getattr(target, "_binding", None) in local:
+                continue
+        if (isinstance(parent, ast.comprehension) and parent.iter is node
+                and isinstance(parents.get(parent), (ast.ListComp, ast.GeneratorExp))):
+            continue
+        unsafe.add(binding)
+
+    proven = roots - unsafe
+    while True:
+        reachable = proven | {target for target, origins in inputs.items() if origins & proven}
+        reachable -= unsafe
+        if reachable == proven:
+            break
+        proven = reachable
+    while True:
+        verified = {bid for bid in proven if inputs.get(bid, set()) <= proven
+                    and aliases.get(bid, set()) <= proven}
+        if verified == proven:
+            break
+        proven = verified
+    for binding, read in readers:
+        if binding in proven:
+            read._runtime_annotation = "py2v_float_element"
+
+
+def _fold_sum_after_scalar_setter(tree: ast.Module, table: symbols.SymbolTable) -> None:
+    """Use a constant global write at an immediately following literal sum."""
+    if table.scopes[0].has_star_import:
+        return
+    setters: dict[int, tuple[int, int]] = {}
+    for stmt in tree.body:
+        if not isinstance(stmt, ast.FunctionDef) or stmt.decorator_list or len(stmt.body) != 2:
+            continue
+        args = stmt.args
+        if args.posonlyargs or args.args or args.kwonlyargs or args.vararg or args.kwarg:
+            continue
+        declare, write = stmt.body
+        if (not isinstance(declare, ast.Global) or not isinstance(write, ast.Assign)
+                or len(write.targets) != 1 or not isinstance(write.targets[0], ast.Name)
+                or write.targets[0].id not in declare.names or not isinstance(write.value, ast.Constant)
+                or type(write.value.value) is not int):
+            continue
+        fn = table.binding(0, stmt.name)
+        target = getattr(write.targets[0], "_binding", None)
+        if fn is not None and len(fn.sites) == 1 and target is not None:
+            setters[fn.id] = (target, write.value.value)
+
+    for prior, stmt in zip(tree.body, tree.body[1:]):
+        if not (isinstance(prior, ast.Expr) and isinstance(prior.value, ast.Call)
+                and isinstance(prior.value.func, ast.Name) and not prior.value.args
+                and not prior.value.keywords):
+            continue
+        setter = setters.get(getattr(prior.value.func, "_binding", None))
+        if setter is None or not isinstance(stmt, ast.Expr) or not isinstance(stmt.value, ast.Call):
+            continue
+        call = stmt.value
+        if (not isinstance(call.func, ast.Name) or call.func.id != "print" or call.keywords
+                or getattr(call.func, "_binding", None) is not None or len(call.args) != 1):
+            continue
+        total = call.args[0]
+        if (not isinstance(total, ast.Call) or not isinstance(total.func, ast.Name)
+                or total.func.id != "sum" or getattr(total.func, "_binding", None) is not None
+                or len(total.args) != 1 or total.keywords or not isinstance(total.args[0], ast.List)):
+            continue
+        items = total.args[0]
+        if len(items.elts) == 1 and isinstance(items.elts[0], ast.Name):
+            if getattr(items.elts[0], "_binding", None) == setter[0]:
+                items.elts[0] = ast.copy_location(ast.Constant(value=setter[1]), items.elts[0])
 
 
 def _mark_literal_list_semantics(tree: ast.Module) -> None:
@@ -10612,6 +10779,8 @@ def process_file(file_path: str, project: Optional[ProjectFacts] = None) -> str:
     if _encode_local_identifiers(tree, table):
         table = _resolve_bindings(tree)
     if table is not None:
+        if project is None:
+            _fold_sum_after_scalar_setter(tree, table)
         _lower_scalar_aliases(tree, table)
         _lower_unsigned_method_references(tree, table)
         _mark_scheduling_refusals(tree, table, file_path)
@@ -10637,6 +10806,9 @@ def process_file(file_path: str, project: Optional[ProjectFacts] = None) -> str:
     _plan_closures(tree, table, facts)
     _lower_named_dunder_operations(tree, facts)
     _plan_bound_appends(tree, table, facts)
+    _mark_bound_generator_sums(tree)
+    if table is not None:
+        _mark_float_index_reads(tree, table)
     _loop_comprehensions(tree, facts)
     any_lists = _declare_inferred_containers(tree, table, facts)
     any_lists |= _declare_block_locals(tree, table, facts)
