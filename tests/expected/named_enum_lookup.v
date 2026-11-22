@@ -64,16 +64,8 @@ fn lookup_target_py(label string) !Target {
 	return Target.py2v_enum_lookup(label)!
 }
 
-fn lookup_target(label string) Target {
-	return lookup_target_py(label) or { pyrt.fail(err) }
-}
-
 fn lookup_options_py(labels []string) ![]Selection {
 	return labels.map(Selection.py2v_enum_lookup(it)!)
-}
-
-fn lookup_options(labels []string) []Selection {
-	return lookup_options_py(labels) or { pyrt.fail(err) }
 }
 
 fn py2v_string_index1(value string, index i64, index_error ?IError) !string {
@@ -124,10 +116,10 @@ fn py2v_slice_step1[T](values []T, lower ?int, upper ?int, step int) []T {
 	return result
 }
 
-fn main() {
-	target := lookup_target('PY312')
+fn py2v_entry1() ! {
+	target := lookup_target_py('PY312')!
 	println('${target} ${int(target)} ${target.py2v_enum_name()} ${target.pretty()}')
-	for option in lookup_options(['preview', 'stable']) {
+	for option in lookup_options_py(['preview', 'stable'])! {
 		println('${option.py2v_enum_name()} ${int(option)}')
 	}
 	mut py2v_err_1 := ?IError(none)
@@ -145,4 +137,8 @@ fn main() {
 			pyrt.fail(py2v_raised_1)
 		}
 	}
+}
+
+fn main() {
+	py2v_entry1() or { pyrt.fail(err) }
 }

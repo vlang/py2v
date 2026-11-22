@@ -1,15 +1,75 @@
 module main
 
 import strconv
-import pyrt
+
+type Py2vErrorArg = bool | i64 | string
+
+fn (arg Py2vErrorArg) str() string {
+	return match arg {
+		bool {
+			if arg { 'True' } else { 'False' }
+		}
+		i64 { arg.str() }
+		string { arg }
+	}
+}
+
+struct Py2vErrorArgs {
+	values []Py2vErrorArg
+}
+
+fn (args Py2vErrorArgs) str() string {
+	mut parts := []string{cap: args.values.len}
+	for value in args.values {
+		if value is string {
+			quote := if value.contains('\x27') && !value.contains('\x22') { '\x22' } else { '\x27' }
+			escaped := value.replace('\\', '\\\\').replace('\n', '\\n').replace('\r', '\\r').replace('\t', '\\t').replace(quote, '\\' + quote)
+			parts << quote + escaped + quote
+		} else {
+			parts << value.str()
+		}
+	}
+	suffix := if parts.len == 1 { ',)' } else { ')' }
+	return '(' + parts.join(', ') + suffix
+}
+
+struct Py2vErrorData {
+	args     Py2vErrorArgs
+	original ?IError
+	cause    ?IError
+}
+
+fn (data Py2vErrorData) str() string {
+	if data.args.values.len > 1 {
+		return data.args.str()
+	}
+	value := data.args.values[0] or { return '' }
+	return value.str()
+}
+
+struct Py2vErrorValueError {
+	Error
+	data Py2vErrorData
+}
+
+fn (err Py2vErrorValueError) msg() string {
+	return err.data.str()
+}
+
+@[noreturn]
+fn py2v_uncaught_exception1(err IError) {
+	class_name := match err {
+		Py2vErrorValueError { 'ValueError' }
+		else { panic(err) }
+	}
+	message := err.msg()
+	eprintln(if message == '' { class_name } else { class_name + ': ' + message })
+	exit(1)
+}
 
 fn parse_digits_py(values []string, index int, base int) !int {
 	text := values[index]
-	return py2v_int_base1(text, int(base)) or { return pyrt.raise('ValueError', err.msg()) }
-}
-
-fn parse_digits(values []string, index int, base int) int {
-	return parse_digits_py(values, index, base) or { pyrt.fail(err) }
+	return py2v_int_base1(text, int(base)) or { return IError(Py2vErrorValueError{ data: Py2vErrorData{ args: Py2vErrorArgs{ values: [Py2vErrorArg(err.msg())] } } }) }
 }
 
 fn py2v_int_base1(value string, requested_base int) !int {
@@ -90,7 +150,7 @@ fn py2v_range_next1(current int, stop int, step int) int {
 	return current + step
 }
 
-fn main() {
+fn py2v_entry1() ! {
 	values := [' -0x_Ff　', '0o_17', '٠b_١٠١', '00_0', '+1_0', 'Z', '-8000_0000_0000_0000']
 	bases := [0, 8, 0, 0, 2, 36, 16]
 	py2v_range_start1 := int(0)
@@ -102,41 +162,45 @@ fn main() {
 	} else {
 		index > py2v_range_stop2
 	}; index = py2v_range_next1(index, py2v_range_stop2, py2v_range_step3) {
-		println(parse_digits(values, index, bases[index]))
+		println(parse_digits_py(values, index, bases[index])!)
 	}
-	println((py2v_int_base1('0b1', int(16)) or { panic('ValueError: ' + err.msg()) }))
-	println((py2v_int_base1('00', int(10)) or { panic('ValueError: ' + err.msg()) }))
-	println((py2v_int_base1('1', int(int(true) + 1)) or { panic('ValueError: ' + err.msg()) }))
+	println((py2v_int_base1('0b1', int(16)) or { return IError(Py2vErrorValueError{ data: Py2vErrorData{ args: Py2vErrorArgs{ values: [Py2vErrorArg(err.msg())] } } }) }))
+	println((py2v_int_base1('00', int(10)) or { return IError(Py2vErrorValueError{ data: Py2vErrorData{ args: Py2vErrorArgs{ values: [Py2vErrorArg(err.msg())] } } }) }))
+	println((py2v_int_base1('1', int(int(true) + 1)) or { return IError(Py2vErrorValueError{ data: Py2vErrorData{ args: Py2vErrorArgs{ values: [Py2vErrorArg(err.msg())] } } }) }))
 	for invalid in ['01', '', '_0', '0x__f', '0b', '0o9', '0_xa', '10\x00', '3\x1c', '²'] {
 		mut py2v_err_2 := ?IError(none)
 		py2v_try_2: for {
 			println((py2v_int_base1(invalid, int(0)) or {
-				py2v_err_2 = pyrt.raise('ValueError', err.msg())
+				py2v_err_2 = IError(Py2vErrorValueError{ data: Py2vErrorData{ args: Py2vErrorArgs{ values: [Py2vErrorArg(err.msg())] } } })
 				break py2v_try_2
 			}))
 			break
 		}
 		if py2v_raised_2 := py2v_err_2 {
-			if pyrt.caught(py2v_raised_2, 'ValueError') != none {
+			if py2v_raised_2 is Py2vErrorValueError {
 				println('invalid')
 			} else {
-				pyrt.fail(py2v_raised_2)
+				return py2v_raised_2
 			}
 		}
 	}
 	mut py2v_err_1 := ?IError(none)
 	py2v_try_1: for {
 		println((py2v_int_base1('40', int(37)) or {
-			py2v_err_1 = pyrt.raise('ValueError', err.msg())
+			py2v_err_1 = IError(Py2vErrorValueError{ data: Py2vErrorData{ args: Py2vErrorArgs{ values: [Py2vErrorArg(err.msg())] } } })
 			break py2v_try_1
 		}))
 		break
 	}
 	if py2v_raised_1 := py2v_err_1 {
-		if pyrt.caught(py2v_raised_1, 'ValueError') != none {
+		if py2v_raised_1 is Py2vErrorValueError {
 			println('invalid base')
 		} else {
-			pyrt.fail(py2v_raised_1)
+			return py2v_raised_1
 		}
 	}
+}
+
+fn main() {
+	py2v_entry1() or { py2v_uncaught_exception1(err) }
 }

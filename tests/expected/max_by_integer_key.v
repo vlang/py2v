@@ -43,16 +43,8 @@ fn winner_py(items []Entry) !Entry {
 	return py2v_max_integer_key1[Entry](items, fn (entry Entry) int { return entry.score })!
 }
 
-fn winner(items []Entry) Entry {
-	return winner_py(items) or { pyrt.fail(err) }
-}
-
 fn highest_py(ranks []Rank) !Rank {
 	return py2v_max_integer_key1[Rank](ranks, fn (rank Rank) int { return int(rank) })!
-}
-
-fn highest(ranks []Rank) Rank {
-	return highest_py(ranks) or { pyrt.fail(err) }
 }
 
 fn py2v_max_integer_key1[T](items []T, key fn (T) int) !T {
@@ -80,8 +72,8 @@ fn py2v_distinct1[T](a []T) []T {
 	return b
 }
 
-fn main() {
-	println(winner([Entry{
+fn py2v_entry1() ! {
+	println(winner_py([Entry{
 		name:  'low'
 		score: 1
 	}, Entry{
@@ -90,8 +82,8 @@ fn main() {
 	}, Entry{
 		name:  'tied'
 		score: 4
-	}]).name)
-	println(highest(py2v_distinct1([Rank.high, Rank.low])).points())
+	}])!.name)
+	println(highest_py(py2v_distinct1([Rank.high, Rank.low]))!.points())
 	mut py2v_err_1 := ?IError(none)
 	py2v_try_1: for {
 		winner_py([]) or {
@@ -107,4 +99,8 @@ fn main() {
 			pyrt.fail(py2v_raised_1)
 		}
 	}
+}
+
+fn main() {
+	py2v_entry1() or { pyrt.fail(err) }
 }

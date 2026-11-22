@@ -21,19 +21,11 @@ fn write_py(holder Any) ! {
 	pyrt.setattr(pyrt.box(receiver(holder)), 'number', pyrt.box(py2v_attr_value_14))!
 }
 
-fn write(holder Any) {
-	write_py(holder) or { pyrt.fail(err) }
-}
-
 fn seed_py(holder Any) ! {
 	py2v_attr_value_15 := pyrt.box(map[string]Any{
 		'old': pyrt.box(1)
 	})
 	pyrt.setattr(pyrt.box(holder), 'default_map', pyrt.box(py2v_attr_value_15))!
-}
-
-fn seed(holder Any) {
-	seed_py(holder) or { pyrt.fail(err) }
 }
 
 fn merge_py(holder Any, config map[string]Any) ! {
@@ -44,10 +36,6 @@ fn merge_py(holder Any, config map[string]Any) ! {
 	pyrt.call_method(pyrt.box(result), 'update', [pyrt.box(config)])!
 	py2v_attr_value_16 := result
 	pyrt.setattr(pyrt.box(holder), 'default_map', pyrt.box(py2v_attr_value_16))!
-}
-
-fn merge(holder Any, config map[string]Any) {
-	merge_py(holder, config) or { pyrt.fail(err) }
 }
 
 fn show_py(holder Any) ! {
@@ -61,14 +49,10 @@ fn show_py(holder Any) ! {
 	println(pyrt.str(pyrt.item_at(pyrt.getattr(pyrt.box(holder), 'default_map')!, pyrt.box('new'))))
 }
 
-fn show(holder Any) {
-	show_py(holder) or { pyrt.fail(err) }
-}
-
-fn main() {
+fn py2v_entry1() ! {
 	parser := argparse.new_parser(prog: 'attrs')
 	args := []string{}
-	show(pyrt.box(parser.parse_args(args) or { pyrt.fail(err) }))
+	show_py(pyrt.box(parser.parse_args(args)!))!
 	mut py2v_err_1 := ?IError(none)
 	py2v_try_1: for {
 		write_py(7) or {
@@ -84,4 +68,8 @@ fn main() {
 			pyrt.fail(py2v_raised_1)
 		}
 	}
+}
+
+fn main() {
+	py2v_entry1() or { pyrt.fail(err) }
 }

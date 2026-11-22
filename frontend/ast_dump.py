@@ -7247,6 +7247,11 @@ def _v_spelling(name: str) -> str:
     return name.strip("_").lower()
 
 
+_RUNTIME_ERROR_HELPERS = ("__py2v__.checked_text_index", "__py2v__.native_list_index",
+                          "__py2v__.enum_lookup", "__py2v__.max_integer_key")
+_VALUE_ERROR_HELPERS = ("__py2v__.int_base", "__py2v__.modular_pow")
+
+
 def _plan_error_propagation(tree: ast.Module, table: Optional[symbols.SymbolTable],
                             standalone: bool, facts: Optional[Any]) -> None:
     """Decide which functions return a V result, which calls pass their error on, and
@@ -7572,8 +7577,9 @@ def _plan_error_propagation(tree: ast.Module, table: Optional[symbols.SymbolTabl
             or (isinstance(node, ast.Attribute) and node.attr == "__cause__")
             or (isinstance(node, ast.Try) and not static_handlers(node))
             or (isinstance(node, ast.Call)
-                and (api.get(getattr(node, "_api", ""))
-                     or api.get("__pyrt__." + getattr(node, "_api", "")) or {}).get("raises"))
+                and (getattr(node, "_api", "") in _RUNTIME_ERROR_HELPERS
+                     or (api.get(getattr(node, "_api", ""))
+                         or api.get("__pyrt__." + getattr(node, "_api", "")) or {}).get("raises")))
             for node in sites)
 
         if native_operations:
@@ -7665,10 +7671,8 @@ def _plan_error_propagation(tree: ast.Module, table: Optional[symbols.SymbolTabl
             # a bare `raise` is planned with the handler it stands in
             return call.exc is not None and raised_class(call) != ""
         api_name = getattr(call, "_api", "")
-        if (api_name.startswith("__py2v__.checked_")
-                or api_name in ("__py2v__.enum_lookup", "__py2v__.max_integer_key",
-                                "__py2v__.native_list_index", "__py2v__.modular_pow",
-                                "__py2v__.int_base")):
+        if (api_name.startswith(("__py2v__.checked_", "__py2v__.native_value_error_"))
+                or api_name in _RUNTIME_ERROR_HELPERS + _VALUE_ERROR_HELPERS):
             return True
         entry = api.get(api_name) or api.get("__pyrt__." + api_name)
         if entry and entry.get("raises"):
@@ -7810,6 +7814,7 @@ def _plan_native_exceptions(tree: ast.Module, table: symbols.SymbolTable,
         return [expr.id, *bases] if bases else None
 
     entry_raises = {id(node) for node in entry if isinstance(node, ast.Raise)}
+    entry_calls = {id(node) for node in entry if isinstance(node, ast.Call)}
     nodes = list(ast.walk(tree))
     args_reads = {id(node) for node in nodes if isinstance(node, ast.Attribute) and node.attr == "args"}
     displays = {id(arg) for node in nodes if isinstance(node, ast.Call)
@@ -7830,13 +7835,19 @@ def _plan_native_exceptions(tree: ast.Module, table: symbols.SymbolTable,
             and (id(node) not in displays or not caught_name(node.value)) for node in nodes):
         return False
     planned: List[Tuple[ast.Raise, str, List[str]]] = []
+    helpers: List[Tuple[ast.Call, str]] = []
     annotations: List[Tuple[ast.expr, str]] = []
     for node in nodes:
         if isinstance(node, ast.Call):
             name = getattr(node, "_api", "")
             runtime = api.get(name) or api.get("__pyrt__." + name)
-            if runtime and runtime.get("raises"):
+            if name in _RUNTIME_ERROR_HELPERS or (runtime and runtime.get("raises")):
                 return False
+            if name in _VALUE_ERROR_HELPERS:
+                if not (getattr(node, "_guard", 0) or getattr(node, "_propagate", False)
+                        or id(node) in entry_calls):
+                    return False
+                helpers.append((node, name.split(".", 1)[1]))
         if isinstance(node, ast.Try):
             for handler in node.handlers:
                 expr = handler.type
@@ -7886,7 +7897,9 @@ def _plan_native_exceptions(tree: ast.Module, table: symbols.SymbolTable,
         node._bases = bases
     for arg, kind in annotations:
         arg._runtime_annotation = kind
-    return bool(planned)
+    for call, helper in helpers:
+        call._api = "__py2v__.native_value_error_" + helper
+    return bool(planned or helpers)
 
 
 @functools.lru_cache(maxsize=None)

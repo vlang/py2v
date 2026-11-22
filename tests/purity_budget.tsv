@@ -39,7 +39,7 @@ dict_local_inferred_writes.v	5
 dict_widen_local.v	5
 dict_widen_reassign.v	4
 divmod_value.v	10
-dynamic_attribute_store.v	22
+dynamic_attribute_store.v	19
 dynamic_attributes.v	23
 dynamic_boxed_bytes.v	6
 dynamic_comprehensions.v	11
@@ -75,7 +75,6 @@ env_optional.v	6
 equations.v	8
 exception_lowering.v	1
 external_dynamic.v	4
-fallible_keyword_order.v	3
 frozenset_annotations.v	10
 functools_decorators.v	1
 generator_value_context.v	1
@@ -84,7 +83,6 @@ getattr_computed_name.v	1
 hello-wuffs.v	2
 independent_dunder_chain.v	1
 infer_ops.v	1
-int_base.v	8
 isinstance_types.v	1
 itertools_basic.v	1
 join_string_iterable.v	14
@@ -131,14 +129,12 @@ map_items_tuple_bound.v	5
 map_items_tuple_pairs.v	4
 map_repr_strings.v	1
 match_basic.v	1
-max_by_integer_key.v	6
+max_by_integer_key.v	5
 mcp_types_runtime.v	7
 mixed_display_dynamic.v	14
-modular_pow.v	7
 modulo_dynamic_target.v	13
-modulo_text.v	2
-named_enum_lookup.v	6
-native_list_index.v	7
+named_enum_lookup.v	5
+native_list_index.v	6
 native_map_types.v	11
 nested_untyped_dict.v	19
 optional_block_local.v	3

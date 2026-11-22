@@ -1611,7 +1611,7 @@ fn (mut t VTranspiler) visit_expr_at(expr Expr, sink WideSink, typ string) strin
 		UnaryOp { return t.visit_unaryop(expr) }
 		BoolOp { return t.visit_boolop(expr) }
 		Compare { return t.visit_compare(expr) }
-		Call { return t.visit_call(expr) }
+		Call { return t.visit_call_at(expr, sink, typ) }
 		Attribute { return t.visit_attribute(expr) }
 		Subscript { return t.visit_subscript(expr) }
 		Slice { return t.visit_slice(expr) }
@@ -5485,7 +5485,7 @@ fn (mut t VTranspiler) plain_system_exit(node Raise) ?string {
 				}
 				int { 'exit(${arg.value as int})' }
 				i64 { 'exit(int(${arg.value as i64}))' }
-				string { 'eprintln(${t.visit_constant(arg)})\nexit(1)' }
+				string { 'eprintln(${t.visit_expr(arg)})\nexit(1)' }
 				else { none }
 			}
 		}
@@ -7765,7 +7765,7 @@ fn (mut t VTranspiler) visit_compare_chain(node Compare) string {
 	mut parts := []string{cap: node.ops.len}
 	for i, op in node.ops {
 		left := if i == 0 { *node.left } else { node.comparators[i - 1] }
-		parts << t.visit_compare(Compare{
+		parts << t.visit_expr(Compare{
 			left:        &left
 			ops:         [op]
 			comparators: [node.comparators[i]]
@@ -7865,19 +7865,21 @@ struct BindingCall {
 	in_function bool
 }
 
-// Collect bindings and calls before emission, keeping definition-time expressions at module scope.
 fn count_call_bindings[T](node T, mut names map[string]int, mut calls []BindingCall, in_function bool) {
 	mut exceptions := map[string][]string{}
 	collect_module_info(node, mut names, mut calls, mut exceptions, in_function)
 }
 
+// Collect bindings, calls, and errors, keeping definition-time expressions at module scope.
 fn collect_module_info[T](node T, mut names map[string]int, mut calls []BindingCall, mut exceptions map[string][]string, in_function bool) {
 	$if T is Call {
 		calls << BindingCall{node, in_function}
 		if node.api == '__py2v__.checked_list_index' {
 			exceptions['IndexError'] = ['LookupError', 'Exception', 'BaseException']
-		} else if node.api.starts_with('__py2v__.checked_') {
+		} else if node.api.starts_with('__py2v__.checked_') && node.api != '__py2v__.checked_text_index' {
 			exceptions['ZeroDivisionError'] = ['ArithmeticError', 'Exception', 'BaseException']
+		} else if node.api.starts_with('__py2v__.native_value_error_') {
+			exceptions['ValueError'] = ['Exception', 'BaseException']
 		}
 	}
 	$if T is Raise {
@@ -7919,14 +7921,15 @@ fn collect_module_info[T](node T, mut names map[string]int, mut calls []BindingC
 		}
 	} $else $if T is Raise {
 		if exc := node.exc {
-			if exc is Call && exc.func is Name && node.mode in ['result', 'guard'] {
+			if exc is Call && exc.func is Name
+				&& node.mode in ['result', 'guard', 'native_result', 'native_guard'] {
 				// The raise emitter constructs an error directly, but still visits its arguments.
-				count_call_bindings[[]Expr](exc.args, mut names, mut calls, in_function)
+				collect_module_info[[]Expr](exc.args, mut names, mut calls, mut exceptions, in_function)
 			} else {
-				count_call_bindings[&Expr](exc, mut names, mut calls, in_function)
+				collect_module_info[&Expr](exc, mut names, mut calls, mut exceptions, in_function)
 			}
 		}
-		count_call_bindings[?&Expr](node.cause, mut names, mut calls, in_function)
+		collect_module_info[?&Expr](node.cause, mut names, mut calls, mut exceptions, in_function)
 	} $else $if T is $struct {
 		$for field in T.fields {
 			mut body := in_function
@@ -8099,6 +8102,10 @@ fn (mut t VTranspiler) visit_checked_operation(node Call) string {
 
 // visit_call binds eligible module functions before rendering their arguments.
 pub fn (mut t VTranspiler) visit_call(original Call) string {
+	return t.visit_expr(original)
+}
+
+fn (mut t VTranspiler) visit_call_at(original Call, permit WideSink, permit_type string) string {
 	// A literal Python format string must not silently lose the width,
 	// precision, conversion, or alignment of wide-derived decimal text.
 	if original.func is Attribute && original.func.attr == 'format'
@@ -8206,7 +8213,8 @@ pub fn (mut t VTranspiler) visit_call(original Call) string {
 		specifier := original.args[1] as Constant
 		return t.visit_radix_format(original.args[0], specifier.value as string)
 	}
-	if original.api == '__py2v__.modular_pow' && original.args.len == 3 {
+	if original.api in ['__py2v__.modular_pow', '__py2v__.native_value_error_modular_pow']
+		&& original.args.len == 3 {
 		if !original.args.all(t.infer_expr_type(it) in ['int', 'i64', 'bool']) {
 			return t.unsupported_site('modular_pow', 'three-argument pow needs native signed integers', '')
 		}
@@ -8215,7 +8223,8 @@ pub fn (mut t VTranspiler) visit_call(original Call) string {
 		args := original.args.map('int(${t.visit_expr(it)})')
 		return t.checked_builtin_value_error('${helper}(${args.join(', ')})', original)
 	}
-	if original.api == '__py2v__.int_base' && original.args.len == 2 {
+	if original.api in ['__py2v__.int_base', '__py2v__.native_value_error_int_base']
+		&& original.args.len == 2 {
 		if t.infer_expr_type(original.args[0]) != 'string'
 			|| t.infer_expr_type(original.args[1]) !in ['int', 'i64', 'bool'] {
 			return t.unsupported_site('int_base', 'int with a base needs a string and a native signed integer', '')
@@ -8231,19 +8240,19 @@ pub fn (mut t VTranspiler) visit_call(original Call) string {
 	local_method := original.api == '' && original.func is Attribute
 	if original.guard > 0 {
 		// a call that can fail, in the body of a `try` whose handlers take the error
-		code, optional := without_opt(t.visit_call(Call{
+		code, optional := without_opt(t.visit_expr_at(Call{
 			...original
 			guard: 0
-		}))
+		}, permit, permit_type))
 		guarded := guarded_call(code, original.guard, local_method)
 		return if optional { '(${guarded}).opt()' } else { guarded }
 	}
 	if original.propagate {
 		// a call that can fail, in straight-line code of a function returning a result
-		code, optional := without_opt(t.visit_call(Call{
+		code, optional := without_opt(t.visit_expr_at(Call{
 			...original
 			propagate: false
-		}))
+		}, permit, permit_type))
 		passed := propagated_call(code, local_method)
 		if t.active_error_guard > 0 {
 			guarded := guarded_call(code, t.active_error_guard, local_method)
@@ -8296,7 +8305,7 @@ pub fn (mut t VTranspiler) visit_call(original Call) string {
 		return t.ctor_struct_literal(name, name, original, ctor_args)
 	}
 	if completed := t.complete_imported_call(original) {
-		return t.visit_call(completed)
+		return t.visit_expr_at(completed, permit, permit_type)
 	}
 	node := t.bind_module_call(original) or { original }
 	mut fname := t.visit_expr(node.func)
@@ -9430,6 +9439,13 @@ pub fn (mut t VTranspiler) visit_call(original Call) string {
 }
 
 fn (mut t VTranspiler) checked_builtin_value_error(code string, call Call) string {
+	if call.api.starts_with('__py2v__.native_value_error_') {
+		value := 'IError(Py2vErrorValueError{ data: Py2vErrorData{ args: Py2vErrorArgs{ values: [Py2vErrorArg(err.msg())] } } })'
+		if call.guard > 0 {
+			return '(${code} or {\n\tpy2v_err_${call.guard} = ${value}\n\tbreak py2v_try_${call.guard}\n})'
+		}
+		return '(${code} or { ${t.escape_exception(value)} })'
+	}
 	if call.guard > 0 {
 		t.add_using('pyrt')
 		n := call.guard
@@ -10243,7 +10259,7 @@ pub fn (mut t VTranspiler) visit_ifexp(node IfExp) string {
 // json2 can decode 0.0 as an integer; an int first branch would truncate 2.5.
 fn (mut t VTranspiler) ifexp_value(expr Expr) string {
 	if expr is Constant && (expr.v_annotation or { '' }) == 'float' {
-		code := t.visit_constant(expr)
+		code := t.visit_expr(expr)
 		return if code.contains('.') || code.contains('e') || code.contains('E') {
 			code
 		} else {
