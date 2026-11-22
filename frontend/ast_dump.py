@@ -6971,8 +6971,30 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
             if (isinstance(node.func, ast.Name)
                     and getattr(node.func, "_binding", None) is None and not has_star_import
                     and not any(isinstance(arg, ast.Starred) for arg in node.args)):
-                if node.func.id == "pow" and len(node.args) == 3 and not node.keywords:
-                    node._api = "__py2v__.modular_pow"
+                if node.func.id == "pow":
+                    if len(node.args) == 3 and not node.keywords:
+                        node._api = "__py2v__.modular_pow"
+                    elif node.keywords and len(node.args) + len(node.keywords) == 3:
+                        parameters = ("base", "exp", "mod")
+                        supplied = dict(zip(parameters, node.args))
+                        for keyword in node.keywords:
+                            if keyword.arg not in parameters or keyword.arg in supplied:
+                                break
+                            supplied[keyword.arg] = keyword.value
+                        if len(supplied) == 3:
+                            source_order = list(parameters[:len(node.args)]) + [
+                                keyword.arg for keyword in node.keywords]
+                            pure = all(isinstance(value, (ast.Constant, ast.Name)) or
+                                       (isinstance(value, ast.UnaryOp)
+                                        and isinstance(value.op, (ast.USub, ast.UAdd))
+                                        and isinstance(value.operand, ast.Constant))
+                                       for value in supplied.values())
+                            if source_order == list(parameters) or pure:
+                                node.args = [supplied[param] for param in parameters]
+                                node.keywords = []
+                                node._api = "__py2v__.modular_pow"
+                            else:
+                                node._api = "__py2v__.unsupported_keyword_evaluation_order"
                 if (node.func.id == "format" and len(node.args) == 2 and not node.keywords
                         and isinstance(node.args[1], ast.Constant)
                         and isinstance(node.args[1].value, str)

@@ -73,6 +73,7 @@ empty_set_uncaught.v	3
 env_mapping.v	1
 env_optional.v	6
 equations.v	8
+exception_int_base_error_text.v	2
 exception_lowering.v	1
 external_dynamic.v	4
 frozenset_annotations.v	10
@@ -83,6 +84,7 @@ getattr_computed_name.v	1
 hello-wuffs.v	2
 independent_dunder_chain.v	1
 infer_ops.v	1
+int_base.v	2
 isinstance_types.v	1
 itertools_basic.v	1
 join_string_iterable.v	14

@@ -29,6 +29,7 @@ mut:
 	func_defaults        map[string][]string
 	func_param_count     map[string]int
 	call_signatures      map[string]FunctionDef
+	module_functions     map[string]bool
 	default_import_names map[string]bool
 	call_before_def      map[string]bool
 	func_return_types    map[string]string
@@ -342,6 +343,8 @@ pub fn (mut t VTranspiler) visit_module(node Module) string {
 		}
 	}
 	t.call_signatures = signatures
+	t.module_functions = map[string]bool{}
+	for name in module_defs.keys() { t.module_functions[name] = true }
 	t.call_before_def = map[string]bool{}
 	mut rejected := false
 	for site in calls {
@@ -992,7 +995,7 @@ fn (mut t VTranspiler) runtime_helper_declaration(kind string) string {
 	}
 	text := normalized.bytestr().trim_space()
 	if text == '' {
-		return error('invalid literal for int()')
+		return error('invalid literal for int() with base ${requested_base}: ' + pyrt.repr(pyrt.box(value)))
 	}
 	negative := text[0] == `-`
 	mut start := if negative || text[0] == `+` { 1 } else { 0 }
@@ -1020,7 +1023,7 @@ fn (mut t VTranspiler) runtime_helper_declaration(kind string) string {
 		panic('py2v_unsupported_int_range: based integer is outside native int')
 	}
 	if status != 0 || (zero_only && magnitude != 0) {
-		return error('invalid literal for int()')
+		return error('invalid literal for int() with base ${requested_base}: ' + pyrt.repr(pyrt.box(value)))
 	}
 	if magnitude == 0 {
 		return 0
@@ -8119,6 +8122,9 @@ fn (mut t VTranspiler) visit_call_at(original Call, permit WideSink, permit_type
 			}
 		}
 	}
+	if original.api == '__py2v__.unsupported_keyword_evaluation_order' {
+		return t.unsupported_site('keyword_argument_order', 'keyword values have unproven evaluation order', '')
+	}
 	if original.api == '__py2v__.unsupported_unicode_surrogate' && original.args.len == 1
 		&& original.args[0] is Constant && (original.args[0] as Constant).value is string {
 		reason := (original.args[0] as Constant).value as string
@@ -8215,6 +8221,9 @@ fn (mut t VTranspiler) visit_call_at(original Call, permit WideSink, permit_type
 	}
 	if original.api in ['__py2v__.modular_pow', '__py2v__.native_value_error_modular_pow']
 		&& original.args.len == 3 {
+		if original.args.any(t.has_u64_bits(it) || t.has_large_integer(it)) {
+			return t.refuse_wide('three-argument pow cannot use unbounded or unsigned operands')
+		}
 		if !original.args.all(t.infer_expr_type(it) in ['int', 'i64', 'bool']) {
 			return t.unsupported_site('modular_pow', 'three-argument pow needs native signed integers', '')
 		}
@@ -8230,6 +8239,7 @@ fn (mut t VTranspiler) visit_call_at(original Call, permit WideSink, permit_type
 			return t.unsupported_site('int_base', 'int with a base needs a string and a native signed integer', '')
 		}
 		t.add_using('strconv')
+		t.add_using('pyrt')
 		helper := t.runtime_helper('int_base')
 		value := t.visit_expr(original.args[0])
 		base := t.visit_expr(original.args[1])
@@ -8307,7 +8317,24 @@ fn (mut t VTranspiler) visit_call_at(original Call, permit WideSink, permit_type
 	if completed := t.complete_imported_call(original) {
 		return t.visit_expr_at(completed, permit, permit_type)
 	}
-	node := t.bind_module_call(original) or { original }
+	bound := t.bind_module_call(original)
+	if original.keywords.len > 0 && original.func is Name {
+		callee := (original.func as Name).id
+		if callee in t.module_functions && bound == none {
+			mut effects := false
+			for keyword in original.keywords {
+				value := keyword.value
+				if value !is Constant && value !is Name
+					&& !(value is UnaryOp && value.op is USub && value.operand is Constant) {
+					effects = true
+				}
+			}
+			if effects {
+				return t.unsupported_site('keyword_argument_order', 'unproven local keyword binding and evaluation order', '')
+			}
+		}
+	}
+	node := bound or { original }
 	mut fname := t.visit_expr(node.func)
 
 	// Check if this function has mut parameters

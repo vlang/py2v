@@ -1,6 +1,7 @@
 module main
 
 import strconv
+import pyrt
 
 type Py2vErrorArg = bool | i64 | string
 
@@ -103,7 +104,7 @@ fn py2v_int_base1(value string, requested_base int) !int {
 	}
 	text := normalized.bytestr().trim_space()
 	if text == '' {
-		return error('invalid literal for int()')
+		return error('invalid literal for int() with base ${requested_base}: ' + pyrt.repr(pyrt.box(value)))
 	}
 	negative := text[0] == `-`
 	mut start := if negative || text[0] == `+` { 1 } else { 0 }
@@ -131,7 +132,7 @@ fn py2v_int_base1(value string, requested_base int) !int {
 		panic('py2v_unsupported_int_range: based integer is outside native int')
 	}
 	if status != 0 || (zero_only && magnitude != 0) {
-		return error('invalid literal for int()')
+		return error('invalid literal for int() with base ${requested_base}: ' + pyrt.repr(pyrt.box(value)))
 	}
 	if magnitude == 0 {
 		return 0
