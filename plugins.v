@@ -569,6 +569,25 @@ fn visit_sum(mut t VTranspiler, node Call, args []string) (string, bool, string)
 			return '${helper}([${after.join(', ')}], f64(${seed}))', true, ''
 		}
 	}
+	items := node.args[0]
+	is_float_array := if items is List {
+		items.elts.len > 0
+			&& items.elts.all(get_expr_annotation(it) in ['float', 'f64']
+				|| t.infer_expr_type(it) == 'f64')
+	} else {
+		t.infer_expr_type(items) == '[]f64'
+	}
+	default_start := node.args.len == 1 && node.keywords.len == 0
+	numeric_start := starts.len == 1 && t.division_operand_type(starts[0], t.infer_expr_type(starts[0])) in [
+		'int',
+		'i64',
+		'f64',
+	]
+	if is_float_array && (default_start || numeric_start) {
+		start := if starts.len == 1 { 'f64(${args[1]})' } else { '0.0' }
+		t.add_using('math')
+		return '${t.runtime_helper('float_sum')}(${args[0]}, ${start})', true, ''
+	}
 	if native_integer_type(elem_type) && starts.len == args.len - 1 {
 		if starts.len == 0 {
 			if !unbounded { return total, true, 'arrays' }
@@ -611,18 +630,10 @@ fn visit_sorted(args []string) (string, bool) {
 // The element and key types `<` orders in V as in Python.
 const sort_scalar_types = ['int', 'i64', 'f64', 'string']!
 
-// sort_less returns the body of the `less(lhs, rhs)` function that orders elements of
-// type `elem` as the `key` and `reverse` keywords of `sorted()` or `list.sort()` ask, and
-// whether a key was given. None when a keyword is not one py2v knows: `reverse` must be a
-// bool constant, and `key` one of `len`, `abs`, `str.lower`, `str.upper`, a function with
-// a known scalar result, or a lambda of its own parameter alone with a scalar result.
-// With `reverse` the operands are swapped, which keeps equal elements in their original
-// order under a stable sort, as Python does.
-fn sort_less(mut t VTranspiler, node Call, elem string) ?(string, bool) {
+// sort_order returns the key expression on `it` and the descending flag for a native sort.
+fn sort_order(mut t VTranspiler, node Call, elem string) ?(string, bool) {
 	mut reverse := false
-	mut lhs := 'lhs'
-	mut rhs := 'rhs'
-	mut has_key := false
+	mut key_code := ''
 	for kw in node.keywords {
 		name := kw.arg or { return none }
 		if name == 'reverse' {
@@ -640,17 +651,15 @@ fn sort_less(mut t VTranspiler, node Call, elem string) ?(string, bool) {
 			if key is Constant && (key as Constant).value is NoneValue {
 				continue
 			}
-			lhs = sort_key_call(mut t, key, elem, 'lhs')?
-			rhs = sort_key_call(mut t, key, elem, 'rhs')?
-			has_key = true
+			key_code = sort_key_call(mut t, key, elem, 'it')?
 		} else {
 			return none
 		}
 	}
-	if !has_key && elem !in sort_scalar_types {
+	if key_code == '' && elem !in sort_scalar_types {
 		return none
 	}
-	return if reverse { '${rhs} < ${lhs}' } else { '${lhs} < ${rhs}' }, has_key
+	return key_code, reverse
 }
 
 // sort_key_call returns the V code of the sort key `key` applied to `operand`, an
@@ -659,7 +668,7 @@ fn sort_key_call(mut t VTranspiler, key Expr, elem string, operand string) ?stri
 	match key {
 		Name {
 			if key.id == 'len' && (elem == 'string' || elem.starts_with('[]')) {
-				return '${operand}.len'
+				return if elem == 'string' { '${operand}.len_utf8()' } else { '${operand}.len' }
 			}
 			if key.id == 'abs' && elem in ['int', 'i64', 'f64'] {
 				t.add_using('math')
@@ -742,10 +751,27 @@ fn expr_reads_only(e Expr, param string) bool {
 	}
 }
 
-// visit_sorted_keywords emits `sorted(xs, key=..., reverse=...)` for a list of known
-// element type or a str. Without a key the elements are scalars and V's `.sorted(a > b)`
-// orders them; with a key `arrays.stable_sort` (a merge sort) keeps the order of elements
-// with equal keys, as Python's sort does. None when sort_less has no answer.
+// keyed_sort evaluates keys in input order and uses the original index to break ties.
+fn keyed_sort(receiver string, elem string, key string, reverse bool, in_place bool) string {
+	prefix := if in_place { 'mut ' } else { '' }
+	result := if in_place { '' } else { ' []${elem}' }
+	first := if reverse { 'rhs' } else { 'lhs' }
+	second := if reverse { 'lhs' } else { 'rhs' }
+	finish := if in_place {
+		'\n\tordered := order.map(items[it])\n\tfor i, item in ordered { items[i] = item }'
+	} else {
+		'\n\treturn order.map(items[it])'
+	}
+	return '(fn (${prefix}items []${elem})${result} {\n' +
+		'\tkeys := items.map(${key})\n\tmut order := []int{len: items.len, init: index}\n' +
+		'\torder.sort_with_compare(fn [keys] (lhs &int, rhs &int) int {\n' +
+		'\t\ta := keys[*${first}]\n\t\tb := keys[*${second}]\n' +
+		'\t\tif a < b { return -1 }\n\t\tif b < a { return 1 }\n' +
+		'\t\treturn if *lhs < *rhs { -1 } else if *lhs > *rhs { 1 } else { 0 }\n\t})' +
+		'${finish}\n})(${prefix}${receiver})'
+}
+
+// visit_sorted_keywords emits sorted(xs, key=..., reverse=...) for known element types.
 fn visit_sorted_keywords(mut t VTranspiler, node Call, args []string) ?string {
 	if node.args.len != 1 {
 		return none
@@ -764,16 +790,11 @@ fn visit_sorted_keywords(mut t VTranspiler, node Call, args []string) ?string {
 	} else {
 		return none
 	}
-	less, has_key := sort_less(mut t, node, elem)?
-	if !has_key {
-		return if less == 'lhs < rhs' {
-			'${receiver}.sorted()'
-		} else {
-			'${receiver}.sorted(a > b)'
-		}
+	key, reverse := sort_order(mut t, node, elem)?
+	if key == '' {
+		return if reverse { '${receiver}.sorted(a > b)' } else { '${receiver}.sorted()' }
 	}
-	t.add_using('arrays')
-	return '(fn (a []${elem}) []${elem} { mut b := a.clone(); arrays.stable_sort(mut b, fn (lhs ${elem}, rhs ${elem}) bool { return ${less} }); return b }(${receiver}))'
+	return keyed_sort(receiver, elem, key, reverse, false)
 }
 
 // Handle map() call (not V's map data structure)
@@ -1280,10 +1301,18 @@ fn dispatch_builtin_impl(mut t VTranspiler, fname string, node Call, args []stri
 			return DispatchResult{code, handled, ''}
 		}
 		'min' {
+			if node.args.len == 2 && node.keywords.len == 0
+				&& node.args.all((it is Name || it is Constant) && t.infer_expr_type(it) == 'int') {
+				return DispatchResult{'math.min(${args[0]}, ${args[1]})', true, 'math'}
+			}
 			code, handled, using := visit_min(args)
 			return DispatchResult{code, handled, using}
 		}
 		'max' {
+			if node.args.len == 2 && node.keywords.len == 0
+				&& node.args.all((it is Name || it is Constant) && t.infer_expr_type(it) == 'int') {
+				return DispatchResult{'math.max(${args[0]}, ${args[1]})', true, 'math'}
+			}
 			code, handled, using := visit_max(args)
 			return DispatchResult{code, handled, using}
 		}
@@ -1489,6 +1518,10 @@ fn dispatch_builtin_impl(mut t VTranspiler, fname string, node Call, args []stri
 				}
 				if arg_type.starts_with('[]') || arg is List || arg is Tuple || arg is ListComp {
 					return DispatchResult{'${t.runtime_helper('distinct')}(${args[0]})', true, ''}
+				}
+				if arg is BinOp && arg.op is Add && args[0].starts_with('arrays.append(') {
+					return DispatchResult{t.unsupported_site('set_concat_order',
+						'set constructed from concatenated lists needs a proven order-independent use', ''), true, ''}
 				}
 			}
 			code, handled := visit_set_fn(args)

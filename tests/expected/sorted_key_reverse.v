@@ -1,7 +1,6 @@
 module main
 
 import math
-import arrays
 
 pub struct Item {
 pub mut:
@@ -31,81 +30,298 @@ fn negate(x int) int {
 fn main_func() {
 	mut nums := [5, -3, 2, -8, 1]
 	println(nums.sorted(a > b))
-	println((fn (a []int) []int {
-		mut b := a.clone()
-		arrays.stable_sort(mut b, fn (lhs int, rhs int) bool {
-			return math.abs(lhs) < math.abs(rhs)
+	println((fn (items []int) []int {
+		keys := items.map(math.abs(it))
+		mut order := []int{len: items.len, init: index}
+		order.sort_with_compare(fn [keys] (lhs &int, rhs &int) int {
+			a := keys[*lhs]
+			b := keys[*rhs]
+			if a < b { return -1 }
+			if b < a { return 1 }
+			return if *lhs < *rhs {
+				-1
+			} else if *lhs > *rhs {
+				1
+			} else {
+				0
+			}
 		})
-		return b
-	}(nums)))
-	println((fn (a []int) []int {
-		mut b := a.clone()
-		arrays.stable_sort(mut b, fn (lhs int, rhs int) bool {
-			return math.abs(rhs) < math.abs(lhs)
+		return order.map(items[it])
+	})(nums))
+	println((fn (items []int) []int {
+		keys := items.map(math.abs(it))
+		mut order := []int{len: items.len, init: index}
+		order.sort_with_compare(fn [keys] (lhs &int, rhs &int) int {
+			a := keys[*rhs]
+			b := keys[*lhs]
+			if a < b { return -1 }
+			if b < a { return 1 }
+			return if *lhs < *rhs {
+				-1
+			} else if *lhs > *rhs {
+				1
+			} else {
+				0
+			}
 		})
-		return b
-	}(nums)))
-	println((fn (a []int) []int {
-		mut b := a.clone()
-		arrays.stable_sort(mut b, fn (lhs int, rhs int) bool { return negate(lhs) < negate(rhs) })
-		return b
-	}(nums)))
+		return order.map(items[it])
+	})(nums))
+	println((fn (items []int) []int {
+		keys := items.map(negate(it))
+		mut order := []int{len: items.len, init: index}
+		order.sort_with_compare(fn [keys] (lhs &int, rhs &int) int {
+			a := keys[*lhs]
+			b := keys[*rhs]
+			if a < b { return -1 }
+			if b < a { return 1 }
+			return if *lhs < *rhs {
+				-1
+			} else if *lhs > *rhs {
+				1
+			} else {
+				0
+			}
+		})
+		return order.map(items[it])
+	})(nums))
 	mut words := ['pear', 'Fig', 'apple', 'kiwi', 'Date']
-	println((fn (a []string) []string {
-		mut b := a.clone()
-		arrays.stable_sort(mut b, fn (lhs string, rhs string) bool { return lhs.len < rhs.len })
-		return b
-	}(words)))
-	println((fn (a []string) []string {
-		mut b := a.clone()
-		arrays.stable_sort(mut b, fn (lhs string, rhs string) bool { return rhs.len < lhs.len })
-		return b
-	}(words)))
-	println((fn (a []string) []string {
-		mut b := a.clone()
-		arrays.stable_sort(mut b, fn (lhs string, rhs string) bool {
-			return lhs.to_lower() < rhs.to_lower()
+	println((fn (items []string) []string {
+		keys := items.map(it.len_utf8())
+		mut order := []int{len: items.len, init: index}
+		order.sort_with_compare(fn [keys] (lhs &int, rhs &int) int {
+			a := keys[*lhs]
+			b := keys[*rhs]
+			if a < b { return -1 }
+			if b < a { return 1 }
+			return if *lhs < *rhs {
+				-1
+			} else if *lhs > *rhs {
+				1
+			} else {
+				0
+			}
 		})
-		return b
-	}(words)))
+		return order.map(items[it])
+	})(words))
+	println((fn (items []string) []string {
+		keys := items.map(it.len_utf8())
+		mut order := []int{len: items.len, init: index}
+		order.sort_with_compare(fn [keys] (lhs &int, rhs &int) int {
+			a := keys[*rhs]
+			b := keys[*lhs]
+			if a < b { return -1 }
+			if b < a { return 1 }
+			return if *lhs < *rhs {
+				-1
+			} else if *lhs > *rhs {
+				1
+			} else {
+				0
+			}
+		})
+		return order.map(items[it])
+	})(words))
+	println((fn (items []string) []string {
+		keys := items.map(it.to_lower())
+		mut order := []int{len: items.len, init: index}
+		order.sort_with_compare(fn [keys] (lhs &int, rhs &int) int {
+			a := keys[*lhs]
+			b := keys[*rhs]
+			if a < b { return -1 }
+			if b < a { return 1 }
+			return if *lhs < *rhs {
+				-1
+			} else if *lhs > *rhs {
+				1
+			} else {
+				0
+			}
+		})
+		return order.map(items[it])
+	})(words))
 	println(words.sorted(a > b))
 	mut rows := [[3, 1], [1, 2], [2, 0], [1, 0]]
-	println((fn (a [][]int) [][]int {
-		mut b := a.clone()
-		arrays.stable_sort(mut b, fn (lhs []int, rhs []int) bool { return lhs[0] < rhs[0] })
-		return b
-	}(rows)))
-	println((fn (a [][]int) [][]int {
-		mut b := a.clone()
-		arrays.stable_sort(mut b, fn (lhs []int, rhs []int) bool { return rhs[1] < lhs[1] })
-		return b
-	}(rows)))
+	println((fn (items [][]int) [][]int {
+		keys := items.map(it[0])
+		mut order := []int{len: items.len, init: index}
+		order.sort_with_compare(fn [keys] (lhs &int, rhs &int) int {
+			a := keys[*lhs]
+			b := keys[*rhs]
+			if a < b { return -1 }
+			if b < a { return 1 }
+			return if *lhs < *rhs {
+				-1
+			} else if *lhs > *rhs {
+				1
+			} else {
+				0
+			}
+		})
+		return order.map(items[it])
+	})(rows))
+	println((fn (items [][]int) [][]int {
+		keys := items.map(it[1])
+		mut order := []int{len: items.len, init: index}
+		order.sort_with_compare(fn [keys] (lhs &int, rhs &int) int {
+			a := keys[*rhs]
+			b := keys[*lhs]
+			if a < b { return -1 }
+			if b < a { return 1 }
+			return if *lhs < *rhs {
+				-1
+			} else if *lhs > *rhs {
+				1
+			} else {
+				0
+			}
+		})
+		return order.map(items[it])
+	})(rows))
 	mut items := [py2v_new_item('b', 2), py2v_new_item('a', 2), py2v_new_item('c', 1)]
-	by_weight := (fn (a []Item) []Item {
-		mut b := a.clone()
-		arrays.stable_sort(mut b, fn (lhs Item, rhs Item) bool { return lhs.weight < rhs.weight })
-		return b
-	}(items))
+	by_weight := (fn (items []Item) []Item {
+		keys := items.map(it.weight)
+		mut order := []int{len: items.len, init: index}
+		order.sort_with_compare(fn [keys] (lhs &int, rhs &int) int {
+			a := keys[*lhs]
+			b := keys[*rhs]
+			if a < b { return -1 }
+			if b < a { return 1 }
+			return if *lhs < *rhs {
+				-1
+			} else if *lhs > *rhs {
+				1
+			} else {
+				0
+			}
+		})
+		return order.map(items[it])
+	})(items)
 	for item in by_weight {
 		println('${item.name} ${item.weight}')
 	}
 	nums.sort(a > b)
 	println(nums)
-	arrays.stable_sort(mut nums, fn (lhs int, rhs int) bool { return math.abs(lhs) < math.abs(rhs) })
+	(fn (mut items []int) {
+		keys := items.map(math.abs(it))
+		mut order := []int{len: items.len, init: index}
+		order.sort_with_compare(fn [keys] (lhs &int, rhs &int) int {
+			a := keys[*lhs]
+			b := keys[*rhs]
+			if a < b { return -1 }
+			if b < a { return 1 }
+			return if *lhs < *rhs {
+				-1
+			} else if *lhs > *rhs {
+				1
+			} else {
+				0
+			}
+		})
+		ordered := order.map(items[it])
+		for i, item in ordered { items[i] = item }
+	})(mut nums)
 	println(nums)
-	arrays.stable_sort(mut words, fn (lhs string, rhs string) bool { return lhs.len < rhs.len })
+	(fn (mut items []string) {
+		keys := items.map(it.len_utf8())
+		mut order := []int{len: items.len, init: index}
+		order.sort_with_compare(fn [keys] (lhs &int, rhs &int) int {
+			a := keys[*lhs]
+			b := keys[*rhs]
+			if a < b { return -1 }
+			if b < a { return 1 }
+			return if *lhs < *rhs {
+				-1
+			} else if *lhs > *rhs {
+				1
+			} else {
+				0
+			}
+		})
+		ordered := order.map(items[it])
+		for i, item in ordered { items[i] = item }
+	})(mut words)
 	println(words)
-	arrays.stable_sort(mut words, fn (lhs string, rhs string) bool {
-		return rhs.to_lower() < lhs.to_lower()
-	})
+	(fn (mut items []string) {
+		keys := items.map(it.to_lower())
+		mut order := []int{len: items.len, init: index}
+		order.sort_with_compare(fn [keys] (lhs &int, rhs &int) int {
+			a := keys[*rhs]
+			b := keys[*lhs]
+			if a < b { return -1 }
+			if b < a { return 1 }
+			return if *lhs < *rhs {
+				-1
+			} else if *lhs > *rhs {
+				1
+			} else {
+				0
+			}
+		})
+		ordered := order.map(items[it])
+		for i, item in ordered { items[i] = item }
+	})(mut words)
 	println(words)
-	arrays.stable_sort(mut rows, fn (lhs []int, rhs []int) bool { return lhs[1] < rhs[1] })
+	(fn (mut items [][]int) {
+		keys := items.map(it[1])
+		mut order := []int{len: items.len, init: index}
+		order.sort_with_compare(fn [keys] (lhs &int, rhs &int) int {
+			a := keys[*lhs]
+			b := keys[*rhs]
+			if a < b { return -1 }
+			if b < a { return 1 }
+			return if *lhs < *rhs {
+				-1
+			} else if *lhs > *rhs {
+				1
+			} else {
+				0
+			}
+		})
+		ordered := order.map(items[it])
+		for i, item in ordered { items[i] = item }
+	})(mut rows)
 	println(rows)
-	arrays.stable_sort(mut items, fn (lhs Item, rhs Item) bool { return heavy(rhs) < heavy(lhs) })
+	(fn (mut items []Item) {
+		keys := items.map(heavy(it))
+		mut order := []int{len: items.len, init: index}
+		order.sort_with_compare(fn [keys] (lhs &int, rhs &int) int {
+			a := keys[*rhs]
+			b := keys[*lhs]
+			if a < b { return -1 }
+			if b < a { return 1 }
+			return if *lhs < *rhs {
+				-1
+			} else if *lhs > *rhs {
+				1
+			} else {
+				0
+			}
+		})
+		ordered := order.map(items[it])
+		for i, item in ordered { items[i] = item }
+	})(mut items)
 	for item in items {
 		println('${item.name} ${item.weight}')
 	}
-	arrays.stable_sort(mut items, fn (lhs Item, rhs Item) bool { return lhs.name < rhs.name })
+	(fn (mut items []Item) {
+		keys := items.map(it.name)
+		mut order := []int{len: items.len, init: index}
+		order.sort_with_compare(fn [keys] (lhs &int, rhs &int) int {
+			a := keys[*lhs]
+			b := keys[*rhs]
+			if a < b { return -1 }
+			if b < a { return 1 }
+			return if *lhs < *rhs {
+				-1
+			} else if *lhs > *rhs {
+				1
+			} else {
+				0
+			}
+		})
+		ordered := order.map(items[it])
+		for i, item in ordered { items[i] = item }
+	})(mut items)
 	for item in items {
 		println('${item.name} ${item.weight}')
 	}

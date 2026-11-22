@@ -39,26 +39,19 @@ fn main() {
 	}; value = py2v_range_next1(value, py2v_range_stop5, py2v_range_step6) {
 		println(value)
 	}
-	py2v_range_start7 := int(0)
-	py2v_range_stop8 := int(-2)
-	py2v_range_step9 := int(1)
-	if py2v_range_step9 == 0 { panic('ValueError: range() arg 3 must not be zero') }
-	for value := py2v_range_start7; if py2v_range_step9 > 0 {
-		value < py2v_range_stop8
-	} else {
-		value > py2v_range_stop8
-	}; value = py2v_range_next1(value, py2v_range_stop8, py2v_range_step9) {
+	py2v_range_stop7 := int(-2)
+	for value in int(0) .. py2v_range_stop7 {
 		println(value)
 	}
-	py2v_range_start10 := int(9)
-	py2v_range_stop11 := int(11)
-	py2v_range_step12 := int(2)
-	if py2v_range_step12 == 0 { panic('ValueError: range() arg 3 must not be zero') }
-	for value := py2v_range_start10; if py2v_range_step12 > 0 {
-		value < py2v_range_stop11
+	py2v_range_start8 := int(9)
+	py2v_range_stop9 := int(11)
+	py2v_range_step10 := int(2)
+	if py2v_range_step10 == 0 { panic('ValueError: range() arg 3 must not be zero') }
+	for value := py2v_range_start8; if py2v_range_step10 > 0 {
+		value < py2v_range_stop9
 	} else {
-		value > py2v_range_stop11
-	}; value = py2v_range_next1(value, py2v_range_stop11, py2v_range_step12) {
+		value > py2v_range_stop9
+	}; value = py2v_range_next1(value, py2v_range_stop9, py2v_range_step10) {
 		println(value)
 	}
 }

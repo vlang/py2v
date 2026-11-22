@@ -6,7 +6,7 @@ type Any = pyrt.Value
 
 fn values_at(data []Any) []int {
 	start, stop, step := data[0], data[1], data[2]
-	return py2v_range_array1(py2v_range_bound1(start), py2v_range_bound1(stop), py2v_range_bound1(step)).clone()
+	return py2v_range_array1(py2v_range_bound1(start), py2v_range_bound1(stop), py2v_range_bound1(step))
 }
 
 @[inline]

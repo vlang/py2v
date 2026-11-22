@@ -9,18 +9,10 @@ fn main_func() {
 	println(d)
 	e := '-'.repeat(10)
 	println(e)
-	println(py2v_text_length1(a))
-	println(py2v_text_length1(c))
+	println(a.len_utf8())
+	println(c.len_utf8())
 	println((py2v_string_index1(c, 0, none) or { panic(err) }))
 	println((py2v_string_index1(c, -1, none) or { panic(err) }))
-}
-
-fn py2v_text_length1(text string) int {
-	mut length := 0
-	for byte in text {
-		if (byte & 0xc0) != 0x80 { length++ }
-	}
-	return length
 }
 
 fn py2v_string_index1(value string, index i64, index_error ?IError) !string {

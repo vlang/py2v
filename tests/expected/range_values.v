@@ -4,7 +4,7 @@ import arrays
 import math
 
 fn collect(begin int, end int, step int) []int {
-	return py2v_range_array1(py2v_range_bound1(begin), py2v_range_bound1(end), py2v_range_bound1(step)).clone()
+	return py2v_range_array1(py2v_range_bound1(begin), py2v_range_bound1(end), py2v_range_bound1(step))
 }
 
 fn from_bounds(bounds []int) int {
@@ -99,14 +99,14 @@ fn py2v_integer_inferred_sum1[T](items []T, start int, site string) T {
 
 fn main() {
 	limit := -3
-	println(py2v_range_array1(0, py2v_range_bound1(limit), 1).clone())
-	println(py2v_range_array1(py2v_range_bound1(3), py2v_range_bound1(limit), 1).clone())
+	println(py2v_range_array1(0, py2v_range_bound1(limit), 1))
+	println(py2v_range_array1(py2v_range_bound1(3), py2v_range_bound1(limit), 1))
 	println(collect(1, 8, 3))
 	println(collect(8, 1, -3))
 	println(collect(1, 8, -3))
 	println(from_bounds([4, 2]))
 	println(from_bounds([-2, 2]))
-	println(py2v_range_array1(0, py2v_range_bound1(8), 1).clone())
+	println(py2v_range_array1(0, py2v_range_bound1(8), 1))
 	println(py2v_range_array1(py2v_range_bound1(8), py2v_range_bound1(9), 1).map(it))
-	println(py2v_range_array1(0, py2v_range_bound1(true), 1).clone())
+	println(py2v_range_array1(0, py2v_range_bound1(true), 1))
 }

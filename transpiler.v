@@ -1602,11 +1602,22 @@ fn (mut t VTranspiler) runtime_helper_declaration(kind string) string {
 				'\t\tif b.is_letter() { bytes[i] = b ^ 32 }\n' +
 				'\t}\n\treturn bytes.bytestr()\n}'
 		}
-		'text_length' {
-			'fn ${name}(text string) int {\n' +
-				'\tmut length := 0\n\tfor byte in text {\n' +
-				'\t\tif (byte & 0xc0) != 0x80 { length++ }\n' +
-				'\t}\n\treturn length\n}'
+		'zfill' {
+			'fn ${name}(text string, width int) string {\n' +
+				'\tlength := text.len_utf8()\n\tif width <= length { return text }\n' +
+				'\tzeros := strings.repeat(`0`, width - length)\n' +
+				'\tif text.len > 0 && (text[0] == `+` || text[0] == `-`) {\n' +
+				'\t\treturn text[..1] + zeros + text[1..]\n\t}\n' +
+				'\treturn zeros + text\n}'
+		}
+		'float_sum' {
+			'fn ${name}(values []f64, start f64) f64 {\n' +
+				'\tmut total := start\n\tmut correction := 0.0\n' +
+				'\tfor value in values {\n\t\tnext := total + value\n' +
+				'\t\tcorrection += if math.abs(total) >= math.abs(value) {\n' +
+				'\t\t\t(total - next) + value\n\t\t} else {\n' +
+				'\t\t\t(value - next) + total\n\t\t}\n\t\ttotal = next\n\t}\n' +
+				'\treturn if correction != 0.0 && !math.is_inf(correction, 0) && !math.is_nan(correction) { total + correction } else { total }\n}'
 		}
 		'typed_list_index' {
 			'fn ${name}[T](items []T, needle T) !int {\n' +
@@ -5725,13 +5736,26 @@ pub fn (mut t VTranspiler) visit_for(node For) string {
 						t.emit_for_else(mut buf, node.orelse, flag, saved_renames)
 						return buf.join('\n')
 					}
-					// zip(a, b) => for i, x in a { y := b[i]; ... }
-					if fname == 'zip' && target_names.len == 2 && call.args.len >= 2 {
-						left := t.visit_for_iter(call.args[0], saved_renames)
-						right := t.visit_for_iter(call.args[1], saved_renames)
-						idx := t.new_tmp('zipi')
-						buf << 'for ${idx}, ${target_names[0]} in ${left} {'
-						buf << '\t${target_names[1]} ${t.bind_op(target_names[1])} ${right}[${idx}]'
+					if fname == 'zip' && target_names.len == 2 && call.args.len == 2
+						&& call.keywords.len == 0 {
+						first := t.new_tmp('zip_first')
+						second := t.new_tmp('zip_second')
+						length := t.new_tmp('zip_len')
+						index := t.new_tmp('zip_index')
+						for i, name in [first, second] {
+							arg := call.args[i]
+							source := t.visit_for_iter(arg, saved_renames)
+							items := if t.infer_expr_type(arg) == 'string' {
+								'${as_receiver(source)}.runes().map(it.str())'
+							} else {
+								source
+							}
+							buf << '${name} := ${items}'
+						}
+						buf << '${length} := if ${first}.len < ${second}.len { ${first}.len } else { ${second}.len }'
+						buf << 'for ${index} in 0 .. ${length} {'
+						buf << '\t${target_names[0]} ${t.bind_op(target_names[0])} ${first}[${index}]'
+						buf << '\t${target_names[1]} ${t.bind_op(target_names[1])} ${second}[${index}]'
 						body, flag := t.visit_for_body(node, 1, has_else, writebacks)
 						buf << body
 						buf << '}'
@@ -5770,7 +5794,37 @@ pub fn (mut t VTranspiler) visit_for(node For) string {
 				} else {
 					'0'
 				}
-				end := t.visit_for_iter(call.args[if call.args.len > 1 { 1 } else { 0 }], saved_renames)
+				end_expr := call.args[if call.args.len > 1 { 1 } else { 0 }]
+				end := t.visit_for_iter(end_expr, saved_renames)
+				unit_step := call.args.len < 3 || (literal_word(call.args[2]) or { 0 }) == 1
+				if unit_step {
+					mut first := 'int(${start})'
+					mut stop := 'int(${end})'
+					if call.args.len > 1 && call.args[0] !is Constant {
+						name := t.new_tmp('range_start')
+						buf << '${name} := ${first}'
+						first = name
+					}
+					// V rejects empty constant ranges. Keeping the bound in a local
+					// preserves Python's empty iteration and for/else behavior.
+					lower := if call.args.len > 1 {
+						literal_word(call.args[0]) or { max_unsigned_word }
+					} else {
+						u64(0)
+					}
+					upper := literal_word(end_expr) or { 0 }
+					if lower >= upper {
+						name := t.new_tmp('range_stop')
+						buf << '${name} := ${stop}'
+						stop = name
+					}
+					buf << 'for ${target} in ${first} .. ${stop} {'
+					body, flag := t.visit_for_body(node, 1, has_else, writebacks)
+					buf << body
+					buf << '}'
+					t.emit_for_else(mut buf, node.orelse, flag, saved_renames)
+					return buf.join('\n')
+				}
 				step := if call.args.len == 3 {
 					t.visit_for_iter(call.args[2], saved_renames)
 				} else {
@@ -8308,7 +8362,6 @@ pub fn (mut t VTranspiler) visit_binop(node BinOp) string {
 	// Handle floor division - V / truncates toward zero, Python // floors toward -inf
 	// e.g. -7 // 2 = -4 in Python, -7 / 2 = -3 in V
 	if node.op is FloorDiv {
-		t.add_using('math')
 		mut left_ann := get_expr_annotation(node.left)
 		mut right_ann := get_expr_annotation(node.right)
 		if left_ann == '' {
@@ -8317,6 +8370,13 @@ pub fn (mut t VTranspiler) visit_binop(node BinOp) string {
 		if right_ann == '' {
 			right_ann = t.infer_expr_type(node.right)
 		}
+		nonnegative := literal_word(node.left) != none
+			|| (node.left is Call && (node.left as Call).api == '__py2v__.text_length')
+		if nonnegative && (literal_word(node.right) or { 0 }) > 0
+			&& is_v_int_type(left_ann) && is_v_int_type(right_ann) {
+			return '${paren_left(left, 5)} / ${paren_right(right, 5)}'
+		}
+		t.add_using('math')
 		is_float := left_ann in ['f64', 'float', 'f32'] || right_ann in ['f64', 'float', 'f32']
 		if is_float {
 			return 'math.floor(${paren_left(left, 5)} / ${paren_right(right, 5)})'
@@ -8346,10 +8406,10 @@ pub fn (mut t VTranspiler) visit_binop(node BinOp) string {
 	if node.op is Add {
 		mut la := get_expr_annotation(node.left)
 		mut ra := get_expr_annotation(node.right)
-		if la == '' {
+		if !la.starts_with('[]') {
 			la = t.infer_expr_type(node.left)
 		}
-		if ra == '' {
+		if !ra.starts_with('[]') {
 			ra = t.infer_expr_type(node.right)
 		}
 		// A list display beside a list of known type has that type
@@ -8360,6 +8420,10 @@ pub fn (mut t VTranspiler) visit_binop(node BinOp) string {
 			ra = la
 		}
 		if la.starts_with('[]') && ra.starts_with('[]') {
+			if la == ra && la in ['[]int', '[]i64', '[]f64', '[]string', '[]bool', '[]u8'] {
+				t.add_using('arrays')
+				return 'arrays.append(${left}, ${right})'
+			}
 			// An immediately called function concatenates; the operands are its
 			// arguments, since either may be any expression
 			return '(fn (a ${la}, b ${ra}) ${la} { mut r := a.clone(); r << b; return r }(${left}, ${right}))'
@@ -9381,6 +9445,9 @@ fn (mut t VTranspiler) visit_call_at(original Call, permit WideSink, permit_type
 	if original.api == '__py2v__.unsupported_keyword_evaluation_order' {
 		return t.unsupported_site('keyword_argument_order', 'keyword values have unproven evaluation order', '')
 	}
+	if original.api == '__py2v__.unsupported_set_iteration' {
+		return t.unsupported_site('set_iteration', 'native set iteration cannot preserve CPython order', '')
+	}
 	if original.api == '__py2v__.unsupported_unicode_surrogate' && original.args.len == 1
 		&& original.args[0] is Constant && (original.args[0] as Constant).value is string {
 		reason := (original.args[0] as Constant).value as string
@@ -9393,8 +9460,22 @@ fn (mut t VTranspiler) visit_call_at(original Call, permit WideSink, permit_type
 		return t.unsupported_site('annotated_call', reason, value)
 	}
 	if original.api == '__py2v__.text_length' && original.args.len == 1 {
-		helper := t.runtime_helper('text_length')
-		return '${helper}(${t.visit_expr(original.args[0])})'
+		return '${as_receiver(t.visit_expr(original.args[0]))}.len_utf8()'
+	}
+	if original.func is Name && original.func.id == 'len' && original.args.len == 1
+		&& original.keywords.len == 0 && original.func.id !in t.module_functions
+		&& !t.is_bound_in_scope(original.func.id) && original.args[0] is ListComp {
+		comp := original.args[0] as ListComp
+		if comp.generators.len == 1 && comp.elt is Name {
+			gen := comp.generators[0]
+			if gen.target is Name && (comp.elt as Name).id == (gen.target as Name).id
+				&& gen.iter is List && gen.ifs.len > 0 && !gen.is_async
+				&& t.infer_expr_type(gen.iter) in ['[]int', '[]i64', '[]f64', '[]string', '[]bool',
+					'[]u8']
+				&& !gen.ifs.any(has_walrus_in_expr(it)) {
+				return t.visit_generator_exp_impl(comp.elt, comp.generators, true)
+			}
+		}
 	}
 	if original.api == '__py2v__.text_characters' && original.args.len == 1 {
 		return '${as_receiver(t.visit_expr(original.args[0]))}.runes().map(it.str())'
@@ -10430,12 +10511,11 @@ fn (mut t VTranspiler) visit_call_at(original Call, permit WideSink, permit_type
 				return '${obj}.bytestr()'
 			}
 			'zfill' {
-				// No direct V equivalent — pad with leading zeros using strings module
-				t.add_using('strings')
-				if vargs.len > 0 {
-					return 'if ${obj}.len < ${vargs[0]} { strings.repeat(`0`, ${vargs[0]} - ${obj}.len) + ${obj} } else { ${obj} }'
+				if vargs.len == 1 && node.keywords.len == 0 {
+					t.add_using('strings')
+					return '${t.runtime_helper('zfill')}(${obj}, ${vargs[0]})'
 				}
-				return obj
+				return t.unsupported_site('zfill_width', 'zfill needs one positional width', '')
 			}
 			'ljust' {
 				t.add_using('strings')
@@ -10505,6 +10585,17 @@ fn (mut t VTranspiler) visit_call_at(original Call, permit WideSink, permit_type
 				return '0'
 			}
 			'copy' {
+				if node.args.len == 0 && node.keywords.len == 0 && attr_node.value is Call {
+					receiver := attr_node.value as Call
+					if receiver.func is Name {
+						name := (receiver.func as Name).id
+						if (name == 'range' && obj.starts_with('py2v_range_array'))
+							|| (name == 'map' && name !in t.module_functions
+								&& !t.is_bound_in_scope(name) && obj.contains('.map(')) {
+							return obj
+						}
+					}
+				}
 				return '${obj}.clone()'
 			}
 			'clear' {
@@ -10526,10 +10617,9 @@ fn (mut t VTranspiler) visit_call_at(original Call, permit WideSink, permit_type
 					}
 					if list_type.starts_with('[]') && !list_type.contains('Any') {
 						elem := list_type[2..]
-						if less, has_key := sort_less(mut t, node, elem) {
-							if has_key {
-								t.add_using('arrays')
-								return 'arrays.stable_sort(mut ${obj}, fn (lhs ${elem}, rhs ${elem}) bool { return ${less} })'
+						if key, reverse := sort_order(mut t, node, elem) {
+							if key != '' {
+								return keyed_sort(obj, elem, key, reverse, true)
 							}
 						}
 					}
@@ -11418,6 +11508,35 @@ pub fn (mut t VTranspiler) visit_list(node List) string {
 		}
 
 		mut result := parts[0]
+		mut element_type := ''
+		mut native := true
+		for e in node.elts {
+			mut typ := ''
+			if e is Starred && e.value is Name {
+				array_type := t.infer_expr_type(e.value)
+				if array_type.starts_with('[]') {
+					typ = array_type[2..]
+				}
+			} else if e is Constant || e is Name {
+				typ = t.infer_expr_type(e)
+			}
+			if typ !in ['int', 'i64', 'f64', 'string', 'bool', 'u8']
+				|| (element_type != '' && typ != element_type) {
+				native = false
+				break
+			}
+			element_type = typ
+		}
+		if native {
+			if parts.len == 1 {
+				return '${as_receiver(result)}.clone()'
+			}
+			t.add_using('arrays')
+			for part in parts[1..] {
+				result = 'arrays.append(${result}, ${part})'
+			}
+			return result
+		}
 		if !result.starts_with('[') {
 			result = '([]).concat(${result})'
 		}
@@ -11855,7 +11974,7 @@ pub fn (mut t VTranspiler) visit_lambda(node Lambda) string {
 pub fn (mut t VTranspiler) visit_list_comp(node ListComp) string {
 	// Should be transformed by VComprehensionRewriter
 	// Fallback implementation
-	return t.visit_generator_exp_impl(node.elt, node.generators)
+	return t.visit_generator_exp_impl(node.elt, node.generators, false)
 }
 
 // A package string product can initialize a constant through a closure. Each
@@ -11897,7 +12016,7 @@ fn (mut t VTranspiler) module_string_product(node ListComp) ?string {
 
 // visit_set_comp emits V code for set comprehensions (SetComp).
 pub fn (mut t VTranspiler) visit_set_comp(node SetComp) string {
-	return '${t.runtime_helper('distinct')}(${t.visit_generator_exp_impl(node.elt, node.generators)})'
+	return '${t.runtime_helper('distinct')}(${t.visit_generator_exp_impl(node.elt, node.generators, false)})'
 }
 
 // comp_binds_py2v_format reports whether a comprehension target is named like
@@ -11983,10 +12102,10 @@ pub fn (mut t VTranspiler) visit_dict_comp(node DictComp) string {
 
 // visit_generator_exp emits V code for generator expressions (GeneratorExp).
 pub fn (mut t VTranspiler) visit_generator_exp(node GeneratorExp) string {
-	return t.visit_generator_exp_impl(node.elt, node.generators)
+	return t.visit_generator_exp_impl(node.elt, node.generators, false)
 }
 
-fn (mut t VTranspiler) visit_generator_exp_impl(elt Expr, generators []Comprehension) string {
+fn (mut t VTranspiler) visit_generator_exp_impl(elt Expr, generators []Comprehension, count bool) string {
 	if generators.len == 0 {
 		return '[]'
 	}
@@ -12007,6 +12126,17 @@ fn (mut t VTranspiler) visit_generator_exp_impl(elt Expr, generators []Comprehen
 	// expression, and V has no assignment expression.
 	if contains_condition_walrus(elt) {
 		return t.visit_generator_exp_impl_walrus(elt, generators)
+	}
+	gen := generators[0]
+	if generators.len == 1 && gen.ifs.len > 0 && elt !is Constant
+		&& !(elt is Name && gen.target is Name && elt.id == gen.target.id)
+		&& !comprehension_uses_runtime(elt) && !gen.ifs.any(comprehension_uses_runtime(it))
+		&& (comprehension_may_observe_order(elt)
+			|| gen.ifs.any(comprehension_may_observe_order(it))) {
+		if code := t.visit_ordered_comprehension(elt, gen) {
+			return code
+		}
+		return t.unsupported_site('comprehension_order', 'filtered comprehension needs interleaved evaluation', '')
 	}
 
 	// Check if the iter is a range() call - need special handling
@@ -12033,6 +12163,7 @@ fn (mut t VTranspiler) visit_generator_exp_impl(elt Expr, generators []Comprehen
 	}
 
 	// Apply filters - need to use 'it' for the element reference
+	mut filters := []string{}
 	for if_clause in generators[0].ifs {
 		mut filter_expr := t.visit_expr(if_clause)
 		// Replace target variable with 'it' for filter lambda
@@ -12041,7 +12172,14 @@ fn (mut t VTranspiler) visit_generator_exp_impl(elt Expr, generators []Comprehen
 		} else {
 			filter_expr.replace(target, 'it')
 		}
-		result = '${as_receiver(result)}.filter(${filter_expr})'
+		filters << filter_expr
+	}
+	if filters.len > 0 {
+		predicate := join_conditions(filters, '&&')
+		if count {
+			return '${as_receiver(result)}.count(${predicate})'
+		}
+		result = '${as_receiver(result)}.filter(${predicate})'
 	}
 
 	// Apply map - need to use 'it' for the element reference
@@ -12056,9 +12194,85 @@ fn (mut t VTranspiler) visit_generator_exp_impl(elt Expr, generators []Comprehen
 	if elt is BinOp && elt.op is FloorDiv && get_expr_annotation(elt) == 'int' {
 		map_expr = 'int(${map_expr})'
 	}
+	if map_expr == 'it' && (filters.len > 0 || iter is List)
+		&& t.infer_expr_type(iter) in ['[]int', '[]i64', '[]f64', '[]string', '[]bool', '[]u8'] {
+		return result
+	}
 	result = '${as_receiver(result)}.map(${map_expr})'
 
 	return result
+}
+
+// Calls, indexing and division can observe, mutate or fail before the next predicate.
+fn comprehension_may_observe_order(expr Expr) bool {
+	if expr is Call || expr is Subscript || expr is Attribute
+		|| (expr is BinOp && (expr.op is Div || expr.op is FloorDiv || expr.op is Mod)) {
+		return true
+	}
+	return condition_walrus_children(expr).any(comprehension_may_observe_order(it))
+}
+
+// comprehension_uses_runtime keeps adapted values on the existing runtime path.
+fn comprehension_uses_runtime(expr Expr) bool {
+	return (expr is Call && (expr.api.starts_with('__pyrt__.') || expr.api in runtime_api))
+		|| condition_walrus_children(expr).any(comprehension_uses_runtime(it))
+}
+
+// comprehension_propagates reports a checked operation inside the generated loop.
+fn comprehension_propagates(expr Expr) bool {
+	return (expr is Call && expr.propagate)
+		|| condition_walrus_children(expr).any(comprehension_propagates(it))
+}
+
+// visit_ordered_comprehension emits one loop for a filter and its value expression.
+fn (mut t VTranspiler) visit_ordered_comprehension(elt Expr, gen Comprehension) ?string {
+	if gen.target !is Name || gen.is_async {
+		return none
+	}
+	target := gen.target.id
+	mut typ := t.infer_expr_type(gen.iter)
+	if typ == '' {
+		typ = get_v_annotation(gen.iter)
+	}
+	if typ == '' && gen.iter is Call && gen.iter.func is Name && gen.iter.func.id == 'range'
+		&& 'range' !in t.module_functions && !t.is_bound_in_scope('range') {
+		typ = '[]int'
+	}
+	if !typ.starts_with('[]') {
+		return none
+	}
+	source_expr := t.visit_expr(gen.iter)
+	mut captures := []string{}
+	for predicate in gen.ifs {
+		t.map_comprehension_captures(predicate, [target], mut captures)
+	}
+	t.map_comprehension_captures(elt, [target], mut captures)
+	capture := if captures.len > 0 { ' [${captures.join(', ')}]' } else { '' }
+	saved_types := t.var_types.clone()
+	saved_renames := t.renamed_idents.clone()
+	defer {
+		t.var_types = saved_types
+		t.renamed_idents = saved_renames
+	}
+	item := t.new_tmp('comp_item')
+	values := t.new_tmp('comp_values')
+	output := t.new_tmp('comp_output')
+	t.renamed_idents[target] = item
+	t.var_types[target] = typ[2..]
+	elem := if elt is JoinedStr { 'string' } else { t.infer_expr_type(elt) }
+	if elem == '' {
+		return none
+	}
+	fallible := comprehension_propagates(elt) || gen.ifs.any(comprehension_propagates(it))
+	result := if fallible { '!' } else { '' }
+	mut lines := ['(fn${capture} (${values} ${typ}) ${result}[]${elem} {',
+		'\tmut ${output} := []${elem}{}', '\tfor ${item} in ${values} {']
+	for predicate in gen.ifs {
+		lines << '\t\tif !(${t.visit_expr(predicate)}) { continue }'
+	}
+	lines << ['\t\t${output} << ${t.visit_expr(elt)}', '\t}', '\treturn ${output}',
+		'})(${source_expr})${result}']
+	return lines.join('\n')
 }
 
 // map_comprehension_captures finds enclosing locals read by a filter or element.

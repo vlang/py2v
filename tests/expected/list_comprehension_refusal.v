@@ -1,3 +1,5 @@
+py2v: grow: 9: a call may resize or reorder the list during iteration; this is not supported
+py2v: main_func: 9: a call may resize or reorder the list during iteration; this is not supported
 module main
 
 fn grow(mut values []int, value int) int {

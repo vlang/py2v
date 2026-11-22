@@ -1,9 +1,11 @@
 module main
 
+import arrays
+
 fn main_func() {
 	a := [1, 2, 3]
 	b := [4, 5, 6]
-	c := a + b
+	c := arrays.append(a, b)
 	println(c)
 	d := [0].repeat(5)
 	println(d)

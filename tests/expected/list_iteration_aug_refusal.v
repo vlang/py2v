@@ -1,3 +1,4 @@
+py2v: main_func: 4: resizing or reordering a shared list during iteration is not supported
 module main
 
 fn main_func() {

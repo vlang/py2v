@@ -1,16 +1,17 @@
 module main
 
 import arrays
+import math
 
 fn main_func() {
 	nums := [3, 1, 4, 1, 5, 9, 2, 6]
 	println(arrays.min(nums) or { panic('!') })
 	println(arrays.max(nums) or { panic('!') })
 	println(py2v_integer_sum1(nums, 0, 'min_max_sum.py:9'))
-	println(arrays.min([10, 20]) or { panic('!') })
-	println(arrays.max([10, 20]) or { panic('!') })
-	println(arrays.min([5, 3]) or { panic('!') })
-	println(arrays.max([5, 3]) or { panic('!') })
+	println(math.min(10, 20))
+	println(math.max(10, 20))
+	println(math.min(5, 3))
+	println(math.max(5, 3))
 }
 
 @[noreturn]

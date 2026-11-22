@@ -49,7 +49,6 @@ list_identity_refusal	differs	line 1: CPython [[1, 2, 3]], V [V panic: py2v_unsu
 list_iteration_aug_refusal	differs	line 1: CPython [[1, 2, 3]], V [V panic: py2v_unsupported_list_identity: list aliases cannot be preserved]
 list_iteration_call_refusal	differs	line 1: CPython [[1, 2, 3]], V [V panic: py2v_unsupported_list_identity: list aliases cannot be preserved]
 list_iteration_slice_refusal	differs	line 1: CPython [[4, 5, 6] [1, 5, 6]], V [V panic: py2v_unsupported_list_identity: list aliases cannot be preserved]
-list_ops	does-not-compile	mismatched types `[]int` and `[]int`
 list_scoped_escape_refusal	does-not-compile	unknown function: py2v_unsupported_list_identity_module1
 literals_annot	does-not-compile	invalid number of operand for `+`. Only one allowed on each side.
 literals_more	does-not-compile	cannot assign a `none` value to a variable

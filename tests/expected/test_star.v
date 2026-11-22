@@ -1,5 +1,6 @@
 module main
 
+import arrays
 import pyrt
 
 type Any = pyrt.Value
@@ -18,7 +19,7 @@ fn main_func() {
 	numbers := [1, 2, 3]
 	println(sum_all(...numbers))
 	others := [4, 5]
-	all_nums := ((([0]).concat(numbers)).concat(others)).concat([6])
+	all_nums := arrays.append(arrays.append(arrays.append([0], numbers), others), [6])
 	println(all_nums)
 	data := [10, 20, 30, 40, 50]
 	py2v_unpack1 := data

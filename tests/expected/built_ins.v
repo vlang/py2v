@@ -1,5 +1,6 @@
 module main
 
+import math
 import arrays
 
 fn default_builtins() {
@@ -14,9 +15,9 @@ fn default_builtins() {
 }
 
 fn main() {
-	a := arrays.max([1, 2]) or { panic('!') }
+	a := math.max(1, 2)
 	println(a)
-	b := arrays.min([1, 2]) or { panic('!') }
+	b := math.min(1, 2)
 	println(b)
 	c := int(arrays.min([1.0, 2.0]) or { panic('!') })
 	println(c)

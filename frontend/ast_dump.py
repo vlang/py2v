@@ -7075,6 +7075,42 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
                 node.comparators = [boxed(right)]
             return node
 
+        def set_membership_aggregate(self, node: ast.Call) -> None:
+            # any/all of total builtin integer membership tests cannot observe set order.
+            if (has_star_import or not isinstance(node.func, ast.Name)
+                    or node.func.id not in ("any", "all") or node.keywords
+                    or getattr(node.func, "_binding", None) is not None or len(node.args) != 1
+                    or not isinstance(node.args[0], ast.GeneratorExp)):
+                return
+            generator = node.args[0]
+            if len(generator.generators) != 1 or not isinstance(generator.elt, ast.Compare):
+                return
+            loop = generator.generators[0]
+            test = generator.elt
+            if (loop.is_async or loop.ifs or not isinstance(loop.target, ast.Name)
+                    or not isinstance(loop.iter, ast.Name) or len(test.ops) != 1
+                    or not isinstance(test.ops[0], (ast.In, ast.NotIn))
+                    or not isinstance(test.comparators[0], ast.Name)
+                    or test.comparators[0].id != loop.iter.id
+                    or getattr(test.comparators[0], "_binding", None)
+                    != getattr(loop.iter, "_binding", None)):
+                return
+            type_id = getattr(loop.iter, "_type", None)
+            if type_id is None:
+                return
+            typ = facts.types[type_id]
+            if typ["k"] != "set" or facts.types[typ["elem"]]["k"] != "int":
+                return
+
+            def integer(expr: ast.expr) -> bool:
+                if isinstance(expr, (ast.Name, ast.Constant)):
+                    return _truth_kind(expr, facts) == "int"
+                return (isinstance(expr, ast.BinOp) and isinstance(expr.op, (ast.Add, ast.Sub))
+                        and integer(expr.left) and integer(expr.right))
+
+            if integer(test.left):
+                loop._set_order_independent = True
+
         def visit_Call(self, node: ast.Call) -> ast.AST:
             external = _qualified_import(node.func, external_imports)
             if external:
@@ -7109,6 +7145,7 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
             join_plain = is_value_join and not dynamic(node.args[0])
             is_callable = (not isinstance(node.func, ast.Attribute) and dynamic(node.func)
                            and not node.keywords and not any(isinstance(a, ast.Starred) for a in node.args))
+            self.set_membership_aggregate(node)
             self.generic_visit(node)
             if (isinstance(node.func, ast.Name)
                     and getattr(node.func, "_binding", None) is None and not has_star_import
@@ -7291,8 +7328,11 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
             return node
 
         def visit_For(self, node: ast.For) -> ast.AST:
+            set_order = _truth_kind(node.iter, facts) == "set"
             self.generic_visit(node)
-            if dynamic(node.iter):
+            if set_order:
+                node.iter = native_call("unsupported_set_iteration", [node.iter], node.iter, "")
+            elif dynamic(node.iter):
                 node.iter = _runtime_call("elements", [node.iter], node.iter)
             if id(node) in unpack_nodes:
                 number = 0
@@ -7309,8 +7349,12 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
             return node
 
         def visit_comprehension(self, node: ast.comprehension) -> ast.AST:
+            set_order = (_truth_kind(node.iter, facts) == "set"
+                         and not getattr(node, "_set_order_independent", False))
             self.generic_visit(node)
-            if dynamic(node.iter):
+            if set_order:
+                node.iter = native_call("unsupported_set_iteration", [node.iter], node.iter, "")
+            elif dynamic(node.iter):
                 node.iter = _runtime_call("elements", [node.iter], node.iter)
                 node.iter._dynamic = False
             return node

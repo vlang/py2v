@@ -10,7 +10,7 @@ fn show() {
 	nums := [1, 2, 3]
 	result := nums.map(fn (x int) i64 {
 		return py2v_integer_mul1(x, 2, 'lambda_walrus.py:11', 'multiplication')
-	}).clone()
+	})
 	println(result.len)
 }
 

@@ -24,15 +24,8 @@ fn build_py() !&argparse.ArgumentParser {
 fn main_func_py() ! {
 	parser := build_py()!
 	args := parser.parse_args(['world', '--count', '3', '--verbose', '--tag', 'a', '--tag', 'b'])!
-	py2v_range_start1 := int(0)
-	py2v_range_stop2 := int(int(args.get_int('count')!))
-	py2v_range_step3 := int(1)
-	if py2v_range_step3 == 0 { panic('ValueError: range() arg 3 must not be zero') }
-	for py2v_range_item4 := py2v_range_start1; if py2v_range_step3 > 0 {
-		py2v_range_item4 < py2v_range_stop2
-	} else {
-		py2v_range_item4 > py2v_range_stop2
-	}; py2v_range_item4 = py2v_range_next1(py2v_range_item4, py2v_range_stop2, py2v_range_step3) {
+	py2v_range_stop1 := int(int(args.get_int('count')!))
+	for _ in int(0) .. py2v_range_stop1 {
 		println(('hello').str() + ' ' + (args.get_str('name')!).str())
 	}
 	if args.get_bool('verbose')! {
@@ -44,17 +37,6 @@ fn main_func_py() ! {
 	} else {
 		'False'
 	}).str() + ' ' + (other.get_str('mode')!).str() + ' ' + (other.get_strings('tag')!).str())
-}
-
-fn py2v_range_next1(current int, stop int, step int) int {
-	if step > 0 {
-		if u64(step) >= u64(stop) - u64(current) {
-			return stop
-		}
-	} else if u64(0) - u64(step) >= u64(current) - u64(stop) {
-		return stop
-	}
-	return current + step
 }
 
 fn py2v_entry1() ! {

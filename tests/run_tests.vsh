@@ -1379,6 +1379,8 @@ for witness in [
 	['wide_sink_unpack', '-1 1', 'wide integer'],
 	['unicode_lone_surrogate', '1', 'unicode surrogate'],
 	['unicode_pair_surrogates', '2', 'unicode surrogate'],
+	['set_iteration', '1\n2\n3', 'set iteration'],
+	['set_concat_order', '14', 'set concat order'],
 ] {
 	source := os.join_path(cases_dir, 'review_refusals', witness[0] + '.py')
 	oracle := os.exec([python, '-X', 'utf8', '-I', source])

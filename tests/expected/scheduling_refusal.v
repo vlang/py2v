@@ -1,3 +1,5 @@
+/private/tmp/agent-run-502/ww-r2.1_qimwbh/tmp.8oTb6rwvxu/gen/tests/cases/scheduling_refusal.py:8: py2v_unsupported_coroutine: read_future requires asyncio.run_coroutine_threadsafe
+/private/tmp/agent-run-502/ww-r2.1_qimwbh/tmp.8oTb6rwvxu/gen/tests/cases/scheduling_refusal.py:15: py2v_unsupported_coroutine: wait requires an awaitable with unknown scheduling
 module main
 
 import pyrt

@@ -3,14 +3,24 @@ module main
 import strings
 
 fn main_func() {
-	println(if '42'.len < 5 { strings.repeat(`0`, 5 - '42'.len) + '42' } else { '42' })
-	println(if 'hello'.len < 3 { strings.repeat(`0`, 3 - 'hello'.len) + 'hello' } else { 'hello' })
+	println(py2v_zfill1('42', 5))
+	println(py2v_zfill1('hello', 3))
 	println(if 'hi'.len < 6 { 'hi' + strings.repeat(' '[0], 6 - 'hi'.len) } else { 'hi' })
 	println(if 'hi'.len < 6 { strings.repeat(' '[0], 6 - 'hi'.len) + 'hi' } else { 'hi' })
 	println(if 'hi'.len < 6 { 'hi' + strings.repeat('*'[0], 6 - 'hi'.len) } else { 'hi' })
 	println(if 'hi'.len < 6 { strings.repeat('-'[0], 6 - 'hi'.len) + 'hi' } else { 'hi' })
 	println(py2v_string_center1('hi', 6, ' '))
 	println(py2v_string_center1('hi', 7, '-'))
+}
+
+fn py2v_zfill1(text string, width int) string {
+	length := text.len_utf8()
+	if width <= length { return text }
+	zeros := strings.repeat(`0`, width - length)
+	if text.len > 0 && (text[0] == `+` || text[0] == `-`) {
+		return text[..1] + zeros + text[1..]
+	}
+	return zeros + text
 }
 
 fn py2v_string_center1(value string, width int, fill string) string {

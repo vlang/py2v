@@ -24,7 +24,7 @@ pub fn py2v_new_args() Args {
 fn main() {
 	originals := ['a']
 	args := py2v_new_args()
-	selected := args.only || originals.filter(py2v_unsupported_getattr_by_computed_name(args, '${it}_bin')).map(it)
+	selected := args.only || originals.filter(py2v_unsupported_getattr_by_computed_name(args, '${it}_bin'))
 	println((args.a_bin).str() + ' ' + (if (typeof(args.only).name != '') {
 		'True'
 	} else {

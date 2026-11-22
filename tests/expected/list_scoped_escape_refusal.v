@@ -1,3 +1,10 @@
+py2v: <lambda@4>: shared-list ordering comparison is not supported
+py2v: refused_reader: shared-list ordering comparison is not supported
+py2v: refused_closure: 21: resizing or reordering a shared list during iteration is not supported
+py2v: module-level list refusal: <module@1>: shared-list ordering comparison is not supported
+py2v: module-level list refusal: <module@2>: shared-list ordering comparison is not supported
+py2v: module-level list refusal: <module@3>: shared-list ordering comparison is not supported
+py2v: module-level list refusal: <module@7>: shared-list ordering comparison is not supported
 module main
 
 const values = [1]

@@ -13,19 +13,11 @@ fn inline_ellipsis() {
 fn indexing() int {
 	mut sum := 0
 	mut a := []int{}
-	py2v_range_start1 := int(0)
-	py2v_range_stop2 := int(10)
-	py2v_range_step3 := int(1)
-	if py2v_range_step3 == 0 { panic('ValueError: range() arg 3 must not be zero') }
-	for i := py2v_range_start1; if py2v_range_step3 > 0 {
-		i < py2v_range_stop2
-	} else {
-		i > py2v_range_stop2
-	}; i = py2v_range_next1(i, py2v_range_stop2, py2v_range_step3) {
+	for i in int(0) .. int(10) {
 		a << i
-		py2v_old4 := sum
-		py2v_aug_result5 := py2v_integer_add1(py2v_old4, a[i], 'coverage.py:16', 'addition')
-		sum = py2v_aug_result5
+		py2v_old1 := sum
+		py2v_aug_result2 := py2v_integer_add1(py2v_old1, a[i], 'coverage.py:16', 'addition')
+		sum = py2v_aug_result2
 	}
 	return sum
 }
@@ -45,26 +37,18 @@ fn show() {
 	assert b9 == b10
 	a2 := 2.1
 	println(py2v_float_text1(a2))
-	py2v_range_start6 := int(0)
-	py2v_range_stop7 := int(10)
-	py2v_range_step8 := int(1)
-	if py2v_range_step8 == 0 { panic('ValueError: range() arg 3 must not be zero') }
-	for i := py2v_range_start6; if py2v_range_step8 > 0 {
-		i < py2v_range_stop7
-	} else {
-		i > py2v_range_stop7
-	}; i = py2v_range_next1(i, py2v_range_stop7, py2v_range_step8) {
+	for i in int(0) .. int(10) {
 		println(i)
 	}
-	py2v_range_start9 := int(0)
-	py2v_range_stop10 := int(10)
-	py2v_range_step11 := int(2)
-	if py2v_range_step11 == 0 { panic('ValueError: range() arg 3 must not be zero') }
-	for i := py2v_range_start9; if py2v_range_step11 > 0 {
-		i < py2v_range_stop10
+	py2v_range_start3 := int(0)
+	py2v_range_stop4 := int(10)
+	py2v_range_step5 := int(2)
+	if py2v_range_step5 == 0 { panic('ValueError: range() arg 3 must not be zero') }
+	for i := py2v_range_start3; if py2v_range_step5 > 0 {
+		i < py2v_range_stop4
 	} else {
-		i > py2v_range_stop10
-	}; i = py2v_range_next1(i, py2v_range_stop10, py2v_range_step11) {
+		i > py2v_range_stop4
+	}; i = py2v_range_next1(i, py2v_range_stop4, py2v_range_step5) {
 		println(i)
 	}
 	a3 := -a1
@@ -115,17 +99,6 @@ fn show() {
 	c1_, _, c2_ = 1, 2, 3
 }
 
-fn py2v_range_next1(current int, stop int, step int) int {
-	if step > 0 {
-		if u64(step) >= u64(stop) - u64(current) {
-			return stop
-		}
-	} else if u64(0) - u64(step) >= u64(current) - u64(stop) {
-		return stop
-	}
-	return current + step
-}
-
 @[noreturn]
 fn py2v_integer_overflow1(site string, operation string) {
 	flush_stdout()
@@ -162,6 +135,17 @@ fn py2v_float_text1[T](value T) string {
 	} $else {
 		return value.str()
 	}
+}
+
+fn py2v_range_next1(current int, stop int, step int) int {
+	if step > 0 {
+		if u64(step) >= u64(stop) - u64(current) {
+			return stop
+		}
+	} else if u64(0) - u64(step) >= u64(current) - u64(stop) {
+		return stop
+	}
+	return current + step
 }
 
 fn main() {

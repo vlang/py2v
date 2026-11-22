@@ -1,3 +1,4 @@
+py2v: main_func: 4: shared list passed to an unresolved call; cannot preserve native list identity at this boundary
 module main
 
 fn main_func() {
