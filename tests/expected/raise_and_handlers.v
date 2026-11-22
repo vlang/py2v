@@ -128,10 +128,16 @@ fn check_py(n int) !int {
 		return IError(Py2vErrorValueError{ data: Py2vErrorData{ args: Py2vErrorArgs{ values: [Py2vErrorArg('negative: ${n}')] } } })
 	}
 	if n == 13 {
-		return IError(Py2vErrorRuntimeError{ data: Py2vErrorData{ args: Py2vErrorArgs{ values: [
-			Py2vErrorArg('unlucky'),
-			Py2vErrorArg(i64(n)),
-		] } } })
+		return IError(Py2vErrorRuntimeError{
+			data: Py2vErrorData{
+				args: Py2vErrorArgs{
+					values: [
+						Py2vErrorArg('unlucky'),
+						Py2vErrorArg(i64(n)),
+					]
+				}
+			}
+		})
 	}
 	return n * 2
 }
