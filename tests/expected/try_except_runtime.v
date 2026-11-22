@@ -28,10 +28,6 @@ fn parse_py(text string) !int {
 	return count
 }
 
-fn parse(text string) int {
-	return parse_py(text) or { pyrt.fail(err) }
-}
-
 fn lookup(conn &sqlite3.Connection, table string) int {
 	mut py2v_err_2 := ?IError(none)
 	py2v_try_2: for {
@@ -81,10 +77,6 @@ fn insert_py(conn &sqlite3.Connection, n int) !string {
 	return 'stored'
 }
 
-fn insert(conn &sqlite3.Connection, n int) string {
-	return insert_py(conn, n) or { pyrt.fail(err) }
-}
-
 fn main_func_py() ! {
 	println(parse_py('{\"a\": 1, \"b\": 2}')!)
 	println(parse_py('{not json')!)
@@ -94,10 +86,6 @@ fn main_func_py() ! {
 	println(insert_py(conn, 1)!)
 	println(lookup(conn, 't'))
 	println(lookup(conn, 'missing'))
-}
-
-fn main_func() {
-	main_func_py() or { pyrt.fail(err) }
 }
 
 fn py2v_slice_step1[T](values []T, lower ?int, upper ?int, step int) []T {
@@ -139,6 +127,10 @@ fn py2v_slice_step1[T](values []T, lower ?int, upper ?int, step int) []T {
 	return result
 }
 
+fn py2v_entry1() ! {
+	main_func_py()!
+}
+
 fn main() {
-	main_func()
+	py2v_entry1() or { pyrt.fail(err) }
 }

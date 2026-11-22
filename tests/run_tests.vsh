@@ -200,6 +200,7 @@ fn compare_fixture(fixture ExecutionCase) ExecutionResult {
 		}
 		'dynamic_method_uncaught_attr' { "AttributeError: 'int' object has no attribute 'append'" }
 		'empty_set_uncaught' { "AttributeError: 'set' object has no attribute 'append'" }
+		'exception_propagation_uncaught' { 'ValueError: invalid value' }
 		'sys_exit' { 'OK' }
 		else { '' }
 	}
@@ -536,7 +537,8 @@ os.rmdir_all(init_root) or { panic(err) }
 
 // Exercise the paths that require a dependency or scheduler on purpose.
 for control in [
-	['external_dynamic', 'println(from_context(', 'lookup()', 'ImportError: untranslated Python import'],
+	['external_dynamic', 'println(from_context_py(', 'lookup_py()!',
+		'ImportError: untranslated Python import'],
 	['scheduling_refusal', 'println(supported())', 'read_future(0)',
 		'V panic: py2v_unsupported_coroutine'],
 ] {
@@ -1340,6 +1342,8 @@ for witness in [
 	['wide_hidden_overflow', '9223372036854775808', 'wide integer'],
 	['wide_sum', '18446744073709551616', 'wide integer'],
 	['enumerate_start_float', 'invalid', 'enumerate start'],
+	['exception_keyword_effects_refusal', 'k\ng\nh\n123', 'keyword argument order'],
+	['exception_wide_modular_refusal', '1', 'wide integer'],
 	['range_zero_step', 'zero', 'range zero step'],
 	['range_for_zero_step', 'zero', 'range zero step'],
 	['range_bool_zero_step', 'zero', 'range zero step'],

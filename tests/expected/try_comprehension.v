@@ -28,10 +28,6 @@ fn collect_py(conn &sqlite3.Connection, query string) ! {
 	println(values.len)
 }
 
-fn collect(conn &sqlite3.Connection, query string) {
-	collect_py(conn, query) or { pyrt.fail(err) }
-}
-
 fn handlers_py(conn &sqlite3.Connection, kind int) ! {
 	mut values := []Any{}
 	mut py2v_err_2 := ?IError(none)
@@ -65,10 +61,6 @@ fn handlers_py(conn &sqlite3.Connection, kind int) ! {
 	println('${values.len} ${pyrt.str(values[0])}')
 }
 
-fn handlers(conn &sqlite3.Connection, kind int) {
-	handlers_py(conn, kind) or { pyrt.fail(err) }
-}
-
 fn returning_py(conn &sqlite3.Connection, query string) ! {
 	mut values := []Any{}
 	mut py2v_err_3 := ?IError(none)
@@ -91,10 +83,6 @@ fn returning_py(conn &sqlite3.Connection, query string) ! {
 		}
 	}
 	println(values.len)
-}
-
-fn returning(conn &sqlite3.Connection, query string) {
-	returning_py(conn, query) or { pyrt.fail(err) }
 }
 
 fn reraising_py(conn &sqlite3.Connection, query string) ! {
@@ -120,10 +108,6 @@ fn reraising_py(conn &sqlite3.Connection, query string) ! {
 	println(values.len)
 }
 
-fn reraising(conn &sqlite3.Connection, query string) {
-	reraising_py(conn, query) or { pyrt.fail(err) }
-}
-
 fn dynamic_collect_py(items []Any) ! {
 	mut values := []Any{}
 	mut py2v_err_5 := ?IError(none)
@@ -147,20 +131,16 @@ fn dynamic_collect_py(items []Any) ! {
 	}
 }
 
-fn dynamic_collect(items []Any) {
-	dynamic_collect_py(items) or { pyrt.fail(err) }
-}
-
-fn main() {
-	conn := (sqlite3.connect(':memory:') or { pyrt.fail(err) })
-	collect(conn, 'SELECT 1')
-	collect(conn, 'SELECT missing')
-	handlers(conn, 0)
-	handlers(conn, 1)
-	handlers(conn, 2)
-	returning(conn, 'SELECT 1')
-	returning(conn, 'SELECT missing')
-	reraising(conn, 'SELECT 1')
+fn py2v_entry1() ! {
+	conn := sqlite3.connect(':memory:')!
+	collect_py(conn, 'SELECT 1')!
+	collect_py(conn, 'SELECT missing')!
+	handlers_py(conn, 0)!
+	handlers_py(conn, 1)!
+	handlers_py(conn, 2)!
+	returning_py(conn, 'SELECT 1')!
+	returning_py(conn, 'SELECT missing')!
+	reraising_py(conn, 'SELECT 1')!
 	mut py2v_err_6 := ?IError(none)
 	py2v_try_6: for {
 		reraising_py(conn, 'SELECT missing') or {
@@ -176,9 +156,13 @@ fn main() {
 			pyrt.fail(py2v_raised_6)
 		}
 	}
-	dynamic_collect([pyrt.box(map[string]Any{
+	dynamic_collect_py([pyrt.box(map[string]Any{
 		'x': pyrt.box(3)
-	})].map(Any(it)))
-	dynamic_collect([1].map(Any(it)))
-	conn.close() or { pyrt.fail(err) }
+	})].map(Any(it)))!
+	dynamic_collect_py([1].map(Any(it)))!
+	conn.close()!
+}
+
+fn main() {
+	py2v_entry1() or { pyrt.fail(err) }
 }

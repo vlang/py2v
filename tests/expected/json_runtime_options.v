@@ -13,16 +13,16 @@ fn report_py(names &pyrt.ListRef[string], scores map[string]int) !string {
 	return json.dumps(pyrt.box(payload), indent: 2)! + json.dumps(pyrt.box(scores), sort_keys: true)! + json.dumps(pyrt.box(names))!
 }
 
-fn report(names &pyrt.ListRef[string], scores map[string]int) string {
-	return report_py(names, scores) or { pyrt.fail(err) }
+fn py2v_entry1() ! {
+	println(report_py(pyrt.list_ref[string](['b', 'a']), map[string]int{
+		'z': 1
+		'y': 2
+	})!)
+	println(json.dumps(pyrt.box({
+		'a': [pyrt.box(1), pyrt.box(pyrt.to_float(pyrt.box(2.5))), pyrt.none_, pyrt.box(true)]
+	}), separators: [',', ':'])!)
 }
 
 fn main() {
-	println(report(pyrt.list_ref[string](['b', 'a']), map[string]int{
-		'z': 1
-		'y': 2
-	}))
-	println((json.dumps(pyrt.box({
-		'a': [pyrt.box(1), pyrt.box(pyrt.to_float(pyrt.box(2.5))), pyrt.none_, pyrt.box(true)]
-	}), separators: [',', ':']) or { pyrt.fail(err) }))
+	py2v_entry1() or { pyrt.fail(err) }
 }

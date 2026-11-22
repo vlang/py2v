@@ -17,16 +17,8 @@ fn add_custom_py(builder Any) !Any {
 	return pyrt.call(pyrt.getattr(pyrt.box(builder), 'add_parser')!, [pyrt.box('x')])!
 }
 
-fn add_custom(builder Any) Any {
-	return add_custom_py(builder) or { pyrt.fail(err) }
-}
-
 fn add_real_py(subparsers &argparse.Subparsers) ! {
 	subparsers.add_parser('real')!
-}
-
-fn add_real(subparsers &argparse.Subparsers) {
-	add_real_py(subparsers) or { pyrt.fail(err) }
 }
 
 fn exercise_py() ! {
@@ -36,10 +28,10 @@ fn exercise_py() ! {
 	println(pyrt.str(add_custom_py(CustomBuilder{})!))
 }
 
-fn exercise() {
-	exercise_py() or { pyrt.fail(err) }
+fn py2v_entry1() ! {
+	exercise_py()!
 }
 
 fn main() {
-	exercise()
+	py2v_entry1() or { pyrt.fail(err) }
 }

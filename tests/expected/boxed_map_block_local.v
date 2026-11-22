@@ -33,10 +33,6 @@ fn show_py(name string) ! {
 	println(pyrt.str(config['squares']))
 }
 
-fn show(name string) {
-	show_py(name) or { pyrt.fail(err) }
-}
-
 fn py2v_typed_list_index1[T](items []T, needle T) !int {
 	index := items.index(needle)
 	if index < 0 {
@@ -45,7 +41,11 @@ fn py2v_typed_list_index1[T](items []T, needle T) !int {
 	return index
 }
 
+fn py2v_entry1() ! {
+	show_py('yes')!
+	show_py('no')!
+}
+
 fn main() {
-	show('yes')
-	show('no')
+	py2v_entry1() or { pyrt.fail(err) }
 }

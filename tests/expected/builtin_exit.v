@@ -109,14 +109,10 @@ fn caught_py() ! {
 	}
 }
 
-fn caught() {
-	caught_py() or { pyrt.fail(err) }
-}
-
-fn main() {
+fn py2v_entry1() ! {
 	mode := os.args[1]
 	if mode == 'caught' {
-		caught()
+		caught_py()!
 	} else if mode == 'zero' {
 		exit(0)
 	} else if mode == 'int' {
@@ -139,4 +135,8 @@ fn main() {
 	} else if mode == 'nested_cleanups' {
 		nested_cleanups()
 	}
+}
+
+fn main() {
+	py2v_entry1() or { pyrt.fail(err) }
 }

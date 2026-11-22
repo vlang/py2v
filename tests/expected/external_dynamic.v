@@ -19,21 +19,17 @@ fn from_context_py(value Any) !string {
 	return pyrt.to_str(pyrt.call_method(pyrt.box(value), 'upper', [])!)
 }
 
-fn from_context(value Any) string {
-	return from_context_py(value) or { pyrt.fail(err) }
-}
-
 fn lookup_py() !Any {
 	return pyrt.untranslated_import('py2v_fixture_missing_dependency.make')!
 }
 
-fn lookup() Any {
-	return lookup_py() or { pyrt.fail(err) }
-}
-
-fn main() {
+fn py2v_entry1() ! {
 
 	// except handlers are not translated: see the TODO(py2v) note above
 	//   except ImportError: 1 statement(s) need an `or { ... }` equivalent
-	println(from_context('ready'))
+	println(from_context_py('ready')!)
+}
+
+fn main() {
+	py2v_entry1() or { pyrt.fail(err) }
 }

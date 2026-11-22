@@ -23,10 +23,6 @@ fn caught_py(values []Any) ! {
 	}
 }
 
-fn caught(values []Any) {
-	caught_py(values) or { pyrt.fail(err) }
-}
-
 fn messages_py(values []Any, py2v_comp_err_0 string) ! {
 	result := values.map(if pyrt.truth(pyrt.call_method(pyrt.box(it), 'get', [pyrt.box('message')])!) {
 		pyrt.item_at(it, pyrt.box('message'))
@@ -39,16 +35,16 @@ fn messages_py(values []Any, py2v_comp_err_0 string) ! {
 	}
 }
 
-fn messages(values []Any, py2v_comp_err_0 string) {
-	messages_py(values, py2v_comp_err_0) or { pyrt.fail(err) }
-}
-
-fn main() {
-	caught([pyrt.empty_list()].map(Any(it)))
-	caught([1].map(Any(it)))
-	messages([pyrt.box(map[string]Any{
+fn py2v_entry1() ! {
+	caught_py([pyrt.empty_list()].map(Any(it)))!
+	caught_py([1].map(Any(it)))!
+	messages_py([pyrt.box(map[string]Any{
 		'message': pyrt.box('one')
 	}), pyrt.box(map[string]Any{
 		'error': pyrt.box('two')
-	})].map(Any(it)), 'pyrt.fail(err)')
+	})].map(Any(it)), 'pyrt.fail(err)')!
+}
+
+fn main() {
+	py2v_entry1() or { pyrt.fail(err) }
 }

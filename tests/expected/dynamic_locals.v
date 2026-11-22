@@ -50,17 +50,17 @@ fn pick_py(flag bool, record Any) ! {
 	println('${pyrt.str(value)} ${pyrt.str(extra)}')
 }
 
-fn pick(flag bool, record Any) {
-	pick_py(flag, record) or { pyrt.fail(err) }
+fn py2v_entry1() ! {
+	show(true)
+	show2(false)
+	pick_py(true, pyrt.box(map[string]Any{
+		'key': pyrt.box(1)
+	}))!
+	pick_py(false, pyrt.box(map[string]Any{
+		'key': pyrt.box('k')
+	}))!
 }
 
 fn main() {
-	show(true)
-	show2(false)
-	pick(true, pyrt.box(map[string]Any{
-		'key': pyrt.box(1)
-	}))
-	pick(false, pyrt.box(map[string]Any{
-		'key': pyrt.box('k')
-	}))
+	py2v_entry1() or { pyrt.fail(err) }
 }

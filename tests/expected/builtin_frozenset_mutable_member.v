@@ -10,10 +10,10 @@ fn show_py() ! {
 	println(pyrt.str(pyrt.item_in(pyrt.box(pyrt.frozenset_from(pyrt.box(pyrt.box([pyrt.box(2)])))!), pyrt.box(outer))!))
 }
 
-fn show() {
-	show_py() or { pyrt.fail(err) }
+fn py2v_entry1() ! {
+	show_py()!
 }
 
 fn main() {
-	show()
+	py2v_entry1() or { pyrt.fail(err) }
 }

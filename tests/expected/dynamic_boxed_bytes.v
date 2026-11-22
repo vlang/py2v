@@ -10,10 +10,10 @@ fn append_bytes_py(items Any) ! {
 	println(pyrt.str(pyrt.call_method(pyrt.box(pyrt.item_at(items, pyrt.box(0))), 'decode', [])!))
 }
 
-fn append_bytes(items Any) {
-	append_bytes_py(items) or { pyrt.fail(err) }
+fn py2v_entry1() ! {
+	append_bytes_py(pyrt.empty_list())!
 }
 
 fn main() {
-	append_bytes(pyrt.empty_list())
+	py2v_entry1() or { pyrt.fail(err) }
 }

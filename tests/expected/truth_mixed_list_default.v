@@ -19,13 +19,13 @@ fn report_py(flag bool, value Any) ! {
 	println(pyrt.str(if pyrt.truth(selected) { selected } else { pyrt.empty_list() }))
 }
 
-fn report(flag bool, value Any) {
-	report_py(flag, value) or { pyrt.fail(err) }
+fn py2v_entry1() ! {
+	report_py(false, pyrt.box([pyrt.box(10)]))!
+	report_py(true, pyrt.box([pyrt.box(10)]))!
+	report_py(false, pyrt.empty_list())!
+	report_py(true, pyrt.empty_list())!
 }
 
 fn main() {
-	report(false, pyrt.box([pyrt.box(10)]))
-	report(true, pyrt.box([pyrt.box(10)]))
-	report(false, pyrt.empty_list())
-	report(true, pyrt.empty_list())
+	py2v_entry1() or { pyrt.fail(err) }
 }

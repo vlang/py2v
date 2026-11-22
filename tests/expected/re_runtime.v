@@ -30,10 +30,10 @@ fn show_py(text string) ! {
 	}).str())
 }
 
-fn show(text string) {
-	show_py(text) or { pyrt.fail(err) }
+fn py2v_entry1() ! {
+	show_py('10-20 abc def 7')!
 }
 
 fn main() {
-	show('10-20 abc def 7')
+	py2v_entry1() or { pyrt.fail(err) }
 }

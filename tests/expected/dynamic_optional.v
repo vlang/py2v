@@ -9,12 +9,12 @@ fn show_py(items Any, value ?string) ! {
 	println(pyrt.str(pyrt.item_at(items, pyrt.box(-1))))
 }
 
-fn show(items Any, value ?string) {
-	show_py(items, value) or { pyrt.fail(err) }
+fn py2v_entry1() ! {
+	show_py(pyrt.empty_list(), none)!
+	show_py(pyrt.empty_list(), '')!
+	show_py(pyrt.empty_list(), 'present')!
 }
 
 fn main() {
-	show(pyrt.empty_list(), none)
-	show(pyrt.empty_list(), '')
-	show(pyrt.empty_list(), 'present')
+	py2v_entry1() or { pyrt.fail(err) }
 }

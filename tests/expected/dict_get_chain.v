@@ -15,14 +15,14 @@ fn show_py(data map[string]Any) ! {
 	])!))
 }
 
-fn show(data map[string]Any) {
-	show_py(data) or { pyrt.fail(err) }
-}
-
-fn main() {
-	show(map[string]Any{
+fn py2v_entry1() ! {
+	show_py(map[string]Any{
 		'nested': pyrt.box(map[string]Any{
 			'leaf': pyrt.box('found')
 		})
-	})
+	})!
+}
+
+fn main() {
+	py2v_entry1() or { pyrt.fail(err) }
 }

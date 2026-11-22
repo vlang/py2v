@@ -16,17 +16,9 @@ fn construct_py() !Any {
 	return pyrt.untranslated_import('unavailable.Widget')!
 }
 
-fn construct() Any {
-	return construct_py() or { pyrt.fail(err) }
-}
-
 fn method_py(receiver Any) !Any {
 	return pyrt.call(pyrt.getattr(pyrt.box(receiver), 'Upper')!, [
 		pyrt.box(compute(4)),
 		pyrt.box(compute(5)),
 	])!
-}
-
-fn method(receiver Any) Any {
-	return method_py(receiver) or { pyrt.fail(err) }
 }

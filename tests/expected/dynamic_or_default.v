@@ -17,22 +17,22 @@ fn show_py(record Any, fallback string) ! {
 	}
 }
 
-fn show(record Any, fallback string) {
-	show_py(record, fallback) or { pyrt.fail(err) }
-}
-
-fn main() {
-	show(pyrt.box(map[string]Any{
+fn py2v_entry1() ! {
+	show_py(pyrt.box(map[string]Any{
 		'name':  pyrt.box('ada')
 		'count': pyrt.box(3)
 		'when':  pyrt.box('2026-11-16')
-	}), 'x')
-	show(pyrt.box(map[string]Any{
+	}), 'x')!
+	show_py(pyrt.box(map[string]Any{
 		'count': pyrt.box(0)
 		'tags':  pyrt.box([pyrt.box('a')])
 		'owner': pyrt.box('o')
-	}), 'y')
-	show(pyrt.box(map[string]Any{
+	}), 'y')!
+	show_py(pyrt.box(map[string]Any{
 		'count': pyrt.box(2)
-	}), 'z')
+	}), 'z')!
+}
+
+fn main() {
+	py2v_entry1() or { pyrt.fail(err) }
 }

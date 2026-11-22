@@ -20,10 +20,6 @@ fn build_py() !Any {
 	return pyrt.frozenset_from(pyrt.box(pyrt.box([pyrt.box('red'), pyrt.box('blue'), pyrt.box('red')])))!
 }
 
-fn build() Any {
-	return build_py() or { pyrt.fail(err) }
-}
-
 fn show_py() ! {
 	values := build_py()!
 	println((count(values)).str() + ' ' + (if contains(values, 'red') { 'True' } else { 'False' }).str() + ' ' + (if contains(values, 'green') {
@@ -54,10 +50,10 @@ fn show_py() ! {
 	}
 }
 
-fn show() {
-	show_py() or { pyrt.fail(err) }
+fn py2v_entry1() ! {
+	show_py()!
 }
 
 fn main() {
-	show()
+	py2v_entry1() or { pyrt.fail(err) }
 }

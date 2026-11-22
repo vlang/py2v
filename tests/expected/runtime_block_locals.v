@@ -25,10 +25,6 @@ fn show_py(conn &sqlite3.Connection, flag bool) ! {
 	println((rows.len).str() + ' ' + (if row == none { 'True' } else { 'False' }).str() + ' ' + (result.returncode).str() + ' ' + (where.name()).str())
 }
 
-fn show(conn &sqlite3.Connection, flag bool) {
-	show_py(conn, flag) or { pyrt.fail(err) }
-}
-
 fn count_py(path string, fresh bool) !int {
 	mut conn := &sqlite3.Connection(unsafe { nil })
 	mut cur := &sqlite3.Cursor(unsafe { nil })
@@ -43,15 +39,15 @@ fn count_py(path string, fresh bool) !int {
 	return cur.fetchall().len
 }
 
-fn count(path string, fresh bool) int {
-	return count_py(path, fresh) or { pyrt.fail(err) }
+fn py2v_entry1() ! {
+	db := sqlite3.connect(':memory:')!
+	show_py(db, true)!
+	show_py(db, false)!
+	stamp := pathlib.new_path('.').stat()!.mtime
+	println(if stamp > 0 { 'True' } else { 'False' })
+	println((count_py(':memory:', true)!).str() + ' ' + (count_py(':memory:', false)!).str())
 }
 
 fn main() {
-	db := (sqlite3.connect(':memory:') or { pyrt.fail(err) })
-	show(db, true)
-	show(db, false)
-	stamp := pathlib.new_path('.').stat() or { pyrt.fail(err) }.mtime
-	println(if stamp > 0 { 'True' } else { 'False' })
-	println((count(':memory:', true)).str() + ' ' + (count(':memory:', false)).str())
+	py2v_entry1() or { pyrt.fail(err) }
 }

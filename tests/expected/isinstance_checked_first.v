@@ -1,7 +1,81 @@
 module main
 
-import pyrt
 import strconv
+
+type Py2vErrorArg = bool | i64 | string
+
+fn (arg Py2vErrorArg) str() string {
+	return match arg {
+		bool {
+			if arg { 'True' } else { 'False' }
+		}
+		i64 { arg.str() }
+		string { arg }
+	}
+}
+
+struct Py2vErrorArgs {
+	values []Py2vErrorArg
+}
+
+fn (args Py2vErrorArgs) str() string {
+	mut parts := []string{cap: args.values.len}
+	for value in args.values {
+		if value is string {
+			quote := if value.contains('\x27') && !value.contains('\x22') { '\x22' } else { '\x27' }
+			escaped := value.replace('\\', '\\\\').replace('\n', '\\n').replace('\r', '\\r').replace('\t', '\\t').replace(quote, '\\' + quote)
+			parts << quote + escaped + quote
+		} else {
+			parts << value.str()
+		}
+	}
+	suffix := if parts.len == 1 { ',)' } else { ')' }
+	return '(' + parts.join(', ') + suffix
+}
+
+struct Py2vErrorData {
+	args     Py2vErrorArgs
+	original ?IError
+	cause    ?IError
+}
+
+fn (data Py2vErrorData) str() string {
+	if data.args.values.len > 1 {
+		return data.args.str()
+	}
+	value := data.args.values[0] or { return '' }
+	return value.str()
+}
+
+struct Py2vErrorTypeError {
+	Error
+	data Py2vErrorData
+}
+
+fn (err Py2vErrorTypeError) msg() string {
+	return err.data.str()
+}
+
+struct Py2vErrorValueError {
+	Error
+	data Py2vErrorData
+}
+
+fn (err Py2vErrorValueError) msg() string {
+	return err.data.str()
+}
+
+@[noreturn]
+fn py2v_uncaught_exception1(err IError) {
+	class_name := match err {
+		Py2vErrorTypeError { 'TypeError' }
+		Py2vErrorValueError { 'ValueError' }
+		else { panic(err) }
+	}
+	message := err.msg()
+	eprintln(if message == '' { class_name } else { class_name + ': ' + message })
+	exit(1)
+}
 
 fn highest_bit(py2v_number_in1 int) int {
 	mut number := py2v_number_in1
@@ -19,35 +93,27 @@ fn highest_bit(py2v_number_in1 int) int {
 fn rotate_py(x int, py2v_k_in2 int) !int {
 	mut k := py2v_k_in2
 	if !true || x < 0 {
-		return pyrt.raise('ValueError', 'x must be non-negative')
+		return IError(Py2vErrorValueError{ data: Py2vErrorData{ args: Py2vErrorArgs{ values: [Py2vErrorArg('x must be non-negative')] } } })
 	}
 	if !true || k < 0 {
-		return pyrt.raise('ValueError', 'k must be non-negative')
+		return IError(Py2vErrorValueError{ data: Py2vErrorData{ args: Py2vErrorArgs{ values: [Py2vErrorArg('k must be non-negative')] } } })
 	}
 	k &= 31
 	return x << k & 65535
 }
 
-fn rotate(x int, py2v_k_in2 int) int {
-	return rotate_py(x, py2v_k_in2) or { pyrt.fail(err) }
-}
-
 fn as_text_py(py2v_num_in3 int) !string {
 	mut num := py2v_num_in3
 	if false {
-		return pyrt.raise('TypeError', 'float given')
+		return IError(Py2vErrorTypeError{ data: Py2vErrorData{ args: Py2vErrorArgs{ values: [Py2vErrorArg('float given')] } } })
 	}
 	if false {
-		return pyrt.raise('TypeError', 'not a number')
+		return IError(Py2vErrorTypeError{ data: Py2vErrorData{ args: Py2vErrorArgs{ values: [Py2vErrorArg('not a number')] } } })
 	}
 	if num < 0 {
 		num = -num
 	}
 	return num.str()
-}
-
-fn as_text(py2v_num_in3 int) string {
-	return as_text_py(py2v_num_in3) or { pyrt.fail(err) }
 }
 
 fn all_ints(arr []int) bool {
@@ -56,7 +122,7 @@ fn all_ints(arr []int) bool {
 
 fn count_ints_py(inputs []int) !int {
 	if !true {
-		return pyrt.raise('TypeError', 'a list is needed')
+		return IError(Py2vErrorTypeError{ data: Py2vErrorData{ args: Py2vErrorArgs{ values: [Py2vErrorArg('a list is needed')] } } })
 	}
 	mut total := 0
 	for item in inputs {
@@ -66,10 +132,6 @@ fn count_ints_py(inputs []int) !int {
 		total += 1
 	}
 	return total
-}
-
-fn count_ints(inputs []int) int {
-	return count_ints_py(inputs) or { pyrt.fail(err) }
 }
 
 fn joined(separator string, separated []string) string {
@@ -86,17 +148,13 @@ fn joined(separator string, separated []string) string {
 fn scaled_py(py2v_theta_in4 f64, accuracy int) !f64 {
 	mut theta := py2v_theta_in4
 	if !true {
-		return pyrt.raise('ValueError', 'an int or float is needed')
+		return IError(Py2vErrorValueError{ data: Py2vErrorData{ args: Py2vErrorArgs{ values: [Py2vErrorArg('an int or float is needed')] } } })
 	}
 	if !true || accuracy <= 0 {
-		return pyrt.raise('ValueError', 'a positive int is needed')
+		return IError(Py2vErrorValueError{ data: Py2vErrorData{ args: Py2vErrorArgs{ values: [Py2vErrorArg('a positive int is needed')] } } })
 	}
 	theta = theta * 2
 	return theta + accuracy
-}
-
-fn scaled(py2v_theta_in4 f64, accuracy int) f64 {
-	return scaled_py(py2v_theta_in4, accuracy) or { pyrt.fail(err) }
 }
 
 fn twice(words []string) int {
@@ -143,13 +201,17 @@ fn py2v_text_length1(text string) int {
 	return length
 }
 
-fn main() {
+fn py2v_entry1() ! {
 	println(highest_bit(25))
-	println(rotate(3, 2))
-	println(as_text(-7))
+	println(rotate_py(3, 2)!)
+	println(as_text_py(-7)!)
 	println(if all_ints([1, 2, 3]) { 'True' } else { 'False' })
-	println(count_ints([1, 0, 1]))
+	println(count_ints_py([1, 0, 1])!)
 	println(joined('-', ['a', 'b']))
-	println(py2v_float_text1(scaled(1.5, 2)))
+	println(py2v_float_text1(scaled_py(1.5, 2)!))
 	println(twice(['ab', 'c']))
+}
+
+fn main() {
+	py2v_entry1() or { py2v_uncaught_exception1(err) }
 }

@@ -14,10 +14,6 @@ fn equation_py(x int, y int) !bool {
 	true
 }
 
-fn equation(x int, y int) bool {
-	return equation_py(x, y) or { pyrt.fail(err) }
-}
-
 fn fequation_py(z f64) !bool {
 	if pyrt.truth(pyrt.untranslated_import('py2many.smt.pre')!) {
 		assert 9.8 + 2 * z == z + 9.11
@@ -25,16 +21,16 @@ fn fequation_py(z f64) !bool {
 	true
 }
 
-fn fequation(z f64) bool {
-	return fequation_py(z) or { pyrt.fail(err) }
+fn py2v_entry1() ! {
+	x := pyrt.untranslated_import('py2many.smt.default_value')!
+	y := pyrt.untranslated_import('py2many.smt.default_value')!
+	z := pyrt.untranslated_import('py2many.smt.default_value')!
+	assert equation_py(x, y)!
+	assert fequation_py(z)!
+	pyrt.untranslated_import('py2many.smt.check_sat')!
+	pyrt.untranslated_import('py2many.smt.get_value')!
 }
 
 fn main() {
-	x := (pyrt.untranslated_import('py2many.smt.default_value') or { pyrt.fail(err) })
-	y := (pyrt.untranslated_import('py2many.smt.default_value') or { pyrt.fail(err) })
-	z := (pyrt.untranslated_import('py2many.smt.default_value') or { pyrt.fail(err) })
-	assert equation(x, y)
-	assert fequation(z)
-	(pyrt.untranslated_import('py2many.smt.check_sat') or { pyrt.fail(err) })
-	(pyrt.untranslated_import('py2many.smt.get_value') or { pyrt.fail(err) })
+	py2v_entry1() or { pyrt.fail(err) }
 }
