@@ -68,7 +68,6 @@ random_module	nondeterministic	Prints whether an unseeded sequence of dice rolls
 rebound_optional_float	does-not-compile	mutable arguments are only allowed for arrays, interfaces, maps, pointers, structs or their aliases
 rebound_optional_int	does-not-compile	mutable arguments are only allowed for arrays, interfaces, maps, pointers, structs or their aliases
 review_w_empty_extrema_refusal	does-not-compile	unknown function: py2v_unsupported_min_numeric_shape
-review_w_empty_float_generator_refusal	does-not-compile	unknown function: py2v_unsupported_unproven_float_generator_sum
 review_w_float_sort_nan_refusal	does-not-compile	unknown function: py2v_unsupported_float_sort_key
 review_w_mixed_extrema_refusal	does-not-compile	unknown function: py2v_unsupported_max_mixed_numeric
 review_w_mixed_sum_refusal	does-not-compile	unknown function: py2v_unsupported_mixed_numeric_sum

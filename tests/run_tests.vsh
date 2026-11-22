@@ -1382,6 +1382,7 @@ for witness in [
 	['set_iteration', '1\n2\n3', 'set iteration'],
 	['set_concat_order', '14', 'set concat order'],
 	['zip_strict', '1:a\ndifferent lengths', 'zip strict'],
+	['float_sum_integer_argument', 'True', 'unproven float sum'],
 ] {
 	source := os.join_path(cases_dir, 'review_refusals', witness[0] + '.py')
 	oracle := os.exec([python, '-X', 'utf8', '-I', source])

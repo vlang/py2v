@@ -1,4 +1,3 @@
-/private/tmp/agent-run-502/ww-r2.1_qimwbh/tmp.8oTb6rwvxu/gen/tests/cases/hello-wuffs.py:49: py2v_unsupported_coroutine: test_parser requires an awaitable with unknown scheduling
 module main
 
 import os

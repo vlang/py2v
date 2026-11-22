@@ -1,8 +1,3 @@
-py2v: module-level list refusal: <module@6>: 10: shared list passed to an unresolved call; cannot preserve native list identity at this boundary
-py2v: module-level list refusal: <module@7>: 10: shared list passed to an unresolved call; cannot preserve native list identity at this boundary
-py2v: module-level list refusal: <module@10>: 10: shared list passed to an unresolved call; cannot preserve native list identity at this boundary
-py2v: module-level list refusal: <module@13>: 10: shared list passed to an unresolved call; cannot preserve native list identity at this boundary
-py2v: module-level list refusal: <module@19>: 10: shared list passed to an unresolved call; cannot preserve native list identity at this boundary
 module main
 
 import arrays

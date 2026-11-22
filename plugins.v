@@ -547,7 +547,7 @@ fn python_numeric_list_kind(t &VTranspiler, items List) string {
 	mut has_int := false
 	mut has_float := false
 	for item in items.elts {
-		kind := python_numeric_literal_kind(t, item)
+		kind := python_number_kind(t, item, t.sum_list_kinds)
 		if kind == 'unknown' { return 'unknown' }
 		if kind == 'float' { has_float = true }
 		if kind == 'int' { has_int = true }
@@ -561,12 +561,380 @@ fn python_numeric_list_kind(t &VTranspiler, items List) string {
 	}
 }
 
+// A native float type may have been assigned after a Python int-to-float coercion.
+fn python_number_kind(t &VTranspiler, expr Expr, bindings map[string]string) string {
+	literal := python_numeric_literal_kind(t, expr)
+	if literal != 'unknown' { return literal }
+	match expr {
+		Name {
+			return match bindings[expr.id] {
+				'float_value' { 'float' }
+				'int_value' { 'int' }
+				else { 'unknown' }
+			}
+		}
+		UnaryOp {
+			if expr.op is UAdd || expr.op is USub {
+				return python_number_kind(t, *expr.operand, bindings)
+			}
+		}
+		BinOp {
+			if expr.op is Div { return 'float' }
+			a := python_number_kind(t, *expr.left, bindings)
+			b := python_number_kind(t, *expr.right, bindings)
+			if expr.op is Pow {
+				if a == 'float' && (b == 'int' || get_expr_annotation(*expr.right) == 'int') {
+					return 'float'
+				}
+			} else if expr.op is Add || expr.op is Sub || expr.op is Mult || expr.op is Mod
+				|| expr.op is FloorDiv {
+				if a == 'float' || b == 'float' { return 'float' }
+				if a == 'int' && b == 'int' { return 'int' }
+			}
+		}
+		Call {
+			if expr.func is Name && expr.keywords.len == 0 {
+				if expr.func.id == 'abs' && expr.args.len == 1 && 'abs' !in t.module_functions
+					&& !t.is_bound_in_scope('abs') {
+					return python_number_kind(t, expr.args[0], bindings)
+				}
+				if t.sum_float_results[expr.func.id] && !t.is_bound_in_scope(expr.func.id) {
+					return 'float'
+				}
+			}
+		}
+		Subscript {
+			if expr.slice !is Slice && expr.value is Name
+				&& bindings[expr.value.id] in ['float', 'maybe_float'] {
+				return 'float'
+			}
+		}
+		IfExp {
+			a := python_number_kind(t, *expr.body, bindings)
+			if a == python_number_kind(t, *expr.orelse, bindings) { return a }
+		}
+		else {}
+	}
+	return 'unknown'
+}
+
+fn python_sum_iter_kinds(t &VTranspiler, iter Expr) []string {
+	if iter is Call && iter.func is Name && iter.func.id !in t.module_functions
+		&& !t.is_bound_in_scope(iter.func.id) && iter.keywords.len == 0 {
+		if iter.func.id == 'range' { return ['int'] }
+		if iter.func.id == 'enumerate' && iter.args.len in [1, 2] {
+			return ['int', python_numeric_arg_list_kind(t, iter.args[0])]
+		}
+		if iter.func.id == 'zip' {
+			return iter.args.map(python_numeric_arg_list_kind(t, it))
+		}
+	}
+	return [python_numeric_arg_list_kind(t, iter)]
+}
+
+fn python_float_comprehension_kind(t &VTranspiler, elt Expr, generators []Comprehension) string {
+	if generators.len != 1 { return 'unknown' }
+	gen := generators[0]
+	mut bindings := t.sum_list_kinds.clone()
+	kinds := python_sum_iter_kinds(t, gen.iter)
+	for i, name in for_target_names(gen.target) {
+		bindings[name] = match kinds[i] or { 'unknown' } {
+			'float', 'maybe_float' { 'float_value' }
+			'int' { 'int_value' }
+			else { 'unknown' }
+		}
+	}
+	if python_number_kind(t, elt, bindings) != 'float' { return 'unknown' }
+	if gen.ifs.len == 0 {
+		if gen.iter is List {
+			return if gen.iter.elts.len == 0 { 'empty' } else { 'float' }
+		}
+		if gen.iter is Name && t.sum_list_kinds[gen.iter.id] == 'empty' { return 'empty' }
+		if python_sum_iter_nonempty(t, gen.iter) { return 'float' }
+	}
+	return 'maybe_float'
+}
+
+fn python_sum_iter_nonempty(t &VTranspiler, iter Expr) bool {
+	return match iter {
+		List { iter.elts.len > 0 }
+		Tuple { iter.elts.len > 0 }
+		Name {
+			get_expr_annotation(iter) == 'py2v_nonempty_list'
+				|| t.sum_list_kinds[iter.id] in ['float', 'int', 'mixed', 'nonempty']
+		}
+		Call {
+			if iter.func is Name && iter.func.id !in t.module_functions
+				&& !t.is_bound_in_scope(iter.func.id) && iter.keywords.len == 0
+				&& iter.args.len > 0 {
+				if iter.func.id == 'enumerate' {
+					python_sum_iter_nonempty(t, iter.args[0])
+				} else if iter.func.id == 'zip' {
+					iter.args.all(python_sum_iter_nonempty(t, it))
+				} else {
+					false
+				}
+			} else {
+				false
+			}
+		}
+		else { false }
+	}
+}
+
 fn python_numeric_arg_list_kind(t &VTranspiler, expr Expr) string {
 	return match expr {
 		List { python_numeric_list_kind(t, expr) }
-		Name { t.sum_list_kinds[expr.id] or { 'unknown' } }
+		Tuple { python_numeric_list_kind(t, List{ elts: expr.elts }) }
+		Name {
+			kind := t.sum_list_kinds[expr.id]
+			if kind in ['float', 'maybe_float', 'empty'] {
+				kind
+			} else if get_expr_annotation(expr) == 'py2v_float_list' {
+				'maybe_float'
+			} else if kind in ['float_buffer', 'maybe_float_buffer'] {
+				if get_expr_annotation(expr) == 'py2v_float_comprehension' {
+					kind.all_before('_buffer')
+				} else {
+					'unknown'
+				}
+			} else {
+				kind
+			}
+		}
+		Subscript {
+			if expr.value is Name && t.sum_list_kinds[expr.value.id] == 'float_lists' {
+				'maybe_float'
+			} else {
+				'unknown'
+			}
+		}
+		GeneratorExp { python_float_comprehension_kind(t, expr.elt, expr.generators) }
+		ListComp { python_float_comprehension_kind(t, expr.elt, expr.generators) }
 		else { 'unknown' }
 	}
+}
+
+// The frontend can materialize a comprehension as an empty local and one
+// append loop. Only the generated use carries the matching provenance marker.
+fn materialized_float_sum_kind(t &VTranspiler, declaration Stmt, statement Stmt) ?(string, string) {
+	if declaration !is AnnAssign || statement !is For { return none }
+	decl := declaration as AnnAssign
+	loop := statement as For
+	value := decl.value or { return none }
+	initial := *value
+	target := *decl.target
+	if initial !is List || target !is Name { return none }
+	if (initial as List).elts.len != 0 || loop.body.len != 1 || loop.orelse.len > 0 { return none }
+	name := (target as Name).id
+	mut append := loop.body[0]
+	mut filters := []Expr{}
+	if append is If && append.body.len == 1 && append.orelse.len == 0 {
+		filters << *append.test
+		append = append.body[0]
+	}
+	if append !is ExprStmt { return none }
+	expr := *(append as ExprStmt).value
+	if expr !is Call { return none }
+	call := expr as Call
+	func := *call.func
+	if func !is Attribute || call.args.len != 1 || call.keywords.len != 0 { return none }
+	method := func as Attribute
+	receiver := *method.value
+	if receiver !is Name { return none }
+	if method.attr != 'append' || (receiver as Name).id != name { return none }
+	kind := python_float_comprehension_kind(t, call.args[0], [Comprehension{
+		target: loop.target
+		iter:   loop.iter
+		ifs:    filters
+	}])
+	if kind !in ['float', 'maybe_float'] { return none }
+	return name, '${kind}_buffer'
+}
+
+fn python_float_return(t &VTranspiler, body []Stmt) bool {
+	mut bindings := map[string]string{}
+	for stmt in body {
+		match stmt {
+			ExprStmt {
+				if stmt.value !is Constant { return false }
+			}
+			Assign {
+				if stmt.targets.len != 1 || stmt.targets[0] !is Name { return false }
+				target := stmt.targets[0] as Name
+				kind := python_number_kind(t, *stmt.value, bindings)
+				bindings[target.id] = '${kind}_value'
+			}
+			Return {
+				value := stmt.value or { return false }
+				return python_number_kind(t, *value, bindings) == 'float'
+			}
+			else { return false }
+		}
+	}
+	return false
+}
+
+fn (mut t VTranspiler) plan_float_sum_sources(stmts []Stmt, uses map[string]int, sites []BindingCall) {
+	t.sum_float_results = map[string]bool{}
+	t.sum_parameter_kinds = map[string][]string{}
+	if t.module_name !in ['', 'main'] || 'sum' in t.module_functions { return }
+	mut defs := map[string]FunctionDef{}
+	mut calls := map[string][]BindingCall{}
+	mut dependencies := map[string]map[string]int{}
+	mut direct := map[string]int{}
+	for site in sites {
+		if site.call.func is Name { direct[site.call.func.id]++ }
+	}
+	for stmt in stmts {
+		if stmt is FunctionDef && stmt.name in t.module_safe_signatures && !stmt.is_class_method
+			&& !stmt.is_nested && uses[':load:${stmt.name}'] == direct[stmt.name] {
+			defs[stmt.name] = stmt
+			mut bindings := map[string]int{}
+			mut seen := []BindingCall{}
+			count_call_bindings(stmt.body, mut bindings, mut seen, true)
+			calls[stmt.name] = seen
+			mut buffers := map[string]Stmt{}
+			for i, body_stmt in stmt.body {
+				if i > 0 && body_stmt is For && stmt.body[i - 1] is AnnAssign {
+					decl := stmt.body[i - 1] as AnnAssign
+					if decl.target is Name {
+						if _, _ := materialized_float_sum_kind(t, stmt.body[i - 1], body_stmt) {
+							continue
+						}
+						buffers[decl.target.id] = body_stmt
+					}
+				}
+			}
+			mut reads := {
+				':load:': 1
+			}
+			mut ignored := []BindingCall{}
+			if bindings['sum'] == 0 && !stmt.args.args.any(it.arg == 'sum') {
+				for use in seen {
+					call := use.call
+					if call.func is Name && call.func.id == 'sum' && call.args.len > 0 {
+						items := call.args[0]
+						if items is Name && get_expr_annotation(items) == 'py2v_float_comprehension' {
+							if materialization := buffers[items.id] {
+								count_call_bindings(materialization, mut reads, mut ignored, true)
+							}
+						} else if python_numeric_arg_list_kind(t, items) !in ['float', 'maybe_float',
+							'empty', 'int', 'mixed'] {
+							count_call_bindings(items, mut reads, mut ignored, true)
+						}
+					}
+				}
+			}
+			dependencies[stmt.name] = reads
+			if bindings['float'] == 0 && bindings['abs'] == 0
+				&& !stmt.args.args.any(it.arg in ['float', 'abs']) && python_float_return(t, stmt.body) {
+				t.sum_float_results[stmt.name] = true
+			}
+		}
+	}
+	for {
+		mut changed := false
+		for name, def in defs {
+			mut reads := dependencies[name].clone()
+			mut ignored := []BindingCall{}
+			function_calls := calls[name] or { continue }
+			for use in function_calls {
+				call := use.call
+				if call.func is Name {
+					for i, kind in t.sum_parameter_kinds[call.func.id] {
+						if kind != '' && i < call.args.len {
+							count_call_bindings(call.args[i], mut reads, mut ignored, true)
+						}
+					}
+				}
+			}
+			mut args := def.args.posonlyargs.clone()
+			args << def.args.args
+			mut kinds := []string{len: args.len}
+			for i, arg in args {
+				if reads[':load:${arg.arg}'] == 0 || arg.is_mutable || arg.arg in def.mutable_vars {
+					continue
+				}
+				annotation := arg.annotation or { continue }
+				kinds[i] = match t.typename_from_annotation(*annotation) {
+					'f64' { 'float_value' }
+					'[]f64' { 'maybe_float' }
+					'[][]f64' { 'float_lists' }
+					else { '' }
+				}
+				default_index := i - (args.len - def.args.defaults.len)
+				if default_index >= 0 && !python_sum_argument_matches(t, def.args.defaults[default_index], kinds[i]) {
+					kinds[i] = ''
+				}
+			}
+			if kinds.any(it != '') && kinds != t.sum_parameter_kinds[name] {
+				t.sum_parameter_kinds[name] = kinds
+				changed = true
+			}
+		}
+		if !changed { break }
+	}
+}
+
+fn python_sum_argument_matches(t &VTranspiler, expr Expr, expected string) bool {
+	return match expected {
+		'float_value' { python_number_kind(t, expr, t.sum_list_kinds) == 'float' }
+		'maybe_float' { python_numeric_arg_list_kind(t, expr) in ['float', 'maybe_float', 'empty'] }
+		'float_lists' {
+			match expr {
+				Name { t.sum_list_kinds[expr.id] == 'float_lists' }
+				List { expr.elts.all(python_sum_argument_matches(t, it, 'maybe_float')) }
+				else { false }
+			}
+		}
+		else { true }
+	}
+}
+
+fn (t &VTranspiler) sum_may_return_integer_zero(call Call) bool {
+	return call.func is Name && call.func.id == 'sum' && call.args.len > 0
+		&& call.func.id !in t.module_functions && !t.is_bound_in_scope('sum')
+		&& python_numeric_arg_list_kind(t, call.args[0]) == 'maybe_float'
+		&& ((call.args.len == 1 && call.keywords.len == 0)
+			|| (call.args.len == 2 && call.keywords.len == 0
+				&& python_number_kind(t, call.args[1], t.sum_list_kinds) == 'int')
+			|| (call.args.len == 1 && call.keywords.len == 1
+				&& (call.keywords[0].arg or { '' }) == 'start'
+				&& python_number_kind(t, call.keywords[0].value, t.sum_list_kinds) == 'int'))
+}
+
+// A local returned array can retain the integer seed alongside float sums.
+// Its single initialization and append-only uses give it one representation.
+fn (t &VTranspiler) sum_result_array_binding(body []Stmt, result Expr) string {
+	if result !is Name { return '' }
+	name := (result as Name).id
+	mut uses := {
+		':load:': 1
+	}
+	mut calls := []BindingCall{}
+	count_call_bindings(body, mut uses, mut calls, true)
+	if uses[name] != 1 { return '' }
+	mut initialized := false
+	for stmt in body {
+		if stmt is Assign && stmt.targets.len == 1 && stmt.targets[0] is Name
+			&& stmt.targets[0].id == name && stmt.value is BinOp && stmt.value.op is Mult
+			&& stmt.value.left is List && stmt.value.left.elts.len == 1 {
+			initialized = true
+			break
+		}
+	}
+	if !initialized { return '' }
+	mut appends := 0
+	for site in calls {
+		call := site.call
+		if call.func is Attribute && call.func.attr == 'append' && call.func.value is Name
+			&& call.func.value.id == name && call.args.len == 1 && call.keywords.len == 0
+			&& call.args[0] is Call {
+			if t.sum_may_return_integer_zero(call.args[0]) { appends++ }
+		}
+	}
+	return if appends > 0 && uses[':load:${name}'] == appends + 1 { name } else { '' }
 }
 
 // Handle sum() call
@@ -631,20 +999,6 @@ fn visit_sum(mut t VTranspiler, node Call, args []string) (string, bool, string)
 		}
 	}
 	items := node.args[0]
-	// A float-producing generator can be empty. Python then returns the int 0,
-	// not a float zero: native []f64 alone cannot represent both outcomes.
-	if items is GeneratorExp {
-		if items.elt is BinOp && (items.elt as BinOp).op is Div {
-			return t.unsupported_site('unproven_float_generator_sum',
-				'empty float generators return Python integer zero', ''), true, ''
-		}
-	}
-	if items is ListComp {
-		if items.elt is BinOp && (items.elt as BinOp).op is Div {
-			return t.unsupported_site('unproven_float_generator_sum',
-				'empty float comprehensions return Python integer zero', ''), true, ''
-		}
-	}
 	kind := python_numeric_arg_list_kind(t, items)
 	if kind == 'empty' {
 		return if starts.len == 1 { args[1] } else { '0' }, true, ''
@@ -655,11 +1009,11 @@ fn visit_sum(mut t VTranspiler, node Call, args []string) (string, bool, string)
 	}
 	// A native []f64 does not establish homogeneous Python float elements.
 	// Unproven float sums must not silently use the compensated-float path.
-	if kind != 'float' && t.infer_expr_type(items) == '[]f64' {
+	if kind !in ['float', 'maybe_float'] && t.infer_expr_type(items) == '[]f64' {
 		return t.unsupported_site('unproven_float_sum',
 			'Python numeric element types are not statically proven', ''), true, ''
 	}
-	is_float_array := kind == 'float'
+	is_float_array := kind in ['float', 'maybe_float']
 	default_start := node.args.len == 1 && node.keywords.len == 0
 	float_start_type := if starts.len == 1 {
 		t.division_operand_type(starts[0], t.infer_expr_type(starts[0]))
@@ -671,6 +1025,13 @@ fn visit_sum(mut t VTranspiler, node Call, args []string) (string, bool, string)
 		start := if starts.len == 1 { 'f64(${args[1]})' } else { '0.0' }
 		integer_start := float_start_type in ['int', 'i64']
 		t.add_using('math')
+		if t.sum_may_return_integer_zero(node) {
+			seed := if starts.len == 1 { 'int(${args[1]})' } else { '0' }
+			t.runtime_helper('numeric_choice')
+			t.runtime_helper('float_text')
+			t.runtime_helper('float_sum')
+			return '${t.runtime_helper('float_sum_optional')}(${args[0]}, ${seed})', true, ''
+		}
 		return '${t.runtime_helper('float_sum')}(${args[0]}, ${start}, ${integer_start})', true, ''
 	}
 	if native_integer_type(elem_type) && starts.len == args.len - 1 {
@@ -772,6 +1133,12 @@ fn sort_key_call(mut t VTranspiler, key Expr, elem string, operand string) ?stri
 		}
 		Attribute {
 			if elem == 'string' && key.value is Name && (key.value as Name).id == 'str' {
+				if get_expr_annotation(key) == 'py2v_ascii_sort_key' && key.attr in [
+					'lower',
+					'upper',
+				] {
+					return '${operand}.to_${key.attr}()'
+				}
 				if key.attr == 'lower' {
 					// V's case conversion is not equivalent to Python's full Unicode mapping.
 					t.add_using('pyrt')

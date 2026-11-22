@@ -1,14 +1,3 @@
-py2v: refused: 4: resizing or reordering a shared list during iteration is not supported
-py2v: refused_groups: 13: resizing or reordering a shared list during iteration is not supported
-py2v: refused_lambda_callback.<lambda@24>: shared-list ordering comparison is not supported
-py2v: refused_lambda_callback.<lambda@24>: shared-list ordering comparison is not supported
-py2v: refused_lambda_callback.<lambda@24>: shared-list ordering comparison is not supported
-py2v: refused_lambda_callback.<lambda@24>: shared-list ordering comparison is not supported
-py2v: Methods.refused: 41: resizing or reordering a shared list during iteration is not supported
-py2v: refused_return: 52: resizing or reordering a shared list during iteration is not supported
-py2v: refused_caller: 52: resizing or reordering a shared list during iteration is not supported
-py2v: refused_default: shared-list ordering comparison is not supported
-py2v: refused_received: 76: shared list received from an unresolved call; cannot preserve native list identity at this boundary
 module main
 
 import pyrt

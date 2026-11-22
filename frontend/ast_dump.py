@@ -3046,6 +3046,120 @@ def _mutating_function_params(tree: ast.Module,
         ScopeTracker.mutating_functions = found
 
 
+def _mark_literal_list_semantics(tree: ast.Module) -> None:
+    """Retain ASCII and float provenance across known operations on a literal list."""
+    nodes = list(ast.walk(tree))
+    if any(isinstance(node, ast.ImportFrom) and any(a.name == "*" for a in node.names)
+           for node in nodes):
+        return
+
+    def builtin(expr: ast.AST, name: str) -> bool:
+        return (isinstance(expr, ast.Name) and expr.id == name
+                and getattr(expr, "_binding", None) is None)
+
+    def case_key(expr: ast.AST) -> bool:
+        return (isinstance(expr, ast.Attribute) and expr.attr in ("lower", "upper")
+                and builtin(expr.value, "str"))
+
+    def safe_sort(call: ast.Call) -> bool:
+        return all(kw.arg == "reverse" or (kw.arg == "key"
+                   and (case_key(kw.value) or builtin(kw.value, "len"))) for kw in call.keywords)
+
+    def ascii_list(expr: ast.AST) -> bool:
+        return isinstance(expr, (ast.List, ast.Tuple)) and all(
+            isinstance(item, ast.Constant) and isinstance(item.value, str) and item.value.isascii()
+            for item in expr.elts)
+
+    def float_value(expr: ast.AST) -> bool:
+        if isinstance(expr, ast.Constant):
+            return isinstance(expr.value, float)
+        if isinstance(expr, ast.UnaryOp) and isinstance(expr.op, (ast.UAdd, ast.USub)):
+            return float_value(expr.operand)
+        return isinstance(expr, ast.Call) and builtin(expr.func, "float") and not expr.keywords
+
+    def float_list(expr: ast.AST) -> bool:
+        return isinstance(expr, (ast.List, ast.Tuple)) and all(map(float_value, expr.elts))
+
+    parents = {child: parent for parent in nodes for child in ast.iter_child_nodes(parent)}
+    stores: dict[int, int] = {}
+    ascii_candidates: set[int] = set()
+    float_candidates: set[int] = set()
+    nonempty_candidates: set[int] = set()
+    ascii_unsafe: set[int] = set()
+    float_unsafe: set[int] = set()
+    nonempty_unsafe: set[int] = set()
+    for node in nodes:
+        if not isinstance(node, ast.Name):
+            continue
+        binding = getattr(node, "_binding", None)
+        if binding is None:
+            continue
+        parent = parents.get(node)
+        if isinstance(node.ctx, ast.Store):
+            stores[binding] = stores.get(binding, 0) + 1
+            if ((isinstance(parent, ast.Assign) and len(parent.targets) == 1)
+                    or isinstance(parent, ast.AnnAssign)):
+                if ascii_list(parent.value):
+                    ascii_candidates.add(binding)
+                if isinstance(parent.value, ast.List) and float_list(parent.value):
+                    float_candidates.add(binding)
+                if isinstance(parent.value, ast.List) and parent.value.elts:
+                    nonempty_candidates.add(binding)
+            continue
+        read_only = isinstance(parent, ast.Call) and node in parent.args and (
+            builtin(parent.func, "print") or builtin(parent.func, "len")
+            or (builtin(parent.func, "sorted") and parent.args == [node] and safe_sort(parent)))
+        float_write = False
+        append_only = False
+        if isinstance(parent, ast.Attribute) and parent.value is node:
+            call = parents.get(parent)
+            if isinstance(call, ast.Call) and call.func is parent:
+                read_only = not call.args and parent.attr in ("sort", "reverse") and safe_sort(call)
+                if len(call.args) == 1 and not call.keywords:
+                    append_only = parent.attr in ("append", "extend")
+                    float_write = ((parent.attr == "append" and float_value(call.args[0]))
+                                   or (parent.attr == "extend" and float_list(call.args[0])))
+        if isinstance(parent, ast.Subscript) and parent.value is node and isinstance(parent.ctx, ast.Store):
+            assignment = parents.get(parent)
+            float_write = (not isinstance(parent.slice, ast.Slice) and isinstance(assignment, ast.Assign)
+                           and assignment.targets == [parent] and float_value(assignment.value))
+        if not read_only:
+            ascii_unsafe.add(binding)
+        if not (read_only or float_write or (isinstance(parent, ast.Call)
+                and builtin(parent.func, "sum") and parent.args and parent.args[0] is node)):
+            float_unsafe.add(binding)
+        if not (read_only or append_only or (isinstance(parent, (ast.For, ast.comprehension))
+                                             and parent.iter is node)):
+            nonempty_unsafe.add(binding)
+
+    for node in nodes:
+        if isinstance(node, (ast.For, ast.comprehension)) and isinstance(node.iter, ast.Name):
+            binding = getattr(node.iter, "_binding", None)
+            if binding in nonempty_candidates and binding not in nonempty_unsafe and stores[binding] == 1:
+                node.iter._runtime_annotation = "py2v_nonempty_list"
+        if not isinstance(node, ast.Call):
+            continue
+        if builtin(node.func, "sum") and node.args and isinstance(node.args[0], ast.Name):
+            source = node.args[0]
+            binding = getattr(source, "_binding", None)
+            if binding in float_candidates and binding not in float_unsafe and stores[binding] == 1:
+                source._runtime_annotation = "py2v_float_list"
+        if not any(kw.arg == "key" and case_key(kw.value) for kw in node.keywords):
+            continue
+        if builtin(node.func, "sorted") and len(node.args) == 1:
+            source = node.args[0]
+        elif isinstance(node.func, ast.Attribute) and node.func.attr == "sort" and not node.args:
+            source = node.func.value
+        else:
+            continue
+        binding = getattr(source, "_binding", None)
+        if ascii_list(source) or (isinstance(source, ast.Name) and binding in ascii_candidates
+                                 and binding not in ascii_unsafe and stores[binding] == 1):
+            for kw in node.keywords:
+                if kw.arg == "key" and case_key(kw.value):
+                    kw.value._runtime_annotation = "py2v_ascii_sort_key"
+
+
 def _resolve_bindings(tree: ast.Module) -> Optional[symbols.SymbolTable]:
     """Resolve lexical bindings on the final scope structure of the tree. A file the resolver
     cannot handle is translated without binding facts, as before the resolver existed."""
@@ -9749,6 +9863,8 @@ def _loop_comprehensions(tree: ast.Module, facts: Optional[infer.TypeFacts]) -> 
                 for mark in ("_type", "_assumed"):
                     if hasattr(node, mark):
                         setattr(name, mark, getattr(node, mark))
+                if isinstance(node, (ast.ListComp, ast.GeneratorExp)) and spelled(node.elt) == "float":
+                    name._runtime_annotation = "py2v_float_comprehension"
                 return name
             return self.generic_visit(node)
 
@@ -10605,6 +10721,8 @@ def process_file(file_path: str, project: Optional[ProjectFacts] = None) -> str:
                 child._used_as_value = not isinstance(parent, ast.Expr)
 
     _mark_project_class_references(tree, table, project)
+    if table is not None:
+        _mark_literal_list_semantics(tree)
 
     # Detect nesting levels
     _detect_nesting_levels(tree)

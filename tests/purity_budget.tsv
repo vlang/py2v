@@ -164,7 +164,6 @@ runtime_field_types.v	4
 runtime_process_and_hashes.v	5
 scheduling_refusal.v	2
 shadow_rebind.v	6
-sorted_key_reverse.v	2
 sqlite_optional_row.v	7
 sqlite_row_comprehension.v	5
 sqlite_row_unpack.v	7

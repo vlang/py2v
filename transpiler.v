@@ -51,7 +51,11 @@ mut:
 	func_param_types            map[string][]string // module function -> the V types of its parameters
 	var_types                   map[string]string
 	// Exact numeric element provenance; []f64 by itself does not prove Python floats.
-	sum_list_kinds map[string]string
+	sum_list_kinds      map[string]string
+	sum_float_results   map[string]bool
+	sum_parameter_kinds map[string][]string
+	sum_array_binding   string
+	sum_array_results   map[string]bool
 	// State for the if-condition lowering, saved separately for each scope.
 	condition_walrus_vars    map[string]bool
 	condition_walrus_types   map[string]string
@@ -338,6 +342,7 @@ pub fn (t VTranspiler) emitted_fn_name(name string) string {
 pub fn (mut t VTranspiler) visit_module(node Module) string {
 	t.prepare_init_constructors(node)
 	mut bindings := map[string]int{}
+	if !t.emit_pub { bindings[':load:'] = 1 }
 	mut calls := []BindingCall{}
 	t.native_exceptions = map[string][]string{}
 	t.binds_native_error = false
@@ -447,6 +452,8 @@ pub fn (mut t VTranspiler) visit_module(node Module) string {
 	// A `def` nested inside a module-level `if`/`for`/`try` cannot be emitted
 	// there: V only allows `fn` declarations at module top level.
 	mut hoisted_body := t.hoist_module_fns(node.body, mut nested_fndefs)
+	t.plan_float_sum_sources(hoisted_body, bindings, calls)
+	t.sum_array_results = map[string]bool{}
 	t.integer_return_inputs = map[string][]int{}
 	find_growth_calls(hoisted_body, false, mut t.integer_return_inputs)
 	propagate_growth_calls(hoisted_body, mut t.integer_return_inputs)
@@ -1623,6 +1630,12 @@ fn (mut t VTranspiler) runtime_helper_declaration(kind string) string {
 				'\t\t\t(value - next) + total\n\t\t}\n\t\ttotal = next\n\t}\n' +
 				'\treturn if correction != 0.0 && !math.is_inf(correction, 0) && !math.is_nan(correction) { total + correction } else { total }\n}'
 		}
+		'float_sum_optional' {
+			sum := t.runtime_helper_name('float_sum')
+			'fn ${name}(values []f64, start int) Py2vNumber {\n' +
+				'\tif values.len == 0 { return Py2vNumber(start) }\n' +
+				'\treturn Py2vNumber(${sum}(values, f64(start), true))\n}'
+		}
 		'typed_list_index' {
 			'fn ${name}[T](items []T, needle T) !int {\n' +
 				'\tindex := items.index(needle)\n' +
@@ -2345,8 +2358,12 @@ pub fn (mut t VTranspiler) indent_code(code string, level int) string {
 // visit_body_stmts visits a list of statements and returns an indented block string.
 pub fn (mut t VTranspiler) visit_body_stmts(stmts []Stmt, level int) string {
 	saved_bindings := if level > 0 { t.scope_idents.clone() } else { map[string]string{} }
+	saved_sum_sources := if level > 0 { t.sum_list_kinds.clone() } else { map[string]string{} }
 	defer {
-		if level > 0 { t.scope_idents = saved_bindings }
+		if level > 0 {
+			t.scope_idents = saved_bindings
+			t.sum_list_kinds = saved_sum_sources
+		}
 	}
 	mut parts := []string{}
 	for i, stmt in stmts {
@@ -2356,12 +2373,67 @@ pub fn (mut t VTranspiler) visit_body_stmts(stmts []Stmt, level int) string {
 		}
 		s := t.visit_stmt(stmt)
 		t.proven_counter_step = saved_counter
+		t.note_sum_exit_guard(stmt)
+		if i > 0 {
+			if name, kind := materialized_float_sum_kind(t, stmts[i - 1], stmt) {
+				t.sum_list_kinds[name] = kind
+			}
+		}
 		if s.len == 0 {
 			continue
 		}
 		parts << indent(s, level, '\t')
 	}
 	return parts.join('\n')
+}
+
+fn (mut t VTranspiler) note_sum_source(name string, value Expr) {
+	if value is List || value is Tuple || value is ListComp || value is GeneratorExp {
+		t.sum_list_kinds[name] = python_numeric_arg_list_kind(t, value)
+		return
+	}
+	kind := python_number_kind(t, value, t.sum_list_kinds)
+	if kind in ['float', 'int'] {
+		t.sum_list_kinds[name] = '${kind}_value'
+	} else {
+		t.sum_list_kinds.delete(name)
+	}
+}
+
+fn (mut t VTranspiler) note_sum_exit_guard(stmt Stmt) {
+	if stmt !is If { return }
+	guard := stmt as If
+	if guard.orelse.len != 0 || guard.body.len != 1
+		|| !(guard.body[0] is Raise || guard.body[0] is Return) {
+		return
+	}
+	test := *guard.test
+	if test is UnaryOp && test.op is Not {
+		sequence := t.sum_nonempty_test_sequence(*test.operand) or { return }
+		if sequence is Name && !t.extra_mut_vars[sequence.id]
+			&& t.infer_expr_type(sequence).starts_with('[]') {
+			name := sequence.id
+			t.sum_list_kinds[name] = match t.sum_list_kinds[name] {
+				'float', 'maybe_float' { 'float' }
+				'float_lists' { 'float_lists' }
+				else { 'nonempty' }
+			}
+		}
+	}
+}
+
+fn (t &VTranspiler) sum_nonempty_test_sequence(expr Expr) ?Expr {
+	if expr is Name { return expr }
+	if expr is Compare && expr.ops.len == 1 && expr.ops[0] is Gt {
+		value := literal_signed_integer(expr.comparators[0]) or { return none }
+		left := *expr.left
+		if value == 0 && left is Call && left.func is Name && left.func.id == 'len'
+			&& 'len' !in t.module_functions && !t.is_bound_in_scope('len')
+			&& left.args.len == 1 && left.keywords.len == 0 {
+			return left.args[0]
+		}
+	}
+	return none
 }
 
 // stable_counter_step proves the pattern of a local zero-based count followed by
@@ -3099,6 +3171,9 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 	saved_var_types := t.var_types.clone()
 	saved_sum_list_kinds := t.sum_list_kinds.clone()
 	t.sum_list_kinds = map[string]string{}
+	saved_sum_array_binding := t.sum_array_binding
+	t.sum_array_binding = ''
+	defer { t.sum_array_binding = saved_sum_array_binding }
 	saved_escaped_identifiers := t.escaped_identifiers.clone()
 	t.escaped_identifiers = map[string]bool{}
 	saved_local_idents := t.local_idents.clone()
@@ -3238,6 +3313,11 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 
 	mut positional_args := node.args.posonlyargs.clone()
 	positional_args << node.args.args
+	sum_parameter_kinds := if !node.is_class_method && !node.is_nested {
+		t.sum_parameter_kinds[node.name]
+	} else {
+		[]string{}
+	}
 	for i, arg in positional_args {
 		if arg.arg == 'self' {
 			continue
@@ -3249,6 +3329,10 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 		// A parameter is already bound, so a `for` variable of the same name
 		// must take a fresh one.
 		t.param_idents[arg.arg] = arg.arg in node.mutable_vars
+		kind := sum_parameter_kinds[i] or { '' }
+		if kind != '' && !arg.is_mutable && arg.arg !in node.mutable_vars {
+			t.sum_list_kinds[arg.arg] = kind
+		}
 
 		mut typename := ''
 		if ann := arg.annotation {
@@ -3449,6 +3533,33 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 	saved_return_type := t.current_return_type
 	t.current_return_count = 0
 	t.current_return_type = ''
+	if !t.emit_pub && !node.is_class_method && !node.is_nested && node.body.len > 0
+		&& node.body.last() is Return {
+		parameter_proofs := t.sum_list_kinds.clone()
+		for i, stmt in node.body {
+			if i > 0 {
+				if name, kind := materialized_float_sum_kind(t, node.body[i - 1], stmt) {
+					t.sum_list_kinds[name] = kind
+				}
+			}
+		}
+		last := node.body.last() as Return
+		if value := last.value {
+			if value is Call && t.sum_may_return_integer_zero(value) {
+				t.numeric_scalar_results[node.name] = true
+			}
+			array_binding := t.sum_result_array_binding(node.body, *value)
+			if array_binding != '' {
+				if declared := node.returns {
+					if t.typename_from_annotation(*declared) == '[]f64' {
+						t.sum_array_binding = array_binding
+						t.sum_array_results[node.name] = true
+					}
+				}
+			}
+		}
+		t.sum_list_kinds = parameter_proofs
+	}
 	if !node.is_void && !node.is_generator && node.name != '__init__' {
 		if t.recursive_int_results[node.name] && !node.is_class_method && !node.is_nested {
 			t.current_return_type = 'int'
@@ -3459,7 +3570,8 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 			signature << t.current_return_type
 			t.func_return_types[node.name] = t.current_return_type
 		} else if ret := node.returns {
-			ret_type := if t.numeric_array_results[node.name] && !node.is_class_method {
+			ret_type := if (t.numeric_array_results[node.name] || t.sum_array_results[node.name])
+				&& !node.is_class_method {
 				'[]Py2vNumber'
 			} else {
 				v_return_type(t.typename_from_annotation(*ret))
@@ -4190,9 +4302,8 @@ fn (mut t VTranspiler) visit_assignment(node Assign, package_initializer bool) s
 	defer { t.integer_update_names = saved_updates }
 	if node.targets.len == 1 && node.targets[0] is Name {
 		name := (node.targets[0] as Name).id
-		if node.value is List && !(node.targets[0] as Name).is_mutable
-			&& !t.extra_mut_vars[name] {
-			t.sum_list_kinds[name] = python_numeric_list_kind(t, node.value)
+		if !(node.targets[0] as Name).is_mutable && !t.extra_mut_vars[name] {
+			t.note_sum_source(name, node.value)
 		} else {
 			t.sum_list_kinds.delete(name)
 		}
@@ -4262,6 +4373,13 @@ fn (mut t VTranspiler) visit_assignment(node Assign, package_initializer bool) s
 			}
 			if target is Name {
 				value := *node.value
+				if !rebind && target.id == t.sum_array_binding {
+					code := t.visit_expr(value)
+					t.runtime_helper('numeric_choice')
+					t.runtime_helper('float_text')
+					t.var_types[target.id] = '[]Py2vNumber'
+					return 'mut ${t.visit_expr(target)} := ${as_receiver(code)}.map(Py2vNumber(it))'
+				}
 				if t.var_types[target.id] == 'Py2vNumber'
 					|| (!rebind && target.is_mutable && value is Call && value.func is Name
 						&& t.recursive_int_results[value.func.id]) {
@@ -5164,8 +5282,8 @@ pub fn (mut t VTranspiler) visit_ann_assign(node AnnAssign) string {
 	if node.target is Name {
 		name := node.target.id
 		if val := node.value {
-			if val is List && !node.target.is_mutable && !t.extra_mut_vars[name] {
-				t.sum_list_kinds[name] = python_numeric_list_kind(t, val)
+			if !node.target.is_mutable && !t.extra_mut_vars[name] {
+				t.note_sum_source(name, *val)
 			} else {
 				t.sum_list_kinds.delete(name)
 			}
@@ -5602,6 +5720,21 @@ fn (t VTranspiler) bind_op(v_name string) string {
 pub fn (mut t VTranspiler) visit_for(node For) string {
 	if t.has_wide_destination(node.target) {
 		return t.refuse_wide('unsigned storage requires a single scalar assignment')
+	}
+	saved_sum_sources := t.sum_list_kinds.clone()
+	defer { t.sum_list_kinds = saved_sum_sources }
+	sum_targets := for_target_names(node.target)
+	iterator_kinds := python_sum_iter_kinds(t, node.iter)
+	if sum_targets.len == iterator_kinds.len {
+		for i, name in sum_targets {
+			kind := match iterator_kinds[i] {
+				'float_lists' { 'maybe_float' }
+				'float', 'maybe_float' { 'float_value' }
+				'int' { 'int_value' }
+				else { '' }
+			}
+			t.sum_list_kinds[name] = kind
+		}
 	}
 	saved_renames := t.renamed_idents.clone()
 	mut rename := map[string]string{}
@@ -8269,6 +8402,12 @@ pub fn (mut t VTranspiler) visit_binop(node BinOp) string {
 	}
 	right := t.visit_expr_at(*node.right, right_sink, '')
 	mut op := op_to_symbol(get_op_type(node.op))
+	if node.op is Pow && t.infer_expr_type(node.left) == 'Py2vNumber'
+		&& t.infer_expr_type(node.right) in ['f64', 'float'] {
+		t.add_using('math')
+		t.runtime_helper('numeric_as_float')
+		return 'math.pow(${as_receiver(left)}.as_float(), ${right})'
+	}
 	if node.op is Add || node.op is Sub || node.op is Mult || node.op is Div {
 		left_type := t.infer_expr_type(node.left)
 		right_type := t.infer_expr_type(node.right)
@@ -9005,6 +9144,11 @@ pub fn (mut t VTranspiler) visit_compare(node Compare) string {
 		if lt == 'Py2vNumber' && rt in ['f64', 'float'] {
 			return t.numeric_float_comparison(left, right, op, false)
 		}
+		if lt == 'Py2vNumber' {
+			if n := literal_signed_integer(node.comparators[0]) {
+				if n == 0 { return t.numeric_float_comparison(left, '0.0', op, false) }
+			}
+		}
 		if rt == 'Py2vNumber' && lt in ['f64', 'float'] {
 			return t.numeric_float_comparison(left, right, reverse_comparison(op), true)
 		}
@@ -9208,7 +9352,11 @@ fn collect_module_info[T](node T, mut names map[string]int, mut calls []BindingC
 		}
 	}
 	$if T is Name {
-		if node.ctx !is Load { names[node.id]++ }
+		if node.ctx !is Load {
+			names[node.id]++
+		} else if ':load:' in names {
+			names[':load:${node.id}']++
+		}
 	} $else $if T is Arg {
 		names[node.arg]++
 	} $else $if T is FunctionDef || T is AsyncFunctionDef || T is ClassDef {
@@ -9732,6 +9880,17 @@ fn (mut t VTranspiler) visit_call_at(original Call, permit WideSink, permit_type
 			}
 			if effects || t.module_safe_signatures[callee].raises {
 				return t.unsupported_site('keyword_argument_order', 'unproven local keyword binding and evaluation order', '')
+			}
+		}
+	}
+	if node.func is Name && node.func.id in t.sum_parameter_kinds {
+		kinds := t.sum_parameter_kinds[node.func.id]
+		if node.keywords.len > 0 || node.args.any(it is Starred) {
+			return t.unsupported_site('unproven_float_sum', 'cannot check the Python float sum argument binding', '')
+		}
+		for i, arg in node.args {
+			if !python_sum_argument_matches(t, arg, kinds[i] or { '' }) {
+				return t.unsupported_site('unproven_float_sum', 'argument may contain a Python int in a float sum', '')
 			}
 		}
 	}
@@ -14079,8 +14238,11 @@ fn (mut t VTranspiler) infer_expr_type(expr Expr) string {
 		}
 		Call {
 			if expr.func is Name {
+				if t.sum_may_return_integer_zero(expr) { return 'Py2vNumber' }
 				if t.recursive_int_results[expr.func.id] { return 'int' }
-				if t.numeric_array_results[expr.func.id] { return '[]Py2vNumber' }
+				if t.numeric_array_results[expr.func.id] || t.sum_array_results[expr.func.id] {
+					return '[]Py2vNumber'
+				}
 				if t.numeric_scalar_results[expr.func.id] { return 'Py2vNumber' }
 				if expr.func.id == 'abs' && expr.args.len == 1 && t.infer_expr_type(expr.args[0]) == 'Py2vNumber' {
 					return 'Py2vNumber'
