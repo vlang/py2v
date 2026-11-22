@@ -1342,6 +1342,8 @@ for witness in [
 	['wide_hidden_overflow', '9223372036854775808', 'wide integer'],
 	['wide_sum', '18446744073709551616', 'wide integer'],
 	['enumerate_start_float', 'invalid', 'enumerate start'],
+	['exception_keyword_effects_refusal', 'k\ng\nh\n123', 'keyword argument order'],
+	['exception_wide_modular_refusal', '1', 'wide integer'],
 	['range_zero_step', 'zero', 'range zero step'],
 	['range_for_zero_step', 'zero', 'range zero step'],
 	['range_bool_zero_step', 'zero', 'range zero step'],

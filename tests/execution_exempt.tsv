@@ -23,8 +23,6 @@ dunder_ops	does-not-compile	unknown type `_Private`.
 dynamic_isinstance_bindings	does-not-compile	unknown function: py2v_unsupported_dynamic_isinstance
 dynamic_slice_axes	does-not-compile	unknown function: py2v_unsupported_slice
 equations	needs-dependency	Imports py2many.smt, which the suite does not install.
-exception_keyword_effects_refusal	does-not-compile	unknown function: py2v_unsupported_keyword_argument_order
-exception_wide_modular_refusal	does-not-compile	unknown function: py2v_unsupported_wide_integer
 exception_group	differs	line 1: CPython [caught value error group], V [V panic: ExceptionGroup: multiple]
 exception_group_else_finally	differs	line 2: CPython [no group], V [cleanup]
 exception_group_nested	differs	line 1: CPython [caught value], V [V panic: ExceptionGroup: mixed]
