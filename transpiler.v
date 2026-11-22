@@ -20,19 +20,20 @@ mut:
 	// Set when an f-string field calls the py2v_format helper.
 	uses_py2v_format bool
 	// Maps and state tracked during transpilation
-	current_class_name   string
-	current_classmethod  bool
-	emitting_function    bool
-	nominal_enums        map[string]bool
-	escaped_identifiers  map[string]bool
-	extra_mut_vars       map[string]bool
-	func_defaults        map[string][]string
-	func_param_count     map[string]int
-	call_signatures      map[string]FunctionDef
-	module_functions     map[string]bool
-	default_import_names map[string]bool
-	call_before_def      map[string]bool
-	func_return_types    map[string]string
+	current_class_name     string
+	current_classmethod    bool
+	emitting_function      bool
+	nominal_enums          map[string]bool
+	escaped_identifiers    map[string]bool
+	extra_mut_vars         map[string]bool
+	func_defaults          map[string][]string
+	func_param_count       map[string]int
+	call_signatures        map[string]FunctionDef
+	module_safe_signatures map[string]FunctionDef
+	module_functions       map[string]bool
+	default_import_names   map[string]bool
+	call_before_def        map[string]bool
+	func_return_types      map[string]string
 	// Methods whose receiver must be `mut` in V, keyed ClassName_method.
 	mut_receiver_methods map[string]bool
 	// Constructor factories mark an emitted fallback parameter here.
@@ -343,6 +344,7 @@ pub fn (mut t VTranspiler) visit_module(node Module) string {
 		}
 	}
 	t.call_signatures = signatures
+	t.module_safe_signatures = signatures.clone()
 	t.module_functions = map[string]bool{}
 	for name in module_defs.keys() { t.module_functions[name] = true }
 	t.call_before_def = map[string]bool{}
@@ -8025,6 +8027,42 @@ fn (t &VTranspiler) bind_module_call(node Call) ?Call {
 	return Call{ ...node, args: bound, keywords: []Keyword{} }
 }
 
+// Preserve Python evaluation order for a proven same-order local call even when
+// another unrelated call made the broader keyword binder cancel its analysis.
+// All parameters must be supplied in their declaration order; otherwise a
+// reordered effectful expression cannot be rendered as V positional arguments.
+fn (t &VTranspiler) bind_source_order_call(node Call) ?Call {
+	if node.func !is Name || node.keywords.len == 0
+		|| t.call_before_def[node.loc.str()] {
+		return none
+	}
+	name := (node.func as Name).id
+	sig := t.module_safe_signatures[name] or { return none }
+	if sig.args.posonlyargs.len > 0 || sig.args.vararg != none
+		|| sig.args.kwarg != none || sig.is_generator {
+		return none
+	}
+	mut params := sig.args.args.clone()
+	params << sig.args.kwonlyargs
+	if params.len != node.args.len + node.keywords.len
+		|| node.args.len > sig.args.args.len {
+		return none
+	}
+	for argument in node.args {
+		if argument is Starred { return none }
+	}
+	for param in params {
+		if param.arg in ['self', 'cls'] { return none }
+	}
+	mut bound := node.args.clone()
+	for i, kw in node.keywords {
+		kw_name := kw.arg or { return none }
+		if kw_name != params[node.args.len + i].arg { return none }
+		bound << kw.value
+	}
+	return Call{ ...node, args: bound, keywords: []Keyword{} }
+}
+
 // guarded_call turns the text of a call that ends the program on an error into one that
 // hands the error to the handlers of `try` number `n` and leaves the try body.
 fn guarded_call(code string, n int, local_method bool) string {
@@ -8317,10 +8355,18 @@ fn (mut t VTranspiler) visit_call_at(original Call, permit WideSink, permit_type
 	if completed := t.complete_imported_call(original) {
 		return t.visit_expr_at(completed, permit, permit_type)
 	}
-	bound := t.bind_module_call(original)
+	mut node := original
+	mut bound := false
+	if direct := t.bind_module_call(original) {
+		node = direct
+		bound = true
+	} else if ordered := t.bind_source_order_call(original) {
+		node = ordered
+		bound = true
+	}
 	if original.keywords.len > 0 && original.func is Name {
 		callee := (original.func as Name).id
-		if callee in t.module_functions && bound == none {
+		if callee in t.module_functions && !bound {
 			mut effects := false
 			for keyword in original.keywords {
 				value := keyword.value
@@ -8334,7 +8380,6 @@ fn (mut t VTranspiler) visit_call_at(original Call, permit WideSink, permit_type
 			}
 		}
 	}
-	node := bound or { original }
 	mut fname := t.visit_expr(node.func)
 
 	// Check if this function has mut parameters

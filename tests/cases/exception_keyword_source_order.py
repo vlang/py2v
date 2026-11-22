@@ -1,0 +1,22 @@
+class Stub:
+    pass
+
+
+stub = Stub()
+
+
+def evaluate(a: int, b: int = 7) -> int:
+    if a < 0:
+        raise ValueError("bad")
+    return a * 100 + b
+
+
+def effect(label: str, value: int) -> int:
+    print(label)
+    return value
+
+
+try:
+    print(evaluate(a=effect("A", 1), b=effect("B", 2)))
+except ValueError:
+    print("caught")
