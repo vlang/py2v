@@ -1269,6 +1269,11 @@ fn (mut t VTranspiler) runtime_helper_declaration(kind string) string {
 			}
 			'fn ${name}(a ${kind_type}, b ${kind_type}, message string) !${kind_type} {\n${zero}${body}\n}'
 		}
+		'native_cause_text' {
+			'fn ${name}(data Py2vErrorData) string {\n' +
+				'\tif cause := data.cause { return cause.msg() }\n' +
+				"\treturn 'None'\n}"
+		}
 		'checked_list_index' {
 			'fn ${name}[T](items []T, index int) !T {\n' +
 				'\tposition := if index < 0 { items.len + index } else { index }\n' +
@@ -8038,13 +8043,21 @@ fn propagated_call(code string, local_method bool) string {
 		return code[..code.len - suffix.len] + '!'
 	}
 	open := code.index('(') or { return code }
-	name := code[..open]
+	mut name := code[..open]
 	if name.len == 0 || !code.ends_with(')') || name.contains_any(' \n{}[]=')
 		|| (!local_method && name.contains('.')) {
 		return code
 	}
-	if local_method && !name.split('.').all(is_simple_identifier(it)) {
-		return code
+	if local_method {
+		parts := name.split('.')
+		if !parts.all(is_simple_identifier(it) || (it.starts_with('@') && is_simple_identifier(it[1..]))) {
+			return code
+		}
+		// The emitted escape on a keyword method is not part of its suffixed name.
+		method := parts.last()
+		if method.starts_with('@') {
+			name = name[..name.len - method.len] + method[1..]
+		}
 	}
 	return '${name}_py${code[open..]}!'
 }
@@ -9720,7 +9733,7 @@ fn lower_first_ascii(name string) string {
 pub fn (mut t VTranspiler) visit_attribute(node Attribute) string {
 	if t.native_exceptions.len > 0 && node.attr == '__cause__' {
 		value := t.visit_expr(*node.value)
-		return "(${value}.cause or { error('None') })"
+		return '${t.runtime_helper('native_cause_text')}(${value})'
 	}
 	if name := t.renamed_class(node.class_path) {
 		return name

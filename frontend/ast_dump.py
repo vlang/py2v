@@ -7302,6 +7302,7 @@ def _plan_error_propagation(tree: ast.Module, table: Optional[symbols.SymbolTabl
 
     methods: Dict[Tuple[int, str], int] = {}
     receivers: Dict[int, int] = {}
+    self_receivers: Dict[int, int] = {}
     if standalone:
         nodes = list(ast.walk(tree))
         written_attrs = {n.attr for n in nodes if isinstance(n, ast.Attribute) and
@@ -7309,8 +7310,11 @@ def _plan_error_propagation(tree: ast.Module, table: Optional[symbols.SymbolTabl
         if any(isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
                and n.func.id in ("setattr", "delattr") for n in nodes):
             written_attrs.update(n.attr for n in nodes if isinstance(n, ast.Attribute))
+        subclassed = {base.id for child in nodes if isinstance(child, ast.ClassDef)
+                      for base in child.bases if isinstance(base, ast.Name)}
         for cls in tree.body:
-            if not isinstance(cls, ast.ClassDef) or cls.bases or cls.keywords or cls.decorator_list:
+            if (not isinstance(cls, ast.ClassDef) or cls.bases or cls.keywords
+                    or cls.decorator_list):
                 continue
             owner = getattr(cls, "_binding", None)
             if owner is None or table.bindings[owner].rebound:
@@ -7325,6 +7329,11 @@ def _plan_error_propagation(tree: ast.Module, table: Optional[symbols.SymbolTabl
                 method_binding = candidate_for(method, names)
                 if method_binding is not None:
                     methods[owner, method.name] = method_binding
+                    # Self dispatch is exact only in a non-subclassed class.
+                    if cls.name not in subclassed and method.args.args:
+                        self_id = getattr(method.args.args[0], "_binding", None)
+                        if self_id is not None and not table.bindings[self_id].rebound:
+                            self_receivers[self_id] = owner
         for stmt in nodes:
             if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1:
                 target, value = stmt.targets[0], stmt.value
@@ -7348,15 +7357,38 @@ def _plan_error_propagation(tree: ast.Module, table: Optional[symbols.SymbolTabl
                  for n in nodes if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
                  and isinstance(n.func.value, ast.Name)}
         definitions = {getattr(n, "_binding", None): n for n in nodes if isinstance(n, ast.FunctionDef)}
-        for method, binding in methods.items():
-            if method in exact:
-                candidates[binding] = definitions[binding]
+        active = {binding for method, binding in methods.items() if method in exact}
+        # Include methods reached by a direct method through an exact self.
+        pending = list(active)
+        while pending:
+            fn = definitions[pending.pop()]
+            nodes_to_check = list(fn.body)
+            while nodes_to_check:
+                node = nodes_to_check.pop()
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef,
+                                     ast.ClassDef, ast.Lambda, ast.DictComp,
+                                     ast.ListComp, ast.SetComp, ast.GeneratorExp)):
+                    continue
+                if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                        and isinstance(node.func.value, ast.Name)):
+                    owner = self_receivers.get(
+                        getattr(node.func.value, "_binding", None))
+                    target = methods.get((owner, node.func.attr))
+                    if target is not None and target not in active:
+                        active.add(target)
+                        pending.append(target)
+                nodes_to_check.extend(ast.iter_child_nodes(node))
+        for binding in active:
+            candidates[binding] = definitions[binding]
 
     def local_callee(call: ast.Call) -> Optional[int]:
         if isinstance(call.func, ast.Name):
             return getattr(call.func, "_binding", None)
         if isinstance(call.func, ast.Attribute) and isinstance(call.func.value, ast.Name):
-            owner = receivers.get(getattr(call.func.value, "_binding", None))
+            receiver = getattr(call.func.value, "_binding", None)
+            owner = receivers.get(receiver)
+            if owner is None:
+                owner = self_receivers.get(receiver)
             if owner is not None:
                 return methods.get((owner, call.func.attr))
         return None

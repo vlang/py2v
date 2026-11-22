@@ -120,6 +120,11 @@ fn translate_py() ! {
 	}
 }
 
+fn py2v_native_cause_text1(data Py2vErrorData) string {
+	if cause := data.cause { return cause.msg() }
+	return 'None'
+}
+
 fn py2v_entry1() ! {
 	mut py2v_err_1 := ?IError(none)
 	py2v_try_1: for {
@@ -134,7 +139,7 @@ fn py2v_entry1() ! {
 			problem := py2v_bind_exception1(py2v_raised_1)
 			println(problem.str())
 			println(problem.args)
-			println((problem.cause or { error('None') }).str())
+			println((py2v_native_cause_text1(problem)).str())
 		} else {
 			return py2v_raised_1
 		}
