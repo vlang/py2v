@@ -1279,6 +1279,27 @@ fn is_nonzero_int_literal(expr Expr) bool {
 	}
 }
 
+// is_literal_zero_range_step catches a provably zero native range stride.
+// A Python ValueError cannot be represented by the native range lowering.
+fn is_literal_zero_range_step(expr Expr) bool {
+	return match expr {
+		Constant {
+			value := expr.value
+			match value {
+				int { value == 0 }
+				i64 { value == 0 }
+				u64 { value == 0 }
+				bool { !value }
+				else { false }
+			}
+		}
+		UnaryOp {
+			(expr.op is USub || expr.op is UAdd) && is_literal_zero_range_step(expr.operand)
+		}
+		else { false }
+	}
+}
+
 // add_using registers an import usage required by generated code.
 pub fn (mut t VTranspiler) add_using(mod string) {
 	if mod == '' {
@@ -4493,6 +4514,10 @@ pub fn (mut t VTranspiler) visit_for(node For) string {
 		call := node.iter as Call
 		if call.func is Name {
 			fname := (call.func as Name).id
+			if fname == 'range' && call.args.len == 3
+				&& is_literal_zero_range_step(call.args[2]) {
+				return t.unsupported_site('range_zero_step', 'range() step must not be zero', '')
+			}
 			if fname == 'range' && t.has_wide_args(call.args) {
 				for_expr = t.refuse_wide('range may narrow an unsigned bound')
 			} else if call.api == '__py2v__.native_range_loop' && call.args.len in [1, 2] {

@@ -10,6 +10,9 @@ fn visit_range(mut t VTranspiler, node Call, args []string) (string, bool) {
 	if args.len !in [1, 2, 3] || args.len != node.args.len || node.keywords.len > 0 {
 		return '', false
 	}
+	if args.len == 3 && is_literal_zero_range_step(node.args[2]) {
+		return t.unsupported_site('range_zero_step', 'range() step must not be zero', ''), true
+	}
 	if node.args.any(it is Starred) {
 		if args.len == 1 && node.args[0] is Starred {
 			operand := (node.args[0] as Starred).value
