@@ -4433,17 +4433,30 @@ pub fn (mut t VTranspiler) visit_for(node For) string {
 					fname := (call.func as Name).id
 					if fname == 'enumerate' && target_names.len == 2 && call.args.len > 0 {
 						mut iter0 := t.visit_for_iter(call.args[0], saved_renames)
+						if t.is_map_expr(call.args[0]) {
+							iter0 = '${as_receiver(iter0)}.keys()'
+						}
 						mut index := target_names[0]
 						mut offset := ''
 						if start := enumerate_start(call) {
 							if t.has_u64_bits(start) {
 								return t.refuse_wide('enumerate start may narrow an unsigned value')
 							}
+							start_type := t.infer_expr_type(start)
+							if start_type !in ['int', 'i64', 'bool'] {
+								return t.unsupported_site('enumerate_start',
+									'enumerate start needs a proven native integer', '')
+							}
 							items := t.new_tmp('enumerated')
 							buf << '${items} := ${iter0}'
 							iter0 = items
 							offset = t.new_tmp('enum_start')
-							buf << '${offset} := ${t.visit_for_iter(start, saved_renames)}'
+							start_expr := t.visit_for_iter(start, saved_renames)
+							buf << '${offset} := ${if start_type == 'bool' {
+								'int(${start_expr})'
+							} else {
+								start_expr
+							}}'
 							index = t.new_tmp('enum_index')
 						}
 						buf << 'for ${index}, ${target_names[1]} in ${iter0} {'
