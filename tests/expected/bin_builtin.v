@@ -8,11 +8,7 @@ fn count_ones(a int) int {
 }
 
 fn bits(number int) string {
-	return if py2v_slice_step1(py2v_bin1(i64(number)).runes(), 2, ?int(none), 1).string().len < 8 {
-		strings.repeat(`0`, 8 - py2v_slice_step1(py2v_bin1(i64(number)).runes(), 2, ?int(none), 1).string().len) + py2v_slice_step1(py2v_bin1(i64(number)).runes(), 2, ?int(none), 1).string()
-	} else {
-		py2v_slice_step1(py2v_bin1(i64(number)).runes(), 2, ?int(none), 1).string()
-	}
+	return py2v_zfill1(py2v_slice_step1(py2v_bin1(i64(number)).runes(), 2, ?int(none), 1).string(), 8)
 }
 
 fn main_func() {
@@ -24,7 +20,7 @@ fn main_func() {
 	println(py2v_slice_step1((py2v_bin1(i64(n))).str().runes(), 2, ?int(none), 1).string())
 	println(count_ones(255))
 	println(bits(10))
-	println(py2v_text_length1(py2v_bin1(i64(1024))))
+	println(py2v_bin1(i64(1024)).len_utf8())
 	table := []int{len: 8, init: index}.map(py2v_bin1(i64(it)).count('1'))
 	println(table)
 }
@@ -75,12 +71,14 @@ fn py2v_slice_step1[T](values []T, lower ?int, upper ?int, step int) []T {
 	return result
 }
 
-fn py2v_text_length1(text string) int {
-	mut length := 0
-	for byte in text {
-		if (byte & 0xc0) != 0x80 { length++ }
+fn py2v_zfill1(text string, width int) string {
+	length := text.len_utf8()
+	if width <= length { return text }
+	zeros := strings.repeat(`0`, width - length)
+	if text.len > 0 && (text[0] == `+` || text[0] == `-`) {
+		return text[..1] + zeros + text[1..]
 	}
-	return length
+	return zeros + text
 }
 
 fn main() {

@@ -4,15 +4,8 @@ import math
 
 fn count_coprime(limit int) int {
 	mut total := 0
-	py2v_range_start1 := int(1)
-	py2v_range_stop2 := int(limit)
-	py2v_range_step3 := int(1)
-	if py2v_range_step3 == 0 { panic('ValueError: range() arg 3 must not be zero') }
-	for n := py2v_range_start1; if py2v_range_step3 > 0 {
-		n < py2v_range_stop2
-	} else {
-		n > py2v_range_stop2
-	}; n = py2v_range_next1(n, py2v_range_stop2, py2v_range_step3) {
+	py2v_range_stop1 := int(limit)
+	for n in int(1) .. py2v_range_stop1 {
 		if math.gcd[int](n, limit) == 1 {
 			total = py2v_integer_add1(total, 1, 'math_int_functions.py:9', 'addition')
 		}
@@ -33,18 +26,7 @@ fn is_prime(number int) bool {
 }
 
 fn choose(n int, r int) int {
-	return math.divide_floored(py2v_integer_factorial1(n, 'math_int_functions.py:23'), py2v_integer_generic_mul1(py2v_integer_factorial1(r, 'math_int_functions.py:23'), py2v_integer_factorial1(n - r, 'math_int_functions.py:23'), 'math_int_functions.py:23', |py2v_operand4, py2v_operand5| py2v_operand4 * py2v_operand5)).quot
-}
-
-fn py2v_range_next1(current int, stop int, step int) int {
-	if step > 0 {
-		if u64(step) >= u64(stop) - u64(current) {
-			return stop
-		}
-	} else if u64(0) - u64(step) >= u64(current) - u64(stop) {
-		return stop
-	}
-	return current + step
+	return math.divide_floored(py2v_integer_factorial1(n, 'math_int_functions.py:23'), py2v_integer_generic_mul1(py2v_integer_factorial1(r, 'math_int_functions.py:23'), py2v_integer_factorial1(n - r, 'math_int_functions.py:23'), 'math_int_functions.py:23', |py2v_operand2, py2v_operand3| py2v_operand2 * py2v_operand3)).quot
 }
 
 @[noreturn]

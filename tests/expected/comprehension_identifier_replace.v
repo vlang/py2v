@@ -40,10 +40,10 @@ fn main_func() {
 	x := py2v_new_box(4)
 	println([1, 2].map(x.it + it))
 	println([Reader{}].map(it.it()))
-	println([1, 2].filter(it >= py2v_text_length1('r')).map(it))
-	println([1, 2].map(it))
-	println([1, 2].filter(it > 1).map(it))
-	println([1, 2].map(it))
+	println([1, 2].filter(it >= 'r'.len_utf8()))
+	println([1, 2])
+	println([1, 2].filter(it > 1))
+	println([1, 2])
 	println([[2, 5, 7]].map([it].map(1)))
 	println([f].map(it(2, 10)))
 	p := pathlib.new_path('a/b.txt')
@@ -53,18 +53,10 @@ fn main_func() {
 	println((fn () map[int]int {
 		mut result := map[int]int{}
 		for s in [2] {
-			result[s] = [1, 2].filter(it >= py2v_text_length1('r')).map(it).len
+			result[s] = [1, 2].count(it >= 'r'.len_utf8())
 		}
 		return result
 	}()))
-}
-
-fn py2v_text_length1(text string) int {
-	mut length := 0
-	for byte in text {
-		if (byte & 0xc0) != 0x80 { length++ }
-	}
-	return length
 }
 
 fn main() {

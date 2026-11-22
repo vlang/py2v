@@ -1,7 +1,8 @@
 module main
 
-import arrays
+import math
 import strconv
+import arrays
 
 fn main_func() {
 	xs := [1, 2, 3]
@@ -10,9 +11,9 @@ fn main_func() {
 	step := 2
 	println(py2v_integer_sum1(xs, 10, 'sum_start.py:6'))
 	println(py2v_integer_sum1(xs, base, 'sum_start.py:7'))
-	println(py2v_float_text1(arrays.fold(fs, f64(0.5), |acc, x| acc + x)))
-	println(py2v_float_text1(arrays.fold(fs, f64(10), |acc, x| acc + x)))
-	println(py2v_float_text1(arrays.fold(fs, f64(base), |acc, x| acc + x)))
+	println(py2v_float_text1(py2v_float_sum1(fs, f64(0.5), false)))
+	println(py2v_float_text1(py2v_float_sum1(fs, f64(10), true)))
+	println(py2v_float_text1(py2v_float_sum1(fs, f64(base), true)))
 	println(py2v_float_text1(arrays.fold(xs, f64(0.5), |acc, x| acc + x)))
 	println(py2v_integer_sum1([]int{len: 4, init: index}, 3, 'sum_start.py:12'))
 	println(py2v_integer_mul1(py2v_integer_sum1(xs, 10, 'sum_start.py:13'), 2, 'sum_start.py:13', 'multiplication'))
@@ -43,6 +44,30 @@ fn py2v_integer_sum1[T](items []T, start int, site string) int {
 		return total
 	} $else {
 		$compile_error('py2v_unsupported_integer_sum: expected native integer elements')
+	}
+}
+
+fn py2v_float_sum1(values []f64, start f64, integer_start bool) f64 {
+	mut total := start
+	mut correction := 0.0
+	mut first := 0
+	if integer_start && values.len > 0 {
+		total += values[0]
+		first = 1
+	}
+	for value in values[first..] {
+		next := total + value
+		correction += if math.abs(total) >= math.abs(value) {
+			(total - next) + value
+		} else {
+			(value - next) + total
+		}
+		total = next
+	}
+	return if correction != 0.0 && !math.is_inf(correction, 0) && !math.is_nan(correction) {
+		total + correction
+	} else {
+		total
 	}
 }
 

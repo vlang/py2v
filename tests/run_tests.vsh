@@ -1379,6 +1379,15 @@ for witness in [
 	['wide_sink_unpack', '-1 1', 'wide integer'],
 	['unicode_lone_surrogate', '1', 'unicode surrogate'],
 	['unicode_pair_surrogates', '2', 'unicode surrogate'],
+	['set_iteration', '1\n2\n3', 'set iteration'],
+	['set_concat_order', '14', 'set concat order'],
+	['zip_strict', '1:a\ndifferent lengths', 'zip strict'],
+	['float_sum_integer_argument', 'True', 'unproven float sum'],
+	['float_sum_integer_scalar', '1.5', 'unproven float sum'],
+	['float_sum_boolean_start', '1.5', 'bool sum start'],
+	['float_sum_unproven_rows', '[0.75, 0]\n[1.0]', 'unproven float sum'],
+	['float_sum_mutated_buffer', '1', 'integer sum'],
+	['float_sum_bound_generator', '1.5\n0', 'bound generator sum'],
 ] {
 	source := os.join_path(cases_dir, 'review_refusals', witness[0] + '.py')
 	oracle := os.exec([python, '-X', 'utf8', '-I', source])
@@ -1391,9 +1400,12 @@ for witness in [
 	} else {
 		translated
 	}
+	named_call := translated.output.contains(symbol + '(')
+		&& checked.output.contains('error: unknown function: ${symbol}')
+	named_compile_error := translated.output.contains("\$compile_error('${symbol}:")
+		&& checked.output.contains('error: ${symbol}:')
 	if oracle.exit_code == 0 && oracle.output.replace('\r', '').trim_right('\n') == witness[1]
-		&& translated.exit_code == 0 && translated.output.contains(symbol + '(')
-		&& checked.exit_code != 0 && checked.output.contains('error: unknown function: ${symbol}') {
+		&& translated.exit_code == 0 && checked.exit_code != 0 && (named_call || named_compile_error) {
 		report('PASS', name, '')
 		passed++
 	} else {

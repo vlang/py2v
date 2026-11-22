@@ -1,0 +1,6 @@
+print(sum([1e16, 1.0, -1e16], 1))
+print(sum([1e16, 1.0, -1e16], 1.0))
+print(sum([1e16, 1.0, -1e16], 0))
+print(sum([1e16, 1.0, -1e16], 0.0))
+print(sum([], 2))
+print(sum([], 2.0))

@@ -1,19 +1,19 @@
 module main
 
 fn parse(line string) []int {
-	return py2v_split_whitespace1(line).map((py2v_int_base1(it, 10, 'map_builtin_types.py:2') or { panic('ValueError: ' + err.msg()) })).clone()
+	return py2v_split_whitespace1(line).map((py2v_int_base1(it, 10, 'map_builtin_types.py:2') or { panic('ValueError: ' + err.msg()) }))
 }
 
 fn halves(line string) []f64 {
-	return line.split(',').map(it.f64()).clone()
+	return line.split(',').map(it.f64())
 }
 
 fn texts(numbers []int) []string {
-	return numbers.map(it.str()).clone()
+	return numbers.map(it.str())
 }
 
 fn whole(values []f64) []int {
-	return values.map(int(it)).clone()
+	return values.map(int(it))
 }
 
 fn pair(line string) int {

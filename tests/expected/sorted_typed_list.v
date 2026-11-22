@@ -1,9 +1,8 @@
 module main
 
-import arrays
 import math
 
-fn check_polygon(nums []f64) bool {
+fn check_polygon(nums []int) bool {
 	sorted_nums := nums.sorted()
 	return sorted_nums[sorted_nums.len - 1] < py2v_integer_inferred_sum1(sorted_nums[..sorted_nums.len - 1], 0, 'sorted_typed_list.py:3')
 }
@@ -65,11 +64,10 @@ fn py2v_integer_inferred_sum1[T](items []T, start int, site string) T {
 			py2v_integer_overflow1(site, 'integer narrowing')
 		}
 		return T(value)
+	} $else $if T is $float {
+		$compile_error('py2v_unsupported_unproven_float_sum: Python element types are not proven')
 	} $else {
-		$if T is $float {
-			if start != 0 { return arrays.fold(items, T(start), |acc, item| acc + item) }
-		}
-		return arrays.sum(items) or { 0 }
+		$compile_error('py2v_unsupported_integer_sum: expected native integer elements')
 	}
 }
 

@@ -2,15 +2,8 @@ module main
 
 fn scaled_copy(source []int, denominator int, scale bool) []int {
 	mut values := source.clone()
-	py2v_range_start1 := int(0)
-	py2v_range_stop2 := int(values.len)
-	py2v_range_step3 := int(1)
-	if py2v_range_step3 == 0 { panic('ValueError: range() arg 3 must not be zero') }
-	for index := py2v_range_start1; if py2v_range_step3 > 0 {
-		index < py2v_range_stop2
-	} else {
-		index > py2v_range_stop2
-	}; index = py2v_range_next1(index, py2v_range_stop2, py2v_range_step3) {
+	py2v_range_stop1 := int(values.len)
+	for index in int(0) .. py2v_range_stop1 {
 		values[index] = py2v_integer_add1(values[index], 1, 'floor_division_comprehension.py:4', 'addition')
 	}
 	if scale {
@@ -21,17 +14,6 @@ fn scaled_copy(source []int, denominator int, scale bool) []int {
 
 fn squared_quotient(value int, denominator int) int {
 	return py2v_integer_floor_div1(int(py2v_integer_power1(value, 2, 'floor_division_comprehension.py:11')), denominator, 'floor_division_comprehension.py:11')
-}
-
-fn py2v_range_next1(current int, stop int, step int) int {
-	if step > 0 {
-		if u64(step) >= u64(stop) - u64(current) {
-			return stop
-		}
-	} else if u64(0) - u64(step) >= u64(current) - u64(stop) {
-		return stop
-	}
-	return current + step
 }
 
 @[noreturn]

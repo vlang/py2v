@@ -166,7 +166,7 @@ fn twice(words []string) int {
 	}
 	for w in words[..1] {
 		py2v_old5 := n
-		py2v_aug_result6 := py2v_integer_add1(py2v_old5, py2v_text_length1(w), 'isinstance_checked_first.py:78', 'addition')
+		py2v_aug_result6 := py2v_integer_add1(py2v_old5, w.len_utf8(), 'isinstance_checked_first.py:78', 'addition')
 		n = py2v_aug_result6
 	}
 	return n
@@ -221,14 +221,6 @@ fn py2v_float_text1[T](value T) string {
 	} $else {
 		return value.str()
 	}
-}
-
-fn py2v_text_length1(text string) int {
-	mut length := 0
-	for byte in text {
-		if (byte & 0xc0) != 0x80 { length++ }
-	}
-	return length
 }
 
 fn py2v_entry1() ! {

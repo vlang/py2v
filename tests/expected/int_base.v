@@ -180,29 +180,11 @@ fn py2v_int_base_error_text1(value string, base int, site string) !int {
 	}
 }
 
-fn py2v_range_next1(current int, stop int, step int) int {
-	if step > 0 {
-		if u64(step) >= u64(stop) - u64(current) {
-			return stop
-		}
-	} else if u64(0) - u64(step) >= u64(current) - u64(stop) {
-		return stop
-	}
-	return current + step
-}
-
 fn py2v_entry1() ! {
 	values := [' -0x_Ff　', '0o_17', '٠b_١٠١', '00_0', '+1_0', 'Z', '-8000_0000_0000_0000']
 	bases := [0, 8, 0, 0, 2, 36, 16]
-	py2v_range_start1 := int(0)
-	py2v_range_stop2 := int(values.len)
-	py2v_range_step3 := int(1)
-	if py2v_range_step3 == 0 { panic('ValueError: range() arg 3 must not be zero') }
-	for index := py2v_range_start1; if py2v_range_step3 > 0 {
-		index < py2v_range_stop2
-	} else {
-		index > py2v_range_stop2
-	}; index = py2v_range_next1(index, py2v_range_stop2, py2v_range_step3) {
+	py2v_range_stop1 := int(values.len)
+	for index in int(0) .. py2v_range_stop1 {
 		println(parse_digits_py(values, index, bases[index])!)
 	}
 	println((py2v_int_base_error_text1('0b1', int(16), 'int_base.py:10') or { return IError(Py2vErrorValueError{ data: Py2vErrorData{ args: Py2vErrorArgs{ values: [Py2vErrorArg(err.msg())] } } }) }))

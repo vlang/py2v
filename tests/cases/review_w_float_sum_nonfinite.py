@@ -1,0 +1,5 @@
+print(sum([float('inf')]))
+print(sum([float('-inf')]))
+print(sum([float('nan')]))
+print(sum([float('inf'), float('-inf')]))
+print(sum([float('inf'), float('nan')]))

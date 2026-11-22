@@ -1,9 +1,15 @@
 module main
 
 fn main_func() {
+	for i in int(0) .. int(3) {
+		println(i)
+	}
+	for i in int(2) .. int(5) {
+		println(i)
+	}
 	py2v_range_start1 := int(0)
-	py2v_range_stop2 := int(3)
-	py2v_range_step3 := int(1)
+	py2v_range_stop2 := int(10)
+	py2v_range_step3 := int(2)
 	if py2v_range_step3 == 0 { panic('ValueError: range() arg 3 must not be zero') }
 	for i := py2v_range_start1; if py2v_range_step3 > 0 {
 		i < py2v_range_stop2
@@ -12,37 +18,15 @@ fn main_func() {
 	}; i = py2v_range_next1(i, py2v_range_stop2, py2v_range_step3) {
 		println(i)
 	}
-	py2v_range_start4 := int(2)
-	py2v_range_stop5 := int(5)
-	py2v_range_step6 := int(1)
+	py2v_range_start4 := int(5)
+	py2v_range_stop5 := int(0)
+	py2v_range_step6 := int(-1)
 	if py2v_range_step6 == 0 { panic('ValueError: range() arg 3 must not be zero') }
 	for i := py2v_range_start4; if py2v_range_step6 > 0 {
 		i < py2v_range_stop5
 	} else {
 		i > py2v_range_stop5
 	}; i = py2v_range_next1(i, py2v_range_stop5, py2v_range_step6) {
-		println(i)
-	}
-	py2v_range_start7 := int(0)
-	py2v_range_stop8 := int(10)
-	py2v_range_step9 := int(2)
-	if py2v_range_step9 == 0 { panic('ValueError: range() arg 3 must not be zero') }
-	for i := py2v_range_start7; if py2v_range_step9 > 0 {
-		i < py2v_range_stop8
-	} else {
-		i > py2v_range_stop8
-	}; i = py2v_range_next1(i, py2v_range_stop8, py2v_range_step9) {
-		println(i)
-	}
-	py2v_range_start10 := int(5)
-	py2v_range_stop11 := int(0)
-	py2v_range_step12 := int(-1)
-	if py2v_range_step12 == 0 { panic('ValueError: range() arg 3 must not be zero') }
-	for i := py2v_range_start10; if py2v_range_step12 > 0 {
-		i < py2v_range_stop11
-	} else {
-		i > py2v_range_stop11
-	}; i = py2v_range_next1(i, py2v_range_stop11, py2v_range_step12) {
 		println(i)
 	}
 }

@@ -13,7 +13,7 @@ fn lookup(key string) ?map[string]int {
 		return none
 	}
 	return {
-		key: py2v_text_length1(key)
+		key: key.len_utf8()
 	}
 }
 
@@ -26,7 +26,7 @@ fn first(items []string) ?string {
 
 // NOTE: Tuple[?string, int] — define a struct with named fields
 fn pair(key string) []Any {
-	return [key, py2v_text_length1(key)]
+	return [key, key.len_utf8()]
 }
 
 @[inline]
@@ -61,14 +61,6 @@ fn py2v_range_array1(start int, stop int, step int) []int {
 		}
 	}
 	return values
-}
-
-fn py2v_text_length1(text string) int {
-	mut length := 0
-	for byte in text {
-		if (byte & 0xc0) != 0x80 { length++ }
-	}
-	return length
 }
 
 fn main() {

@@ -2,15 +2,8 @@ module main
 
 fn squares(n int) []int {
 	mut out := []int{}
-	py2v_range_start1 := int(0)
-	py2v_range_stop2 := int(n)
-	py2v_range_step3 := int(1)
-	if py2v_range_step3 == 0 { panic('ValueError: range() arg 3 must not be zero') }
-	for i := py2v_range_start1; if py2v_range_step3 > 0 {
-		i < py2v_range_stop2
-	} else {
-		i > py2v_range_stop2
-	}; i = py2v_range_next1(i, py2v_range_stop2, py2v_range_step3) {
+	py2v_range_stop1 := int(n)
+	for i in int(0) .. py2v_range_stop1 {
 		out << py2v_integer_mul1(i, i, 'empty_container_inferred.py:4', 'multiplication')
 	}
 	return out
@@ -19,7 +12,7 @@ fn squares(n int) []int {
 fn lengths(words []string) map[string]int {
 	mut table := map[string]int{}
 	for word in words {
-		table[word] = py2v_text_length1(word)
+		table[word] = word.len_utf8()
 	}
 	return table
 }
@@ -44,17 +37,6 @@ fn nested() int {
 	return total
 }
 
-fn py2v_range_next1(current int, stop int, step int) int {
-	if step > 0 {
-		if u64(step) >= u64(stop) - u64(current) {
-			return stop
-		}
-	} else if u64(0) - u64(step) >= u64(current) - u64(stop) {
-		return stop
-	}
-	return current + step
-}
-
 @[noreturn]
 fn py2v_integer_overflow1(site string, operation string) {
 	flush_stdout()
@@ -70,14 +52,6 @@ fn py2v_integer_mul1(a int, b int, site string, operation string) int {
 		py2v_integer_overflow1(site, operation)
 	}
 	return a * b
-}
-
-fn py2v_text_length1(text string) int {
-	mut length := 0
-	for byte in text {
-		if (byte & 0xc0) != 0x80 { length++ }
-	}
-	return length
 }
 
 @[inline]

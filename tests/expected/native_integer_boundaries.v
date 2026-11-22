@@ -89,15 +89,8 @@ fn main_func() {
 	println(count_nonzero([-1, 0, 2, 3]))
 	println((masked_accumulator('Algorithms')).str() + ' ' + (masked_accumulator('scramble bits')).str())
 	println(masked_accumulator(''))
-	py2v_range_start9 := int(0)
-	py2v_range_stop10 := int(values.len)
-	py2v_range_step11 := int(1)
-	if py2v_range_step11 == 0 { panic('ValueError: range() arg 3 must not be zero') }
-	for position := py2v_range_start9; if py2v_range_step11 > 0 {
-		position < py2v_range_stop10
-	} else {
-		position > py2v_range_stop10
-	}; position = py2v_range_next1(position, py2v_range_stop10, py2v_range_step11) {
+	py2v_range_stop9 := int(values.len)
+	for position in int(0) .. py2v_range_stop9 {
 		println(position + 1)
 	}
 }
@@ -332,17 +325,6 @@ fn py2v_integer_isqrt1(value int) int {
 		bit >>= 2
 	}
 	return int(root)
-}
-
-fn py2v_range_next1(current int, stop int, step int) int {
-	if step > 0 {
-		if u64(step) >= u64(stop) - u64(current) {
-			return stop
-		}
-	} else if u64(0) - u64(step) >= u64(current) - u64(stop) {
-		return stop
-	}
-	return current + step
 }
 
 @[inline]

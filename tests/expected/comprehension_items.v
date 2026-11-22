@@ -1,6 +1,5 @@
 module main
 
-import arrays
 import math
 
 fn show(small map[string]int, big map[string]int, rank int) {
@@ -43,8 +42,16 @@ fn show(small map[string]int, big map[string]int, rank int) {
 	}
 	println(grid)
 	mut py2v_comp5 := []int{}
-	for py2v_zipi1, n in [1, 2, 3] {
-		w := [4, 5, 6][py2v_zipi1]
+	py2v_zip_first1 := [1, 2, 3]
+	py2v_zip_second2 := [4, 5, 6]
+	py2v_zip_len3 := if py2v_zip_first1.len < py2v_zip_second2.len {
+		py2v_zip_first1.len
+	} else {
+		py2v_zip_second2.len
+	}
+	for py2v_zip_index4 in 0 .. py2v_zip_len3 {
+		n := py2v_zip_first1[py2v_zip_index4]
+		w := py2v_zip_second2[py2v_zip_index4]
 		py2v_comp5 << py2v_integer_mul1(n, w, 'comprehension_items.py:15', 'multiplication')
 	}
 	total := py2v_integer_sum1(py2v_comp5, 0, 'comprehension_items.py:15')
@@ -100,11 +107,10 @@ fn py2v_integer_inferred_sum1[T](items []T, start int, site string) T {
 			py2v_integer_overflow1(site, 'integer narrowing')
 		}
 		return T(value)
+	} $else $if T is $float {
+		$compile_error('py2v_unsupported_unproven_float_sum: Python element types are not proven')
 	} $else {
-		$if T is $float {
-			if start != 0 { return arrays.fold(items, T(start), |acc, item| acc + item) }
-		}
-		return arrays.sum(items) or { 0 }
+		$compile_error('py2v_unsupported_integer_sum: expected native integer elements')
 	}
 }
 

@@ -17,8 +17,8 @@ fn total(values []int) int {
 fn longest(words []string) int {
 	mut best := 0
 	for w in words {
-		if py2v_text_length1(w) > best {
-			best = py2v_text_length1(w)
+		if w.len_utf8() > best {
+			best = w.len_utf8()
 		}
 	}
 	return best
@@ -41,14 +41,6 @@ fn py2v_integer_add1(a int, b int, site string, operation string) int {
 	min := -max - 1
 	if (b > 0 && a > max - b) || (b < 0 && a < min - b) { py2v_integer_overflow1(site, operation) }
 	return a + b
-}
-
-fn py2v_text_length1(text string) int {
-	mut length := 0
-	for byte in text {
-		if (byte & 0xc0) != 0x80 { length++ }
-	}
-	return length
 }
 
 fn main() {

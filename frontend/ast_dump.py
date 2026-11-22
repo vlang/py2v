@@ -2794,6 +2794,8 @@ def _node_to_dict(node: ast.AST, mutable_vars: Set[str],
 
     if isinstance(node, ast.expr) and getattr(node, "_runtime_annotation", ""):
         result["v_annotation"] = node._runtime_annotation
+    if isinstance(node, ast.Name) and getattr(node, "_bound_generator_sum", False):
+        result["v_annotation"] = "py2v_bound_generator"
     if isinstance(node, ast.Name) and getattr(node, "_native_unsigned_constant", False):
         result["v_annotation"] = "u64"
     if isinstance(node, (ast.Name, ast.Attribute)) and getattr(node, "_class_path", ""):
@@ -3044,6 +3046,285 @@ def _mutating_function_params(tree: ast.Module,
             return found
         found = current
         ScopeTracker.mutating_functions = found
+
+
+def _mark_bound_generator_sums(tree: ast.Module) -> None:
+    nodes = list(ast.walk(tree))
+    bindings: set[int] = set()
+    aliases: list[tuple[int, int]] = []
+    for node in nodes:
+        if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+            continue
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+        for target in targets:
+            dest = getattr(target, "_binding", None)
+            if not isinstance(target, ast.Name) or dest is None:
+                continue
+            if isinstance(node.value, ast.GeneratorExp):
+                bindings.add(dest)
+            elif isinstance(node.value, ast.Name):
+                source = getattr(node.value, "_binding", None)
+                if source is not None:
+                    aliases.append((dest, source))
+    while True:
+        before = len(bindings)
+        bindings.update(dest for dest, source in aliases if source in bindings)
+        if len(bindings) == before:
+            break
+    for node in nodes:
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "sum"
+                and getattr(node.func, "_binding", None) is None and node.args
+                and isinstance(node.args[0], ast.Name)
+                and getattr(node.args[0], "_binding", None) in bindings):
+            node.args[0]._bound_generator_sum = True
+
+
+def _mark_float_index_reads(tree: ast.Module, table: symbols.SymbolTable) -> None:
+    """Prove that local list copies, rebinds, and indexed writes retain Python floats."""
+    if table.scopes[0].has_star_import:
+        return
+    nodes = list(ast.walk(tree))
+    parents = {child: node for node in nodes for child in ast.iter_child_nodes(node)}
+    local = {b.id for b in table.bindings if not b.is_param and table.scopes[b.scope].kind == "function"}
+
+    def float_value(value: ast.AST) -> bool:
+        if isinstance(value, ast.Constant):
+            return type(value.value) is float
+        if isinstance(value, ast.UnaryOp) and isinstance(value.op, (ast.UAdd, ast.USub)):
+            return float_value(value.operand)
+        if isinstance(value, ast.BinOp) and isinstance(value.op, ast.Div):
+            return True
+        return (isinstance(value, ast.Call) and isinstance(value.func, ast.Name)
+                and value.func.id == "float" and getattr(value.func, "_binding", None) is None
+                and len(value.args) <= 1 and not value.keywords)
+
+    def copy_call(value: ast.AST) -> bool:
+        return (isinstance(value, ast.Call) and isinstance(value.func, ast.Attribute)
+                and value.func.attr == "copy" and not value.args and not value.keywords)
+
+    roots: set[int] = set()
+    unsafe: set[int] = set()
+    inputs: dict[int, set[int]] = {}
+    aliases: dict[int, set[int]] = {}
+    readers: list[tuple[int, ast.Subscript]] = []
+    for node in nodes:
+        if not isinstance(node, ast.Name):
+            continue
+        binding = getattr(node, "_binding", None)
+        if binding not in local:
+            continue
+        parent = parents.get(node)
+        if isinstance(node.ctx, ast.Store):
+            if not isinstance(parent, ast.Assign) or parent.targets != [node]:
+                unsafe.add(binding)
+                continue
+            value = parent.value
+            if ((isinstance(value, ast.List) and all(map(float_value, value.elts)))
+                    or (isinstance(value, ast.ListComp) and float_value(value.elt))):
+                roots.add(binding)
+            else:
+                source = value.func.value if copy_call(value) else value
+                origin = getattr(source, "_binding", None)
+                if isinstance(source, ast.Name) and origin in local:
+                    inputs.setdefault(binding, set()).add(origin)
+                    if source is value:
+                        aliases.setdefault(origin, set()).add(binding)
+                else:
+                    unsafe.add(binding)
+            continue
+        if isinstance(parent, ast.Subscript) and parent.value is node and not isinstance(parent.slice, ast.Slice):
+            if isinstance(parent.ctx, ast.Load):
+                readers.append((binding, parent))
+                continue
+            stmt = parents.get(parent)
+            if isinstance(stmt, ast.Assign) and stmt.targets == [parent] and float_value(stmt.value):
+                continue
+        if isinstance(parent, ast.Attribute) and copy_call(parents.get(parent)):
+            continue
+        if isinstance(parent, ast.Assign) and parent.value is node and len(parent.targets) == 1:
+            target = parent.targets[0]
+            if isinstance(target, ast.Name) and getattr(target, "_binding", None) in local:
+                continue
+        if (isinstance(parent, ast.comprehension) and parent.iter is node
+                and isinstance(parents.get(parent), (ast.ListComp, ast.GeneratorExp))):
+            continue
+        unsafe.add(binding)
+
+    proven = roots - unsafe
+    while True:
+        reachable = proven | {target for target, origins in inputs.items() if origins & proven}
+        reachable -= unsafe
+        if reachable == proven:
+            break
+        proven = reachable
+    while True:
+        verified = {bid for bid in proven if inputs.get(bid, set()) <= proven
+                    and aliases.get(bid, set()) <= proven}
+        if verified == proven:
+            break
+        proven = verified
+    for binding, read in readers:
+        if binding in proven:
+            read._runtime_annotation = "py2v_float_element"
+
+
+def _fold_sum_after_scalar_setter(tree: ast.Module, table: symbols.SymbolTable) -> None:
+    """Use a constant global write at an immediately following literal sum."""
+    if table.scopes[0].has_star_import:
+        return
+    setters: dict[int, tuple[int, int]] = {}
+    for stmt in tree.body:
+        if not isinstance(stmt, ast.FunctionDef) or stmt.decorator_list or len(stmt.body) != 2:
+            continue
+        args = stmt.args
+        if args.posonlyargs or args.args or args.kwonlyargs or args.vararg or args.kwarg:
+            continue
+        declare, write = stmt.body
+        if (not isinstance(declare, ast.Global) or not isinstance(write, ast.Assign)
+                or len(write.targets) != 1 or not isinstance(write.targets[0], ast.Name)
+                or write.targets[0].id not in declare.names or not isinstance(write.value, ast.Constant)
+                or type(write.value.value) is not int):
+            continue
+        fn = table.binding(0, stmt.name)
+        target = getattr(write.targets[0], "_binding", None)
+        if fn is not None and len(fn.sites) == 1 and target is not None:
+            setters[fn.id] = (target, write.value.value)
+
+    for prior, stmt in zip(tree.body, tree.body[1:]):
+        if not (isinstance(prior, ast.Expr) and isinstance(prior.value, ast.Call)
+                and isinstance(prior.value.func, ast.Name) and not prior.value.args
+                and not prior.value.keywords):
+            continue
+        setter = setters.get(getattr(prior.value.func, "_binding", None))
+        if setter is None or not isinstance(stmt, ast.Expr) or not isinstance(stmt.value, ast.Call):
+            continue
+        call = stmt.value
+        if (not isinstance(call.func, ast.Name) or call.func.id != "print" or call.keywords
+                or getattr(call.func, "_binding", None) is not None or len(call.args) != 1):
+            continue
+        total = call.args[0]
+        if (not isinstance(total, ast.Call) or not isinstance(total.func, ast.Name)
+                or total.func.id != "sum" or getattr(total.func, "_binding", None) is not None
+                or len(total.args) != 1 or total.keywords or not isinstance(total.args[0], ast.List)):
+            continue
+        items = total.args[0]
+        if len(items.elts) == 1 and isinstance(items.elts[0], ast.Name):
+            if getattr(items.elts[0], "_binding", None) == setter[0]:
+                items.elts[0] = ast.copy_location(ast.Constant(value=setter[1]), items.elts[0])
+
+
+def _mark_literal_list_semantics(tree: ast.Module) -> None:
+    """Retain ASCII and float provenance across known operations on a literal list."""
+    nodes = list(ast.walk(tree))
+    if any(isinstance(node, ast.ImportFrom) and any(a.name == "*" for a in node.names)
+           for node in nodes):
+        return
+
+    def builtin(expr: ast.AST, name: str) -> bool:
+        return (isinstance(expr, ast.Name) and expr.id == name
+                and getattr(expr, "_binding", None) is None)
+
+    def case_key(expr: ast.AST) -> bool:
+        return (isinstance(expr, ast.Attribute) and expr.attr in ("lower", "upper")
+                and builtin(expr.value, "str"))
+
+    def safe_sort(call: ast.Call) -> bool:
+        return all(kw.arg == "reverse" or (kw.arg == "key"
+                   and (case_key(kw.value) or builtin(kw.value, "len"))) for kw in call.keywords)
+
+    def ascii_list(expr: ast.AST) -> bool:
+        return isinstance(expr, (ast.List, ast.Tuple)) and all(
+            isinstance(item, ast.Constant) and isinstance(item.value, str) and item.value.isascii()
+            for item in expr.elts)
+
+    def float_value(expr: ast.AST) -> bool:
+        if isinstance(expr, ast.Constant):
+            return isinstance(expr.value, float)
+        if isinstance(expr, ast.UnaryOp) and isinstance(expr.op, (ast.UAdd, ast.USub)):
+            return float_value(expr.operand)
+        return isinstance(expr, ast.Call) and builtin(expr.func, "float") and not expr.keywords
+
+    def float_list(expr: ast.AST) -> bool:
+        return isinstance(expr, (ast.List, ast.Tuple)) and all(map(float_value, expr.elts))
+
+    parents = {child: parent for parent in nodes for child in ast.iter_child_nodes(parent)}
+    stores: dict[int, int] = {}
+    ascii_candidates: set[int] = set()
+    float_candidates: set[int] = set()
+    nonempty_candidates: set[int] = set()
+    ascii_unsafe: set[int] = set()
+    float_unsafe: set[int] = set()
+    nonempty_unsafe: set[int] = set()
+    for node in nodes:
+        if not isinstance(node, ast.Name):
+            continue
+        binding = getattr(node, "_binding", None)
+        if binding is None:
+            continue
+        parent = parents.get(node)
+        if isinstance(node.ctx, ast.Store):
+            stores[binding] = stores.get(binding, 0) + 1
+            if ((isinstance(parent, ast.Assign) and len(parent.targets) == 1)
+                    or isinstance(parent, ast.AnnAssign)):
+                if ascii_list(parent.value):
+                    ascii_candidates.add(binding)
+                if isinstance(parent.value, ast.List) and float_list(parent.value):
+                    float_candidates.add(binding)
+                if isinstance(parent.value, ast.List) and parent.value.elts:
+                    nonempty_candidates.add(binding)
+            continue
+        read_only = isinstance(parent, ast.Call) and node in parent.args and (
+            builtin(parent.func, "print") or builtin(parent.func, "len")
+            or (builtin(parent.func, "sorted") and parent.args == [node] and safe_sort(parent)))
+        float_write = False
+        append_only = False
+        if isinstance(parent, ast.Attribute) and parent.value is node:
+            call = parents.get(parent)
+            if isinstance(call, ast.Call) and call.func is parent:
+                read_only = not call.args and parent.attr in ("sort", "reverse") and safe_sort(call)
+                if len(call.args) == 1 and not call.keywords:
+                    append_only = parent.attr in ("append", "extend")
+                    float_write = ((parent.attr == "append" and float_value(call.args[0]))
+                                   or (parent.attr == "extend" and float_list(call.args[0])))
+        if isinstance(parent, ast.Subscript) and parent.value is node and isinstance(parent.ctx, ast.Store):
+            assignment = parents.get(parent)
+            float_write = (not isinstance(parent.slice, ast.Slice) and isinstance(assignment, ast.Assign)
+                           and assignment.targets == [parent] and float_value(assignment.value))
+        if not read_only:
+            ascii_unsafe.add(binding)
+        if not (read_only or float_write or (isinstance(parent, ast.Call)
+                and builtin(parent.func, "sum") and parent.args and parent.args[0] is node)):
+            float_unsafe.add(binding)
+        if not (read_only or append_only or (isinstance(parent, (ast.For, ast.comprehension))
+                                             and parent.iter is node)):
+            nonempty_unsafe.add(binding)
+
+    for node in nodes:
+        if isinstance(node, (ast.For, ast.comprehension)) and isinstance(node.iter, ast.Name):
+            binding = getattr(node.iter, "_binding", None)
+            if binding in nonempty_candidates and binding not in nonempty_unsafe and stores[binding] == 1:
+                node.iter._runtime_annotation = "py2v_nonempty_list"
+        if not isinstance(node, ast.Call):
+            continue
+        if builtin(node.func, "sum") and node.args and isinstance(node.args[0], ast.Name):
+            source = node.args[0]
+            binding = getattr(source, "_binding", None)
+            if binding in float_candidates and binding not in float_unsafe and stores[binding] == 1:
+                source._runtime_annotation = "py2v_float_list"
+        if not any(kw.arg == "key" and case_key(kw.value) for kw in node.keywords):
+            continue
+        if builtin(node.func, "sorted") and len(node.args) == 1:
+            source = node.args[0]
+        elif isinstance(node.func, ast.Attribute) and node.func.attr == "sort" and not node.args:
+            source = node.func.value
+        else:
+            continue
+        binding = getattr(source, "_binding", None)
+        if ascii_list(source) or (isinstance(source, ast.Name) and binding in ascii_candidates
+                                 and binding not in ascii_unsafe and stores[binding] == 1):
+            for kw in node.keywords:
+                if kw.arg == "key" and case_key(kw.value):
+                    kw.value._runtime_annotation = "py2v_ascii_sort_key"
 
 
 def _resolve_bindings(tree: ast.Module) -> Optional[symbols.SymbolTable]:
@@ -7075,6 +7356,42 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
                 node.comparators = [boxed(right)]
             return node
 
+        def set_membership_aggregate(self, node: ast.Call) -> None:
+            # any/all of total builtin integer membership tests cannot observe set order.
+            if (has_star_import or not isinstance(node.func, ast.Name)
+                    or node.func.id not in ("any", "all") or node.keywords
+                    or getattr(node.func, "_binding", None) is not None or len(node.args) != 1
+                    or not isinstance(node.args[0], ast.GeneratorExp)):
+                return
+            generator = node.args[0]
+            if len(generator.generators) != 1 or not isinstance(generator.elt, ast.Compare):
+                return
+            loop = generator.generators[0]
+            test = generator.elt
+            if (loop.is_async or loop.ifs or not isinstance(loop.target, ast.Name)
+                    or not isinstance(loop.iter, ast.Name) or len(test.ops) != 1
+                    or not isinstance(test.ops[0], (ast.In, ast.NotIn))
+                    or not isinstance(test.comparators[0], ast.Name)
+                    or test.comparators[0].id != loop.iter.id
+                    or getattr(test.comparators[0], "_binding", None)
+                    != getattr(loop.iter, "_binding", None)):
+                return
+            type_id = getattr(loop.iter, "_type", None)
+            if type_id is None:
+                return
+            typ = facts.types[type_id]
+            if typ["k"] != "set" or facts.types[typ["elem"]]["k"] != "int":
+                return
+
+            def integer(expr: ast.expr) -> bool:
+                if isinstance(expr, (ast.Name, ast.Constant)):
+                    return _truth_kind(expr, facts) == "int"
+                return (isinstance(expr, ast.BinOp) and isinstance(expr.op, (ast.Add, ast.Sub))
+                        and integer(expr.left) and integer(expr.right))
+
+            if integer(test.left):
+                loop._set_order_independent = True
+
         def visit_Call(self, node: ast.Call) -> ast.AST:
             external = _qualified_import(node.func, external_imports)
             if external:
@@ -7109,6 +7426,7 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
             join_plain = is_value_join and not dynamic(node.args[0])
             is_callable = (not isinstance(node.func, ast.Attribute) and dynamic(node.func)
                            and not node.keywords and not any(isinstance(a, ast.Starred) for a in node.args))
+            self.set_membership_aggregate(node)
             self.generic_visit(node)
             if (isinstance(node.func, ast.Name)
                     and getattr(node.func, "_binding", None) is None and not has_star_import
@@ -7291,8 +7609,11 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
             return node
 
         def visit_For(self, node: ast.For) -> ast.AST:
+            set_order = _truth_kind(node.iter, facts) == "set"
             self.generic_visit(node)
-            if dynamic(node.iter):
+            if set_order:
+                node.iter = native_call("unsupported_set_iteration", [node.iter], node.iter, "")
+            elif dynamic(node.iter):
                 node.iter = _runtime_call("elements", [node.iter], node.iter)
             if id(node) in unpack_nodes:
                 number = 0
@@ -7309,8 +7630,12 @@ def _lower_dynamic_values(tree: ast.Module, table: Optional[symbols.SymbolTable]
             return node
 
         def visit_comprehension(self, node: ast.comprehension) -> ast.AST:
+            set_order = (_truth_kind(node.iter, facts) == "set"
+                         and not getattr(node, "_set_order_independent", False))
             self.generic_visit(node)
-            if dynamic(node.iter):
+            if set_order:
+                node.iter = native_call("unsupported_set_iteration", [node.iter], node.iter, "")
+            elif dynamic(node.iter):
                 node.iter = _runtime_call("elements", [node.iter], node.iter)
                 node.iter._dynamic = False
             return node
@@ -9705,6 +10030,8 @@ def _loop_comprehensions(tree: ast.Module, facts: Optional[infer.TypeFacts]) -> 
                 for mark in ("_type", "_assumed"):
                     if hasattr(node, mark):
                         setattr(name, mark, getattr(node, mark))
+                if isinstance(node, (ast.ListComp, ast.GeneratorExp)) and spelled(node.elt) == "float":
+                    name._runtime_annotation = "py2v_float_comprehension"
                 return name
             return self.generic_visit(node)
 
@@ -10452,6 +10779,8 @@ def process_file(file_path: str, project: Optional[ProjectFacts] = None) -> str:
     if _encode_local_identifiers(tree, table):
         table = _resolve_bindings(tree)
     if table is not None:
+        if project is None:
+            _fold_sum_after_scalar_setter(tree, table)
         _lower_scalar_aliases(tree, table)
         _lower_unsigned_method_references(tree, table)
         _mark_scheduling_refusals(tree, table, file_path)
@@ -10477,6 +10806,9 @@ def process_file(file_path: str, project: Optional[ProjectFacts] = None) -> str:
     _plan_closures(tree, table, facts)
     _lower_named_dunder_operations(tree, facts)
     _plan_bound_appends(tree, table, facts)
+    _mark_bound_generator_sums(tree)
+    if table is not None:
+        _mark_float_index_reads(tree, table)
     _loop_comprehensions(tree, facts)
     any_lists = _declare_inferred_containers(tree, table, facts)
     any_lists |= _declare_block_locals(tree, table, facts)
@@ -10561,6 +10893,8 @@ def process_file(file_path: str, project: Optional[ProjectFacts] = None) -> str:
                 child._used_as_value = not isinstance(parent, ast.Expr)
 
     _mark_project_class_references(tree, table, project)
+    if table is not None:
+        _mark_literal_list_semantics(tree)
 
     # Detect nesting levels
     _detect_nesting_levels(tree)

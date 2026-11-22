@@ -1,0 +1,2 @@
+for value in set([3, 1, 3, 2]):
+    print(value)
