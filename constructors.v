@@ -335,7 +335,8 @@ fn init_function_capture_names(node FunctionDef) map[string]bool {
 fn (t VTranspiler) init_argument_local(name Name) bool {
 	if t.global_vars[name.id] { return false }
 	return name.id in t.init_capture_locals || name.id in t.local_idents || t.is_bound_in_scope(name.id)
-		|| name.id in t.loop_idents || name.id in t.renamed_idents
+		|| name.id in t.loop_idents || t.binding_spelling(name.id) in t.loop_idents
+		|| name.id in t.renamed_idents
 		|| (name.id == 'self' && t.current_class_name != '' && !t.current_classmethod)
 }
 
