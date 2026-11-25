@@ -62,12 +62,44 @@ fn parse_type_annotation(m map[string]json2.Any) ?string {
 
 // parse_ast parses a JSON AST string into a Module.
 pub fn parse_ast(json_str string) !Module {
-	raw := json2.decode[json2.Any](json_str)!
+	decoded := json2.decode[json2.Any](json_str)!
+	raw := if deferred := decoded.as_map()['py2v_deferred'] {
+		resolve_deferred(decoded, deferred.as_array())
+	} else {
+		decoded
+	}
 	mut mod := parse_module(raw.as_map())!
 	mut words := map[string]bool{}
 	collect_source_words(raw, mut words)
 	mod.source_words = words.keys()
 	return mod
+}
+
+// resolve_deferred puts back the containers the frontend moved out of a deeply nested document
+// (`_hoist_deep_nodes` in frontend/ast_dump.py): each `{"py2v_ref": i}` becomes `deferred[i]`.
+fn resolve_deferred(node json2.Any, deferred []json2.Any) json2.Any {
+	match node {
+		map[string]json2.Any {
+			if node.len == 1 {
+				if ref := node['py2v_ref'] {
+					return resolve_deferred(deferred[ref.int()], deferred)
+				}
+			}
+			mut out := map[string]json2.Any{}
+			for key, value in node {
+				if key != 'py2v_deferred' {
+					out[key] = resolve_deferred(value, deferred)
+				}
+			}
+			return out
+		}
+		[]json2.Any {
+			return node.map(resolve_deferred(it, deferred))
+		}
+		else {
+			return node
+		}
+	}
 }
 
 // collect_source_words adds each word of the decoded AST's keys and strings as py2v may emit

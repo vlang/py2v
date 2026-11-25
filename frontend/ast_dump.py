@@ -10959,7 +10959,38 @@ def process_file(file_path: str, project: Optional[ProjectFacts] = None) -> str:
             literal._integral_float_rebound = True
 
     result = _node_to_dict(tree, mutable_vars, redefined, ctx)
-    return json.dumps(result)
+    return json.dumps(_hoist_deep_nodes(result, _MAX_JSON_DEPTH))
+
+
+# V's json2 refuses a document whose dynamic values nest more than 256 containers deep. A long
+# `a + b + c + ...` or `elif` chain nests one level per term, so a container that would sit deeper
+# than this is moved to the top-level list `py2v_deferred` and replaced by `{"py2v_ref": index}`;
+# parser.v puts it back after decoding. A document within the limit is written unchanged.
+_MAX_JSON_DEPTH = 128
+
+
+def _hoist_deep_nodes(root, limit):
+    deferred = []
+    stack = [(root, 1)]
+    while stack:
+        node, depth = stack.pop()
+        children = list(node.items()) if isinstance(node, dict) else list(enumerate(node))
+        for key, child in children:
+            if isinstance(child, tuple):
+                # json writes a tuple as an array: make it one that can be edited in place.
+                child = node[key] = list(child)
+            if not isinstance(child, (dict, list)):
+                continue
+            if depth >= limit:
+                node[key] = {"py2v_ref": len(deferred)}
+                deferred.append(child)
+                # A deferred container sits under the root object and the deferred list.
+                stack.append((child, 3))
+            else:
+                stack.append((child, depth + 1))
+    if deferred:
+        root["py2v_deferred"] = deferred
+    return root
 
 
 def _pattern_to_dict(pattern, mutable_vars, redefined, ctx):
