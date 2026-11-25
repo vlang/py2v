@@ -1275,16 +1275,25 @@ if first_run.exit_code == 0 && second_run.exit_code == 1
 }
 // A deeply nested file must be translated, not overflow the stack: a chain of 120 `elif`
 // branches (Python nests each one in the `else` of the one before) and a sum of 401 terms.
+// V's json2 decodes at most 256 nested dynamic containers, which the sum and a chain of 300
+// branches exceed: the frontend keeps its document under that depth.
 mut elif_src := 'x = 5\nif x == 0:\n    print(0)\n'
 for i in 1 .. 120 {
 	elif_src += 'elif x == ${i}:\n    print(${i})\n'
 }
 elif_py := os.join_path(frontend_root, 'elif_chain.py')
+mut long_elif_src := elif_src
+for i in 120 .. 300 {
+	long_elif_src += 'elif x == ${i}:\n    print(${i})\n'
+}
+long_elif_py := os.join_path(frontend_root, 'long_elif_chain.py')
+os.write_file(long_elif_py, long_elif_src) or { panic(err) }
 os.write_file(elif_py, elif_src) or { panic(err) }
 sum_py := os.join_path(frontend_root, 'long_sum.py')
 os.write_file(sum_py, 'seed = 1\nx = seed' + ' + 1'.repeat(400) + '\nprint(x)\n') or { panic(err) }
 for c in [['an elif chain of 120 branches', elif_py, 'x == 119'],
-	['a sum of 401 terms', sum_py, '+ 1']] {
+	['an elif chain of 300 branches', long_elif_py, 'x == 299'], ['a sum of 401 terms', sum_py,
+		'+ 1']] {
 	res := os.exec([py2v, c[1]])
 	name := 'deep nesting: ${c[0]}'
 	if res.exit_code == 0 && res.output.contains(c[2]) {
