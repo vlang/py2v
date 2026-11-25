@@ -2967,7 +2967,8 @@ fn (mut t VTranspiler) visit_closure_from_funcdef(node FunctionDef, nl_names []s
 		refusal = 'decorator'
 	}
 	for py_name in capture_names {
-		if py_name in saved_loops || py_name in saved_renames {
+		if py_name in saved_loops || t.binding_spelling(py_name) in saved_loops
+			|| py_name in saved_renames {
 			refusal = 'loop_capture'
 		} else if py_name !in saved_locals && py_name !in saved_types && !t.is_bound_in_scope(py_name)
 			&& !(py_name == 'self' && t.current_class_name != '') {
@@ -5806,17 +5807,18 @@ pub fn (mut t VTranspiler) visit_for(node For) string {
 				// different binding that happened to share the V spelling.
 				t.local_idents[name] = fresh
 			}
+			is_walrus := t.condition_walrus_vars[name]
 			// Only write back to the same Python binding. Distinct names can
 			// acquire the same V spelling when a parameter is lowercased.
-			if t.is_bound_in_scope(name) && (t.param_idents[name] or { true })
-				&& !t.condition_walrus_vars[name] && for_target_is_mutable(node.target, name) {
+			if t.is_bound_in_scope(name) && (is_walrus || (t.param_idents[name] or { true }))
+				&& (is_walrus || for_target_is_mutable(node.target, name)) {
 				mut binding := spelling
 				typ := t.var_types[name] or { '' }
 				// Keep mutations of the caller's object before the loop, but
 				// detach the Python name when the loop begins to rebind it.
 				// A V `mut` parameter cannot itself be rebound without altering
 				// the caller. Earlier writes must still go through that parameter.
-				if name in t.param_idents && t.param_idents[name]
+				if !is_walrus && name in t.param_idents && t.param_idents[name]
 					&& t.local_idents[name] == escape_local_decl(name)
 					&& typ !in v_value_param_types && typ !in ['', 'Any']
 					&& !typ.starts_with('[]') && !typ.starts_with('map[')
@@ -6180,23 +6182,30 @@ fn (mut t VTranspiler) visit_for_body(node For, level int, has_else bool, writeb
 		for local in locals { t.scope_idents.delete(local) }
 	}
 	for target in targets {
-		if target is Name && (get_expr_annotation(target).starts_with('&pyrt.ListRef[')
-			|| loop_rebinds(node.body, target.id)) {
-			saved[target.id] = t.renamed_idents[target.id] or { '' }
+		if target is Name {
 			if binding := writebacks[target.id] {
-				t.renamed_idents[target.id] = binding
-				continue
+				if t.condition_walrus_vars[target.id]
+					|| get_expr_annotation(target).starts_with('&pyrt.ListRef[')
+					|| loop_rebinds(node.body, target.id) {
+					saved[target.id] = t.renamed_idents[target.id] or { '' }
+					t.renamed_idents[target.id] = binding
+					continue
+				}
 			}
-			incoming := t.visit_expr(target)
-			local := t.new_tmp('iter_value')
-			t.loop_prelude << if get_expr_annotation(target).starts_with('&pyrt.ListRef[') {
-				'mut ${local} := unsafe { ${incoming} }'
-			} else {
-				'mut ${local} := ${incoming}'
+			if get_expr_annotation(target).starts_with('&pyrt.ListRef[')
+				|| loop_rebinds(node.body, target.id) {
+				saved[target.id] = t.renamed_idents[target.id] or { '' }
+				incoming := t.visit_expr(target)
+				local := t.new_tmp('iter_value')
+				t.loop_prelude << if get_expr_annotation(target).starts_with('&pyrt.ListRef[') {
+					'mut ${local} := unsafe { ${incoming} }'
+				} else {
+					'mut ${local} := ${incoming}'
+				}
+				t.renamed_idents[target.id] = local
+				t.note_scope_binding(target.id)
+				locals << local
 			}
-			t.renamed_idents[target.id] = local
-			t.note_scope_binding(target.id)
-			locals << local
 		}
 	}
 	// The control value is bounded independently of mutations of the sequence.

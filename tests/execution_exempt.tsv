@@ -54,6 +54,7 @@ literals_annot	does-not-compile	invalid number of operand for `+`. Only one allo
 literals_more	does-not-compile	cannot assign a `none` value to a variable
 logging_calls	differs	line 2: CPython [logging_calls.py:11: DeprecationWarning: The 'warn' function is deprecated, use 'warning' instead], V [WARNING:root:also a warning]
 long_wrap	does-not-compile	cannot have non-pointer of type `string` in a pointer array of type `&pyrt.ListRef[string]`
+loop_capture_escaped_refusal	does-not-compile	unknown function: py2v_unsupported_closure_loop_capture
 match_basic	does-not-compile	cannot match `pyrt.Value` with `?void`
 mcp_types_runtime	needs-dependency	Imports mcp.types, which the suite does not install.
 none_handling	does-not-compile	cannot use `?void` as type `int` in return argument
