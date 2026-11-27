@@ -16,7 +16,7 @@ fn generator_with_type(ch chan int) {
 	}
 }
 
-fn generator_with_args(a int, b int, ch chan i64) {
+fn generator_with_args(ch chan int, a int, b int) {
 	defer { ch.close() }
 	py2v_range_start1 := int(a)
 	py2v_range_stop2 := int(b)

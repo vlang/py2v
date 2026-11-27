@@ -647,6 +647,7 @@ fn translate_package(python_cmd string, ast_dump string, package_dir string, out
 	register_colliding_functions(parsed, dupes, mut registry)
 	register_colliding_classes(parsed, dupes, mut registry)
 	register_wide_exports(parsed, mut registry)
+	register_generator_signatures(parsed, mut registry)
 	if dupes.len > 0 {
 		mut keys := dupes.keys()
 		keys.sort()
