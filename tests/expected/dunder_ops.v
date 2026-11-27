@@ -68,7 +68,7 @@ pub fn py2v_new_private(tag string) Private {
 	return py2v_instance
 }
 
-fn describe(p _Private) string {
+fn describe(p Private) string {
 	return repr(p) + p.str()
 }
 

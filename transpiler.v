@@ -178,6 +178,13 @@ mut:
 	// The classes defined at the top level of this module, known before any
 	// function is rendered. A class is a type in V, never a captured variable.
 	module_class_names map[string]bool
+	// local_class_names maps each Python class name defined in this module to its
+	// emitted V type name, keeping renamed classes collision-free.
+	local_class_names map[string]string
+	// local_static_members records `Class.member` for local @staticmethod / @classmethod.
+	local_static_members map[string]bool
+	// ref_class_emitted records the emitted V type name of each reference class.
+	ref_class_emitted map[string]bool
 	// submodule_aliases maps a local name bound by `from . import mod` to the
 	// Python submodule it names, when that submodule shares the current V module.
 	submodule_aliases map[string]string
@@ -218,7 +225,11 @@ fn emitted_class_name(name string) string {
 		if trimmed.len == 0 {
 			return name
 		}
-		return trimmed[0].ascii_str().to_upper() + trimmed[1..]
+		cap := trimmed[0].ascii_str().to_upper() + trimmed[1..]
+		if cap.len == 1 {
+			return '${cap}_struct'
+		}
+		return cap
 	}
 	if name != '' && name[0] >= `a` && name[0] <= `z` {
 		return 'Py2v_${name}'
@@ -226,7 +237,109 @@ fn emitted_class_name(name string) string {
 	return name
 }
 
+fn collect_local_class_defs(stmts []Stmt, mut defs []ClassDef) {
+	for stmt in stmts {
+		match stmt {
+			ClassDef {
+				defs << stmt
+				collect_local_class_defs(stmt.body, mut defs)
+			}
+			FunctionDef, AsyncFunctionDef, With, AsyncWith {
+				collect_local_class_defs(stmt.body, mut defs)
+			}
+			If, For, AsyncFor, While {
+				collect_local_class_defs(stmt.body, mut defs)
+				collect_local_class_defs(stmt.orelse, mut defs)
+			}
+			Try {
+				collect_local_class_defs(stmt.body, mut defs)
+				for handler in stmt.handlers {
+					collect_local_class_defs(handler.body, mut defs)
+				}
+				collect_local_class_defs(stmt.orelse, mut defs)
+				collect_local_class_defs(stmt.finalbody, mut defs)
+			}
+			Match {
+				for case in stmt.cases {
+					collect_local_class_defs(case.body, mut defs)
+				}
+			}
+			else {}
+		}
+	}
+}
+
+// prepare_local_class_names resolves the emitted V type name for every class
+// defined in this module before signatures, fields, or calls are emitted.
+// Verbatim V type names keep their spelling; colliding renamed classes get a
+// fresh numeric suffix that avoids taken names and source words.
+fn (mut t VTranspiler) prepare_local_class_names(stmts []Stmt) {
+	t.local_class_names = map[string]string{}
+	t.local_static_members = map[string]bool{}
+	mut defs := []ClassDef{}
+	collect_local_class_defs(stmts, mut defs)
+	mut seen := map[string]bool{}
+	mut ordered := []string{}
+	for def in defs {
+		for member in def.body {
+			if member is FunctionDef && member.decorator_kind in ['staticmethod', 'classmethod'] {
+				t.local_static_members['${def.name}.${member.name}'] = true
+			}
+		}
+		if !seen[def.name] {
+			seen[def.name] = true
+			ordered << def.name
+		}
+	}
+	mut taken := map[string]bool{}
+	for name in ordered {
+		if reg := t.registry.class_names['${t.current_dotted}.${name}'] {
+			t.local_class_names[name] = reg
+			taken[reg] = true
+		}
+	}
+	for name in ordered {
+		if name in t.local_class_names {
+			continue
+		}
+		emitted := emitted_class_name(name)
+		if emitted == name {
+			t.local_class_names[name] = name
+			taken[name] = true
+		}
+	}
+	mut reserved := map[string]bool{}
+	for word in t.source_words {
+		reserved[word] = true
+	}
+	for word in t.registry.module_words[t.module_name] {
+		reserved[word] = true
+	}
+	for name in ordered {
+		if name in t.local_class_names {
+			continue
+		}
+		base := emitted_class_name(name)
+		if !taken[base] {
+			t.local_class_names[name] = base
+			taken[base] = true
+			continue
+		}
+		mut suffix := 1
+		mut cand := '${base}_${suffix}'
+		for taken[cand] || reserved[cand] {
+			suffix++
+			cand = '${base}_${suffix}'
+		}
+		t.local_class_names[name] = cand
+		taken[cand] = true
+	}
+}
+
 fn (t &VTranspiler) local_class_name(name string) string {
+	if mapped := t.local_class_names[name] {
+		return mapped
+	}
 	return t.registry.class_names['${t.current_dotted}.${name}'] or { emitted_class_name(name) }
 }
 
@@ -246,12 +359,46 @@ fn (mut t VTranspiler) renamed_class(path string) ?string {
 	return '${owner.v_module}.${name}'
 }
 
+fn (mut t VTranspiler) imported_class_type(path string) ?string {
+	if renamed := t.renamed_class(path) {
+		return renamed
+	}
+	dot := path.last_index('.') or { return none }
+	mod_dotted := path[..dot]
+	class_name := path[dot + 1..]
+	if path !in t.registry.class_fields_by_path && t.registry.class_bases(mod_dotted, class_name).len == 0 {
+		return none
+	}
+	owner := t.registry.lookup(mod_dotted)
+	if owner.dotted == '' { return none }
+	emitted := emitted_class_name(class_name)
+	if owner.v_module == t.module_name { return emitted }
+	t.add_using(owner.v_module)
+	return '${owner.v_module}.${emitted}'
+}
+
 fn (mut t VTranspiler) renamed_static_member(node Attribute) ?string {
-	path := expr_class_path(*node.value)
-	if !t.registry.class_static_members['${path}.${node.attr}'] { return none }
-	owner := t.renamed_class(path) or { return none }
-	name := '${to_symbol_ident(owner.all_after_last('.'))}_${escape_leading_underscore(node.attr)}'
-	return if owner.contains('.') { '${owner.all_before_last('.')}.${name}' } else { name }
+	mut path := expr_class_path(*node.value)
+	if path == '' {
+		path = t.init_python_path(*node.value)
+	}
+	if !t.registry.class_static_members['${path}.${node.attr}'] {
+		return none
+	}
+	owner := t.registry.lookup(path.all_before_last('.'))
+	if owner.dotted == '' {
+		return none
+	}
+	cls := t.registry.class_names[path] or { emitted_class_name(path.all_after_last('.')) }
+	mut prefix := ''
+	if owner.v_module != t.module_name {
+		t.add_using(owner.v_module)
+		prefix = '${owner.v_module}.'
+	}
+	if path in t.registry.class_names {
+		return '${prefix}${to_symbol_ident(cls)}_${escape_leading_underscore(node.attr)}'
+	}
+	return '${prefix}${cls}.${escape_keyword(escape_leading_underscore(node.attr))}'
 }
 
 // new_transpiler creates a new VTranspiler instance
@@ -341,6 +488,8 @@ pub fn (t VTranspiler) emitted_fn_name(name string) string {
 // visit_module renders a whole Python module: constants, imports, structs and
 // functions, in the order V requires them.
 pub fn (mut t VTranspiler) visit_module(node Module) string {
+	t.source_words = node.source_words
+	t.prepare_local_class_names(node.body)
 	t.prepare_init_constructors(node)
 	mut bindings := map[string]int{}
 	if !t.emit_pub { bindings[':load:'] = 1 }
@@ -424,8 +573,8 @@ pub fn (mut t VTranspiler) visit_module(node Module) string {
 	// does not leak global-declaration flags.
 	t.has_global_decl = false
 	t.ref_classes = map[string]bool{}
+	t.ref_class_emitted = map[string]bool{}
 	t.prescan_ref_classes(node.body)
-	t.source_words = node.source_words
 	t.helpers_used = []
 	t.unsupported_sites.clear()
 	t.entry_returns_result = false
@@ -4014,7 +4163,10 @@ pub fn (mut t VTranspiler) visit_class_def(node ClassDef) string {
 				if stmt.targets.len == 1 && stmt.targets[0] is Name {
 					attr_name := (stmt.targets[0] as Name).id
 					if !is_v_field_ident(attr_name) {
-						class_name := t.registry.class_names['${t.current_dotted}.${node.name}'] or { node.name }
+						class_name := t.registry.class_names['${t.current_dotted}.${node.name}'] or {
+							local := t.local_class_name(node.name)
+							if local != emitted_class_name(node.name) { local } else { node.name }
+						}
 						symbol := class_attr_symbol_name(class_name, attr_name)
 						// A package can export Status.VALID under STATUS_VALID.
 						// Keep the generated storage distinct from that alias.
@@ -4183,7 +4335,7 @@ pub fn (mut t VTranspiler) visit_class_def(node ClassDef) string {
 	mut embeddable_bases := []string{}
 	for base_name in base_names {
 		if base_name in t.known_classes {
-			embeds << t.indent_code(emitted_class_name(base_name), 1)
+			embeds << t.indent_code(t.local_class_name(base_name), 1)
 			embeddable_bases << base_name
 		}
 	}
@@ -4258,7 +4410,7 @@ pub fn (mut t VTranspiler) visit_class_def(node ClassDef) string {
 	// through an embedded base (`self.Base.method(...)` from `super()`) can mark
 	// the embedded value as mutable.
 	base_name_early := t.class_base_names[node.name] or { []string{} }
-	base_key := if base_name_early.len > 0 { emitted_class_name(base_name_early[0]) } else { '' }
+	base_key := if base_name_early.len > 0 { t.local_class_name(base_name_early[0]) } else { '' }
 	for stmt in node.body {
 		if stmt is FunctionDef {
 			is_binop := stmt.dunder_op in ['+', '-', '*', '/', '%', '==', '!=', '<', '<=', '>',
@@ -4281,6 +4433,9 @@ pub fn (mut t VTranspiler) visit_class_def(node ClassDef) string {
 					v_name = python_dunder_method_names[stmt.name] or { stmt.name }
 				}
 				t.mut_receiver_methods['${node.name}_${v_name}'] = true
+				if emitted_name != node.name {
+					t.mut_receiver_methods['${emitted_name}_${v_name}'] = true
+				}
 			}
 		}
 	}
@@ -8839,7 +8994,7 @@ fn (mut t VTranspiler) has_wide_member(expr Attribute, kind string) bool {
 		return false
 	}
 	owner := if expr.value is Name && expr.value.id == 'self' {
-		emitted_class_name(t.current_class_name)
+		t.local_class_name(t.current_class_name)
 	} else {
 		t.infer_expr_type(expr.value).trim_left('?&')
 	}
@@ -10120,6 +10275,20 @@ fn (mut t VTranspiler) visit_call_at(original Call, permit WideSink, permit_type
 		if member := t.renamed_static_member(attr_node) {
 			return '${member}(${vargs.join(', ')})'
 		}
+		if attr_node.value is Name {
+			recv_name := (attr_node.value as Name).id
+			if t.local_static_members['${recv_name}.${attr_node.attr}']
+				&& !t.is_bound_in_scope(recv_name) && recv_name !in t.module_idents
+				&& recv_name !in t.local_idents {
+				owner := t.local_class_name(recv_name)
+				v_method := escape_keyword(escape_leading_underscore(attr_node.attr))
+				if '${t.current_dotted}.${recv_name}' in t.registry.class_names
+					&& !t.nominal_enums[recv_name] {
+					return '${to_symbol_ident(owner)}_${escape_leading_underscore(attr_node.attr)}(${vargs.join(', ')})'
+				}
+				return '${owner}.${v_method}(${vargs.join(', ')})'
+			}
+		}
 		if renamed := t.imported_colliding_function(t.init_python_path(node.func)) {
 			return '${renamed}(${vargs.join(', ')})'
 		}
@@ -10136,14 +10305,17 @@ fn (mut t VTranspiler) visit_call_at(original Call, permit WideSink, permit_type
 			class_name := attr_node.attr
 			sibling_fields := t.registry.class_fields(sibling, class_name)
 			sibling_bases := t.registry.class_bases(sibling, class_name)
-			if sibling_fields.len > 0 || sibling_bases.len > 0 {
+			if '${sibling}.${class_name}' in t.registry.class_fields_by_path
+				|| sibling_bases.len > 0 {
 				if class_name !in t.known_classes {
 					t.known_classes[class_name] = sibling_fields
 					t.class_direct_fields[class_name] = sibling_fields
 					t.class_base_names[class_name] = sibling_bases
 					t.imported_classes[class_name] = sibling_fields
 				}
-				mut emitted_ctor := emitted_class_name(class_name)
+				mut emitted_ctor := t.registry.class_names['${sibling}.${class_name}'] or {
+					emitted_class_name(class_name)
+				}
 				if class_name in t.ref_classes {
 					emitted_ctor = '&${emitted_ctor}'
 				}
@@ -10180,9 +10352,9 @@ fn (mut t VTranspiler) visit_call_at(original Call, permit WideSink, permit_type
 					base_args = base_args[1..]
 				}
 				if base_args.len > 0 {
-					return 'self.${emitted_class_name(recv)}.${init_method}(${base_args.join(', ')})'
+					return 'self.${t.local_class_name(recv)}.${init_method}(${base_args.join(', ')})'
 				}
-				return 'self.${emitted_class_name(recv)}.${init_method}()'
+				return 'self.${t.local_class_name(recv)}.${init_method}()'
 			}
 			if !t.is_known_module_receiver(recv) {
 				t.note_unmapped_call(fname)
@@ -11016,25 +11188,48 @@ fn (mut t VTranspiler) visit_call_at(original Call, permit WideSink, permit_type
 				// `cache.Blocker(...)` reaches a class this module never
 				// transpiled, because it lives in a sibling file of the same V
 				// module. The scan registry knows its fields.
-				t.seed_class_by_name(ctor_lookup)
+				t.seed_class_by_name(ctor_lookup, t.init_python_path(node.func))
 			}
 			is_ctor = ctor_lookup in t.known_classes
 		} else {
 			is_ctor = false
 		}
 	}
-	if is_ctor && (ctor_lookup == fname || ctor_lookup == emitted_class_name(ctor_lookup)
+	mut is_qualified_class := false
+	if is_ctor && ctor_lookup != fname {
+		mod_dotted := t.registry.dotted_for_v_module(fname.all_before_last('.'))
+		if mod_dotted != '' {
+			qpath := '${mod_dotted}.${ctor_lookup}'
+			is_qualified_class = qpath in t.registry.class_names
+				|| qpath in t.registry.class_fields_by_path
+				|| t.registry.class_bases(mod_dotted, ctor_lookup).len > 0
+		}
+	}
+	if is_ctor && (ctor_lookup == fname || is_qualified_class
+		|| ctor_lookup == emitted_class_name(ctor_lookup)
 		|| (node.args.len == 0 && node.keywords.len == 0)) {
 		// Keep the module qualifier: `Box{}` would refer to nothing when the
 		// class lives in another V module.
-		mut emitted_ctor := emitted_class_name(ctor_lookup)
+		mut emitted_ctor := if ctor_lookup == fname {
+			t.local_class_name(ctor_lookup)
+		} else {
+			mod_dotted := t.registry.dotted_for_v_module(fname.all_before_last('.'))
+			if mod_dotted != '' {
+				t.registry.class_names['${mod_dotted}.${ctor_lookup}'] or {
+					emitted_class_name(ctor_lookup)
+				}
+			} else {
+				emitted_class_name(ctor_lookup)
+			}
+		}
 		if ctor_lookup != fname {
 			emitted_ctor = '${fname.all_before_last('.')}.${emitted_ctor}'
 		}
 		if ctor_lookup in t.ref_classes {
 			emitted_ctor = '&${emitted_ctor}'
 		}
-		return t.ctor_struct_literal(emitted_ctor, fname, node, vargs)
+		lookup_key := if ctor_lookup in t.known_classes { ctor_lookup } else { fname }
+		return t.ctor_struct_literal(emitted_ctor, lookup_key, node, vargs)
 	}
 	if node.func is Attribute || (node.func is Name && fname.contains('.')
 		&& t.registry.dotted_for_v_module(fname.all_before_last('.')) != '') {
@@ -11185,7 +11380,7 @@ fn (mut t VTranspiler) checked_builtin_value_error(code string, call Call) strin
 }
 
 fn (mut t VTranspiler) build_inline_class_init(class_name string, field_vals map[string]string) string {
-	emitted_name := emitted_class_name(class_name)
+	emitted_name := t.local_class_name(class_name)
 	mut parts := []string{}
 	direct_fields := t.class_direct_fields[class_name] or { []string{} }
 	for field in direct_fields {
@@ -11197,7 +11392,7 @@ fn (mut t VTranspiler) build_inline_class_init(class_name string, field_vals map
 	for base_name in base_names {
 		base_init := t.build_inline_class_init(base_name, field_vals)
 		if base_init != '' {
-			parts << '${emitted_class_name(base_name)}: ${base_init}'
+			parts << '${t.local_class_name(base_name)}: ${base_init}'
 		}
 	}
 	if parts.len == 0 {
@@ -11219,7 +11414,7 @@ fn (mut t VTranspiler) resolve_super_base() string {
 	if base !in t.known_classes {
 		return ''
 	}
-	return emitted_class_name(base)
+	return t.local_class_name(base)
 }
 
 // collect_super_calls returns the method names invoked through a `super()` call
@@ -11492,7 +11687,12 @@ pub fn (mut t VTranspiler) visit_attribute(node Attribute) string {
 	if node.api != '' {
 		match node.api {
 			'__py2v__.enum_constant' {
-				return '${t.visit_expr(node.value)}.${escape_keyword(node.attr.to_lower())}'
+				owner := if node.value is Name && node.value.id in t.nominal_enums {
+					t.local_class_name(node.value.id)
+				} else {
+					t.visit_expr(node.value)
+				}
+				return '${owner}.${escape_keyword(node.attr.to_lower())}'
 			}
 			'__py2v__.enum_name' {
 				return '${as_receiver(t.visit_expr(node.value))}.py2v_enum_name()'
@@ -11750,7 +11950,7 @@ pub fn (mut t VTranspiler) visit_list(node List) string {
 	if node.elts.len == 0 {
 		annotation := node.v_annotation or { '' }
 		if annotation.starts_with('list[') {
-			typ := map_type(annotation)
+			typ := t.map_type(annotation)
 			return '${typ}{}'
 		}
 	}
@@ -11902,7 +12102,7 @@ pub fn (mut t VTranspiler) visit_dict(node Dict) string {
 	if node.keys.len == 0 {
 		annotation := node.v_annotation or { '' }
 		if annotation.starts_with('dict[') {
-			typ := map_type(annotation)
+			typ := t.map_type(annotation)
 			return '${typ}{}'
 		}
 		// V has no untyped empty map literal; fall back to a string-keyed map,
@@ -13471,9 +13671,57 @@ fn (t &VTranspiler) abc_named_classes() []string {
 }
 
 // map_type is map_type() that leaves a class of this module named Sequence,
-// Iterable or Mapping as the class.
+// Iterable or Mapping as the class, and rewrites renamed local classes to their
+// emitted V type names.
 fn (t &VTranspiler) map_type(typename string) string {
-	return t.ref_type(map_type_except(typename, t.abc_named_classes()))
+	mapped := map_type_except(typename, t.abc_named_classes())
+	return t.ref_type(t.rewrite_local_class_types(mapped))
+}
+
+// rewrite_local_class_types replaces bare Python names of renamed local classes
+// (such as `box` -> `Py2v_box`) inside a mapped V type string.
+fn (t &VTranspiler) rewrite_local_class_types(typ string) string {
+	if t.local_class_names.len == 0 || typ == '' {
+		return typ
+	}
+	mut has_renamed := false
+	for py_name, v_name in t.local_class_names {
+		if py_name != v_name {
+			has_renamed = true
+			break
+		}
+	}
+	if !has_renamed {
+		return typ
+	}
+	mut out := []u8{cap: typ.len + 8}
+	mut i := 0
+	for i < typ.len {
+		c := typ[i]
+		if c.is_letter() || c == `_` {
+			mut j := i
+			for j < typ.len && (typ[j].is_letter() || typ[j].is_digit() || typ[j] == `_`) {
+				j++
+			}
+			word := typ[i..j]
+			if (i == 0 || typ[i - 1] != `.`) && word !in ['map', 'fn', 'chan', 'Any']
+				&& word !in v_builtin_types {
+				if mapped := t.local_class_names[word] {
+					if mapped != word {
+						out << mapped.bytes()
+						i = j
+						continue
+					}
+				}
+			}
+			out << word.bytes()
+			i = j
+			continue
+		}
+		out << c
+		i++
+	}
+	return out.bytestr()
 }
 
 // prescan_ref_classes records the classes that declare a field of their own type,
@@ -13488,6 +13736,7 @@ fn (mut t VTranspiler) prescan_ref_classes(stmts []Stmt) {
 				mapped := map_type_except(typename, t.abc_named_classes())
 				if mapped.trim_left('?&') == stmt.name {
 					t.ref_classes[stmt.name] = true
+					t.ref_class_emitted[t.local_class_name(stmt.name)] = true
 					break
 				}
 			}
@@ -13499,13 +13748,14 @@ fn (mut t VTranspiler) prescan_ref_classes(stmts []Stmt) {
 // is_ref_class_type tells whether a V type is a reference class, a reference to
 // one or an optional of one.
 fn (t &VTranspiler) is_ref_class_type(typ string) bool {
-	return typ.trim_left('?&') in t.ref_classes
+	base := typ.trim_left('?&')
+	return base in t.ref_classes || base in t.ref_class_emitted
 }
 
 // ref_type writes each reference class named in a V type as a reference:
 // `?Node` becomes `?&Node` and `[]Node` becomes `[]&Node`.
 fn (t &VTranspiler) ref_type(typ string) string {
-	if t.ref_classes.len == 0 || typ == '' {
+	if t.ref_class_emitted.len == 0 || typ == '' {
 		return typ
 	}
 	mut out := []u8{cap: typ.len + 4}
@@ -13518,7 +13768,7 @@ fn (t &VTranspiler) ref_type(typ string) string {
 				j++
 			}
 			word := typ[i..j]
-			if word in t.ref_classes && (i == 0 || typ[i - 1] !in [`&`, `.`]) {
+			if word in t.ref_class_emitted && (i == 0 || typ[i - 1] !in [`&`, `.`]) {
 				out << `&`
 			}
 			out << word.bytes()
@@ -13563,7 +13813,7 @@ fn (mut t VTranspiler) annotation_typename(ann ?Expr) string {
 		if owner.dotted == '' {
 			return 'Any'
 		}
-		name := emitted_class_name(target.all_after_last('.'))
+		name := t.registry.class_names[target] or { emitted_class_name(target.all_after_last('.')) }
 		if owner.v_module == t.module_name { return name }
 		t.add_using(owner.v_module)
 		return '${owner.v_module}.${name}'
@@ -13595,6 +13845,14 @@ fn (mut t VTranspiler) annotation_typename(ann ?Expr) string {
 			if name in ['Callable', 'MutableSequence'] {
 				return map_type(name)
 			}
+			if mapped := t.local_class_names[name] {
+				return mapped
+			}
+			if imported_path := t.init_import_aliases[name] {
+				if imported_name := t.imported_class_type(imported_path) {
+					return imported_name
+				}
+			}
 			return name
 		}
 		Subscript {
@@ -13622,7 +13880,11 @@ fn (mut t VTranspiler) annotation_typename(ann ?Expr) string {
 				mut members := []string{}
 				if a.slice is Tuple {
 					for e in (a.slice as Tuple).elts {
-						members << t.annotation_typename(e)
+						if e is Constant && (e as Constant).value is NoneValue {
+							members << 'none'
+						} else {
+							members << t.annotation_typename(e)
+						}
 					}
 				} else {
 					members << t.annotation_typename(*a.slice)
@@ -13818,6 +14080,27 @@ fn (mut t VTranspiler) annotation_typename(ann ?Expr) string {
 			// Handle typing.X or similar qualified names
 			// e.g., typing.List -> List
 			attr := a.attr
+			if a.value is Name {
+				base_name := (a.value as Name).id
+				if sibling := t.submodule_aliases[base_name] {
+					if imported_name := t.imported_class_type('${sibling}.${attr}') {
+						return imported_name
+					}
+				}
+				if mod_path := t.init_import_aliases[base_name] {
+					if imported_name := t.imported_class_type('${mod_path}.${attr}') {
+						return imported_name
+					}
+				}
+				if v_mod := t.import_aliases[base_name] {
+					mod_dotted := t.registry.dotted_for_v_module(v_mod)
+					if mod_dotted != '' {
+						if imported_name := t.imported_class_type('${mod_dotted}.${attr}') {
+							return imported_name
+						}
+					}
+				}
+			}
 			if attr in v_type_map {
 				return v_type_map[attr]
 			}
@@ -13867,12 +14150,15 @@ fn (mut t VTranspiler) annotation_typename(ann ?Expr) string {
 				// mapping leaves as Python is not a V type and becomes Any.
 				if s.contains('|') || s.contains('[') {
 					spaced := s.replace('|', ' | ').split(' ').filter(it != '').join(' ')
-					mapped := map_type(spaced)
+					mapped := t.map_type(spaced)
 					if is_plain_v_type(mapped) {
 						return mapped
 					}
 					t.pending_type_notes << '// NOTE: annotation "${s}" has no V type here'
 					return 'Any'
+				}
+				if mapped := t.local_class_names[s] {
+					return mapped
 				}
 				return s
 			}
@@ -14702,12 +14988,13 @@ pub fn (t VTranspiler) is_known_module_receiver(name string) bool {
 // seed_class_by_name registers a class the scan saw under its bare name, so a
 // qualified reference such as `cache.Blocker(...)` can lower to a struct
 // literal even though this module never emitted the class itself.
-pub fn (mut t VTranspiler) seed_class_by_name(name string) {
+pub fn (mut t VTranspiler) seed_class_by_name(name string, path string) {
 	if name in t.known_classes {
 		return
 	}
 	found := t.registry.class_named(name)
-	if found.fields.len == 0 && found.bases.len == 0 {
+	if found.fields.len == 0 && found.bases.len == 0
+		&& path !in t.registry.class_fields_by_path {
 		return
 	}
 	t.known_classes[name] = found.fields
@@ -14729,7 +15016,7 @@ pub fn (mut t VTranspiler) seed_imported_classes(module_dotted string) {
 		// A class that declares no fields of its own is still a class when it
 		// embeds a base: `class B(A)` where `A` holds the state. Registering it
 		// is what lets `B(...)` become a struct literal that fills the base.
-		if fields.len > 0 || bases.len > 0 {
+		if '${module_dotted}.${name}' in t.registry.class_fields_by_path || bases.len > 0 {
 			if name !in t.imported_classes {
 				t.imported_classes[name] = fields
 			}
@@ -14868,7 +15155,7 @@ fn (mut t VTranspiler) ctor_struct_literal(emitted_ctor string, class_name strin
 	for base_name in base_names {
 		base_init := t.build_inline_class_init(base_name, field_vals)
 		if base_init.len > 0 {
-			field_parts << '\t${emitted_class_name(base_name)}: ${base_init}'
+			field_parts << '\t${t.local_class_name(base_name)}: ${base_init}'
 		}
 	}
 	if field_parts.len == 0 {

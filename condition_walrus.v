@@ -150,13 +150,16 @@ fn (mut t VTranspiler) condition_walrus_type(expr Expr) string {
 	if typ != '' { return typ }
 	ann := get_expr_annotation(expr)
 	if ann != '' {
-		mapped := map_type(ann)
+		mapped := t.map_type(ann)
 		if mapped != 'auto' { return mapped }
 	}
 	match expr {
 		UnaryOp { return t.condition_walrus_type(*expr.operand) }
 		NamedExpr { return t.condition_walrus_type(*expr.value) }
-		Call { return t.constructor_name(expr) }
+		Call {
+			cls := t.constructor_name(expr)
+			if cls != '' { return t.map_type(cls) }
+		}
 		IfExp {
 			body := t.condition_walrus_type(*expr.body)
 			otherwise := t.condition_walrus_type(*expr.orelse)

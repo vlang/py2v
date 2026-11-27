@@ -1831,25 +1831,53 @@ fn visit_isinstance(mut t VTranspiler, node Call, args []string) (string, bool) 
 			return '${args[0]} is ${typ}', true
 		}
 	}
-	types_arg := args[1]
-	// Handle tuple of types: isinstance(x, (A, B)) → x is A || x is B
-	// visit_tuple renders Python tuples as V arrays: [A, B, ...]
-	if types_arg.starts_with('[') && types_arg.ends_with(']') {
-		inner := types_arg[1..types_arg.len - 1]
-		types := inner.split(', ')
-		if types.len > 1 {
-			mut parts := []string{}
-			for typ in types {
-				parts << '${args[0]} is ${typ}'
+	// V's `is` is illegal for a concrete struct. For a proven local class type,
+	// an exact class match is necessarily true; otherwise refuse until
+	// inheritance and runtime identity have been established.
+	subject_type := t.map_type(t.infer_expr_type(node.args[0])).trim_left('&')
+	if subject_type in t.local_class_names.values() {
+		mut checked := []Expr{}
+		if type_expr is Tuple {
+			checked = type_expr.elts.clone()
+		} else {
+			checked << type_expr
+		}
+		for candidate in checked {
+			if candidate is Name && !t.is_bound_in_scope(candidate.id)
+				&& candidate.id !in t.local_idents && candidate.id !in t.module_idents
+				&& candidate.id in t.local_class_names
+				&& t.local_class_name(candidate.id) == subject_type {
+				return 'true', true
 			}
+		}
+		return 'py2v_unsupported_concrete_isinstance(${args.join(', ')})', true
+	}
+	if type_expr is Tuple {
+		mut parts := []string{}
+		for elt in type_expr.elts {
+			typ := if elt is Name && elt.id in t.local_class_names && !t.is_bound_in_scope(elt.id) {
+				t.local_class_name(elt.id)
+			} else {
+				t.visit_expr(elt)
+			}
+			parts << '${args[0]} is ${typ}'
+		}
+		if parts.len > 1 {
 			return '(${parts.join(' || ')})', true
 		}
-		// Single-element tuple: isinstance(x, (A,)) → x is A
-		return '${args[0]} is ${types[0]}', true
+		if parts.len == 1 {
+			return parts[0], true
+		}
 	}
 	// V `is` checks the static (sum-type) variant; inherited types need
 	// manual adaptation if the hierarchy is not a V sum type.
-	return '${args[0]} is ${args[1]}', true
+	target_type := if type_expr is Name && type_expr.id in t.local_class_names
+		&& !t.is_bound_in_scope(type_expr.id) {
+		t.local_class_name(type_expr.id)
+	} else {
+		args[1]
+	}
+	return '${args[0]} is ${target_type}', true
 }
 
 fn isinstance_static_types(expr Expr) bool {
