@@ -10,7 +10,6 @@ comment_unsupported	does-not-compile	undefined ident: `key`
 complex	does-not-compile	invalid number of operand for `+`. Only one allowed on each side.
 comprehension_identifier_replace	does-not-compile	type `Box` has no field named `it`.
 contextlib_cm	does-not-compile	cannot use `Any` as `string` in argument 1 to `os.open`
-coverage	does-not-compile	undefined ident: `c1_` (use `:=` to declare a variable)
 dataclass	does-not-compile	reference field must be initialized with reference
 datatypes	needs-dependency	Imports adt, which the suite does not install.
 datatypes_base	needs-dependency	Imports adt, which the suite does not install.

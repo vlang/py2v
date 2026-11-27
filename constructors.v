@@ -105,7 +105,7 @@ fn (mut t VTranspiler) init_constructor_error(info InitConstructor, reason strin
 	return '${t.new_tmp(label)}()'
 }
 
-fn (mut t VTranspiler) init_parameter_type(param Arg, keyword_only bool) string {
+fn (mut t VTranspiler) resolved_init_parameter_type(param Arg, keyword_only bool) string {
 	mut typ := ''
 	if ann := param.annotation {
 		typ = t.typename_from_annotation(*ann)
@@ -119,8 +119,20 @@ fn (mut t VTranspiler) init_parameter_type(param Arg, keyword_only bool) string 
 		typ = t.map_type(param.v_annotation)
 	}
 	if typ == '' {
-		t.generated_code_has_any_type = true
 		return 'Any'
+	}
+	return typ
+}
+
+fn (mut t VTranspiler) init_param_is_v_mut(info InitConstructor, param Arg, keyword_only bool) bool {
+	typ := t.resolved_init_parameter_type(param, keyword_only)
+	return param_mut_mode(info.init, param, typ, true) == .v_mut_param
+}
+
+fn (mut t VTranspiler) init_parameter_type(param Arg, keyword_only bool) string {
+	typ := t.resolved_init_parameter_type(param, keyword_only)
+	if typ == 'Any' && param.annotation == none && (keyword_only || param.v_annotation == '') {
+		t.generated_code_has_any_type = true
 	}
 	return typ
 }
@@ -143,7 +155,7 @@ fn (mut t VTranspiler) emit_init_factory(info InitConstructor) string {
 		}
 		names[name] = true
 		typ := t.init_parameter_type(param, keyword_only)
-		if param.arg in info.init.mutable_vars {
+		if t.init_param_is_v_mut(info, param, keyword_only) {
 			declarations << 'mut ${name} ${typ}'
 			forwarded << 'mut ${name}'
 		} else {
@@ -262,9 +274,10 @@ fn (mut t VTranspiler) render_init_call(info InitConstructor, qualified_factory 
 		return t.render_sequenced_init_call(info, qualified_factory, params, supplied, order, bound)
 	}
 	mut rendered := []string{}
+	positional_count := positional.len
 	for i, expr in bound {
 		mut value := t.render_init_argument(expr, params[i])
-		if params[i].arg in info.init.mutable_vars {
+		if t.init_param_is_v_mut(info, params[i], i >= positional_count) {
 			value = 'mut ${value}'
 		}
 		rendered << value
@@ -343,20 +356,29 @@ fn (t VTranspiler) init_argument_local(name Name) bool {
 		|| (name.id == 'self' && t.current_class_name != '' && !t.current_classmethod)
 }
 
-fn (t VTranspiler) init_mutated_argument_names(calls []Call) map[string]bool {
+fn (mut t VTranspiler) init_mutated_argument_names(calls []Call) map[string]bool {
 	mut names := map[string]bool{}
 	for call in calls {
 		if constructor := t.resolve_init_constructor(call.func) {
 			params := init_positional_parameters(constructor)
 			for i, arg in call.args {
-				if i < params.len && params[i].arg in constructor.init.mutable_vars && arg is Name {
+				if i < params.len && t.init_param_is_v_mut(constructor, params[i], false)
+					&& arg is Name {
 					names[arg.id] = true
 				}
 			}
+			all_params := init_parameters(constructor)
+			pos_count := params.len
 			for keyword in call.keywords {
 				if name := keyword.arg {
-					if name in constructor.init.mutable_vars && keyword.value is Name {
-						names[(keyword.value as Name).id] = true
+					if keyword.value is Name {
+						for idx, p in all_params {
+							if p.arg == name
+								&& t.init_param_is_v_mut(constructor, p, idx >= pos_count) {
+								names[(keyword.value as Name).id] = true
+								break
+							}
+						}
 					}
 				}
 			}
@@ -402,8 +424,9 @@ fn (mut t VTranspiler) render_sequenced_init_call(info InitConstructor, qualifie
 		return t.init_constructor_error(info, 'scoped_argument_expression')
 	}
 	mut mutated := t.init_mutated_argument_names(refs.calls)
-	for param in params {
-		if param.arg in info.init.mutable_vars {
+	positional_count := init_positional_parameters(info).len
+	for i, param in params {
+		if t.init_param_is_v_mut(info, param, i >= positional_count) {
 			if expr := supplied[param.arg] {
 				if expr is Name {
 					mutated[expr.id] = true
@@ -448,7 +471,8 @@ fn (mut t VTranspiler) render_sequenced_init_call(info InitConstructor, qualifie
 		expr := supplied[name] or { return t.init_constructor_error(info, 'missing_bound_argument_' + name) }
 		index := param_names.index(name)
 		value := t.render_init_argument(expr, params[index])
-		if init_immutable_default(expr) || params[index].arg in info.init.mutable_vars {
+		if init_immutable_default(expr)
+			|| t.init_param_is_v_mut(info, params[index], index >= positional_count) {
 			evaluated[name] = value
 		} else {
 			tmp := t.new_tmp('init_arg')
@@ -459,7 +483,7 @@ fn (mut t VTranspiler) render_sequenced_init_call(info InitConstructor, qualifie
 	mut rendered := []string{}
 	for i, param in params {
 		mut value := evaluated[param.arg] or { t.render_init_argument(bound[i], param) }
-		if param.arg in info.init.mutable_vars { value = 'mut ${value}' }
+		if t.init_param_is_v_mut(info, param, i >= positional_count) { value = 'mut ${value}' }
 		rendered << value
 	}
 	lines << '\treturn ${qualified_factory}(${rendered.join(', ')})'
