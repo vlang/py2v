@@ -19,13 +19,10 @@ fn for_with_continue() {
 }
 
 fn for_with_else() {
-	has_break := false
 	for i in int(0) .. int(4) {
 		println(i)
 	}
-	if has_break != true {
-		println('OK')
-	}
+	println('OK')
 }
 
 fn while_with_break() {

@@ -28,7 +28,6 @@ fn discarded_py(value Any) ! {
 }
 
 fn pairs_py(values Any) ! {
-	has_break := false
 	for py2v_dynamic_iter_0 in pyrt.elements(values) {
 		py2v_unpack4 := pyrt.unpack(pyrt.box(py2v_dynamic_iter_0), 2)!
 		mut first := py2v_unpack4[0]
@@ -36,9 +35,7 @@ fn pairs_py(values Any) ! {
 		println(pyrt.str(pyrt.call_method(pyrt.box(first), 'upper', [])!))
 		println(pyrt.str(pyrt.item_at(second, pyrt.box('n'))))
 	}
-	if has_break != true {
-		println('done')
-	}
+	println('done')
 }
 
 fn arity_py(value Any) ! {

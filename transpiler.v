@@ -148,6 +148,10 @@ mut:
 	scope_idents map[string]string
 	// param_idents records whether a parameter has an assignable local binding.
 	param_idents map[string]bool
+	// loop_state holds per-function escaping loop-binding and unbound-target state.
+	loop_state LoopScopeState
+	// stmt_rest holds statements after the current one in the enclosing block.
+	stmt_rest []Stmt
 	// loop_prelude holds the lines the next loop body starts with: the
 	// assignments that keep a rebound local in step with its fresh loop name.
 	loop_prelude []string
@@ -767,7 +771,7 @@ pub fn (mut t VTranspiler) visit_module(node Module) string {
 	}
 
 	mut first_stmt := true
-	for stmt in hoisted_body {
+	for i, stmt in hoisted_body {
 		// Skip module-level docstrings (first bare string constant)
 		if first_stmt {
 			first_stmt = false
@@ -782,13 +786,23 @@ pub fn (mut t VTranspiler) visit_module(node Module) string {
 			}
 		}
 		t.in_entry = !t.emit_pub && stmt !is FunctionDef && stmt !is AsyncFunctionDef && stmt !is ClassDef
+		mut pending_varargs := []string{}
+		if t.in_entry {
+			pre, pv := t.predeclare_and_guard(stmt, hoisted_body[i + 1..])
+			pending_varargs = pv.clone()
+			for line in pre {
+				main_fn_body << line
+				main_fn_stmts << Stmt(Pass{})
+			}
+		}
 		s := if t.emit_pub && stmt is Assign && stmt.value is ListComp {
 			t.visit_assignment(stmt, true)
 		} else {
-			t.visit_stmt(stmt)
+			t.visit_stmt_in_block(stmt, hoisted_body[i + 1..], pending_varargs)
 		}
+		post_updates := if t.in_entry { t.unbound_post_updates(stmt) } else { []string{} }
 		t.in_entry = false
-		if s.len == 0 {
+		if s.len == 0 && post_updates.len == 0 {
 			continue
 		}
 		match stmt {
@@ -829,8 +843,14 @@ pub fn (mut t VTranspiler) visit_module(node Module) string {
 				} else if decl := module_const_decl(stmt, trimmed, node.module_consts) {
 					type_decls << if t.emit_pub { 'pub ' + decl } else { decl }
 				} else {
-					main_fn_body << s
-					main_fn_stmts << stmt
+					if s.len > 0 {
+						main_fn_body << s
+						main_fn_stmts << stmt
+					}
+					for upd in post_updates {
+						main_fn_body << upd
+						main_fn_stmts << Stmt(Pass{})
+					}
 				}
 			}
 		}
@@ -1762,6 +1782,10 @@ fn (mut t VTranspiler) runtime_helper_declaration(kind string) string {
 			'fn ${name}[T](target &T, value T) T {\n' +
 				'\tunsafe { *target = value }\n\treturn value\n}'
 		}
+		'assign_expr_bound' {
+			'fn ${name}[T](target &T, bound &bool, value T) T {\n' +
+				'\tunsafe {\n\t\t*target = value\n\t\t*bound = true\n\t}\n\treturn value\n}'
+		}
 		'divmod_float', 'divmod_value' {
 			typ := if kind == 'divmod_float' {
 				'f64'
@@ -1939,6 +1963,15 @@ fn (mut t VTranspiler) runtime_helper_declaration(kind string) string {
 			// A Python set as an array: each value once, in order of first occurrence.
 			'fn ${name}[T](a []T) []T {\n' + '\tmut b := []T{cap: a.len}\n' + '\tfor v in a {\n' +
 				'\t\tif v !in b {\n' + '\t\t\tb << v\n' + '\t\t}\n' + '\t}\n' + '\treturn b\n' + '}'
+		}
+		'unbound_local' {
+			'@[noreturn]\nfn ${name}(var_name string) {\n\tflush_stdout()\n\teprintln(' + '"' +
+				r"UnboundLocalError: cannot access local variable '${var_name}' where it is not associated with a value" +
+				'"' + ')\n\texit(1)\n}'
+		}
+		'check_bound' {
+			fail := t.runtime_helper_name('unbound_local')
+			'@[inline]\nfn ${name}[T](bound bool, value T, var_name string) T {\n\tif !bound { ${fail}(var_name) }\n\treturn value\n}'
 		}
 		else {
 			panic('py2v has no run-time helper ${kind}')
@@ -2599,11 +2632,15 @@ pub fn (mut t VTranspiler) visit_body_stmts(stmts []Stmt, level int) string {
 	}
 	mut parts := []string{}
 	for i, stmt in stmts {
+		pre, pending_varargs := t.predeclare_and_guard(stmt, stmts[i + 1..])
+		for line in pre {
+			parts << indent(line, level, '\t')
+		}
 		saved_counter := t.proven_counter_step
 		if i > 0 && stmt is For && t.emitting_function {
 			t.proven_counter_step = t.stable_counter_step(stmts[i - 1], stmt)
 		}
-		s := t.visit_stmt(stmt)
+		s := t.visit_stmt_in_block(stmt, stmts[i + 1..], pending_varargs)
 		t.proven_counter_step = saved_counter
 		t.note_sum_exit_guard(stmt)
 		if i > 0 {
@@ -2611,10 +2648,12 @@ pub fn (mut t VTranspiler) visit_body_stmts(stmts []Stmt, level int) string {
 				t.sum_list_kinds[name] = kind
 			}
 		}
-		if s.len == 0 {
-			continue
+		if s.len > 0 {
+			parts << indent(s, level, '\t')
 		}
-		parts << indent(s, level, '\t')
+		for upd in t.unbound_post_updates(stmt) {
+			parts << indent(upd, level, '\t')
+		}
 	}
 	return parts.join('\n')
 }
@@ -3098,6 +3137,8 @@ fn (mut t VTranspiler) visit_closure_from_funcdef(node FunctionDef, nl_names []s
 	saved_locals := t.local_idents.clone()
 	saved_scope := t.scope_idents.clone()
 	saved_params := t.param_idents.clone()
+	saved_loop_state := t.loop_state
+	saved_any_params := t.any_parameter_names.clone()
 	saved_renames := t.renamed_idents.clone()
 	saved_loops := t.loop_idents.clone()
 	saved_loop_prelude := t.loop_prelude.clone()
@@ -3122,6 +3163,8 @@ fn (mut t VTranspiler) visit_closure_from_funcdef(node FunctionDef, nl_names []s
 		t.scope_idents = saved_scope
 		t.scope_idents[name] = node.name
 		t.param_idents = saved_params
+		t.loop_state = saved_loop_state
+		t.any_parameter_names = saved_any_params
 		t.renamed_idents = saved_renames
 		t.loop_idents = saved_loops
 		t.loop_prelude = saved_loop_prelude
@@ -3176,6 +3219,7 @@ fn (mut t VTranspiler) visit_closure_from_funcdef(node FunctionDef, nl_names []s
 			refusal = 'forward_capture'
 		}
 	}
+	mut capture_flags := map[string]string{}
 	for py_name in capture_names {
 		local := t.visit_name(Name{ id: py_name })
 		mut typ := t.map_type(node.capture_types[py_name] or { saved_types[py_name] })
@@ -3191,6 +3235,12 @@ fn (mut t VTranspiler) visit_closure_from_funcdef(node FunctionDef, nl_names []s
 			capture_setup << '${pointer} := &(${local})'
 			captures << pointer
 			capture_locals[py_name] = '(*${pointer})'
+			if flag := saved_loop_state.unbound_guard_flags[py_name] {
+				flag_ptr := t.new_tmp('capture_bound')
+				capture_setup << '${flag_ptr} := ${format_bound_flag_addr(flag)}'
+				captures << flag_ptr
+				capture_flags[py_name] = '(*${flag_ptr})'
+			}
 		}
 	}
 
@@ -3202,6 +3252,11 @@ fn (mut t VTranspiler) visit_closure_from_funcdef(node FunctionDef, nl_names []s
 	t.scope_idents = map[string]string{}
 	for py_name, spelling in capture_locals { t.scope_idents[spelling] = py_name }
 	t.param_idents = map[string]bool{}
+	t.loop_state = LoopScopeState{
+		unbound_guard_flags: capture_flags
+		unbound_guard_order: capture_flags.keys()
+	}
+	t.any_parameter_names = map[string]bool{}
 	t.renamed_idents = map[string]string{}
 	t.loop_idents = map[string]bool{}
 	t.loop_prelude = []string{}
@@ -3274,6 +3329,10 @@ fn (mut t VTranspiler) visit_closure_from_funcdef(node FunctionDef, nl_names []s
 			typ = 'Any'
 		}
 		t.local_idents[vararg.arg] = local
+		t.scope_idents[local] = vararg.arg
+		t.param_idents[vararg.arg] = false
+		t.var_types[vararg.arg] = '[]' + typ
+		t.loop_state.vararg_params[vararg.arg] = typ
 		declarations << '${local} ...${typ}'
 	}
 	mut ret := ''
@@ -3355,7 +3414,10 @@ fn (mut t VTranspiler) visit_closure_from_funcdef(node FunctionDef, nl_names []s
 		if i == 0 && stmt is ExprStmt && stmt.value is Constant && stmt.value.value is string {
 			continue
 		}
-		body << t.visit_stmt(stmt)
+		pre, pending_varargs := t.predeclare_and_guard(stmt, node.body[i + 1..])
+		body << pre
+		body << t.visit_stmt_in_block(stmt, node.body[i + 1..], pending_varargs)
+		body << t.unbound_post_updates(stmt)
 	}
 	condition_declarations := t.condition_walrus_declarations()
 	if condition_declarations != '' { body.insert(header_len, condition_declarations) }
@@ -3491,6 +3553,9 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 	t.scope_idents = map[string]string{}
 	saved_param_idents := t.param_idents
 	t.param_idents = map[string]bool{}
+	saved_loop_state := t.loop_state
+	t.loop_state = LoopScopeState{}
+	defer { t.loop_state = saved_loop_state }
 	saved_any_params := t.any_parameter_names
 	t.any_parameter_names = map[string]bool{}
 	defer { t.any_parameter_names = saved_any_params }
@@ -3782,10 +3847,12 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 			typename = '...' + typename
 		}
 		local := escape_local_decl(vararg.arg)
+		elem_type := typename.trim_left('.')
 		t.local_idents[vararg.arg] = local
 		t.scope_idents[local] = vararg.arg
 		t.param_idents[vararg.arg] = false
-		t.var_types[vararg.arg] = '[]' + typename.trim_left('.')
+		t.var_types[vararg.arg] = '[]' + elem_type
+		t.loop_state.vararg_params[vararg.arg] = elem_type
 		args_strs << '${local} ${typename}'
 	}
 
@@ -5671,6 +5738,10 @@ fn (mut t VTranspiler) visit_aug_assign_once(node AugAssign, op_type string, tar
 // visit_ann_assign emits V code for an AnnAssign statement.
 pub fn (mut t VTranspiler) visit_ann_assign(node AnnAssign) string {
 	was_bound := node.target is Name && t.is_bound_in_scope(node.target.id)
+	// A bare annotation does not assign or reset an already-bound Python local.
+	if node.value == none && was_bound {
+		return ''
+	}
 	if node.target is Name {
 		name := node.target.id
 		if val := node.value {
@@ -6403,11 +6474,20 @@ pub fn (mut t VTranspiler) visit_for(node For) string {
 	mut rename := map[string]string{}
 	mut writebacks := map[string]string{}
 	mut preloop := []string{}
+	mut rebound_varargs := []string{}
 	for name in for_target_names(node.target) {
 		if name == '_' {
 			continue
 		}
 		spelling := t.binding_spelling(name)
+		if boxed_decl := t.loop_state.boxed_vararg_decls[name] {
+			fresh := t.fresh_loop_ident(name, rename)
+			writebacks[name] = boxed_decl
+			t.loop_prelude << '${boxed_decl} = pyrt.box(${fresh})'
+			rename[name] = fresh
+			rebound_varargs << name
+			continue
+		}
 		if spelling in t.loop_idents || spelling in t.scope_idents {
 			fresh := if t.condition_walrus_vars[name] {
 				t.new_tmp('walrus_iter')
@@ -6443,7 +6523,9 @@ pub fn (mut t VTranspiler) visit_for(node For) string {
 				writebacks[name] = binding
 				// V requires explicit sharing of array/map values, whereas a
 				// Python loop target rebinds the reference without copying it.
-				value := if typ.starts_with('[]') || typ.starts_with('map[') {
+				value := if t.loop_state.boxed_vararg_vars[name] {
+					'pyrt.box(${fresh})'
+				} else if typ.starts_with('[]') || typ.starts_with('map[') {
 					'unsafe { ${fresh} }'
 				} else {
 					fresh
@@ -6452,6 +6534,9 @@ pub fn (mut t VTranspiler) visit_for(node For) string {
 					t.loop_prelude << 'unsafe { ${binding} = ${value} }'
 				} else {
 					t.loop_prelude << '${binding} = ${value}'
+				}
+				if flag := t.loop_state.unbound_guard_flags[name] {
+					t.loop_prelude << format_bound_flag_assign(flag, 'true')
 				}
 			}
 			rename[name] = fresh
@@ -6476,15 +6561,20 @@ pub fn (mut t VTranspiler) visit_for(node For) string {
 		for fresh in bound {
 			t.loop_idents.delete(fresh)
 		}
+		for name in rebound_varargs {
+			t.activate_boxed_vararg(name)
+		}
 	}
 	mut target := t.visit_expr(node.target)
 	mut buf := preloop.clone()
 
-	// Handle for/else pattern - V doesn't have it, use has_break flag
+	// Handle for/else pattern - emit a placeholder only when the loop has an else
+	// and drop it when no break targets this loop.
 	has_else := node.orelse.len > 0
+	flag_pos := buf.len
 
 	if has_else {
-		buf << 'has_break := false'
+		buf << ''
 	}
 
 	// Support tuple/list loop targets with V syntax: for a, b in ...
@@ -6554,7 +6644,7 @@ pub fn (mut t VTranspiler) visit_for(node For) string {
 				body, flag := t.visit_for_body(node, 1, has_else, writebacks)
 				buf << body
 				buf << '}'
-				t.emit_for_else(mut buf, node.orelse, flag, saved_renames)
+				t.emit_for_else(mut buf, flag_pos, node.orelse, flag, saved_renames)
 				return buf.join('\n')
 			}
 			target = target_names.join(', ')
@@ -6599,7 +6689,7 @@ pub fn (mut t VTranspiler) visit_for(node For) string {
 						body, flag := t.visit_for_body(node, 1, has_else, writebacks)
 						buf << body
 						buf << '}'
-						t.emit_for_else(mut buf, node.orelse, flag, saved_renames)
+						t.emit_for_else(mut buf, flag_pos, node.orelse, flag, saved_renames)
 						return buf.join('\n')
 					}
 					if fname == 'zip' && target_names.len == 2 && call.args.len == 2 {
@@ -6629,7 +6719,7 @@ pub fn (mut t VTranspiler) visit_for(node For) string {
 						body, flag := t.visit_for_body(node, 1, has_else, writebacks)
 						buf << body
 						buf << '}'
-						t.emit_for_else(mut buf, node.orelse, flag, saved_renames)
+						t.emit_for_else(mut buf, flag_pos, node.orelse, flag, saved_renames)
 						return buf.join('\n')
 					}
 				}
@@ -6677,7 +6767,7 @@ pub fn (mut t VTranspiler) visit_for(node For) string {
 			body, flag := t.visit_for_body(node, 1, has_else, writebacks)
 			buf << body
 			buf << '}'
-			t.emit_for_else(mut buf, node.orelse, flag, saved_renames)
+			t.emit_for_else(mut buf, flag_pos, node.orelse, flag, saved_renames)
 			return buf.join('\n')
 		}
 	}
@@ -6737,7 +6827,7 @@ pub fn (mut t VTranspiler) visit_for(node For) string {
 					body, flag := t.visit_for_body(node, 1, has_else, writebacks)
 					buf << body
 					buf << '}'
-					t.emit_for_else(mut buf, node.orelse, flag, saved_renames)
+					t.emit_for_else(mut buf, flag_pos, node.orelse, flag, saved_renames)
 					return buf.join('\n')
 				}
 				step := if call.args.len == 3 {
@@ -6766,7 +6856,7 @@ pub fn (mut t VTranspiler) visit_for(node For) string {
 				body, flag := t.visit_for_body(node, 1, has_else, writebacks)
 				buf << body
 				buf << '}'
-				t.emit_for_else(mut buf, node.orelse, flag, saved_renames)
+				t.emit_for_else(mut buf, flag_pos, node.orelse, flag, saved_renames)
 				return buf.join('\n')
 			} else {
 				for_expr = t.visit_for_iter(node.iter, saved_renames)
@@ -6779,12 +6869,27 @@ pub fn (mut t VTranspiler) visit_for(node For) string {
 	}
 
 	// Track the type of the loop target variable based on the iterator type
+	mut boxed_elem_target := ''
+	mut had_boxed_elem_target := false
 	if node.target is Name {
 		target_name := (node.target as Name).id
 		// Infer element type from the iterator
 		elem_type := t.infer_iter_elem_type(node.iter)
-		if elem_type != '' {
+		if node.iter is Name && t.loop_state.boxed_vararg_vars[node.iter.id]
+			&& target_name !in writebacks {
+			t.var_types[target_name] = 'Any'
+			boxed_elem_target = target_name
+			had_boxed_elem_target = t.loop_state.boxed_vararg_vars[target_name]
+			t.loop_state.boxed_vararg_vars[target_name] = true
+		} else if elem_type != '' && target_name !in writebacks && !t.any_parameter_names[target_name]
+			&& !t.loop_state.boxed_vararg_vars[target_name]
+			&& target_name !in t.loop_state.boxed_vararg_decls {
 			t.var_types[target_name] = elem_type
+		}
+	}
+	defer {
+		if boxed_elem_target != '' && !had_boxed_elem_target {
+			t.loop_state.boxed_vararg_vars.delete(boxed_elem_target)
 		}
 	}
 
@@ -6793,7 +6898,7 @@ pub fn (mut t VTranspiler) visit_for(node For) string {
 	body, flag := t.visit_for_body(node, 1, has_else, writebacks)
 	buf << body
 	buf << '}'
-	t.emit_for_else(mut buf, node.orelse, flag, saved_renames)
+	t.emit_for_else(mut buf, flag_pos, node.orelse, flag, saved_renames)
 
 	return buf.join('\n')
 }
@@ -6803,7 +6908,12 @@ fn (mut t VTranspiler) visit_for_iter(expr Expr, before map[string]string) strin
 	inside := t.renamed_idents
 	t.renamed_idents = before
 	defer { t.renamed_idents = inside }
-	return t.visit_expr(expr)
+	code := t.visit_expr(expr)
+	if expr is Name && t.loop_state.boxed_vararg_vars[expr.id] {
+		t.add_using('pyrt')
+		return 'pyrt.elements(${code})'
+	}
+	return code
 }
 
 // zip_disables_strict recognizes the explicit default for a two-input zip.
@@ -6985,27 +7095,12 @@ mut:
 // visit_loop_body emits a loop body and returns it with the name of the flag
 // its `break`s set, or '' when the loop has no else or no break of its own.
 fn (mut t VTranspiler) visit_loop_body(stmts []Stmt, level int, has_else bool) (string, string) {
-	mut condition_renames := map[string]string{}
-	mut prefix := []string{}
-	for name in t.condition_walrus_order {
-		if iter := t.renamed_idents[name] {
-			if t.loop_idents[iter] {
-				condition_renames[name] = iter
-				t.renamed_idents.delete(name)
-				prefix << '${t.visit_name(Name{ id: name })} = ${iter}'
-			}
-		}
-	}
-	defer {
-		for name, iter in condition_renames { t.renamed_idents[name] = iter }
-	}
 	t.loop_breaks << LoopBreak{
 		has_else:     has_else
 		copy_targets: growth_copy_targets(stmts)
 	}
-	mut first := t.loop_prelude.clone()
+	first := t.loop_prelude.clone()
 	t.loop_prelude = []string{}
-	first << prefix
 	mut body := t.visit_body_stmts(stmts, level)
 	if first.len > 0 {
 		body = t.indent_code(first.join('\n'), level) + '\n' + body
@@ -7028,19 +7123,38 @@ fn (mut t VTranspiler) visit_break() string {
 	return '${t.loop_breaks[i].flag} = true\nbreak'
 }
 
-// emit_for_else emits the else of a for loop after its body. buf[0] holds the
-// flag declaration visit_for wrote; a loop without a break keeps it as is.
-fn (mut t VTranspiler) emit_for_else(mut buf []string, orelse []Stmt, flag string, before map[string]string) {
+// emit_for_else emits the else of a for loop after its body. buf[flag_pos] holds
+// the flag placeholder visit_for reserved; a breakless loop omits the guard.
+fn (mut t VTranspiler) emit_for_else(mut buf []string, flag_pos int, orelse []Stmt, flag string, before map[string]string) {
 	if orelse.len == 0 {
 		return
 	}
 	t.renamed_idents = before.clone()
-	if flag == '' {
-		buf << 'if has_break != true {'
-	} else {
-		buf[0] = 'mut ${flag} := false'
-		buf << 'if !${flag} {'
+	for i, stmt in orelse {
+		if stmt is AnnAssign && stmt.value == none && stmt.target is Name {
+			name := stmt.target.id
+			if !t.is_bound_in_scope(name)
+				&& !orelse[..i].any(stmt_definitely_binds(it, name, false))
+				&& stmts_read_before_write(concat_stmts(orelse[i + 1..], t.stmt_rest), name) {
+				buf << t.unsupported_site('for_else_bare_annotation',
+					'bare annotation does not bind a Python local', '')
+				return
+			}
+		}
 	}
+	if flag == '' {
+		buf.delete(flag_pos)
+		if t.orelse_needs_block(orelse) {
+			buf << '{'
+			buf << t.visit_body_stmts(orelse, 1)
+			buf << '}'
+		} else {
+			buf << t.visit_body_stmts(orelse, 0)
+		}
+		return
+	}
+	buf[flag_pos] = 'mut ${flag} := false'
+	buf << 'if !${flag} {'
 	buf << t.visit_body_stmts(orelse, 1)
 	buf << '}'
 }
@@ -7757,15 +7871,17 @@ pub fn (mut t VTranspiler) visit_try(node Try) string {
 	if node.finalbody.len > 0 {
 		t.exit_finally_bodies << node.finalbody
 	}
-	for stmt in node.body {
-		buf << t.visit_stmt(stmt)
+	try_body := t.visit_body_stmts(node.body, 0)
+	if try_body.len > 0 {
+		buf << try_body
 	}
 	if node.finalbody.len > 0 {
 		t.exit_finally_bodies.pop()
 	}
 	if finally_in_defer {
-		for stmt in node.finalbody {
-			buf << t.visit_stmt(stmt)
+		fin_body := t.visit_body_stmts(node.finalbody, 0)
+		if fin_body.len > 0 {
+			buf << fin_body
 		}
 	}
 
@@ -7803,8 +7919,9 @@ fn (mut t VTranspiler) visit_guarded_try(node Try) string {
 	if native {
 		t.active_error_guard = n
 	}
-	for stmt in node.body {
-		buf << t.indent_code(t.visit_stmt(stmt), 1)
+	guarded_body := t.visit_body_stmts(node.body, 1)
+	if guarded_body.len > 0 {
+		buf << guarded_body
 	}
 	t.active_error_guard = outer_guard
 	mut leaves := false
@@ -7827,8 +7944,9 @@ fn (mut t VTranspiler) visit_guarded_try(node Try) string {
 	mut takes_all := false
 	for handler in node.handlers {
 		mut body := []string{}
-		for stmt in handler.body {
-			body << t.indent_code(t.visit_stmt(stmt), 1)
+		hbody := t.visit_body_stmts(handler.body, 1)
+		if hbody.len > 0 {
+			body << hbody
 		}
 		name := handler.name or { '' }
 		if handler.classes.len == 0 {
@@ -7879,8 +7997,9 @@ fn (mut t VTranspiler) visit_guarded_try(node Try) string {
 	buf << t.indent_code(chain_code, 1)
 	if node.orelse.len > 0 {
 		buf << '} else {'
-		for stmt in node.orelse {
-			buf << t.indent_code(t.visit_stmt(stmt), 1)
+		obody := t.visit_body_stmts(node.orelse, 1)
+		if obody.len > 0 {
+			buf << obody
 		}
 	} else if node.body.len > 0 && node.body.last() is Return {
 		// The body always returns, so nothing follows a try that did not fail; V cannot
@@ -8995,6 +9114,12 @@ pub fn (mut t VTranspiler) visit_name(node Name) string {
 	}
 	// A local declared under a rewritten spelling must be referenced by it.
 	if v_ident := t.local_idents[node.id] {
+		if t.loop_state.guard_conditional_loads && node.ctx is Load {
+			if flag := t.loop_state.unbound_guard_flags[node.id] {
+				t.runtime_helper('unbound_local')
+				return "${t.runtime_helper('check_bound')}(${format_bound_flag_read(flag)}, ${v_ident}, '${node.id}')"
+			}
+		}
 		return v_ident
 	}
 	// A locally bound Python main shadows the module's renamed main function.
@@ -9912,8 +10037,13 @@ pub fn (mut t VTranspiler) visit_boolop(node BoolOp) string {
 	op := op_to_symbol(get_bool_op_type(node.op))
 	own := v_prec(op)
 	mut parts := []string{}
-	for val in node.values {
+	for i, val in node.values {
+		saved_guard := t.loop_state.guard_conditional_loads
+		if i > 0 {
+			t.loop_state.guard_conditional_loads = true
+		}
 		expr_str := t.visit_expr(val)
+		t.loop_state.guard_conditional_loads = saved_guard
 		p := code_prec(expr_str)
 		// Wrap nested BoolOps, and any operand that binds less tightly than `op` or would put
 		// `&&` beside `||` (`p and (q | r)` on bools), which V refuses.
@@ -12847,8 +12977,11 @@ fn (mut t VTranspiler) if_condition(test Expr) string {
 pub fn (mut t VTranspiler) visit_ifexp(node IfExp) string {
 	test := t.if_condition(node.test)
 	// A bare map at the start of a branch is parsed as a statement block.
+	saved_guard := t.loop_state.guard_conditional_loads
+	t.loop_state.guard_conditional_loads = true
 	body := t.ifexp_branch(node.body)
 	orelse := t.ifexp_branch(node.orelse)
+	t.loop_state.guard_conditional_loads = saved_guard
 	if t.is_numeric_choice(node) {
 		if t.emit_pub {
 			// Package code already shares the runtime value across module boundaries.
@@ -13073,11 +13206,22 @@ pub fn (mut t VTranspiler) visit_lambda(node Lambda) string {
 
 	// Try to infer types from the body expression
 	// If body uses arithmetic, use int; otherwise use generic default
+	mut masked_flags := map[string]string{}
 	for arg in node.args.args {
 		t.lambda_params[arg.arg]++
+		if flag := t.loop_state.unbound_guard_flags[arg.arg] {
+			masked_flags[arg.arg] = flag
+			t.loop_state.unbound_guard_flags.delete(arg.arg)
+		}
 	}
+	saved_guard := t.loop_state.guard_conditional_loads
+	t.loop_state.guard_conditional_loads = true
 	requests_before := t.helper_requests
 	body := t.visit_expr(node.body)
+	t.loop_state.guard_conditional_loads = saved_guard
+	for k, v in masked_flags {
+		t.loop_state.unbound_guard_flags[k] = v
+	}
 	for arg in node.args.args {
 		t.lambda_params[arg.arg]--
 	}
@@ -13217,9 +13361,19 @@ pub fn (mut t VTranspiler) visit_dict_comp(node DictComp) string {
 	buf << '(fn () ${mtype} {'
 	buf << 'mut result := ${mtype}{}'
 
+	saved_comp_flags := t.loop_state.unbound_guard_flags.clone()
+	saved_comp_guard := t.loop_state.guard_conditional_loads
+	defer {
+		t.loop_state.unbound_guard_flags = saved_comp_flags
+		t.loop_state.guard_conditional_loads = saved_comp_guard
+	}
 	for comp in node.generators {
 		target := t.visit_expr(comp.target)
 		iter := t.visit_expr(comp.iter)
+		for name in for_target_names(*comp.target) {
+			t.loop_state.unbound_guard_flags.delete(name)
+		}
+		t.loop_state.guard_conditional_loads = true
 		buf << 'for ${target} in ${iter} {'
 
 		for if_clause in comp.ifs {
@@ -13307,6 +13461,19 @@ fn (mut t VTranspiler) visit_generator_exp_impl(elt Expr, generators []Comprehen
 	if iter !is Call && t.is_map_expr(iter) {
 		// iterating a dict visits its keys
 		result = '${as_receiver(result)}.keys()'
+	}
+
+	// Comprehension targets shadow outer locals, while captured outer locals
+	// are read conditionally inside each iteration.
+	saved_comp_flags := t.loop_state.unbound_guard_flags.clone()
+	saved_comp_guard := t.loop_state.guard_conditional_loads
+	for name in for_target_names(*generators[0].target) {
+		t.loop_state.unbound_guard_flags.delete(name)
+	}
+	t.loop_state.guard_conditional_loads = true
+	defer {
+		t.loop_state.unbound_guard_flags = saved_comp_flags
+		t.loop_state.guard_conditional_loads = saved_comp_guard
 	}
 
 	// Apply filters - need to use 'it' for the element reference
@@ -13967,6 +14134,9 @@ pub fn (mut t VTranspiler) visit_named_expr(node NamedExpr) string {
 	target := t.visit_expr(node.target)
 	value := t.visit_expr(node.value)
 	if node.target is Name && t.is_bound_in_scope(node.target.id) {
+		if flag := t.loop_state.unbound_guard_flags[node.target.id] {
+			return '${t.runtime_helper('assign_expr_bound')}(&(${target}), ${format_bound_flag_addr(flag)}, ${value})'
+		}
 		return '${t.runtime_helper('assign_expr')}(&(${target}), ${value})'
 	}
 	return "py2v_unsupported_assignment_expression('${escape_string(target)}', ${value})"
@@ -14113,12 +14283,22 @@ fn (mut t VTranspiler) visit_generator_exp_impl_walrus(elt Expr, generators []Co
 	mut depth := 1
 	mut close_braces := 0 // total extra braces to close after element emit
 
+	saved_comp_flags := t.loop_state.unbound_guard_flags.clone()
+	saved_comp_guard := t.loop_state.guard_conditional_loads
+	defer {
+		t.loop_state.unbound_guard_flags = saved_comp_flags
+		t.loop_state.guard_conditional_loads = saved_comp_guard
+	}
 	for comp in generators {
 		indent_ := tab.repeat(depth)
 		target_str := t.visit_expr(comp.target)
 
 		// Determine iteration expression (use range notation for range() calls)
 		mut for_expr := t.visit_expr(comp.iter)
+		for name in for_target_names(*comp.target) {
+			t.loop_state.unbound_guard_flags.delete(name)
+		}
+		t.loop_state.guard_conditional_loads = true
 		if comp.iter is Call {
 			call := comp.iter as Call
 			if call.func is Name && (call.func as Name).id == 'range' {
