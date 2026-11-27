@@ -23,7 +23,10 @@ fn init_required_reference_fields(node ClassDef, classes map[string]ClassDef, mu
 	mut fields := []string{}
 	for field, raw_type in node.declarations {
 		if field in python_dunder_class_attrs || field in node.class_defaults { continue }
-		typ := map_type(raw_type)
+		mut typ := map_type(raw_type)
+		if typ in classes {
+			typ = emitted_class_name(typ)
+		}
 		// A field of one of the class's own type parameters is a value of that type.
 		if typ in node.type_params || raw_type in node.type_params {
 			continue
@@ -113,7 +116,7 @@ fn (mut t VTranspiler) init_parameter_type(param Arg, keyword_only bool) string 
 	// This is the same fallback as visit_function_def. That emitter currently
 	// uses frontend parameter inference only for ordinary parameters.
 	if typ == '' && !keyword_only && param.v_annotation != '' {
-		typ = map_type(param.v_annotation)
+		typ = t.map_type(param.v_annotation)
 	}
 	if typ == '' {
 		t.generated_code_has_any_type = true
@@ -426,9 +429,9 @@ fn (mut t VTranspiler) render_sequenced_init_call(info InitConstructor, qualifie
 		} else if mutated[raw_name] {
 			mut typ := t.infer_expr_type(Expr(name))
 			if typ == '' {
-				if annotation := name.v_annotation { typ = map_type(annotation) }
+				if annotation := name.v_annotation { typ = t.map_type(annotation) }
 			}
-			if typ == '' && raw_name == 'self' { typ = emitted_class_name(t.current_class_name) }
+			if typ == '' && raw_name == 'self' { typ = t.local_class_name(t.current_class_name) }
 			if typ == '' || typ == 'auto' {
 				return t.init_constructor_error(info, 'unknown_mutable_capture_type_' + raw_name)
 			}
@@ -461,7 +464,13 @@ fn (mut t VTranspiler) render_sequenced_init_call(info InitConstructor, qualifie
 	}
 	lines << '\treturn ${qualified_factory}(${rendered.join(', ')})'
 	capture_list := if captures.len > 0 { ' [${captures.join(', ')}]' } else { '' }
-	mut result_type := emitted_class_name(info.class_name)
+	mut result_type := if info.defining_module != '' {
+		t.registry.class_names['${info.defining_module}.${info.class_name}'] or {
+			emitted_class_name(info.class_name)
+		}
+	} else {
+		t.local_class_name(info.class_name)
+	}
 	if qualified_factory.contains('.') {
 		result_type = qualified_factory.all_before_last('.') + '.' + result_type
 	}

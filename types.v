@@ -250,7 +250,7 @@ pub fn map_type_except(typename string, classes []string) string {
 		members := split_union_members(typename)
 		rest := members.filter(it != 'None' && it != 'none')
 		if rest.len == 1 && members.len == 2 {
-			return '?' + map_type(rest[0])
+			return '?' + map_type_except(rest[0], classes)
 		}
 		return 'Any'
 	}

@@ -419,19 +419,38 @@ fn register_colliding_functions(parsed map[string]Module, dupes map[string][]str
 	}
 }
 
-// Reserve one V type name per Python file that defines the colliding class.
+// Reserve one V type name per Python class that collides in the same V module,
+// whether because sibling files define the same Python class name or because
+// renamed classes (such as `lower` -> `Py2v_lower`) collide with another class.
 fn register_colliding_classes(parsed map[string]Module, dupes map[string][]string, mut registry ModuleRegistry) {
 	mut keys := parsed.keys()
 	keys.sort()
 	mut taken := map[string]bool{}
+	mut emitted_counts := map[string]int{}
+	mut has_verbatim := map[string]bool{}
 	for key in keys {
 		info := registry.lookup(key)
 		for stmt in parsed[key]!.body {
 			if stmt is ClassDef {
-				taken['${info.v_module}.${emitted_class_name(stmt.name)}'] = true
+				emitted := emitted_class_name(stmt.name)
+				vkey := '${info.v_module}.${emitted}'
+				taken[vkey] = true
+				emitted_counts[vkey]++
+				if emitted == stmt.name && '${info.v_module}.${stmt.name}' !in dupes {
+					has_verbatim[vkey] = true
+				}
+				for member in stmt.body {
+					if member is FunctionDef && member.decorator_kind in [
+						'staticmethod',
+						'classmethod',
+					] {
+						registry.class_static_members['${info.dotted}.${stmt.name}.${member.name}'] = true
+					}
+				}
 			}
 		}
 	}
+	mut claimed := map[string]bool{}
 	mut serial := 0
 	for key in keys {
 		info := registry.lookup(key)
@@ -440,13 +459,39 @@ fn register_colliding_classes(parsed map[string]Module, dupes map[string][]strin
 				continue
 			}
 			class_def := stmt as ClassDef
-			if '${info.v_module}.${class_def.name}' !in dupes { continue }
+			in_dupes := '${info.v_module}.${class_def.name}' in dupes
+			emitted := emitted_class_name(class_def.name)
+			vkey := '${info.v_module}.${emitted}'
+			if !in_dupes {
+				if emitted_counts[vkey] <= 1 {
+					continue
+				}
+				if emitted == class_def.name {
+					claimed[vkey] = true
+					continue
+				}
+				if !has_verbatim[vkey] && !claimed[vkey] {
+					claimed[vkey] = true
+					continue
+				}
+			}
 			mut name := ''
-			for {
-				serial++
-				name = 'Py2v${emitted_class_name(class_def.name)}${serial}'
-				if '${info.v_module}.${name}' !in taken && name !in registry.module_words[info.v_module] {
-					break
+			if in_dupes {
+				for {
+					serial++
+					name = 'Py2v${emitted}${serial}'
+					if '${info.v_module}.${name}' !in taken && name !in registry.module_words[info.v_module] {
+						break
+					}
+				}
+			} else {
+				mut suffix := 0
+				for {
+					suffix++
+					name = '${emitted}_${suffix}'
+					if '${info.v_module}.${name}' !in taken && name !in registry.module_words[info.v_module] {
+						break
+					}
 				}
 			}
 			taken['${info.v_module}.${name}'] = true
