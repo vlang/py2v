@@ -126,6 +126,7 @@ logging_calls.v	2
 logging_runtime.v	6
 long_wrap.v	4
 loop_target_rebinding.v	2
+loop_vararg_rebind.v	10
 map_items_comprehensions.v	10
 map_items_tuple_bound.v	5
 map_items_tuple_pairs.v	4

@@ -200,6 +200,11 @@ fn visit_print(mut t VTranspiler, node Call, args []string) (string, bool) {
 		// Check if this is a Name that refers to a known bool variable
 		if arg is Name {
 			n := arg as Name
+			if t.loop_state.boxed_vararg_vars[n.id] {
+				t.add_using('pyrt')
+				parts << 'pyrt.str(${arg_str})'
+				continue
+			}
 			if t.var_types[n.id] == 'bool' {
 				parts << bool_to_python_str(arg_str)
 				continue
@@ -2042,6 +2047,11 @@ fn dispatch_builtin_impl(mut t VTranspiler, fname string, node Call, args []stri
 			return DispatchResult{code, handled, ''}
 		}
 		'len' {
+			if node.args.len == 1 && node.args[0] is Name
+				&& t.loop_state.boxed_vararg_vars[(node.args[0] as Name).id] {
+				t.add_using('pyrt')
+				return DispatchResult{'pyrt.length(${args[0]})', true, ''}
+			}
 			code, handled := visit_len(args)
 			return DispatchResult{code, handled, ''}
 		}

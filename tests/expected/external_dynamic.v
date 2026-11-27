@@ -24,7 +24,6 @@ fn lookup_py() !Any {
 }
 
 fn py2v_entry1() ! {
-
 	// except handlers are not translated: see the TODO(py2v) note above
 	//   except ImportError: 1 statement(s) need an `or { ... }` equivalent
 	println(from_context_py('ready')!)

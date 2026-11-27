@@ -44,12 +44,9 @@ fn main() {
 	}; i = py2v_range_next1(i, py2v_range_stop5, py2v_range_step6) {
 		println('negative ${i}')
 	}
-	has_break := false
 	py2v_range_stop7 := int(1)
 	for i in int(3) .. py2v_range_stop7 {
 		println('wrong ${i}')
 	}
-	if has_break != true {
-		println('empty else')
-	}
+	println('empty else')
 }
