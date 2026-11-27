@@ -6,7 +6,7 @@ import pyrt
 type Any = pyrt.Value
 
 // @contextmanager: unsupported decorator — remove or implement manually
-fn managed_file(path Any, ch chan Any) {
+fn managed_file(ch chan Any, path Any) {
 	defer { ch.close() }
 	f := os.open(path) or { panic(err) }
 	defer {

@@ -39,6 +39,8 @@ pub mut:
 	init_import_bindings map[string]string
 	// Module function signatures used to fill omitted scalar defaults.
 	defaulted_functions map[string]FunctionDef
+	// Generator function and method signatures, keyed by defining Python path.
+	generator_signatures map[string]GeneratorSignature
 	// Source-level unsigned facts, keyed by kind and defining Python path.
 	wide_exports map[string]bool
 	wide_members map[string]bool

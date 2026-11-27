@@ -48,6 +48,9 @@ mut:
 	has_global_decl             bool
 	mut_param_indices           map[string][]int
 	generator_signatures        map[string]GeneratorSignature
+	generator_aliases           map[string]GeneratorSignature
+	non_generator_locals        map[string]bool
+	current_gen_ch              string
 	func_param_types            map[string][]string // module function -> the V types of its parameters
 	var_types                   map[string]string
 	// Exact numeric element provenance; []f64 by itself does not prove Python floats.
@@ -690,6 +693,7 @@ pub fn (mut t VTranspiler) visit_module(node Module) string {
 			}
 		}
 	}
+	t.prescan_generators(hoisted_body)
 	for name, first in node.rebound_functions {
 		spelling := t.module_value_name(name, shared)
 		t.module_idents[name] = spelling
@@ -3200,14 +3204,13 @@ fn (mut t VTranspiler) visit_closure_from_funcdef(node FunctionDef, nl_names []s
 		t.local_idents[kwarg.arg] = local
 		declarations << '${local} map[string]Any'
 	}
-	if node.is_generator {
+	is_gen := node.is_generator && body_has_direct_yield(node.body)
+	mut gen_ch := ''
+	if is_gen {
 		typ := t.infer_generator_yield_type(node.body)
-		if node.args.vararg != none {
-			declarations.prepend('ch chan ${typ}')
-		} else {
-			declarations << 'ch chan ${typ}'
-		}
-		t.generator_signatures[node.name] = GeneratorSignature{typ, node.args.vararg != none, node.args}
+		gen_ch = t.pick_generator_channel_name(node.args, node.body)
+		declarations.prepend('${gen_ch} chan ${typ}')
+		t.generator_signatures[node.name] = GeneratorSignature{typ, node.args, false, '', t.generator_needs_sequential_resume(node.body)}
 	}
 	if vararg := node.args.vararg {
 		local := escape_local_decl(vararg.arg)
@@ -3219,7 +3222,9 @@ fn (mut t VTranspiler) visit_closure_from_funcdef(node FunctionDef, nl_names []s
 		declarations << '${local} ...${typ}'
 	}
 	mut ret := ''
-	if !node.is_void && !node.is_generator {
+	closure_void := node.is_void || (node.is_generator && !is_gen && node.returns == none
+		&& !body_has_direct_return_value(node.body))
+	if !closure_void && !is_gen {
 		if annotation := node.returns {
 			ret = v_return_type(t.typename_from_annotation(*annotation))
 		} else {
@@ -3252,6 +3257,17 @@ fn (mut t VTranspiler) visit_closure_from_funcdef(node FunctionDef, nl_names []s
 	saved_nested_returns := t.func_return_types.clone()
 	saved_nested_mut := t.mut_param_indices.clone()
 	saved_nested_generators := t.generator_signatures.clone()
+	saved_gen_aliases := t.generator_aliases.clone()
+	saved_non_gen_locals := t.non_generator_locals.clone()
+	saved_gen_ch := t.current_gen_ch
+	if is_gen {
+		t.current_gen_ch = gen_ch
+	}
+	for param in params {
+		t.generator_aliases.delete(param.arg)
+		t.non_generator_locals[param.arg] = true
+	}
+	t.prescan_generators(node.body)
 	defer {
 		t.func_defaults = saved_nested_defaults
 		t.func_param_count = saved_nested_counts
@@ -3259,6 +3275,9 @@ fn (mut t VTranspiler) visit_closure_from_funcdef(node FunctionDef, nl_names []s
 		t.func_return_types = saved_nested_returns
 		t.mut_param_indices = saved_nested_mut
 		t.generator_signatures = saved_nested_generators
+		t.generator_aliases = saved_gen_aliases
+		t.non_generator_locals = saved_non_gen_locals
+		t.current_gen_ch = saved_gen_ch
 	}
 
 	// Defaults use the parent context; the nested body owns its cleanup state.
@@ -3273,7 +3292,7 @@ fn (mut t VTranspiler) visit_closure_from_funcdef(node FunctionDef, nl_names []s
 
 	t.prepare_condition_walruses(node.condition_walrus_names, params)
 	mut body := []string{}
-	if node.is_generator { body << 'defer { ch.close() }' }
+	if is_gen { body << 'defer { ${gen_ch}.close() }' }
 	body << copies
 	for i, stmt in node.body {
 		if stmt is Nonlocal { continue }
@@ -3705,17 +3724,25 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 		args_strs << '${local} ${typename}'
 	}
 
-	// For generator functions, add channel parameter
-	if node.is_generator {
+	// For generator functions, always place the channel parameter first so
+	// direct, forward, aliased, method, and variadic generators share one ABI.
+	is_gen := node.is_generator && body_has_direct_yield(node.body)
+	mut gen_ch := ''
+	if is_gen {
 		yield_type := t.infer_generator_yield_type(node.body)
-		channel_first := node.args.vararg != none
-		if channel_first {
-			// V requires the remaining Python arguments to be last.
-			args_strs.prepend('ch chan ${yield_type}')
+		gen_ch = t.pick_generator_channel_name(node.args, node.body)
+		args_strs.prepend('${gen_ch} chan ${yield_type}')
+		sig_key := if node.is_class_method && t.current_class_name != '' {
+			'${t.current_class_name}.${node.name}'
 		} else {
-			args_strs << 'ch chan ${yield_type}'
+			node.name
 		}
-		t.generator_signatures[node.name] = GeneratorSignature{yield_type, channel_first, node.args}
+		static_cls := if node.is_class_method && node.decorator_kind in ['staticmethod', 'classmethod'] {
+			node.class_name
+		} else {
+			''
+		}
+		t.generator_signatures[sig_key] = GeneratorSignature{yield_type, node.args, node.is_class_method && node.decorator_kind != 'staticmethod', static_cls, t.generator_needs_sequential_resume(node.body)}
 	}
 
 	// A function names its generic types; a method takes them from its receiver.
@@ -3763,7 +3790,9 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 		}
 		t.sum_list_kinds = parameter_proofs
 	}
-	if !node.is_void && !node.is_generator && node.name != '__init__' {
+	fn_void := node.is_void || (node.is_generator && !is_gen && node.returns == none
+		&& !body_has_direct_return_value(node.body))
+	if !fn_void && !is_gen && node.name != '__init__' {
 		if t.recursive_int_results[node.name] && !node.is_class_method && !node.is_nested {
 			t.current_return_type = 'int'
 			signature << 'int'
@@ -3809,6 +3838,16 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 	saved_nested_returns := t.func_return_types.clone()
 	saved_nested_mut := t.mut_param_indices.clone()
 	saved_nested_generators := t.generator_signatures.clone()
+	saved_gen_aliases := t.generator_aliases.clone()
+	saved_non_gen_locals := t.non_generator_locals.clone()
+	saved_gen_ch := t.current_gen_ch
+	if !node.is_nested {
+		t.generator_aliases = map[string]GeneratorSignature{}
+		t.non_generator_locals = map[string]bool{}
+	}
+	if is_gen {
+		t.current_gen_ch = gen_ch
+	}
 	defer {
 		t.func_defaults = saved_nested_defaults
 		t.func_param_count = saved_nested_counts
@@ -3816,6 +3855,9 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 		t.func_return_types = saved_nested_returns
 		t.mut_param_indices = saved_nested_mut
 		t.generator_signatures = saved_nested_generators
+		t.generator_aliases = saved_gen_aliases
+		t.non_generator_locals = saved_non_gen_locals
+		t.current_gen_ch = saved_gen_ch
 	}
 
 	// Process body - separate nested function definitions
@@ -3879,10 +3921,24 @@ pub fn (mut t VTranspiler) visit_function_def(node FunctionDef) string {
 	if kwarg := node.args.kwarg { condition_parameters << kwarg }
 	t.prepare_condition_walruses(node.condition_walrus_names, condition_parameters)
 
+	for param in condition_parameters {
+		t.generator_aliases.delete(param.arg)
+		t.non_generator_locals[param.arg] = true
+	}
+	t.prescan_generators(body_stmts)
+
 	// Build body
 	mut body_lines := []string{}
-	if node.is_generator {
-		body_lines << t.indent_code('defer { ch.close() }', 1)
+	if is_gen && node.is_class_method && node.decorator_kind == 'classmethod'
+		&& node.args.args.len > 0 {
+		mut referenced := map[string]bool{}
+		collect_scope_names(node.body, mut referenced)
+		if node.args.args[0].arg in referenced || node.class_name in referenced {
+			body_lines << t.indent_code('py2v_unsupported_classmethod_generator_receiver()', 1)
+		}
+	}
+	if is_gen {
+		body_lines << t.indent_code('defer { ${gen_ch}.close() }', 1)
 	}
 	if param_copies.len > 0 {
 		body_lines << t.indent_code(param_copies.join('\n'), 1)
@@ -4472,6 +4528,46 @@ pub fn (mut t VTranspiler) visit_class_def(node ClassDef) string {
 					methods << emitted
 				}
 			}
+			AsyncFunctionDef {
+				if !stmt.is_generator || !body_has_direct_yield(stmt.body) {
+					continue
+				}
+				returns := if r := stmt.returns { &Expr(r) } else { none }
+				mut fd := FunctionDef{
+					is_nested:              stmt.is_nested
+					is_recursive:           stmt.is_recursive
+					capture_names:          stmt.capture_names
+					capture_mutable:        stmt.capture_mutable
+					capture_refusal:        stmt.capture_refusal
+					capture_types:          stmt.capture_types
+					name:                   stmt.name
+					args:                   stmt.args
+					body:                   stmt.body
+					decorator_list:         stmt.decorator_list
+					returns:                returns
+					type_comment:           stmt.type_comment
+					loc:                    stmt.loc
+					is_generator:           stmt.is_generator
+					is_void:                stmt.is_void
+					mutable_vars:           stmt.mutable_vars
+					is_class_method:        true
+					class_name:             node.name
+					decorator_kind:         stmt.decorator_kind
+					dunder_op:              stmt.dunder_op
+					condition_walrus_names: stmt.condition_walrus_names
+					v_annotation:           if stmt.condition_walrus_names.len > 0 {
+						stmt.v_annotation
+					} else {
+						''
+					}
+				}
+				emitted := t.visit_function_def(fd)
+				if fd.decorator_kind in ['staticmethod', 'classmethod'] {
+					static_fns << emitted
+				} else {
+					methods << emitted
+				}
+			}
 			else {}
 		}
 	}
@@ -4730,10 +4826,18 @@ fn (mut t VTranspiler) visit_assignment(node Assign, package_initializer bool) s
 		}
 	}
 
-	// Track variable types for print() optimization
+	// Track variable types for print() optimization and generator function aliases.
+	rhs_gen_sig := t.resolve_generator_signature(*node.value)
 	for target in node.targets {
 		if target is Name {
 			n := target as Name
+			if sig := rhs_gen_sig {
+				t.generator_aliases[n.id] = sig
+				t.non_generator_locals.delete(n.id)
+			} else {
+				t.generator_aliases.delete(n.id)
+				t.non_generator_locals[n.id] = true
+			}
 			inferred := t.infer_expr_type(node.value)
 			if inferred.len > 0 {
 				previous := t.var_types[n.id] or { '' }
@@ -6146,6 +6250,51 @@ pub fn (mut t VTranspiler) visit_for(node For) string {
 		}
 	}
 
+	// Synchronous iteration over a known generator call lowers to the same
+	// goroutine + channel loop as async for, with the channel argument first.
+	if node.iter is Call {
+		iter_call := node.iter as Call
+		if sig := t.resolve_generator_signature(*iter_call.func) {
+			if sig.needs_sequential_resume {
+				return 'py2v_unsupported_generator_suspension_order()'
+			}
+			prep := t.prepare_generator_call(iter_call, sig, saved_renames)
+			if !prep.valid {
+				return '// TODO(py2v): unsupported generator call arguments\npy2v_unsupported_generator_arguments()'
+			}
+			if node.target is Name {
+				t.var_types[(node.target as Name).id] = prep.ch_type
+			}
+			ch := t.new_tmp('ch')
+			buf << prep.arg_prefix
+			buf << '${ch} := chan ${prep.ch_type}{}'
+			mut call_args := [ch]
+			call_args << prep.args
+			buf << 'go ${prep.producer}(${call_args.join(', ')})'
+			buf << 'for {'
+			if node.target is Tuple || node.target is List {
+				elts := if node.target is Tuple {
+					(node.target as Tuple).elts
+				} else {
+					(node.target as List).elts
+				}
+				item := t.new_tmp('item')
+				buf << '\t${item} := <-${ch} or { break }'
+				for k, e in elts {
+					ename := t.visit_expr(e)
+					buf << '\t${ename} ${t.bind_op(ename)} ${item}[${k}]'
+				}
+			} else {
+				buf << '\t${target} := <-${ch} or { break }'
+			}
+			body, flag := t.visit_for_body(node, 1, has_else, writebacks)
+			buf << body
+			buf << '}'
+			t.emit_for_else(mut buf, node.orelse, flag, saved_renames)
+			return buf.join('\n')
+		}
+	}
+
 	// Check for range with step
 	mut for_expr := ''
 	if node.iter is Call {
@@ -6469,9 +6618,11 @@ fn (mut t VTranspiler) emit_for_else(mut buf []string, orelse []Stmt, flag strin
 }
 
 struct GeneratorSignature {
-	yield_type    string
-	channel_first bool
-	args          Arguments
+	yield_type              string
+	args                    Arguments
+	is_method               bool
+	static_class            string
+	needs_sequential_resume bool
 }
 
 struct GeneratorCallArgs {
@@ -6489,6 +6640,9 @@ fn (mut t VTranspiler) ordered_generator_call(call Call, sig GeneratorSignature)
 	}
 	mut positional := sig.args.posonlyargs.clone()
 	positional << sig.args.args
+	if sig.is_method && positional.len > 0 {
+		positional = positional[1..].clone()
+	}
 	mut named := map[string]string{}
 	mut extras := []string{}
 	mut prefix := []string{}
@@ -6570,48 +6724,26 @@ pub fn (mut t VTranspiler) visit_async_for(node AsyncFor) string {
 	target := t.visit_expr(node.target)
 	if node.iter is Call {
 		iter_call := node.iter as Call
-		producer := t.visit_expr(iter_call.func)
-		mut producer_args := []string{}
-		mut arg_prefix := []string{}
-		mut ordered := false
+		sig := t.resolve_generator_signature(*iter_call.func)
+		if found := sig {
+			if found.needs_sequential_resume {
+				return 'py2v_unsupported_generator_suspension_order()'
+			}
+		}
+		prep := t.prepare_generator_call(iter_call, sig, none)
+		if !prep.valid {
+			return '// TODO(py2v): unsupported generator call arguments\npy2v_unsupported_generator_arguments()'
+		}
+		if node.target is Name {
+			t.var_types[(node.target as Name).id] = prep.ch_type
+		}
 		ch := t.new_tmp('ch')
 		buf << '// async for lowered to goroutine + channel'
-		// The channel has the element type its producer was declared with
-		mut elem_type := t.infer_iter_elem_type(node.iter)
-		mut channel_first := false
-		if iter_call.func is Name {
-			if sig := t.generator_signatures[iter_call.func.id] {
-				elem_type = sig.yield_type
-				channel_first = sig.channel_first
-				if sig.args.kwonlyargs.len > 0 || sig.args.defaults.len > 0
-					|| iter_call.keywords.len > 0 {
-					bound := t.ordered_generator_call(iter_call, sig)
-					if !bound.valid {
-						return '// TODO(py2v): unsupported generator call arguments\\npy2v_unsupported_generator_arguments()'
-					}
-					arg_prefix = bound.prefix
-					producer_args = bound.ordered
-					ordered = true
-				}
-			}
-		}
-		if !ordered {
-			for arg in iter_call.args {
-				producer_args << t.visit_expr(arg)
-			}
-			for kw in iter_call.keywords {
-				producer_args << t.visit_expr(kw.value)
-			}
-		}
-		buf << arg_prefix
-		ch_type := if elem_type.len > 0 { elem_type } else { 'Any' }
-		buf << '${ch} := chan ${ch_type}{}'
-		if channel_first {
-			producer_args.prepend(ch)
-		} else {
-			producer_args << ch
-		}
-		buf << 'go ${producer}(${producer_args.join(', ')})'
+		buf << prep.arg_prefix
+		buf << '${ch} := chan ${prep.ch_type}{}'
+		mut producer_args := [ch]
+		producer_args << prep.args
+		buf << 'go ${prep.producer}(${producer_args.join(', ')})'
 		buf << 'for {'
 		buf << '\t${target} := <-${ch} or { break }'
 		body, _ := t.visit_loop_body(node.body, 1, false)
@@ -9887,6 +10019,31 @@ fn (mut t VTranspiler) visit_call_at(original Call, permit WideSink, permit_type
 	if original.api == '__py2v__.text_length' && original.args.len == 1 {
 		return '${as_receiver(t.visit_expr(original.args[0]))}.len_utf8()'
 	}
+	// Materializing a known generator via list/tuple/set (or the frontend's
+	// `.copy()` rewrite of `list(...)`) drains the channel in an IIFE before
+	// evaluating the bare generator call as an ordinary function call.
+	if original.func is Name && original.func.id in ['list', 'tuple', 'set']
+		&& original.args.len == 1 && original.keywords.len == 0
+		&& original.func.id !in t.module_functions && !t.is_bound_in_scope(original.func.id)
+		&& original.args[0] is Call {
+		gen_call := original.args[0] as Call
+		if sig := t.resolve_generator_signature(*gen_call.func) {
+			collected := t.collect_generator_call(gen_call, sig)
+			return if original.func.id == 'set' {
+				'${t.runtime_helper('distinct')}(${collected})'
+			} else {
+				collected
+			}
+		}
+	}
+	if original.func is Attribute && original.func.attr == 'copy'
+		&& original.args.len == 0 && original.keywords.len == 0
+		&& original.func.value is Call {
+		gen_call := original.func.value as Call
+		if sig := t.resolve_generator_signature(*gen_call.func) {
+			return t.collect_generator_call(gen_call, sig)
+		}
+	}
 	if original.func is Name && original.func.id == 'len' && original.args.len == 1
 		&& original.keywords.len == 0 && original.func.id !in t.module_functions
 		&& !t.is_bound_in_scope(original.func.id) && original.args[0] is ListComp {
@@ -12940,18 +13097,20 @@ pub fn (mut t VTranspiler) visit_await(node Await) string {
 
 // visit_yield emits V code for yield expressions (Yield).
 pub fn (mut t VTranspiler) visit_yield(node Yield) string {
+	ch := t.generator_channel_name()
 	if node.used_as_value {
 		value := if val := node.value { t.visit_expr(val) } else { 'none' }
 		return 'py2v_unsupported_generator_send(${value})'
 	}
 	if val := node.value {
-		return 'ch <- ${t.visit_expr(val)}'
+		return '${ch} <- ${t.visit_expr(val)}'
 	}
-	return 'ch <- 0'
+	return '${ch} <- 0'
 }
 
 // visit_yield_from emits V code for yield-from expressions (YieldFrom).
 pub fn (mut t VTranspiler) visit_yield_from(node YieldFrom) string {
+	ch := t.generator_channel_name()
 	gen_expr := t.visit_expr(node.value)
 	if node.used_as_value {
 		return 'py2v_unsupported_yield_from_result(${gen_expr})'
@@ -12963,7 +13122,7 @@ pub fn (mut t VTranspiler) visit_yield_from(node YieldFrom) string {
 	buf << '// yield from ${gen_var}'
 	buf << 'for {'
 	buf << '    val := <-${gen_var} or { break }'
-	buf << '    ch <- val'
+	buf << '    ${ch} <- val'
 	buf << '}'
 
 	return buf.join('\n')
@@ -14203,14 +14362,26 @@ fn (mut t VTranspiler) infer_generator_yield_type(body []Stmt) string {
 	if types.len == 0 {
 		return 'Any'
 	}
-	// Use first type; if all are the same, return it
+	// Use first type; if all are the same, return it. Mixed `int` and `i64`
+	// come from integer expressions whose V result is `int`.
 	first := types[0]
+	mut all_same := true
+	mut all_int := true
 	for ty in types {
 		if ty != first {
-			return 'Any'
+			all_same = false
+		}
+		if ty !in ['int', 'i64'] {
+			all_int = false
 		}
 	}
-	return first
+	if all_int {
+		return 'int'
+	}
+	if all_same {
+		return first
+	}
+	return 'Any'
 }
 
 // collect_yield_types recursively walks stmts collecting types of yielded exprs.
@@ -14233,12 +14404,62 @@ fn (mut t VTranspiler) collect_yield_types(stmts []Stmt, mut out []string) {
 				t.collect_yield_types(stmt.orelse, mut out)
 			}
 			For {
+				saved_vars := t.var_types.clone()
+				if stmt.target is Name {
+					elem := t.infer_iter_elem_type(*stmt.iter)
+					if elem.len > 0 {
+						t.var_types[(stmt.target as Name).id] = elem
+					}
+				}
 				t.collect_yield_types(stmt.body, mut out)
+				t.var_types = saved_vars
+				t.collect_yield_types(stmt.orelse, mut out)
+			}
+			AsyncFor {
+				saved_vars := t.var_types.clone()
+				if stmt.target is Name {
+					mut elem := ''
+					if stmt.iter is Call {
+						if sig := t.resolve_generator_signature(*(stmt.iter as Call).func) {
+							elem = sig.yield_type
+						}
+					}
+					if elem == '' {
+						elem = t.infer_iter_elem_type(*stmt.iter)
+					}
+					if elem.len > 0 {
+						t.var_types[(stmt.target as Name).id] = elem
+					}
+				}
+				t.collect_yield_types(stmt.body, mut out)
+				t.var_types = saved_vars
+				t.collect_yield_types(stmt.orelse, mut out)
 			}
 			While {
 				t.collect_yield_types(stmt.body, mut out)
+				t.collect_yield_types(stmt.orelse, mut out)
+			}
+			Try {
+				t.collect_yield_types(stmt.body, mut out)
+				for handler in stmt.handlers {
+					t.collect_yield_types(handler.body, mut out)
+				}
+				t.collect_yield_types(stmt.orelse, mut out)
+				t.collect_yield_types(stmt.finalbody, mut out)
+			}
+			With {
+				t.collect_yield_types(stmt.body, mut out)
+			}
+			AsyncWith {
+				t.collect_yield_types(stmt.body, mut out)
+			}
+			Match {
+				for kase in stmt.cases {
+					t.collect_yield_types(kase.body, mut out)
+				}
 			}
 			FunctionDef {} // don't recurse into nested functions
+			AsyncFunctionDef {}
 			else {}
 		}
 	}
@@ -14507,6 +14728,23 @@ fn get_expr_annotation(expr Expr) string {
 
 // Infer the type of an expression for variable tracking
 fn (mut t VTranspiler) infer_expr_type(expr Expr) string {
+	if expr is Call {
+		call := expr as Call
+		if call.func is Name && call.func.id in ['list', 'tuple', 'set']
+			&& call.args.len == 1 && call.keywords.len == 0 && call.args[0] is Call {
+			gen_call := call.args[0] as Call
+			if sig := t.resolve_generator_signature(*gen_call.func) {
+				return '[]${sig.yield_type}'
+			}
+		}
+		if call.func is Attribute && call.func.attr == 'copy' && call.args.len == 0
+			&& call.keywords.len == 0 && call.func.value is Call {
+			gen_call := call.func.value as Call
+			if sig := t.resolve_generator_signature(*gen_call.func) {
+				return '[]${sig.yield_type}'
+			}
+		}
+	}
 	if t.has_u64_bits(expr) {
 		return 'u64'
 	}
